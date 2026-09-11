@@ -1,0 +1,44 @@
+{
+  "site": "https://adct.org.za/",
+  "mirror_root": "site-mirror/adct.org.za",
+  "captured_at": "2026-09-11T06:30:49Z",
+  "method": "best-effort reconstruction from publicly indexed summaries because the live site and Wayback snapshots could not be resolved from this environment",
+  "mirrored_pages": [
+    "/",
+    "/about/",
+    "/contact-us/",
+    "/resources/",
+    "/ministries/",
+    "/religious/",
+    "/structure/",
+    "/catechetical-material/"
+  ],
+  "known_additional_pages": [
+    "/page/2/",
+    "/page/3/",
+    "/deans-and-deaneries-of-the-archdiocese-of-cape-town-2026/",
+    "/pastoral-development-2/"
+  ],
+  "wayback_snapshots": [
+    "20140115073232",
+    "20160323153642",
+    "20201118130338",
+    "20220413175939",
+    "20240207104309"
+  ],
+  "known_assets": [
+    "https://adct.org.za/wp-content/uploads/2023/01/ADCT-Safeguarding-Policy-Final-_-signed-by-AB.pdf",
+    "https://adct.org.za/wp-content/uploads/2024/08/diary-september-2024.pdf",
+    "https://adct.org.za/wp-content/uploads/2024/10/diary-october-2024-updated.pdf",
+    "https://adct.org.za/wp-content/uploads/2023/09/diary-september-2023.pdf",
+    "https://adct.org.za/wp-content/uploads/diary-may-2025.pdf",
+    "https://adct.org.za/wp-content/uploads/diary-march-2025-2.pdf",
+    "https://adct.org.za/wp-content/uploads/diary-april-2026-1.pdf",
+    "https://adct.org.za/wp-content/uploads/Catechetics-Policy-ARCHDIOCESE-OF-CAPE-TOWN-FINAL.pdf",
+    "https://adct.org.za/wp-content/uploads/2022/04/Screenshot-2022-04-07-123635.jpg",
+    "https://adct.org.za/wp-content/uploads/2018/08/Find-a-Parish-new-image.jpg",
+    "https://adct.org.za/wp-content/uploads/2022/12/SYD_WebCarousel.jpg",
+    "https://adct.org.za/wp-content/uploads/2022/09/Archbishop-Stephen-Brislin.jpg",
+    "https://adct.org.za/wp-content/uploads/2013/10/Fabris-Francesco-1-221x300.jpg"
+  ]
+}
