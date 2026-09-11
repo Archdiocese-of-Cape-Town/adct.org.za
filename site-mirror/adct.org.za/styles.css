@@ -36,6 +36,14 @@ nav a {
   border: 1px solid rgba(255,255,255,0.4);
   border-radius: 999px;
 }
+nav a:hover,
+nav a:focus-visible {
+  text-decoration: underline;
+}
+nav a:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
 main {
   max-width: 72rem;
   margin: 0 auto;
