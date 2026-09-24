@@ -13,6 +13,12 @@ final class ParseContext
         $this->options = $options;
     }
 
+    public function reset(): void
+    {
+        $this->notes = [];
+        $this->errors = [];
+    }
+
     public function getOption(string $key, $default = null)
     {
         return $this->options[$key] ?? $default;
