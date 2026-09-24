@@ -40,11 +40,13 @@
             "phpunit",
             "@php tests/parser_smoke_test.php"
         ],
+        "fixture-score": "@php scripts/fixture-score.php",
         "test:unit": "phpunit --testsuite unit",
         "test:integration": "npm run test:integration"
     },
     "scripts-descriptions": {
         "test": "Run the PHPUnit suite and the prototype smoke test.",
+        "fixture-score": "Report parser fixture fields correct per fixture and overall.",
         "test:unit": "Run only the unit test suite.",
         "test:integration": "Run WordPress integration tests against the built release zip."
     }

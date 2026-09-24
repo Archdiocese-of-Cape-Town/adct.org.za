@@ -1,0 +1,14 @@
+{
+  "classification": "low_confidence",
+  "fields": {
+    "title": "Image-only poster",
+    "parish_name": "Example Parish",
+    "attachment_names": [
+      "example-event-poster.jpg"
+    ]
+  },
+  "reprocess_needed": true,
+  "known_failures": {
+    "reprocess_needed": "#63"
+  }
+}

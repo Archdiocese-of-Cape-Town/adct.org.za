@@ -1,0 +1,15 @@
+{
+  "classification": "recurring_event",
+  "fields": {
+    "title": "First Friday healing Mass",
+    "parish_name": "Example Parish",
+    "event_time": "18:00",
+    "venue": "Example Parish Hall"
+  },
+  "recurrence": {
+    "frequency": "monthly",
+    "interval": 1,
+    "by_day": "FR",
+    "by_set_position": 1
+  }
+}

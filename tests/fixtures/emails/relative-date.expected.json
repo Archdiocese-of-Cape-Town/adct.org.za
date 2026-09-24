@@ -1,0 +1,10 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Youth gathering",
+    "parish_name": "Example Parish",
+    "event_date": "2026-10-02",
+    "event_time": "18:00",
+    "venue": "Example Parish Hall"
+  }
+}
