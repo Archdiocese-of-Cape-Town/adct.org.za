@@ -87,3 +87,18 @@ This review compares the first generated backlog (`docs/parish-intake-project-ba
   - InstaWP/TasteWP use the same zip for real mail tests.
   - A temporary xneelo staging instance is used once, as the final check before launch.
   - See [ADR 0009](../decisions/0009-preview-and-test-environments.md).
+- **Hosting answers:**
+  - Cron at most every 2 hours (10 jobs max).
+  - No WP-CLI.
+  - 500 emails per hour.
+  - 30 MB messages.
+  - Outbound HTTPS allowed.
+
+  This led to [ADR 0010](../decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md) (WP-Cron + 2-hourly backstop + optional pinger + "Check now") and [ADR 0011](../decisions/0011-outbound-email-queue-with-hourly-cap.md) (mail queue with an hourly cap). New issue: #76.
+- **Real samples** (13 bulletins and posters) led to these changes ([parser findings](../parser-samples.md)):
+  - skip personal/non-event sections: new issue #74;
+  - silent matching of weekly repeats: #46 raised to P0;
+  - venues and outstations: #33 raised to P0;
+  - position-aware PDF text;
+  - optional OCR brought forward: new issue #75.
+- **Deaneries and parishes** are seeded from the official directory ([seed data](../../data/seed/README.md)). A deanery without a dean set up still works: reviewers approve.

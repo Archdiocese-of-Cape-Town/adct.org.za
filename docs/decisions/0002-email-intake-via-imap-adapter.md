@@ -15,6 +15,6 @@ Phase 1 intake is email to `events@adct.org.za`. Options: IMAP polling, email pi
 
 ## Consequences
 - Works with no third-party services, using credentials the archdiocese already controls.
-- Polling delay: new mail is picked up within about 5–10 minutes, which is fine for events.
+- Polling delay: new mail is picked up within about 5–10 minutes, which is fine for events. *(Note 2026-09-24: this needs the optional external pinger; the host's own cron runs only every 2 hours. See [ADR 0010](0010-scheduled-jobs-with-2-hour-cron-limit.md).)*
 - IMAP is tested with a throwaway GreenMail server in CI.
 - OAuth mailboxes need extra work later (an app registration and token refresh).

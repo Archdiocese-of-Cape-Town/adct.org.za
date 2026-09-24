@@ -1,0 +1,125 @@
+slug,name,area,church,kind,is_mother_parish,parent_slug,deanery_slug,address,office_email,latitude,longitude
+athlone-st-mary-of-the-angels,Athlone: St Mary of the Angels,Athlone,St Mary of the Angels,parish,yes,,eastern,Lawrence Road Athlone 7764,athlone@adct.org.za,-33.965281,18.502987
+atlantis-st-john-the-baptist,Atlantis: St John the Baptist,Atlantis,St John the Baptist,parish,yes,,west-coast,9 Sun Road Avondale Atlantis 7349,atlantis@adct.org.za,-33.562314,18.487449
+belgravia-regina-caeli,Belgravia: Regina Caeli,Belgravia,Regina Caeli,parish,yes,,eastern,23 Klipfontein Road Belgravia 7764,belgravia@adct.org.za,-33.964782,18.518838
+belhar-ss-john-paul,Belhar: Ss John & Paul,Belhar,Ss John & Paul,parish,yes,,central,33 Willow Way Belhar 7493,belhar@adct.org.za,-33.946567,18.623566
+bellville-south-holy-family,Bellville South: Holy Family,Bellville South,Holy Family,parish,no,,northern,18 Eendrag Street Bellville South,,-33.911886,18.635148
+bellville-our-lady-of-fatima,Bellville: Our Lady of Fatima,Bellville,Our Lady of Fatima,parish,yes,,northern,Corner Rhos & Welgemeend Streets Bellville 7530,bellville@adct.org.za,-33.900143,18.625173
+bergvliet-holy-redeemer,Bergvliet: Holy Redeemer,Bergvliet,Holy Redeemer,parish,yes,,constantiaberg,Bergvliet Road Bergvliet 7945,bergvliet@adct.org.za,-34.042690,18.461475
+bettys-bay-our-lady-of-montserrat,Betty's Bay: Our Lady of Montserrat,Betty's Bay,Our Lady of Montserrat,parish,no,,east-coast,"5149 Aristea Road, Betty's Bay 7141",,-34.351947,18.930561
+bonteheuwel-st-matthew,Bonteheuwel: St Matthew,Bonteheuwel,St Matthew,parish,yes,,central,118 Jakkalsvlei Avenue Bonteheuwel 7764,bonteheuwel@adct.org.za,-33.945853,18.550560
+bothasig-good-shepherd,Bothasig: Good Shepherd,Bothasig,Good Shepherd,parish,yes,,west-coast,1 Goede Hoop Street Bothasig,bothasig@adct.org.za,-33.858887,18.535891
+brackenfell-all-saints,Brackenfell: All Saints,Brackenfell,All Saints,parish,yes,,northern,17 Stasie/Station Road Brackenfell,brackenfell@adct.org.za,-33.882280,18.690410
+bredasdorp,Bredasdorp,Bredasdorp,Bredasdorp,mass_centre,no,,east-coast,"Congregation of Our Lady of Fatima, at All Saints Anglican Church, All Saints Street, Bredasdorp",,-34.535047,20.039892
+bridgetown-our-lady-of-good-counsel,Bridgetown: Our Lady of Good Counsel,Bridgetown,Our Lady of Good Counsel,parish,yes,,eastern,52 Loerie Road Bridgetown 7764,bridgetown@adct.org.za,-33.958567,18.527759
+brooklyn-our-lady-of-the-assumption,Brooklyn: Our Lady of the Assumption,Brooklyn,Our Lady of the Assumption,parish,yes,,west-coast,160 Koeberg Rd Brooklyn 7405,brooklyn@adct.org.za,-33.902834,18.488102
+caledon,Caledon,Caledon,Caledon,mass_centre,no,,east-coast,,,-34.230000,19.428300
+camps-bay-st-theresa,Camps Bay: St Theresa,Camps Bay,St Theresa,parish,yes,,city-bowl,11 The Fairway Camps Bay 8005,campsbay@adct.org.za,-33.950215,18.380433
+cathedral-st-mary-of-the-flight-into-egypt,Cathedral: St Mary of the Flight into Egypt,Cathedral,St Mary of the Flight into Egypt,parish,yes,,city-bowl,Corner Roeland & Hope Streets Cape Town 8001,cathedral@adct.org.za,-33.928103,18.419871
+clanwilliam,Clanwilliam,Clanwilliam,Clanwilliam,mass_centre,no,,west-coast,,,-32.178550,18.891040
+claremont-st-ignatius,Claremont: St Ignatius,Claremont,St Ignatius,parish,yes,,constantiaberg,30-32 Imam Haron Rd Claremont 7708,claremont@adct.org.za,-33.984296,18.471221
+cloetesville-all-saints,Cloetesville: All Saints,Cloetesville,All Saints,outstation,no,stellenbosch-st-nicholas,east-coast,Corner Lang & Gabriel Streets Cloetesville,stellenbosch@adct.org.za,-33.904715,18.848569
+constantia-our-lady-of-the-visitation,Constantia: Our Lady of the Visitation,Constantia,Our Lady of the Visitation,parish,yes,,constantiaberg,4 Price Drive Constantia 7848,constantia@adct.org.za,-34.021946,18.423594
+constantia-schoenstatt,Constantia: Schoenstatt,Constantia,Schoenstatt,outstation,no,constantia-our-lady-of-the-visitation,constantiaberg,"Schoenstatt Shrine, Constantia Main Rd Constantia 7806",,-34.021946,18.423594
+crossroads-lower-our-lady-queen-of-africa,Crossroads (Lower): Our Lady Queen of Africa,Crossroads (Lower),Our Lady Queen of Africa,parish,yes,,northern,"7644 Phezukomkhono Street, Philippi East 7750",nyanga@adct.org.za,-34.009546,18.619151
+crossroads-old-st-josephine-bakhita,Crossroads (Old): St Josephine Bakhita,Crossroads (Old),St Josephine Bakhita,parish,yes,,northern,"2473 Qomoyi Street, Old Crossroads 7750",nyanga@adct.org.za,-33.994698,18.604149
+delft-jubilee-church-of-st-lawrence,Delft: Jubilee Church of St Lawrence,Delft,Jubilee Church of St Lawrence,parish,yes,,northern,"73 Caledon Street, Leiden, Delft",delft@adct.org.za,-33.964416,18.639371
+district-six-holy-cross,District Six: Holy Cross,District Six,Holy Cross,parish,yes,,city-bowl,31 Upper Nile Street District Six 7925,districtsix@adct.org.za,-33.933101,18.439461
+durbanville-our-lady-of-perpetual-help,Durbanville: Our Lady of Perpetual Help,Durbanville,Our Lady of Perpetual Help,parish,yes,,northern,7 The Crescent Durbanville 7550,durbanville@adct.org.za,-33.831919,18.648598
+elsies-river-st-clare,Elsie's River: St Clare,Elsie's River,St Clare,parish,yes,,central,114 Halt Road Elsie’s River 7490,elsiesriver@adct.org.za,-33.919182,18.566127
+factreton-st-luke,Factreton: St Luke,Factreton,St Luke,parish,yes,,city-bowl,Corner 16th & Factreton Avenues Factreton 7405,factreton@adct.org.za,-33.910978,18.519411
+fish-hoek-st-john-the-evangelist,Fish Hoek: St John the Evangelist,Fish Hoek,St John the Evangelist,parish,yes,,peninsula,Corner 6th Avenue & Kommetjie Road Fish Hoek,fishhoek@adct.org.za,-34.139142,18.425348
+franschhoek,Franschhoek,Franschhoek,Franschhoek,mass_centre,no,,northern,"Methodist Church, c/o Bagatelle & Lambrechts Road (R45), Franschhoek 7690",,-33.919005,19.140179
+gansbaai-st-peter-the-fisherman,Gansbaai: St Peter the Fisherman,Gansbaai,St Peter the Fisherman,parish,no,,east-coast,35 Church Street Gansbaai 7220,,-34.584820,19.349903
+goodwood-st-joseph,Goodwood: St Joseph,Goodwood,St Joseph,parish,yes,,central,30 Anderson Street Goodwood 7460,goodwood@adct.org.za,-33.911520,18.547110
+graafwater-st-augustine,Graafwater: St Augustine,Graafwater,St Augustine,parish,no,,west-coast,De Villiers Street,,-32.160728,18.607202
+grabouw-our-lady-of-grabouw,Grabouw: Our Lady of Grabouw,Grabouw,Our Lady of Grabouw,parish,no,,east-coast,6 Caledon Street Grabouw 7160,somersetwest@adct.org.za,-34.149616,19.024168
+grassy-park-our-lady-queen-of-peace,Grassy Park: Our Lady Queen of Peace,Grassy Park,Our Lady Queen of Peace,parish,yes,,constantiaberg,Corner 1st Road & 4th Avenue Grassy Park 7941,grassypark@adct.org.za,-34.044511,18.500611
+green-point-sacred-heart,Green Point: Sacred Heart,Green Point,Sacred Heart,outstation,no,sea-point-our-lady-of-good-hope,city-bowl,Corner Somerset Road & Napier Street Cape Town Picture of Church & Street Map,,-33.915019,18.418082
+green-point-st-margaret-mary,Green Point: St Margaret Mary,Green Point,St Margaret Mary,parish,yes,,city-bowl,19 Cheviot Place Road Green Point 8005,greenpoint@adct.org.za,-33.909999,18.405984
+greyton,Greyton,Greyton,Greyton,mass_centre,no,,east-coast,"Ladle Ministries, on the Main Road. Contact priest for changes/directions",somersetwest@adct.org.za,-34.046745,19.612587
+gugulethu-st-gabriel,Gugulethu: St Gabriel,Gugulethu,St Gabriel,parish,yes,,eastern,NY 5 (also NY 148) Gugulethu 7750,gugulethu@adct.org.za,-33.980918,18.573877
+hanover-park-our-lady-of-the-rosary,Hanover Park: Our Lady of the Rosary,Hanover Park,Our Lady of the Rosary,parish,yes,,eastern,111 Hanover Park Avenue Hanover Park 7780,hanoverpark@adct.org.za,-33.992655,18.525724
+harare-st-therese-of-lisieux,Harare: St Therese of Lisieux,Harare,St Therese of Lisieux,parish,no,,east-coast,Contact Priest for directions,,-34.057685,18.673492
+hermanus-our-lady-of-light,Hermanus: Our Lady of Light,Hermanus,Our Lady of Light,parish,yes,,east-coast,21 Lord Roberts Road Hermanus 7200,hermanus@adct.org.za,-34.411910,19.240652
+hout-bay-harbour-our-lady-star-of-the-sea,Hout Bay Harbour: Our Lady Star of the Sea,Hout Bay Harbour,Our Lady Star of the Sea,parish,no,,constantiaberg,Karbonkel Street Hout Bay Harbour,,-34.054091,18.341247
+hout-bay-st-anthony,Hout Bay: St Anthony,Hout Bay,St Anthony,parish,yes,,constantiaberg,3 St Anthony’s Road Hout Bay 7806,houtbay@adct.org.za,-34.039733,18.359509
+idas-valley-st-mark,Ida's Valley: St Mark,Ida's Valley,St Mark,outstation,no,stellenbosch-st-nicholas,east-coast,4 Rustenburg Road Ida’s Valley 7600,stellenbosch@adct.org.za,-33.924222,18.878417
+khayamnandi,Khayamnandi,Khayamnandi,Khayamnandi,outstation,no,stellenbosch-st-nicholas,east-coast,,stellenbosch@adct.org.za,-33.930050,18.856458
+khayelitsha-site-b-st-eugene-de-mazenod,Khayelitsha Site B: St Eugene de Mazenod,Khayelitsha Site B,St Eugene de Mazenod,parish,yes,,northern,21 Honono Crescent Site B Khayelitsha 7784,mfuleni@adct.org.za,-34.024331,18.659610
+khayelitsha-st-kizito,Khayelitsha: St Kizito,Khayelitsha,St Kizito,parish,yes,,northern,"14 Nyandeni Crescent, Site C Khayelitsha",mfuleni@adct.org.za,-34.015483,18.653887
+khayelitsha-st-raphael,Khayelitsha: St Raphael,Khayelitsha,St Raphael,parish,yes,,east-coast,E504 Silumko Street Khayelitsha Town 1,khayelitsha@adct.org.za,-34.037640,18.663620
+kleinvlei-st-catherine-of-siena,Kleinvlei: St Catherine of Siena,Kleinvlei,St Catherine of Siena,parish,yes,,east-coast,Cnr Mimosa & Hakea Streets Kleinvlei 7100,kleinvlei@adct.org.za,-33.991445,18.706704
+koelenhof-holy-spirit,Koelenhof: Holy Spirit,Koelenhof,Holy Spirit,outstation,no,stellenbosch-st-nicholas,northern,Kromme Rhee Road (Station Road) Koelenhof 7570,koelenhof@adct.org.za,-33.870276,18.830789
+kommetjie-st-josephs-chapel,Kommetjie: St Joseph's Chapel,Kommetjie,St Joseph's Chapel,outstation,no,kommetjie-st-norbert,peninsula,,,-34.142669,18.332815
+kommetjie-st-norbert,Kommetjie: St Norbert,Kommetjie,St Norbert,parish,yes,,peninsula,Rubbi Road Kommetjie 7976,kommetjie@adct.org.za,-34.142669,18.332815
+kraaifontein-st-anthony,Kraaifontein: St Anthony,Kraaifontein,St Anthony,parish,yes,,northern,Corner Church Street & Tenth Avenue Kraaifontein,kraaifontein@adct.org.za,-33.849502,18.723378
+kuils-river-st-ninian,Kuils River: St Ninian,Kuils River,St Ninian,parish,yes,,northern,"20 Station Rd, De Kuilen, Kuils River",kuilsriver@adct.org.za,-33.932810,18.680839
+laaiplek-st-helena,Laaiplek: St Helena,Laaiplek,St Helena,parish,no,,west-coast,Church Street (off Voortrekker Road),,-32.774138,18.153969
+laingville-st-peter-the-fisherman,Laingville: St Peter the Fisherman,Laingville,St Peter the Fisherman,parish,no,,west-coast,Main Road (off St Helena Bay Road),,-32.789071,18.061915
+lamberts-bay-st-bartholomew,Lambert's Bay: St Bartholomew,Lambert's Bay,St Bartholomew,parish,yes,,west-coast,3 Heyneman Street Lambert’s Bay,lambertsbay@adct.org.za,-32.099300,18.330700
+langa-st-anthony,Langa: St Anthony,Langa,St Anthony,parish,yes,,central,Ndabeni Street Langa 7455,langa@adct.org.za,-33.946378,18.521906
+langebaan-star-of-the-sea,Langebaan: Star of the Sea,Langebaan,Star of the Sea,parish,no,,west-coast,84 Main Street Langebaan (022 772 0077),,-33.086265,18.031548
+lansdowne-our-lady-help-of-christians,Lansdowne: Our Lady Help of Christians,Lansdowne,Our Lady Help of Christians,parish,yes,,eastern,312 Imam Haron Rd Lansdowne 7780,lansdowne@adct.org.za,-33.985190,18.491630
+lavistown-st-martin-de-porres,Lavistown: St Martin de Porres,Lavistown,St Martin de Porres,parish,yes,,central,"Corner Tafelberg & Kasteelberg Roads, Bishop Lavis 7490",lavistown@adct.org.za,-33.952109,18.579328
+lentegeur-st-mary-magdalene,Lentegeur: St Mary Magdalene,Lentegeur,St Mary Magdalene,parish,yes,,peninsula,Corner Sunflower & Merrydale Roads Lentegeur 7785,lentegeur@adct.org.za,-34.034293,18.608933
+lingalethu,Lingalethu,Lingalethu,Lingalethu,mass_centre,no,,west-coast,Contact priest for time and directions,,-33.460277,18.723611
+lotus-river-st-clement,Lotus River: St Clement,Lotus River,St Clement,parish,no,,constantiaberg,"Cnr Grysbok Road & Oribi Avenue, off 5th Avenue Lotus River 7941",,-34.040762,18.522155
+lwandle-st-monica,Lwandle: St Monica,Lwandle,St Monica,parish,no,,east-coast,"Noxolo Street, Lwandle",,-34.119253,18.865739
+macassar-st-stephen-the-martyr,Macassar: St Stephen the Martyr,Macassar,St Stephen the Martyr,parish,no,,east-coast,cnr Charlie Brown & Snoopy Streets Macassar 7130,,-34.065591,18.766408
+maitland-st-johns,Maitland: St John's,Maitland,St John's,parish,yes,,city-bowl,163 Coronation Road Maitland 7405,maitland@adct.org.za,-33.920521,18.493995
+makhaza-all-saints,Makhaza: All Saints,Makhaza,All Saints,parish,no,,east-coast,93 Lulamile Crescent Erf 37070,,-34.053567,18.705191
+malmesbury-st-francis-de-sales,Malmesbury: St Francis de Sales,Malmesbury,St Francis de Sales,parish,yes,,west-coast,27 St Francis Street Malmesbury 7300,malmesbury@adct.org.za,-33.464118,18.726881
+manenberg-holy-family-of-nazareth,Manenberg: Holy Family of Nazareth,Manenberg,Holy Family of Nazareth,parish,yes,,eastern,34 Manenberg Avenue Manenberg 7764,manenberg@adct.org.za,-33.986889,18.551679
+masiphumelele-bl-isidore-bakanja,Masiphumelele: Bl. Isidore Bakanja,Masiphumelele,Bl. Isidore Bakanja,parish,no,,peninsula,"101 Pokela Road, Masiphumelele",,-34.127025,18.378431
+matroosfontein-holy-trinity,Matroosfontein: Holy Trinity,Matroosfontein,Holy Trinity,parish,yes,,central,St Dominic Street Matroosfontein 7490,matroosfontein@adct.org.za,-33.938241,18.587296
+mbekweni-st-charles-lwanga,Mbekweni: St Charles Lwanga,Mbekweni,St Charles Lwanga,parish,no,,northern,"Cnr Pinzi & Phokeng Streets, Mbekweni 7655",,-33.678071,18.994507
+melkbosstrand-ascension-community-centre,Melkbosstrand: Ascension Community Centre,Melkbosstrand,Ascension Community Centre,parish,no,,west-coast,"Catholic Community Centre, 11th Avenue Melkbosstrand",tableview@adct.org.za,-33.729024,18.445444
+mfuleni-st-matthias,Mfuleni: St Matthias,Mfuleni,St Matthias,parish,yes,,northern,"35 Umswi Street, Ext 3, Mfuleni",mfuleni@adct.org.za,-34.008759,18.681260
+milnerton-our-lady-of-the-annunciation,Milnerton: Our Lady of the Annunciation,Milnerton,Our Lady of the Annunciation,parish,yes,,west-coast,19 Barrow Road Milnerton,milnerton@adct.org.za,-33.882730,18.502467
+montana-st-josephs-home,Montana: St Joseph's Home,Montana,St Joseph's Home,parish,no,,central,St Joseph’s Home Pallotti Road Montana,,-33.963669,18.571817
+mowbray-st-patrick,Mowbray: St Patrick,Mowbray,St Patrick,parish,yes,,city-bowl,Corner Klipfontein & Campground Roads Mowbray,mowbray@adct.org.za,-33.949406,18.480765
+newlands-st-bernard,Newlands: St Bernard,Newlands,St Bernard,parish,yes,,constantiaberg,Corner Protea & Buchan Roads Newlands,newlands@adct.org.za,-33.980639,18.457151
+northpine-st-kevin,Northpine: St Kevin,Northpine,St Kevin,parish,no,,northern,"Northpine Drive, Northpine",,-33.870698,18.710973
+nyanga-st-mary,Nyanga: St Mary,Nyanga,St Mary,parish,yes,,eastern,1st Avenue New Crossroads 7750,nyanga@adct.org.za,-34.000898,18.578638
+observatory-church-of-the-holy-name,Observatory: Church of the Holy Name,Observatory,Church of the Holy Name,parish,yes,,city-bowl,118 Station Road Observatory 7925,observatory@adct.org.za,-33.938554,18.467015
+ocean-view-st-andrew,Ocean View: St Andrew,Ocean View,St Andrew,parish,no,,peninsula,"Cnr Draco & Castor Way, Ocean View PO Box 48106 Kommetjie 7976",,-34.146142,18.349586
+ottery-chapel-of-ease,Ottery: Chapel of Ease,Ottery,Chapel of Ease,parish,no,,constantiaberg,,,-34.009562,18.503625
+paarl-east-huguenot-our-lady-of-divine-love,Paarl East (Huguenot): Our Lady of Divine Love,Paarl East (Huguenot),Our Lady of Divine Love,parish,no,,northern,"Barbarossa Street, Huguenot, Paarl-East 7646",,-33.730120,18.985315
+paarl-st-augustine,Paarl: St Augustine,Paarl,St Augustine,parish,yes,,northern,9 Van Der Lingen Street Paarl 7646,paarl@adct.org.za,-33.733352,18.964593
+parkwood-estate-st-gerard,Parkwood Estate: St Gerard,Parkwood Estate,St Gerard,parish,no,,constantiaberg,Kestrel Way Parkwood Estate 7800,,-34.028253,18.500551
+parow-valley-mater-dei,Parow Valley: Mater Dei,Parow Valley,Mater Dei,parish,yes,,central,213 Riley Street Parow Valley 7500,parowvalley@adct.org.za,-33.915652,18.602936
+parow-immaculate-conception,Parow: Immaculate Conception,Parow,Immaculate Conception,parish,yes,,central,10 Wicht Street Parow 7460,parow@adct.org.za,-33.907022,18.575268
+piketberg,Piketberg,Piketberg,Piketberg,mass_centre,no,,west-coast,"Anglican Church, Corner Lang & Hoof Streets",,-32.906709,18.757371
+pinelands-christ-the-king,Pinelands: Christ the King,Pinelands,Christ the King,parish,yes,,central,Corner Union Avenue & Queen’s Way Pinelands 7405,pinelands@adct.org.za,-33.933697,18.503943
+plumstead-st-pius-x,Plumstead: St Pius X,Plumstead,St Pius X,parish,yes,,constantiaberg,Corner Lympleigh Road & Naruna Crescent Southfield,plumstead@adct.org.za,-34.028686,18.481317
+retreat-our-lady-of-perpetual-help,Retreat: Our Lady of Perpetual Help,Retreat,Our Lady of Perpetual Help,parish,yes,,constantiaberg,Retreat Road Retreat 7945,retreat@adct.org.za,-34.056462,18.481240
+rocklands-st-stephen,Rocklands: St Stephen,Rocklands,St Stephen,parish,yes,,peninsula,"Corner Park Avenue & Siberian Road, Rocklands 7798",rocklands@adct.org.za,-34.061727,18.605170
+rondebosch-st-michael,Rondebosch: St Michael,Rondebosch,St Michael,parish,yes,,constantiaberg,23 Rouwkoop Road Rondebosch 7700,rondebosch@adct.org.za,-33.965778,18.470377
+ruyterwacht-our-lady-of-the-rosary,Ruyterwacht: Our Lady of the Rosary,Ruyterwacht,Our Lady of the Rosary,parish,no,,central,Corner Michell Street & Jan van Riebeek Avenue Ruyterwacht 7460,,-33.924119,18.554421
+saldanha-mother-of-mercy,Saldanha: Mother of Mercy,Saldanha,Mother of Mercy,parish,no,,west-coast,Cnr Church & Windhoek Streets (Contact priest for directions),,-33.008289,17.941190
+salt-river-st-francis,Salt River: St Francis,Salt River,St Francis,parish,no,,city-bowl,Coleridge Road Salt River,,-33.932428,18.460880
+scottsdene-st-owen,Scottsdene: St Owen,Scottsdene,St Owen,parish,no,,northern,Park Avenue (Off Skakel Road),,-33.860165,18.722666
+sea-point-our-lady-of-good-hope,Sea Point: Our Lady of Good Hope,Sea Point,Our Lady of Good Hope,parish,yes,,city-bowl,Corner St Andrews & Beach Roads Sea Point,seapoint@adct.org.za,-33.919736,18.383090
+simons-town-ss-simon-jude,Simon's Town: Ss Simon & Jude,Simon's Town,Ss Simon & Jude,parish,yes,,peninsula,174 St Georges Street Simon’s Town 7975,simonstown@adct.org.za,-34.194051,18.437538
+sir-lowrys-pass-village,Sir Lowry's Pass Village,Sir Lowry's Pass Village,Sir Lowry's Pass Village,mass_centre,no,,east-coast,"Anglican Chapel of St Matthew, Sir Lowry’s Pass Village Road",,-34.118291,18.912550
+somerset-west-st-paul,Somerset West: St Paul,Somerset West,St Paul,parish,yes,,east-coast,45 Andries Pretorius Street Somerset West 7130,somersetwest@adct.org.za,-34.087049,18.850376
+st-james-st-james,St James: St James,St James,St James,parish,yes,,peninsula,80 Main Road St James 7945,stjames@adct.org.za,-34.125757,18.449995
+steenberg-st-anne,Steenberg: St Anne,Steenberg,St Anne,parish,yes,,constantiaberg,17 Grens Road Steenberg 7945,steenberg@adct.org.za,-34.074279,18.474650
+stellenbosch-st-nicholas,Stellenbosch: St Nicholas,Stellenbosch,St Nicholas,parish,yes,,east-coast,16 Paul Kruger Street Stellenbosch 7600,stellenbosch@adct.org.za,-33.929800,18.856216
+strand-st-peter,Strand: St Peter,Strand,St Peter,parish,yes,,east-coast,Cnr Gordon’s Bay Rd & Van Der Merwe St Strand 7140,strand@adct.org.za,-34.117931,18.832989
+strandfontein-st-philip,Strandfontein: St Philip,Strandfontein,St Philip,parish,yes,,peninsula,Welgelegen Road Strandfontein 7798,strandfontein@adct.org.za,-34.074919,18.555336
+sun-valley-st-brendan,Sun Valley: St Brendan,Sun Valley,St Brendan,parish,no,,peninsula,Corner Corvette Avenue & Jangada Street Sun Valley,,-34.124026,18.395729
+tableview-church-of-the-resurrection,Tableview: Church of the Resurrection,Tableview,Church of the Resurrection,parish,yes,,west-coast,43 Janssens Avenue Table View 7441,tableview@adct.org.za,-33.830736,18.500193
+tafelsig-st-timothy,Tafelsig: St Timothy,Tafelsig,St Timothy,parish,yes,,peninsula,25 Mountain Street Tafelsig 7785,tafelsig@adct.org.za,-34.056994,18.631561
+tamboerskloof-villa-maria,Tamboerskloof: Villa Maria,Tamboerskloof,Villa Maria,parish,no,,city-bowl,1 Kloof Nek Road Cape Town,,-33.930270,18.408573
+villiersdorp-st-barnabas,Villiersdorp: St Barnabas,Villiersdorp,St Barnabas,parish,no,,east-coast,Buitekant Street Villiersdorp 7170,somersetwest@adct.org.za,-33.991659,19.286873
+vredehoek-most-sacred-heart-of-jesus-nazareth-house,Vredehoek: Most Sacred Heart of Jesus (Nazareth House),Vredehoek,Most Sacred Heart of Jesus (Nazareth House),parish,no,,city-bowl,1 Derry Street Vredehoek,,-33.936698,18.426098
+vredenburg-st-jude,Vredenburg: St Jude,Vredenburg,St Jude,parish,yes,,west-coast,49 Long Street Vredenburg,vredenburg@adct.org.za,-32.913740,17.992430
+wallacedene-st-elizabeth,Wallacedene: St Elizabeth,Wallacedene,St Elizabeth,parish,no,,northern,"Galata Street, Wallacedene",,-33.852912,18.745829
+welcome-estate-st-theresa,Welcome Estate: St Theresa,Welcome Estate,St Theresa,parish,yes,,eastern,Fourth Street Welcome Estate 7764,welcomeestate@adct.org.za,-33.963299,18.546947
+westridge-st-john-bosco,Westridge: St John Bosco,Westridge,St John Bosco,parish,yes,,peninsula,32 Amandel Street Westridge 7798,westridge@adct.org.za,-34.046957,18.594145
+woodstock-st-agnes,Woodstock: St Agnes,Woodstock,St Agnes,parish,yes,,city-bowl,Dublin Street Woodstock 7925,woodstock@adct.org.za,-33.928780,18.452575
+wynberg-corpus-christi,Wynberg: Corpus Christi,Wynberg,Corpus Christi,parish,yes,,constantiaberg,,wynberg@adct.org.za,-34.014930,18.471780
+wynberg-st-dominic,Wynberg: St Dominic,Wynberg,St Dominic,outstation,no,wynberg-corpus-christi,constantiaberg,Convent Road Wynberg,,-34.002205,18.456967
+zwelihle-martyrs-of-africa,Zwelihle: Martyrs of Africa,Zwelihle,Martyrs of Africa,parish,no,,east-coast,Hlobo Street Zwelihle 7200,,-34.428282,19.217125

@@ -29,8 +29,11 @@ erDiagram
 | Column | Notes |
 |---|---|
 | id | PK |
-| name, slug | e.g. "Southern Suburbs Deanery" |
+| name, slug | e.g. "Central Deanery" |
+| dean_name, vice_dean_name, secretary_name | display only; approval rights come from `deanery_approvers` |
 | status | `active`, `inactive` |
+
+The 8 official deaneries are seeded from [`data/seed/deaneries.csv`](../data/seed/README.md). A deanery with **no active approver** still works: its items go to archdiocese reviewers only ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md), point 7).
 
 ### `adct_pi_deanery_approvers`
 | Column | Notes |
@@ -50,8 +53,10 @@ Archdiocese reviewers aren't listed here. They are WordPress users with the `adc
 | Column | Notes |
 |---|---|
 | id | PK |
-| name, slug | e.g. "St Mary's, Woodstock" |
-| kind | `parish`, `mission`, `group`, `archdiocese`, `school`, `other` |
+| name, slug | e.g. "Woodstock: St Mary's" (the directory uses "Area: Church") |
+| area, church | e.g. "Woodstock", "St Mary's"; the parser matches both |
+| kind | `parish`, `outstation`, `mass_centre`, `group`, `archdiocese`, `school`, `other` |
+| parent_parish_id | FK → parishes; set for outstations, mass centres and parishes administered by another parish. Contacts of the parent parish may submit for them. |
 | deanery_id | FK → deaneries; null for groups/offices without a deanery (their events go to archdiocese reviewers only) |
 | address, suburb | |
 | latitude, longitude | decimal(9,6); used for "near me" |
@@ -61,6 +66,8 @@ Archdiocese reviewers aren't listed here. They are WordPress users with the `adc
 | reminders_enabled | per-parish on/off (a global switch also exists) |
 | status | `active`, `inactive` |
 | notes | admin notes |
+
+The 124 parishes, outstations and mass centres are seeded from [`data/seed/parishes.csv`](../data/seed/README.md) (public directory data; only official `@adct.org.za` office emails, which become `verified` contacts on import).
 
 ### `adct_pi_venues`
 Named places for a parish (church, hall, outstation), each with its own address and lat/lng. Used by the parser to look up venue names.
@@ -150,6 +157,9 @@ token_hash, purpose (`confirm`, `deny`, `edit`, `login`, `publish_found`, `appro
 ### `adct_pi_follow_ups`
 parish_id, kind (`inactivity_reminder`, `found_on_secondary`, `unknown_sender`, `approval_reminder`), channel, sent_at, outcome, note.
 
+### `adct_pi_mail_queue`
+recipient, subject, body_html, body_text, priority (1 = login/confirmation, 2 = approver/change notice, 3 = reminder/digest), group_key (to bundle notices per approver), status (`queued`, `sent`, `failed`, `suppressed`), attempts, next_attempt_at, sent_at, error. The sender respects an hourly cap (default 100) because the host allows 500 emails per hour for the whole account ([ADR 0011](decisions/0011-outbound-email-queue-with-hourly-cap.md)). Sent rows are pruned after 30 days.
+
 ### `adct_pi_audit_log`
 actor (user id / email / `system`), action, subject_type, subject_id, details JSON, created_at.
 
@@ -181,7 +191,7 @@ stateDiagram-v2
     expired --> awaiting_approval: if configured
     awaiting_approval --> published: dean or reviewer approves (first to act wins)
     awaiting_approval --> rejected: dean or reviewer rejects
-    draft --> duplicate: matches existing event, no changes
+    draft --> duplicate: matches existing or pending event, no changes (silent, no emails)
     published --> superseded: a newer candidate updated the event
 ```
 
@@ -194,6 +204,7 @@ stateDiagram-v2
 
 - Raw `.eml` files and attachments: default **12 months** after receipt (configurable), then deleted. Extracted candidates and published events stay.
 - Action tokens: deleted 30 days after expiry.
+- Bulletin sections with personal information (Mass intentions, sick lists, finances) are skipped by the parser and never copied into candidates, events or AI prompts ([E3.7](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/74)).
 - Event change history (`event_changes`): kept while the event exists, then deleted with it.
 - Audit log: 24 months.
 - Outgoing emails show the archdiocese's contact details for questions about personal information.

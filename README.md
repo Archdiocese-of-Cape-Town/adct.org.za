@@ -38,8 +38,8 @@ Use GitHub Issues plus a GitHub Project to coordinate work across sessions. Repo
 
 ### Validation
 
-A simple smoke test is available (see [`docs/testing.md`](docs/testing.md) for the planned test layers):
+See the [development guide](docs/development.md) for setup (PHP runs in Docker), rules and the build order, and [`docs/testing.md`](docs/testing.md) for the test layers. The prototype smoke test:
 
-```bash
-php tests/parser_smoke_test.php
+```powershell
+docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli php tests/parser_smoke_test.php
 ```
