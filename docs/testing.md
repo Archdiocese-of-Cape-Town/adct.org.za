@@ -30,13 +30,27 @@ The approval rules ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-re
 - A change or cancellation by a verified contact to a published event publishes immediately, writes `event_changes`, and notifies approvers. Revert restores the previous version.
 - A change from an unknown sender or a monitored source needs approval.
 - A group without a deanery goes to reviewers only.
+- A parish in a deanery with **no active approver** (dean not set up) goes to reviewers only, is approved by a reviewer, and the dashboard lists that deanery as "no approver".
+- An unchanged repeat of a published or pending event (same parish, title, schedule) is marked `duplicate` and sends **no** confirmation or approval email.
 - Approver digest mode sends one daily email instead of one per item. Reminders respect the on/off switches.
 - Approve/reject links: a GET never changes state, and tokens are single-use and expire.
 
+## Scheduling and mail limits test cases
+
+From [ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md) and [ADR 0011](decisions/0011-outbound-email-queue-with-hourly-cap.md):
+- Two triggers at once (visitor + pinger): only one job run does the work (lock).
+- A job that is "due" runs on the first trigger after its due time. Long gaps (2 h) don't cause duplicate or lost work.
+- "Check now" runs the poll and queue within the time budget and needs the right capability and a nonce.
+- Health warning appears when the last run is older than 2 h 15 min.
+- Mail queue: hourly cap enforced across runs; priority 1 goes before priority 3; notices grouped per approver; retries with backoff; Test mode suppresses non-allow-listed recipients.
+
 ## Parser fixture corpus
 
+Real samples reviewed so far, and what they taught us, are in [parser findings](parser-samples.md). The originals are kept privately (not in this public repository).
+
 - Collect real examples: bulletins, posters (PDF/image), one-line notices, forwarded emails, replies with quoted text, recurring schedules, cancellations, changes.
-- Anonymise personal names, phone numbers and private addresses before committing. Parish names and public church addresses can stay.
+- Anonymise personal names, phone numbers, personal email addresses, bank details and private addresses before committing. Replace sick lists and Mass intentions with fake names but keep their headings (the skip-section tests need them). Parish names, public church addresses and `@adct.org.za` office addresses can stay.
+- Include each sample type: text-layer bulletin (multi-column), multi-church bulletin, printed Mailchimp email, text-layer poster, image-only poster.
 - Each fixture has an expected JSON with only the fields that matter (e.g. number of events, title, start date/time, recurrence, parish). A test runner compares the parser's output with it and prints a readable diff.
 - A **score report** (fields right / total) is printed in CI. When parsing rules improve, the score should not go down.
 - Every parser bug report should add a fixture first (failing), then the fix.
@@ -62,7 +76,7 @@ All of these use the **same zip that CI builds**. The plugin bundles prefixed Co
 There is no permanent staging site. Before the first launch (and optionally before big releases):
 - Create a temporary xneelo instance (e.g. a subdomain with its own database) with the release zip and a separate test mailbox (e.g. `events-test@adct.org.za`).
 - Turn on **Test mode**, so outgoing email only goes to an allow-list of test addresses.
-- Release checklist: install zip → run migrations → send test emails (single event, bulletin, poster PDF, recurring event) → confirm via the emailed links → approve as a dean and as a reviewer → make a change as a verified contact and revert it → check the events page and ICS feed → check the health dashboard and that the real cron runs jobs within the time budget.
+- Release checklist: install zip → run migrations → send test emails (single event, bulletin, poster PDF, recurring event) → confirm via the emailed links → approve as a dean and as a reviewer → make a change as a verified contact and revert it → check the events page and ICS feed → check the health dashboard, that the 2-hourly xneelo cron and the external pinger both trigger jobs within the time budget, and that the mail queue respects the hourly cap.
 - Remove the instance afterwards. Launch starts with a few pilot parishes.
 
 ## Running tests locally

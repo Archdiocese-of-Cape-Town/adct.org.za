@@ -19,18 +19,20 @@ Tooling and structure so everything after it is safe to build.
 ### Phase 1 – MVP email loop
 **Exit criteria (the MVP demo):**
 1. A parish secretary emails a notice with two events (one once-off, one "every first Friday") to the intake mailbox.
-2. Within ~10 minutes she receives a confirmation email showing both events as they will appear.
+2. Within ~15 minutes she receives a confirmation email showing both events as they will appear. This assumes the free external pinger is set up; without it, it can take up to 2 hours ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
 3. She confirms both. The dean of her deanery and the archdiocese reviewers each get an approval email. The dean approves from the email. The reviewers' copy now shows "approved by the dean".
 4. The events appear on the public events page (filterable by date, type, parish and near me) and in the ICS feed. The recurring event shows its upcoming dates.
 5. She emails a time change for the once-off event. Because her address is a verified contact, it updates immediately, and the dean gets a change notice with a Revert link.
 6. An email from an unknown address goes through the same confirm-then-approve steps. The approver sees an "unknown sender" warning and links the address to a parish.
-7. The health dashboard shows when the mailbox was last checked, and any errors.
+7. The health dashboard shows when the mailbox was last checked, what triggered it, the mail queue size, and any errors.
+8. Next week's bulletin from the same parish repeats the "every first Friday" event unchanged. No new confirmation or approval email is sent.
+9. A parish in a deanery with no dean set up still gets its events approved, by an archdiocese reviewer.
 
 Before launch, the release checklist runs once on a temporary xneelo staging instance ([ADR 0009](decisions/0009-preview-and-test-environments.md)). Launch then starts with a few pilot parishes.
 
 ### Phase 1.5 – Posters and PDFs
 Text from PDF attachments, manual entry beside an attachment preview, bulletin splitting quality.
-**Exit criteria:** a PDF poster with a text layer produces a correct candidate. An image-only poster is shown beside the edit form for manual entry.
+**Exit criteria:** a PDF poster with a text layer produces a correct candidate. A multi-column bulletin is read column by column. An image-only poster is either read by the optional OCR provider (when switched on) or shown beside the edit form for manual entry. Real samples showed about 1 in 4 posters are image-only ([parser findings](parser-samples.md)).
 
 ### Phase 2 – Self-service, monitoring and more inputs
 Magic-link parish portal (edit, cancel, submit). Inactivity reminders with on/off switches. The archdiocese Google Calendar (ICS) and the monthly PDF as inputs. Optional AI/OCR plug-ins hardened.
@@ -67,13 +69,13 @@ Phase 0, 1 and 1.5 items have GitHub issues. Phase 2 and 3 items are listed as c
 ### E0 – Foundations ([E0](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/3))
 | ID | Item | Pri | Dep | Acceptance (summary) |
 |---|---|---|---|---|
-| [E0.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/18) | Hosting spike: cron, WP-CLI, SMTP limits, temporary staging for the pre-launch check, outbound HTTPS | P0 | – | Answers recorded in `docs/hosting-environment.md`; how to set up (and remove) a temporary staging instance is known. |
+| [E0.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/18) | Hosting spike: cron, WP-CLI, SMTP limits, temporary staging for the pre-launch check, outbound HTTPS | P0 | – | **Mostly answered:** cron every 2 h at most, no WP-CLI, 500 emails/h, 30 MB, HTTPS OK (ADR 0010/0011). Still open: per-account vs per-site limits, SPF/DKIM, loopback check, temporary staging. |
 | [E0.2](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17) | Composer, PHPUnit and GitHub Actions CI (PHP 8.2/8.3/8.4) | P0 | – | CI green on PRs; existing smoke test cases ported to PHPUnit with **equal or stronger** assertions. |
 | [E0.3](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/20) | Separate domain core from WordPress adapters | P0 | E0.2 | `src/Core` has no WordPress calls; ports defined; unit tests run without WordPress. |
-| [E0.4](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/19) | Parser fixture corpus and golden-test harness | P0 | E0.2 | `tests/fixtures/emails/*.eml` + expected JSON; readable diff; score report in CI; ≥10 anonymised real samples. |
+| [E0.4](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/19) | Parser fixture corpus and golden-test harness | P0 | E0.2 | `tests/fixtures/emails/*.eml` + expected JSON; readable diff; score report in CI; ≥10 anonymised real samples covering the types in [parser findings](parser-samples.md). |
 | [E0.5](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/21) | Fix date parsing: DD/MM, Africa/Johannesburg, dates without year, relative dates | P0 | E0.2 | `12/10/2026` → 12 October; "Sunday 5 October" resolves to the next matching date after the received date; "this Sunday" resolves correctly; tests added. |
 | [E0.6](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/22) | Versioned migrations and new schema | P0 | E0.3 | Tables from [data model](data-model.md) (including deaneries, approvers, approval fields and `event_changes`) created and upgraded by version; activation/upgrade tested. |
-| [E0.7](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/23) | Scheduled job framework: lock, time budget, checkpoint, real cron | P0 | E0.3 | Jobs stop at the budget and resume; overlapping runs prevented; cron setup documented. |
+| [E0.7](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/23) | Scheduled job framework: lock, time budget, checkpoint, several triggers | P0 | E0.3 | Jobs stop at the budget and resume; overlapping runs prevented; works with WP-Cron traffic, a 2-hourly xneelo cron over HTTP, an optional external pinger and a "Check now" button (ADR 0010); setup documented without WP-CLI. |
 | [E0.8](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/24) | Release packaging: zip with bundled, namespace-prefixed dependencies | P0 | E0.2 | CI builds an installable zip on every PR (used by previews and test sites); tagging creates a GitHub Release; install/upgrade steps documented. |
 | [E0.9](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/27) | WordPress integration test harness and Playground PR preview button | P1 | E0.2, E0.8 | Integration tests run in CI; every PR gets a "Preview in WordPress Playground" button (official action, build + publish workflows) with sample data. |
 | [E0.10](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/25) | Roles and capabilities | P1 | E0.6 | Capabilities from ADR 0007 registered, including the Deanery approver role; screens check them; tests. |
@@ -82,12 +84,12 @@ Phase 0, 1 and 1.5 items have GitHub issues. Phase 2 and 3 items are listed as c
 ### E1 – Parish directory and sender registry ([E1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/4))
 | ID | Item | Pri | Dep | Acceptance |
 |---|---|---|---|---|
-| [E1.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/30) | Parish admin screen and CSV import | P0 | E0.6 | Admins create/edit parishes (address, lat/lng, deanery, cadence, reminders flag); import ~150 parishes from CSV. |
+| [E1.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/30) | Parish admin screen and CSV import | P0 | E0.6 | Admins create/edit parishes (address, lat/lng, deanery, kind, parent parish, cadence, reminders flag); imports [`data/seed/parishes.csv`](../data/seed/README.md) (124 rows) and re-imports as updates. |
 | [E1.2](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/28) | Contacts: several addresses per parish with trust states | P0 | E1.1 | Add/link/unlink/block addresses; one address can belong to several parishes. |
 | [E1.3](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/31) | Sender learning for unknown addresses | P1 | E1.2, E3.2 | Unknown sender creates a `pending` contact with a best-guess parish; one-click confirm by an approver or admin. Being verified doesn't skip approval. |
 | [E1.4](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/29) | Source registry: official vs monitored, status and health fields | P1 | E1.1 | Sources listed per parish with last checked/success and status. |
-| [E1.5](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/33) | Venues per parish | P1 | E1.1 | Parishes can have several venues with their own address/lat-lng; used by the parser. |
-| [E1.6](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/68) | Deaneries and approver assignment | P0 | E1.1, E0.10, E0.6 | Deaneries with one or more approvers (dean, assistant); parishes assigned; groups without a deanery go to reviewers only; CSV import. |
+| [E1.5](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/33) | Venues per parish, outstations and mass centres | **P0** | E1.1 | Parishes can have several venues with their own address/lat-lng; outstations/mass centres linked to their parent parish; used by the parser (multi-church bulletins). |
+| [E1.6](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/68) | Deaneries and approver assignment | P0 | E1.1, E0.10, E0.6 | 8 deaneries imported from [`data/seed/deaneries.csv`](../data/seed/README.md); one or more approvers per deanery (dean, assistant); **works with no approver set** (reviewers only; dashboard warning). |
 
 ### E2 – Email intake ([E2](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/5))
 | ID | Item | Pri | Dep | Acceptance |
@@ -108,7 +110,8 @@ Phase 0, 1 and 1.5 items have GitHub issues. Phase 2 and 3 items are listed as c
 | [E3.3](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/42) | Recurrence phrases to RRULE | P0 | E0.5 | Covers "every first Friday", "1st and 3rd Sunday", "every Tuesday and Thursday", "weekly/monthly", "until …", "during Lent" (flagged); tests per phrase. |
 | [E3.4](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/45) | Event type classification with editable keyword lists | P1 | E5.1 | Keywords map to `adct_event_type` terms; admins can edit lists. |
 | [E3.5](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/43) | Field and overall confidence scoring with review thresholds | P1 | E3.1 | Each field has a confidence; below-threshold items flagged in preview and queue. |
-| [E3.6](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/46) | Update, duplicate and cancellation matching | P1 | E5.3 | A re-sent or changed notice updates the existing event; "cancelled" notices mark it cancelled. |
+| [E3.6](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/46) | Update, duplicate and cancellation matching | **P0** | E5.3 | Unchanged weekly repeats are matched silently (no emails); a changed notice updates the existing event; "cancelled" notices mark it cancelled. |
+| [E3.7](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/74) | Skip non-event bulletin sections (Mass times, intentions, sick list, finances) | P0 | E3.1, E0.4 | Personal/routine sections produce no candidates and never reach event text or AI prompts; keyword lists editable. |
 
 ### E4 – Submitter confirmation and approval ([E4](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/9))
 | ID | Item | Pri | Dep | Acceptance |
@@ -119,6 +122,7 @@ Phase 0, 1 and 1.5 items have GitHub issues. Phase 2 and 3 items are listed as c
 | [E4.4](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/48) | Test mode: outbound email allow-list | P1 | E4.2 | When enabled (test sites, pre-launch check), email only goes to listed addresses; banner in admin. |
 | [E4.5](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/69) | Approver emails with Approve / Reject / Edit (per item or daily digest) | P0 | E4.1, E4.3, E1.6 | Dean and reviewers emailed in parallel; first to act wins (atomic); others see who acted; submitter told when live. |
 | [E4.6](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/70) | Approval reminders with on/off switches | P1 | E4.5, E0.7 | One reminder after N days (default 3); global and per-approver off switch; never after a decision. |
+| [E4.7](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/76) | Outbound email queue with hourly cap and priorities | P0 | E0.6, E0.7 | All plugin mail queued; cap default 100/h (host limit 500/h per account); login links and confirmations first; retries; queue shown on health dashboard (ADR 0011). |
 
 ### E5 – Events model and publishing ([E5](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/7))
 | ID | Item | Pri | Dep | Acceptance |
@@ -144,16 +148,17 @@ Phase 0, 1 and 1.5 items have GitHub issues. Phase 2 and 3 items are listed as c
 | [E7.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/59) | Review queue with filters and bulk actions | P0 | E4.3 | Tabs: awaiting approval (scoped to the user's deaneries for deanery approvers; all for reviewers), low confidence, failed, unknown senders, recent changes; shows who acted. |
 | [E7.2](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/61) | Candidate detail: source, attachments, fields; edit and approve | P0 | E7.1 | Side-by-side source and fields; save and approve in one step. |
 | [E7.3](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/58) | Audit log | P1 | E0.6 | Every decision recorded and viewable per item. |
-| [E7.4](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/64) | Health dashboard and failure alert emails | P1 | E2.3 | Last checked/success per source; queue sizes; alert after N consecutive failures. |
+| [E7.4](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/64) | Health dashboard, "Check now" button and failure alert emails | P1 | E2.3 | Last run and trigger per job; warning if nothing ran for 2 h 15 min; last checked/success per source; mail and parse queue sizes; deaneries without an approver; alert after N consecutive failures. |
 | [E7.5](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/62) | Operator guide (`docs/operator-guide.md`) and in-screen help | P1 | E7.1 | A non-technical admin can follow it to review, approve and add a parish; a one-page guide for deans. |
 | [E7.6](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/72) | Front-end approval queue for deans (magic-link login) | P2 | E7.1, E4.5, E1.6 | Dean logs in with an emailed link, sees only their deaneries' items and can act; in the MVP deans can act from emails alone. |
 
 ### E8 – Posters, PDFs and attachments (Phase 1.5) ([E8](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/11))
 | ID | Item | Pri | Dep | Acceptance |
 |---|---|---|---|---|
-| [E8.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/65) | PDF text extraction with size/page limits | P1 | E2.3 | Text-layer PDFs parsed; oversized files flagged, not crashed. |
+| [E8.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/65) | PDF text extraction with size/page limits, column-aware | P1 | E2.3 | Text-layer PDFs parsed; multi-column bulletins read column by column using text positions; oversized files flagged, not crashed. |
 | [E8.2](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/63) | Manual entry beside attachment preview | P1 | E7.2 | Image/PDF shown next to the edit form in the admin area (and later the portal). |
-| *Later* | Optional OCR provider (OCR.space / AI vision) · poster as featured image | P2 | E12 | |
+| [E8.3](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/75) | Optional OCR for image-only posters (OCR.space / vision model) | P1 | E8.1, E8.2, E12.1 | Off by default; runs in the queue job with a timeout and daily cap; always falls back to manual entry. |
+| *Later* | Poster as featured image | P2 | E8.2 | |
 
 ### E9 – Parish self-service portal (Phase 2, checklist) ([E9](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/13))
 - Magic-link login and long sessions for `parish_contact` (ADR 0007)
@@ -175,7 +180,7 @@ Phase 0, 1 and 1.5 items have GitHub issues. Phase 2 and 3 items are listed as c
 
 ### E12 – Optional AI and OCR plug-ins ([E12](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/14))
 - **Phase 1 issue – [E12.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/66):** replace the `openrouter/auto` default (which is paid) with a generic OpenAI-compatible provider and a `:free` model default. Add a timeout, a daily cap and JSON schema validation. Treat email content as untrusted in the prompt. *(P1, Dep: E0.3)*
-- Phase 2 checklist: OCR provider interface + OCR.space adapter; AI vision option; AI provenance shown in review; re-review rule for AI-filled fields; usage report.
+- Phase 2 checklist: (OCR provider moved to Phase 1.5 as [E8.3](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/75)); AI provenance shown in review; re-review rule for AI-filled fields; usage report.
 
 ### E13 – Secondary channels (Phase 3, checklist) ([E13](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/16))
 - Spike: WhatsApp forwarding and the Business Cloud API (ADR 0006)
@@ -209,9 +214,14 @@ flowchart LR
 
 Phase 0, in this order:
 1. **Archdiocese (no code needed):**
-   - Answer the hosting questions in [#18](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/18): can a cron job be added, is WP-CLI available, what are the outgoing mail limits, can the site make outbound HTTPS calls, and can a temporary staging instance be set up later?
-   - Start collecting 10–20 real parish emails, posters and bulletins (with permission) for the parser fixtures ([#19](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/19)).
-   - List the deaneries, their deans, and which parishes belong to each, for the directory import ([#68](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/68)).
+   - Hosting answers are in (see [hosting environment](hosting-environment.md)). Still open in [#18](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/18):
+     - Are the cron and mail limits per account?
+     - Does SPF/DKIM cover mail sent from the site?
+     - Does the WP-Cron loopback work (Site Health)?
+     - Can a temporary staging instance be set up later?
+   - Create a free cron-job.org account (or agree to use GitHub Actions) for the external pinger ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
+   - Real samples: 13 are in and reviewed ([parser findings](parser-samples.md)). Keep collecting, especially one-line email notices, forwarded emails and changes/cancellations ([#19](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/19)).
+   - Deaneries and parishes are seeded ([`data/seed`](../data/seed/README.md)). When you are ready, give the deans' email addresses to set them up as approvers. Until then, reviewers approve everything ([#68](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/68)).
 2. **Build, in parallel:**
    - [#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17) CI and PHPUnit
    - [#20](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/20) domain core split
@@ -219,8 +229,8 @@ Phase 0, in this order:
    - [#24](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/24) zip packaging
    - [#27](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/27) Playground PR preview button
 3. **Then:**
-   - [#22](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/22) migrations and schema
-   - [#23](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/23) job framework
+   - [#22](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/22) migrations and schema (including the mail queue and parish kinds)
+   - [#23](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/23) job framework with several triggers
    - [#25](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/25) roles, including Deanery approver
    - [#26](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/26) secrets
 

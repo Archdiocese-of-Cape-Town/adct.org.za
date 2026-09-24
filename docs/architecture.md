@@ -71,13 +71,13 @@ The core talks to the outside through interfaces (ports): `MailboxInterface`, `C
 - Admin screens (dashboard, review/approval queue, parishes, deaneries and approvers, sources, settings, health).
 - Front-end approver queue for deans (magic-link login, no wp-admin).
 - Public views: shortcode/block for the events page, single event template, ICS endpoint, REST endpoints for filtering.
-- Scheduled jobs via WP-Cron hooks, triggered by a real xneelo cron job.
-- `wp_mail` mailer, `wp_remote_*` HTTP client, roles and capabilities.
+- Scheduled jobs via WP-Cron hooks, triggered by site traffic, a 2-hourly xneelo cron backstop, an optional external pinger and a "Check now" button ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
+- Queued mailer (`adct_pi_mail_queue` → `wp_mail`) with an hourly cap and priorities ([ADR 0011](decisions/0011-outbound-email-queue-with-hourly-cap.md)), `wp_remote_*` HTTP client, roles and capabilities.
 
 ### 3. Infrastructure adapters
 - `ImapMailbox` – pure-PHP IMAP over TLS (ext-imap is not available). Fetches unseen messages, stores raw RFC 822 source, marks/moves processed mail, deletes it after retention.
 - `IcsSource` – fetches and parses ICS feeds (Google Calendar).
-- `PdfTextExtractor` – pure-PHP text extraction (e.g. `smalot/pdfparser`).
+- `PdfTextExtractor` – pure-PHP text extraction (e.g. `smalot/pdfparser`) that uses text positions to rebuild columns, because most bulletins have 2–3 columns ([parser findings](parser-samples.md)).
 - Optional `OcrProvider`s (OCR.space free tier, OpenAI-compatible vision models) – off by default.
 - Optional `OpenAiCompatibleProvider` for AI enrichment (OpenRouter `:free` models, Groq, local Ollama during development).
 
@@ -87,14 +87,21 @@ All jobs follow the same pattern: take a lock (transient/option with expiry), wo
 
 | Job | Default interval | Work |
 |---|---|---|
-| `poll_mailboxes` | every 5–10 min | Fetch new mail, store raw message + attachments, queue for parsing. |
-| `process_queue` | every 5 min | Extract text, parse, create candidates, send confirmation and approver emails. |
+| `poll_mailboxes` | due every 10 min | Fetch new mail, store raw message + attachments, queue for parsing. |
+| `process_queue` | due every 10 min | Extract text, parse, create candidates, queue confirmation and approver emails. |
+| `send_mail` | every trigger | Send queued email up to the hourly cap, highest priority first. |
 | `poll_sources` | hourly | ICS/PDF/secondary sources, a few sources per run (oldest `last_checked_at` first). |
 | `expand_occurrences` | daily | Refresh the occurrence table for the next 12 months. |
 | `monitoring` | daily | Update source health, create reminder candidates, send inactivity reminders, approval reminders and approver digests (each can be switched off). |
 | `retention` | daily | Delete raw messages/attachments past retention, prune tokens and logs. |
 
-A real cron job on xneelo calls `wp-cron.php` (or `wp cron event run --due-now`) every 5 minutes. `DISABLE_WP_CRON` is set so visitor traffic doesn't trigger it.
+xneelo cron jobs can run at most every 2 hours, and there is no WP-CLI, so jobs have several triggers ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)):
+- WP-Cron stays on, so site visits run due jobs.
+- A 2-hourly xneelo cron job calls `wp-cron.php` over HTTP as a backstop.
+- An optional free external pinger (cron-job.org) calls it every 5–10 minutes for timely intake.
+- A "Check now" admin button runs the mail poll and queue at once.
+
+The intervals above are "due" times: a job runs on the first trigger after it is due. The health dashboard warns if nothing has run for more than 2 h 15 min.
 
 ## Trust, confirmation and approval (summary)
 
@@ -108,7 +115,8 @@ See [ADR 0004](decisions/0004-trust-and-confirmation-model.md) (confirmation, sa
 - **Known sender** (a verified address linked to a parish): parish and venue are filled in automatically. Their **changes and cancellations to published events publish immediately**, and approvers get a change notice with Revert / Unpublish.
 - **Unknown sender:** same two steps. Approvers see an "unknown sender" warning and can link the address to a parish, which makes it known.
 - **Secondary/monitored source:** a "we found this on X, do you want it published?" email goes to the parish's known contacts. Their "yes" counts as the confirmation, and approval follows.
-- **Groups without a deanery** go to archdiocese reviewers only.
+- **No dean needed:** parishes without a deanery, or in a deanery with no active approver set up yet, go to archdiocese reviewers only. The dashboard shows which deaneries have no approver.
+- **Routine repeats are silent:** an unchanged event that appears again (e.g. in every weekly bulletin) is matched to the existing event and not sent for confirmation or approval again ([parser findings](parser-samples.md)).
 - To change an event, reply with the changes, or click *Edit* (magic link) and edit it in the portal.
 
 ## Parish self-service

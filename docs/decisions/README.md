@@ -13,6 +13,8 @@ Short records of important decisions: what was decided, why, and what follows fr
 | [0007](0007-auth-with-wordpress-users-and-magic-links.md) | Auth with WordPress users, custom roles and magic links | Accepted |
 | [0008](0008-approval-by-dean-or-archdiocese-reviewer.md) | Every new event approved by a dean or archdiocese reviewer | Accepted |
 | [0009](0009-preview-and-test-environments.md) | Playground PR previews, test sites from the CI zip, temporary staging only | Accepted |
+| [0010](0010-scheduled-jobs-with-2-hour-cron-limit.md) | Scheduled jobs with a 2-hour cron limit: WP-Cron + 2-hourly backstop + optional external pinger | Accepted |
+| [0011](0011-outbound-email-queue-with-hourly-cap.md) | Outbound email queue with an hourly cap and priorities | Accepted |
 
 Template:
 
