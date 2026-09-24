@@ -1,5 +1,8 @@
 <?php
 
+use ADCT\ParishIntake\Core\Auth\Capabilities;
+use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
+
 require_once ABSPATH . 'wp-admin/includes/plugin.php';
 
 $fail = static function (string $message): void {
@@ -52,6 +55,27 @@ if (! is_plugin_active($pluginBasename)) {
 
 if ((int) get_option('adct_pi_db_version', 0) !== 1) {
     $fail('Activation did not set the parish intake schema version to 1.');
+}
+
+if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CURRENT_VERSION) {
+    $fail('Activation did not set the parish intake roles version.');
+}
+
+foreach (Capabilities::customRoleLabels() as $roleName => $roleLabel) {
+    if (get_role($roleName) === null) {
+        $fail(sprintf('Activation did not create the %s role (%s).', $roleLabel, $roleName));
+    }
+}
+
+$administratorRole = get_role('administrator');
+if ($administratorRole === null) {
+    $fail('The administrator role is missing.');
+}
+
+foreach (Capabilities::all() as $capability) {
+    if (! $administratorRole->has_cap($capability)) {
+        $fail('The administrator role is missing the ' . $capability . ' capability.');
+    }
 }
 
 global $wpdb;
@@ -110,8 +134,21 @@ if ($administrators === []) {
 
 wp_set_current_user($administrators[0]->ID);
 
-if (! current_user_can('edit_others_posts')) {
+if (! current_user_can(Capabilities::REVIEW)) {
     $fail('The current administrator does not have the Parish Intake menu capability.');
+}
+
+$intakeReviewerRole = get_role('adct_pi_intake_reviewer');
+$intakeReviewerRole->remove_cap(Capabilities::VIEW_REPORTS);
+update_option('adct_pi_roles_version', 0, false);
+do_action('admin_init');
+
+if (! get_role('adct_pi_intake_reviewer')->has_cap(Capabilities::VIEW_REPORTS)) {
+    $fail('An admin_init role-version upgrade did not restore the missing reviewer capability.');
+}
+
+if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CURRENT_VERSION) {
+    $fail('The admin_init role upgrade did not advance the roles version.');
 }
 
 $parentSlug = 'adct-parish-intake';

@@ -145,11 +145,15 @@ Parish contacts are WordPress users with a custom `parish_contact` role, linked 
 
 ## Security notes
 
-- All admin actions use capabilities + nonces. Portal actions check parish ownership.
+- Admin screens use dedicated capabilities for settings, directory management, review, reports and deanery approval. The pure role/capability map lives in `Core\Auth\Capabilities`; a versioned, additive installer creates custom roles and adds missing capabilities without replacing other role capabilities.
+- `parish_contact` and `deanery_approver` are read-only roles. They cannot use `wp-admin` or the admin bar, except for AJAX and `admin-post.php` requests; users who also have editorial `edit_posts` access are not blocked.
+- Deanery approvals require an active assignment in `adct_pi_deanery_approvers` matching the parish's `deanery_id`. `adct_pi_review` holders can approve across deaneries, including parishes without a deanery.
+- Admin actions use capabilities + nonces. Portal actions check parish ownership.
 - Action tokens: random 32-byte values, stored hashed, single-use, with expiry; GET shows a confirmation page, POST performs the action.
 - Email HTML is never rendered unsanitised; attachments are stored outside the web root or with deny rules, and only allowed MIME types are processed.
 - AI prompts treat email content as untrusted data; AI output is schema-validated and never decides publishing.
 - Secrets (IMAP password, API keys) are preferably defined as constants in `wp-config.php` rather than stored in the database; the settings UI says so.
+- Uninstall removes the plugin's custom roles and its custom capabilities from built-in roles. Tables and plugin data are retained until the owner makes a separate data-deletion decision.
 
 ## Related documents
 

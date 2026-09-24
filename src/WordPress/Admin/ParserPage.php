@@ -2,6 +2,7 @@
 
 namespace ADCT\ParishIntake\WordPress\Admin;
 
+use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
@@ -12,7 +13,10 @@ use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
 
 final class ParserPage
 {
-    private const CAPABILITY = 'edit_others_posts';
+    private const MENU_CAPABILITY = Capabilities::REVIEW;
+    private const SETTINGS_CAPABILITY = Capabilities::MANAGE_SETTINGS;
+    private const REVIEW_CAPABILITY = Capabilities::REVIEW;
+    private const REPORTS_CAPABILITY = Capabilities::VIEW_REPORTS;
 
     private Schema $schema;
     private PipelineFactory $pipelineFactory;
@@ -36,9 +40,9 @@ final class ParserPage
         add_menu_page(
             'Parish Intake',
             'Parish Intake',
-            self::CAPABILITY,
+            self::MENU_CAPABILITY,
             'adct-parish-intake',
-            [$this, 'renderSettingsPage'],
+            [$this, 'renderManualParserPage'],
             'dashicons-email-alt2',
             58
         );
@@ -47,8 +51,8 @@ final class ParserPage
             'adct-parish-intake',
             'Parish Intake Settings',
             'Settings',
-            self::CAPABILITY,
-            'adct-parish-intake',
+            self::SETTINGS_CAPABILITY,
+            'adct-parish-intake-settings',
             [$this, 'renderSettingsPage']
         );
 
@@ -56,7 +60,7 @@ final class ParserPage
             'adct-parish-intake',
             'Parish Intake Manual Parser',
             'Manual parser',
-            self::CAPABILITY,
+            self::REVIEW_CAPABILITY,
             'adct-parish-intake-manual-parser',
             [$this, 'renderManualParserPage']
         );
@@ -64,7 +68,7 @@ final class ParserPage
 
     public function maybeHandleSettings(): void
     {
-        if (! is_admin() || ! current_user_can(self::CAPABILITY)) {
+        if (! is_admin() || ! current_user_can(self::SETTINGS_CAPABILITY)) {
             return;
         }
 
@@ -87,7 +91,7 @@ final class ParserPage
 
     public function renderSettingsPage(): void
     {
-        if (! current_user_can(self::CAPABILITY)) {
+        if (! current_user_can(self::SETTINGS_CAPABILITY)) {
             wp_die(esc_html__('You do not have permission to access this page.', 'adct-parish-intake'));
         }
 
@@ -158,14 +162,18 @@ final class ParserPage
 
     public function renderManualParserPage(): void
     {
-        if (! current_user_can(self::CAPABILITY)) {
+        if (! current_user_can(self::REVIEW_CAPABILITY)) {
             wp_die(esc_html__('You do not have permission to access this page.', 'adct-parish-intake'));
         }
 
         $result = null;
         $report = null;
+        $canViewReports = current_user_can(self::REPORTS_CAPABILITY);
 
-        if (isset($_POST['adct_parish_intake_parse_nonce'], $_POST['adct_parish_intake_parse'])) {
+        if (
+            ! isset($_POST['adct_parish_intake_generate_report'])
+            && isset($_POST['adct_parish_intake_parse_nonce'], $_POST['adct_parish_intake_parse'])
+        ) {
             check_admin_referer('adct_parish_intake_parse', 'adct_parish_intake_parse_nonce');
 
             $message = new Message(
@@ -185,11 +193,19 @@ final class ParserPage
 
             $result = $pipeline->parse($message);
             $this->schema->insertMessageResult($message, $result);
-            $report = $this->reportGenerator->generate();
+            if ($canViewReports) {
+                $report = $this->reportGenerator->generate();
+            }
         }
 
         if (isset($_POST['adct_parish_intake_generate_report'])) {
-            check_admin_referer('adct_parish_intake_parse', 'adct_parish_intake_parse_nonce');
+            if (! $canViewReports) {
+                wp_die(esc_html__('You do not have permission to generate reports.', 'adct-parish-intake'), '', [
+                    'response' => 403,
+                ]);
+            }
+
+            check_admin_referer('adct_parish_intake_generate_report', 'adct_parish_intake_report_nonce');
             $report = $this->reportGenerator->generate();
         }
 
@@ -236,8 +252,14 @@ final class ParserPage
                     </tr>
                 </table>
                 <?php submit_button('Parse and save'); ?>
-                <button class="button" type="submit" name="adct_parish_intake_generate_report" value="1">Generate static report only</button>
             </form>
+
+            <?php if ($canViewReports) : ?>
+                <form method="post">
+                    <?php wp_nonce_field('adct_parish_intake_generate_report', 'adct_parish_intake_report_nonce'); ?>
+                    <button class="button" type="submit" name="adct_parish_intake_generate_report" value="1">Generate static report only</button>
+                </form>
+            <?php endif; ?>
 
             <?php if ($result) : ?>
                 <h2>Latest parse result</h2>

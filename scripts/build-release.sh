@@ -72,7 +72,7 @@ fi
 
 package_dir="$temp_dir/adct-parish-intake"
 mkdir -p "$package_dir"
-cp -R adct-parish-intake.php src vendor-prefixed "$package_dir/"
+cp -R adct-parish-intake.php uninstall.php src vendor-prefixed "$package_dir/"
 
 rm -f "$ZIP_PATH"
 (
