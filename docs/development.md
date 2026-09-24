@@ -14,11 +14,12 @@ docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli php tests/parser_smoke_test
 # "config": { "platform": { "php": "8.2.0" } } to resolve packages for PHP 8.2)
 docker run --rm -v "${PWD}:/app" -w /app composer:2 install --no-interaction --no-progress
 
-# PHPUnit on PHP 8.2 (after composer install); use php:8.3-cli / php:8.4-cli to try other versions
-docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli vendor/bin/phpunit
+# All tests (PHPUnit + prototype smoke test), the same as CI; use php:8.3-cli / php:8.4-cli to try other versions
+docker run --rm -v "${PWD}:/app" -w /app composer:2 validate --no-check-publish
+docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c "vendor/bin/phpunit && php tests/parser_smoke_test.php"
 
 # Lint every PHP file
-docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c 'find src tests -name "*.php" -print0 | xargs -0 -n1 php -l > /dev/null && echo lint-ok'
+docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c 'find src tests adct-parish-intake.php -name "*.php" -print0 | xargs -0 -n1 php -l > /dev/null && echo lint-ok'
 ```
 
 These commands were checked on 2026-09-24: the smoke test passes, lint is clean, and PHPUnit 11 runs on `php:8.2-cli` with the platform pin. Use **PHPUnit 11** (PHPUnit 12 needs PHP 8.3).

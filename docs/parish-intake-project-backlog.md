@@ -69,7 +69,7 @@ Phase 0, 1 and 1.5 items have GitHub issues. Phase 2 and 3 items are listed as c
 ### E0 – Foundations ([E0](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/3))
 | ID | Item | Pri | Dep | Acceptance (summary) |
 |---|---|---|---|---|
-| [E0.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/18) | Hosting spike: cron, WP-CLI, SMTP limits, temporary staging for the pre-launch check, outbound HTTPS | P0 | – | **Mostly answered:** cron every 2 h at most, no WP-CLI, 500 recipients/h per account, 30 MB, HTTPS OK, SPF/DKIM through authenticated SMTP (FluentSMTP) (ADR 0010/0011). Still open: loopback check, temporary staging. |
+| [E0.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/18) | Hosting spike: cron, WP-CLI, SMTP limits, temporary staging for the pre-launch check, outbound HTTPS | P0 | – | **Mostly answered:** cron every 2 h at most, no WP-CLI, 500 recipients/h per account, 30 MB, HTTPS OK, SPF/DKIM through authenticated SMTP (FluentSMTP) (ADR 0010/0011). FluentSMTP set up, `wp_mail` and the loopback check work, cap of 100/h confirmed. Still open: temporary staging. |
 | [E0.2](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17) | Composer, PHPUnit and GitHub Actions CI (PHP 8.2/8.3/8.4) | P0 | – | CI green on PRs; existing smoke test cases ported to PHPUnit with **equal or stronger** assertions. |
 | [E0.3](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/20) | Separate domain core from WordPress adapters | P0 | E0.2 | `src/Core` has no WordPress calls; ports defined; unit tests run without WordPress. |
 | [E0.4](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/19) | Parser fixture corpus and golden-test harness | P0 | E0.2 | `tests/fixtures/emails/*.eml` + expected JSON; readable diff; score report in CI; ≥10 anonymised real samples covering the types in [parser findings](parser-samples.md). |
@@ -215,9 +215,8 @@ flowchart LR
 Phase 0, in this order:
 1. **Archdiocese (no code needed):**
    - Hosting answers are in (see [hosting environment](hosting-environment.md)). Still open in [#18](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/18):
-     - Does the WP-Cron loopback work (Site Health)?
      - Can a temporary staging instance be set up later?
-   - Set up **FluentSMTP** on adct.org.za with xneelo's authenticated SMTP, and check SPF (`include:spf.host-h.net`) and DKIM in konsoleH. This helps all site email, not just this plugin.
+   - Done: FluentSMTP is set up, `wp_mail` works and the WP-Cron loopback check passes. Optionally send a test email and check its headers show SPF and DKIM `pass`.
    - Create a free cron-job.org account (or agree to use GitHub Actions) for the external pinger ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
    - Real samples: 13 are in and reviewed ([parser findings](parser-samples.md)). Keep collecting, especially one-line email notices, forwarded emails and changes/cancellations ([#19](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/19)).
    - Deaneries and parishes are seeded ([`data/seed`](../data/seed/README.md)). When you are ready, give the deans' email addresses to set them up as approvers. Until then, reviewers approve everything ([#68](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/68)).

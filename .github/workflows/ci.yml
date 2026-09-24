@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 8.2 is production (xneelo); 8.3 and 8.4 guard against host upgrades.
+        php: ['8.2', '8.3', '8.4']
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: composer:v2
+
+      # Not --strict: no license is chosen yet, which composer reports as a warning. A stale lock file still fails.
+      - name: Validate composer.json and composer.lock
+        run: composer validate --no-check-publish
+
+      - uses: ramsey/composer-install@v3
+
+      - name: Lint PHP files
+        run: find src tests adct-parish-intake.php -name '*.php' -print0 | xargs -0 -n1 php -l > /dev/null
+
+      - name: Run tests
+        run: composer test

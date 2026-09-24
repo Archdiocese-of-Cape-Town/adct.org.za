@@ -39,10 +39,10 @@ Update this table whenever the host is upgraded.
 
 ## Still to confirm (Phase 0 hosting spike)
 
-Answered on 2026-09-24: the limits are per account/domain, and SPF/DKIM work through authenticated SMTP (see above). Still open (none of these block the first build):
+Answered on 2026-09-24: the limits are per account/domain, and SPF/DKIM work through authenticated SMTP (see above). Also confirmed: **FluentSMTP is set up**, `wp_mail` works on the server, the Site Health loopback check passes (so WP-Cron runs), and the default cap of 100 emails an hour is right. Still open (none of these block the first build):
 
 - Can a **temporary** staging instance (e.g. a subdomain with its own database and a test mailbox) be set up for the one-off pre-launch check, and removed afterwards? No permanent staging site is planned ([ADR 0009](decisions/0009-preview-and-test-environments.md)).
-- Does the loopback request WP-Cron needs work on this host (Site Health > "loopback request")?
+- Optional: send a test email from the site and check its headers show SPF and DKIM `pass`.
 
 ## Other mailbox providers
 

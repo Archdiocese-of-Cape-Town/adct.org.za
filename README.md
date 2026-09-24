@@ -38,8 +38,11 @@ Use GitHub Issues plus a GitHub Project to coordinate work across sessions. Repo
 
 ### Validation
 
-See the [development guide](docs/development.md) for setup (PHP runs in Docker), rules and the build order, and [`docs/testing.md`](docs/testing.md) for the test layers. The prototype smoke test:
+See the [development guide](docs/development.md) for setup (PHP runs in Docker), rules and the build order, and [`docs/testing.md`](docs/testing.md) for the test layers. To run all tests (PHPUnit and the prototype smoke test) through Docker:
 
 ```powershell
-docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli php tests/parser_smoke_test.php
+docker run --rm -v "${PWD}:/app" -w /app composer:2 install --no-interaction --no-progress
+docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c "vendor/bin/phpunit && php tests/parser_smoke_test.php"
 ```
+
+GitHub Actions runs the same tests on PHP 8.2, 8.3 and 8.4 for every pull request.
