@@ -10,7 +10,8 @@
     },
     "autoload": {
         "psr-4": {
-            "ADCT\\ParishIntake\\": "src/"
+            "ADCT\\ParishIntake\\Core\\": "src/Core/",
+            "ADCT\\ParishIntake\\WordPress\\": "src/WordPress/"
         }
     },
     "autoload-dev": {

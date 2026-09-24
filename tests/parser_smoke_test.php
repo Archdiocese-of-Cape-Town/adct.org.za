@@ -1,11 +1,16 @@
 <?php
 
-require_once __DIR__ . '/../src/Autoloader.php';
+$composerAutoloader = __DIR__ . '/../vendor/autoload.php';
 
-ADCT\ParishIntake\Autoloader::register();
+if (is_file($composerAutoloader)) {
+    require_once $composerAutoloader;
+} else {
+    require_once __DIR__ . '/../src/WordPress/Autoloader.php';
+    ADCT\ParishIntake\WordPress\Autoloader::register();
+}
 
-use ADCT\ParishIntake\Parsing\Input\Message;
-use ADCT\ParishIntake\Parsing\PipelineFactory;
+use ADCT\ParishIntake\Core\Parsing\Input\Message;
+use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 
 $pipeline = (new PipelineFactory())->create();
 

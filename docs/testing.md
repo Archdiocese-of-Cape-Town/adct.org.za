@@ -8,7 +8,7 @@ Tests protect the project from breaking as more people and sessions work on it.
 
 | Layer | What | Where it runs | When |
 |---|---|---|---|
-| 1. Unit | Domain core: parsing stages, date/recurrence, matching, trust rules, tokens, MIME parsing. No WordPress. | GitHub Actions + locally | Every push / PR |
+| 1. Unit | Domain core: parsing stages, date/recurrence, matching, trust rules, tokens, MIME parsing. Includes a token-based check that `src/Core/` has no WordPress dependencies. | GitHub Actions + locally | Every push / PR |
 | 2. Parser fixtures ("golden" tests) | Anonymised real parish emails (`tests/fixtures/emails/*.eml`) with expected output (`*.expected.json`). | GitHub Actions + locally | Every push / PR |
 | 3. WordPress integration | Plugin activation, migrations, post type, roles/capabilities, token pages, ICS output, REST filters. | GitHub Actions using `wp-env` (Docker) or WordPress Playground CLI | Every PR |
 | 4. IMAP integration | Polling, duplicate prevention, checkpoints, folder moves, retention, against a throwaway IMAP server (GreenMail in a Docker service container). | GitHub Actions | Every PR touching ingestion |
@@ -89,6 +89,8 @@ composer install
 composer test        # PHPUnit (tests/Unit) + prototype smoke test
 composer test:unit   # PHPUnit only
 ```
+
+`composer test` includes `CoreIsolationTest`, which tokenizes every PHP file under `src/Core/` and rejects WordPress function calls (`wp_*`, `esc_*`, `sanitize_*`, translation helpers such as `__()`/`_e()`, and the listed global WordPress APIs including `get_option`, `add_action`, `current_user_can`, and `dbDelta`), `WP_*` classes, WordPress constants such as `ABSPATH`/`ARRAY_A`, and WordPress globals such as `$wpdb`/`$wp`. It also catches `function_exists()` checks for those APIs. Comments and ordinary strings are ignored; PHP-native helpers such as `function_exists('mb_strtolower')` are allowed.
 
 Without a local PHP, use the Docker commands in the [development guide](development.md#local-setup-windows-no-php-install-needed). CI (`.github/workflows/ci.yml`) runs `composer validate`, a `php -l` lint and `composer test` on PHP 8.2, 8.3 and 8.4 for every PR and push to `main`.
 

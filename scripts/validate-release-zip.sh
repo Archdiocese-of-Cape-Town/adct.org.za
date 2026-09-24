@@ -38,7 +38,7 @@ package_dir="$temp_dir/unpacked/adct-parish-intake"
 
 for required_file in \
     adct-parish-intake.php \
-    src/Autoloader.php \
+    src/WordPress/Autoloader.php \
     vendor-prefixed/autoload.php
 do
     if [ ! -f "$package_dir/$required_file" ]; then

@@ -1,0 +1,95 @@
+<?php
+
+namespace ADCT\ParishIntake\WordPress;
+
+use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
+use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
+use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
+use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
+use ADCT\ParishIntake\WordPress\Admin\ParserPage;
+use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
+use ADCT\ParishIntake\WordPress\Database\Schema;
+use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
+use ADCT\ParishIntake\WordPress\Http\WordPressHttpClient;
+
+final class Plugin
+{
+    private static ?self $instance = null;
+
+    private string $pluginFile;
+    private Schema $schema;
+    private PipelineFactory $pipelineFactory;
+    private ParserPage $parserPage;
+    private HttpClientInterface $httpClient;
+
+    private function __construct(string $pluginFile)
+    {
+        $this->pluginFile = $pluginFile;
+        $this->schema = new Schema();
+        $this->pipelineFactory = new PipelineFactory();
+        $this->httpClient = new WordPressHttpClient();
+        $this->parserPage = new ParserPage(
+            $this->schema,
+            $this->pipelineFactory,
+            new StaticReportGenerator($this->schema),
+            $this->httpClient
+        );
+    }
+
+    public static function boot(string $pluginFile): void
+    {
+        if (self::$instance instanceof self) {
+            return;
+        }
+
+        self::$instance = new self($pluginFile);
+        self::$instance->registerHooks();
+    }
+
+    public static function activate(): void
+    {
+        if (! function_exists('add_option')) {
+            return;
+        }
+
+        add_option('adct_parish_intake_ai_enabled', '0');
+        add_option('adct_parish_intake_ai_provider', 'none');
+        add_option('adct_parish_intake_openrouter_model', 'openrouter/auto');
+        add_option('adct_parish_intake_ai_threshold', '0.55');
+
+        (new Schema())->install();
+    }
+
+    private function registerHooks(): void
+    {
+        if (! function_exists('add_action')) {
+            return;
+        }
+
+        add_action('admin_menu', [$this->parserPage, 'registerMenu']);
+        add_action('admin_init', [$this->parserPage, 'maybeHandleSettings']);
+    }
+
+    public function makeAiProvider(): AiProviderInterface
+    {
+        if (! function_exists('get_option')) {
+            return new NullAiProvider();
+        }
+
+        $enabled = get_option('adct_parish_intake_ai_enabled', '0') === '1';
+        $provider = get_option('adct_parish_intake_ai_provider', 'none');
+
+        if (! $enabled || $provider !== 'openrouter') {
+            return new NullAiProvider();
+        }
+
+        $apiKey = trim((string) get_option('adct_parish_intake_openrouter_api_key', ''));
+        $model = trim((string) get_option('adct_parish_intake_openrouter_model', 'openrouter/auto'));
+
+        if ($apiKey === '') {
+            return new NullAiProvider();
+        }
+
+        return new OpenRouterProvider($apiKey, $model, $this->httpClient);
+    }
+}

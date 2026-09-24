@@ -55,7 +55,7 @@ flowchart LR
 ## Components
 
 ### 1. Domain core (`src/Core/…`, no WordPress dependency)
-Pure PHP 8.2, covered by unit tests:
+Pure PHP 8.2, covered by unit tests and loaded through Composer PSR-4:
 - `Parsing` – the stage pipeline (normalise → split into blocks → rule extraction → gazetteer lookup → date/time → recurrence → classification → confidence → optional AI).
 - `Recurrence` – RRULE model and expansion of upcoming occurrences (Africa/Johannesburg).
 - `Matching` – duplicate/update detection between candidates and existing events.
@@ -64,15 +64,19 @@ Pure PHP 8.2, covered by unit tests:
 - `Mail` – MIME parsing into `Message` + `Attachment`, auto-reply/bounce detection.
 - `Tokens` – signed, single-use action tokens.
 
-The core talks to the outside through interfaces (ports): `MailboxInterface`, `ClockInterface`, `EventRepositoryInterface`, `AiProviderInterface`, `OcrProviderInterface`, `MailerInterface`.
+The core talks to the outside through interfaces (ports): `MailboxInterface`, `ClockInterface`, `EventRepositoryInterface`, `AiProviderInterface`, `OcrProviderInterface`, `MailerInterface` and `HttpClientInterface`. The parsing pipeline, its stages and value objects live under `Core\Parsing`; shared pure-PHP helpers live under `Core\Support`; contracts live under `Core\Ports`. The mailbox, mailer, candidate repository and OCR method signatures are provisional until their first consumers (E2.1, ADR 0011's mail queue, E5.3 and E12 respectively).
 
 ### 2. WordPress adapters (`src/WordPress/…`)
+- Plugin bootstrap and hook wiring, the manual parser/admin UI, database schema/repository access, static reports, and the WordPress HTTP client.
+- `WordPress\Ai\OpenRouterProvider` implements the core AI port and receives `HttpClientInterface`; only `WordPress\Http\WordPressHttpClient` calls `wp_remote_post`.
 - Repositories using `$wpdb` (custom tables in the site's existing WordPress MySQL database) and the `adct_event` post type.
 - Admin screens (dashboard, review/approval queue, parishes, deaneries and approvers, sources, settings, health).
 - Front-end approver queue for deans (magic-link login, no wp-admin).
 - Public views: shortcode/block for the events page, single event template, ICS endpoint, REST endpoints for filtering.
 - Scheduled jobs via WP-Cron hooks, triggered by site traffic, a 2-hourly xneelo cron backstop, an optional external pinger and a "Check now" button ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
 - Queued mailer (`adct_pi_mail_queue` → `wp_mail`) with an hourly cap and priorities ([ADR 0011](decisions/0011-outbound-email-queue-with-hourly-cap.md)), `wp_remote_*` HTTP client, roles and capabilities.
+
+The Composer PSR-4 mappings keep `ADCT\ParishIntake\Core\…` and `ADCT\ParishIntake\WordPress\…` separate. The release zip includes a small source autoloader in `WordPress\Autoloader` alongside the namespace-prefixed Composer dependency loader; development and tests use Composer's generated autoloader.
 
 ### 3. Infrastructure adapters
 - `ImapMailbox` – pure-PHP IMAP over TLS (ext-imap is not available). Fetches unseen messages, stores raw RFC 822 source, marks/moves processed mail, deletes it after retention.
