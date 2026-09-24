@@ -57,6 +57,10 @@ final class ConfidenceScoringStage implements StageInterface
             $score -= 0.15;
         }
 
+        if ($result->hasAmbiguousNextWeekday()) {
+            $score -= 0.05;
+        }
+
         $score = max(0.0, min(1.0, $score));
         $result->setConfidence($score);
         $result->setNeedsReprocess($result->needsReprocess() || $score < 0.45);

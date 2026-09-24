@@ -11,6 +11,7 @@ final class ParseResult
     private float $confidence = 0.0;
     private bool $dateWeekdayMismatch = false;
     private bool $rangeEndBeforeStart = false;
+    private bool $nextWeekdayAmbiguous = false;
     private array $notes = [];
     private array $errors = [];
     private array $strategies = [];
@@ -107,6 +108,16 @@ final class ParseResult
     public function hasRangeEndBeforeStart(): bool
     {
         return $this->rangeEndBeforeStart;
+    }
+
+    public function markNextWeekdayAmbiguous(): void
+    {
+        $this->nextWeekdayAmbiguous = true;
+    }
+
+    public function hasAmbiguousNextWeekday(): bool
+    {
+        return $this->nextWeekdayAmbiguous;
     }
 
     public function addNote(string $note): void

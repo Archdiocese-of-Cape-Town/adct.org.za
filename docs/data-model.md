@@ -140,7 +140,7 @@ message_id, filename, mime_type, size_bytes, storage_path, content_hash, `extrac
 | approved_via | `dean`, `reviewer`, `self`, `contact_change` (instant change to a published event) |
 | decided_by, decided_at, decision_note | audit (reject/other decisions) |
 
-The rule parser represents the start as `event_date` / `event_time` and only adds `event_end_date` / `event_end_time` when it finds a date or time range. Single dates and times omit the end fields. If a range's end is before its start, the parser adds a note and lowers confidence rather than silently reordering it.
+The rule parser represents the start as `event_date` / `event_time` and only adds `event_end_date` / `event_end_time` when it finds a date or time range. Single dates and times omit the end fields. If a range's end is before its start, the parser adds a note and lowers confidence rather than silently reordering it. An ambiguous "next <weekday>" also produces a note and a small confidence reduction.
 
 ### `adct_event` (WordPress custom post type)
 Post title/content hold the public text. Post meta holds: `parish_id`, `venue_id`, `start_local`, `end_local`, `all_day`, `rrule`, `exdates` (JSON), `rdates`, `featured`, `status_flag` (`scheduled`, `cancelled`, `postponed`), `source_candidate_id`, `contact`. Taxonomy: `adct_event_type`.

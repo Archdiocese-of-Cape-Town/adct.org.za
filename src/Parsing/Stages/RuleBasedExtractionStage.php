@@ -63,6 +63,14 @@ final class RuleBasedExtractionStage implements StageInterface
                 $result->addNote('The stated weekday does not match the parsed event date; verify it.');
             }
 
+            if ($date['next_weekday_ambiguous'] !== null) {
+                $result->markNextWeekdayAmbiguous();
+                $result->addNote(sprintf(
+                    'The phrase "next %s" is ambiguous between this week and next week; the first future occurrence was selected.',
+                    $date['next_weekday_ambiguous']
+                ));
+            }
+
             $rangeEndBeforeStart = $date['end_before_start'];
         }
 
@@ -149,7 +157,7 @@ final class RuleBasedExtractionStage implements StageInterface
     }
 
     /**
-     * @return array{date: string, end_date: ?string, weekday_mismatch: bool, end_before_start: bool}|null
+     * @return array{date: string, end_date: ?string, weekday_mismatch: bool, end_before_start: bool, next_weekday_ambiguous: ?string}|null
      */
     private function extractDate(string $text, DateTimeImmutable $referenceDate): ?array
     {
@@ -212,14 +220,25 @@ final class RuleBasedExtractionStage implements StageInterface
             $match = $candidate['match'];
             $endDate = null;
             $endBeforeStart = false;
+            $ambiguousWeekday = null;
 
             if ($candidate['type'] === 'this_weekday' || $candidate['type'] === 'next_weekday') {
+                $weekdayText = $this->capturedValue($match, 'weekday');
+                $targetWeekday = $weekdayText === null ? null : $this->weekdayNumber($weekdayText);
                 $date = $this->resolveWeekday(
                     $referenceDate,
-                    $this->capturedValue($match, 'weekday'),
+                    $weekdayText,
                     $candidate['type'] === 'next_weekday'
                 );
                 $weekdayMismatch = false;
+
+                if (
+                    $candidate['type'] === 'next_weekday'
+                    && $targetWeekday !== null
+                    && $targetWeekday > (int) $referenceDate->format('N')
+                ) {
+                    $ambiguousWeekday = $weekdayText;
+                }
             } elseif ($candidate['type'] === 'tomorrow') {
                 $date = $referenceDate->modify('+1 day');
                 $weekdayMismatch = false;
@@ -267,6 +286,7 @@ final class RuleBasedExtractionStage implements StageInterface
                 'end_date' => $endDate?->format('Y-m-d'),
                 'weekday_mismatch' => $weekdayMismatch,
                 'end_before_start' => $endBeforeStart,
+                'next_weekday_ambiguous' => $ambiguousWeekday,
             ];
         }
 

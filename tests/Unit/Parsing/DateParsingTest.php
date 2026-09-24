@@ -113,6 +113,18 @@ final class DateParsingTest extends TestCase
         self::assertSame('2026-10-02', $result['fields']['event_date'] ?? null);
     }
 
+    public function testUpcomingNextWeekdayIsFlaggedAsAmbiguous(): void
+    {
+        $ambiguous = self::parse('next Friday', '2026-10-01');
+        $nextWeek = self::parse('next Friday', '2026-10-02');
+        $thisSunday = self::parse('this Sunday', '2026-10-01');
+
+        self::assertSame('2026-10-02', $ambiguous['fields']['event_date'] ?? null);
+        self::assertStringContainsString('ambiguous', strtolower(implode(' ', $ambiguous['notes'])));
+        self::assertEqualsWithDelta(0.05, $nextWeek['confidence'] - $ambiguous['confidence'], 0.0001);
+        self::assertStringNotContainsString('ambiguous', strtolower(implode(' ', $thisSunday['notes'])));
+    }
+
     public function testUsesInjectedClockWhenMessageHasNoReceivedDate(): void
     {
         $message = new Message(
