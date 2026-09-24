@@ -63,6 +63,7 @@ Pure PHP 8.2, covered by unit tests and loaded through Composer PSR-4:
 - `Approval` – parallel dean/reviewer queues, atomic "first to act wins", self-approval, reminders.
 - `Mail` – MIME parsing into `Message` + `Attachment`, auto-reply/bounce detection.
 - `Tokens` – signed, single-use action tokens.
+- `Jobs` – due checks, bounded item processing, checkpoints, lock/state ports and run results.
 
 The core talks to the outside through interfaces (ports): `MailboxInterface`, `ClockInterface`, `EventRepositoryInterface`, `AiProviderInterface`, `OcrProviderInterface`, `MailerInterface` and `HttpClientInterface`. The parsing pipeline, its stages and value objects live under `Core\Parsing`; shared pure-PHP helpers live under `Core\Support`; contracts live under `Core\Ports`. The mailbox, mailer, candidate repository and OCR method signatures are provisional until their first consumers (E2.1, ADR 0011's mail queue, E5.3 and E12 respectively).
 
@@ -87,25 +88,32 @@ The Composer PSR-4 mappings keep `ADCT\ParishIntake\Core\…` and `ADCT\ParishIn
 
 ## Scheduled jobs
 
-All jobs follow the same pattern: take a lock (transient/option with expiry), work in a loop until a **time budget (~60 s)** or item budget is used, save a checkpoint after each item, release the lock. If a run dies, the lock expires and the next run resumes from the checkpoint.
+The framework in `src/Core/Jobs` is WordPress-free. A job decides whether it is due and processes one item per step. `JobRunner` acquires a lease, loads the last checkpoint, processes items until the **60-second time budget** or **100-item budget** is reached, saves each returned checkpoint, and releases its token in `finally`. The budgets are configurable through the runner constructor or per-run arguments. The default lock lease is 180 seconds, longer than the time budget. Jobs receive time through `ClockInterface`.
+
+Each job's state records `last_run_at` (run start), `last_success_at` (updated only after a non-failing batch), the last error message and timestamp, the last run's item count, and its checkpoint. A budget-limited batch is a successful run: its checkpoint is saved and the next due run resumes there. A failed batch records the error without moving `last_success_at`.
+
+`WordPressJobStateStore` stores state in non-autoloaded WordPress options; no database migration or custom table is needed. `WordPressJobLock` uses `add_option` for atomic creation. Expired or malformed locks are removed with a prepared compare-and-delete against the exact stored value, and release also checks the holder's random token so an old holder cannot remove a replacement lock. The WordPress scheduler registers one custom ten-minute WP-Cron event per job; each job's due check prevents unnecessary work between its own intervals. Scheduling and cleanup failures are logged without aborting visitor requests or plugin deactivation. An unexpected cron callback failure is logged and recorded in job state when the state store is available.
 
 | Job | Default interval | Work |
 |---|---|---|
-| `poll_mailboxes` | due every 10 min | Fetch new mail, store raw message + attachments, queue for parsing. |
-| `process_queue` | due every 10 min | Extract text, parse, create candidates, queue confirmation and approver emails. |
-| `send_mail` | every trigger | Send queued email up to the hourly cap, highest priority first. |
-| `poll_sources` | hourly | ICS/PDF/secondary sources, a few sources per run (oldest `last_checked_at` first). |
-| `expand_occurrences` | daily | Refresh the occurrence table for the next 12 months. |
-| `monitoring` | daily | Update source health, create reminder candidates, send inactivity reminders, approval reminders and approver digests (each can be switched off). |
-| `retention` | daily | Delete raw messages/attachments past retention, prune tokens and logs. |
+| `framework_heartbeat` | due every 10 min | Currently registered framework check only; no parish data or email work. |
+| `poll_mailboxes` | due every 10 min | Planned: fetch new mail, store raw message + attachments, queue for parsing. |
+| `process_queue` | due every 10 min | Planned: extract text, parse, create candidates, queue confirmation and approver emails. |
+| `send_mail` | every trigger | Planned: send queued email up to the hourly cap, highest priority first. |
+| `poll_sources` | hourly | Planned: ICS/PDF/secondary sources, a few sources per run (oldest `last_checked_at` first). |
+| `expand_occurrences` | daily | Planned: refresh the occurrence table for the next 12 months. |
+| `monitoring` | daily | Planned: update source health, create reminder candidates, send inactivity reminders, approval reminders and approver digests (each can be switched off). |
+| `retention` | daily | Planned: delete raw messages/attachments past retention, prune tokens and logs. |
+
+The framework heartbeat is the only job registered until intake work is implemented. It exists to exercise scheduling and the admin screen; it does not poll mail, process events, or send email.
 
 xneelo cron jobs can run at most every 2 hours, and there is no WP-CLI, so jobs have several triggers ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)):
 - WP-Cron stays on, so site visits run due jobs.
-- A 2-hourly xneelo cron job calls `wp-cron.php` over HTTP as a backstop.
+- One 2-hourly xneelo cron job calls `https://<site>/wp-cron.php?doing_wp_cron` over HTTP as a backstop.
 - An optional free external pinger (cron-job.org) calls it every 5–10 minutes for timely intake.
-- A "Check now" admin button runs the mail poll and queue at once.
+- **Parish Intake → Scheduled jobs** lists each registered job and its last run, last success, last error, and last run's item count. The per-job **Run now** action is a capability- and nonce-protected POST that uses the same lock and budgets while bypassing only the due check. Once mail and queue jobs are registered, their Run now actions provide the corresponding manual checks; the current heartbeat does no intake work.
 
-The intervals above are "due" times: a job runs on the first trigger after it is due. The health dashboard warns if nothing has run for more than 2 h 15 min.
+The intervals above are "due" times: a job runs on the first trigger after it is due, including after a trigger gap of up to 2 hours. The scheduled-jobs page reports run state; the separate health-dashboard warning after 2 h 15 min remains a later dashboard feature.
 
 ## Trust, confirmation and approval (summary)
 

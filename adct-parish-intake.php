@@ -16,5 +16,6 @@ require_once __DIR__ . '/src/WordPress/Autoloader.php';
 ADCT\ParishIntake\WordPress\Autoloader::register();
 
 register_activation_hook(__FILE__, ['ADCT\\ParishIntake\\WordPress\\Plugin', 'activate']);
+register_deactivation_hook(__FILE__, ['ADCT\\ParishIntake\\WordPress\\Plugin', 'deactivate']);
 
 ADCT\ParishIntake\WordPress\Plugin::boot(__FILE__);
