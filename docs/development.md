@@ -38,7 +38,7 @@ This creates `dist/adct-parish-intake.zip`. The script installs production depen
 
 The build pins Strauss 0.30.0 and verifies the official [release asset](https://github.com/BrianHenryIE/strauss/releases/download/0.30.0/strauss.phar) against SHA-256 `08c1a8e553594745c22294e158129005fd11ed09ed452d7d4f48566f38c66c96` before running it. To upgrade Strauss, calculate the SHA-256 of the chosen official release asset and update both `STRAUSS_VERSION` and `STRAUSS_SHA256` in `scripts/build-release.sh`, then rebuild the zip locally.
 
-The build validates the zip by unpacking it, checking its contents, linting every packaged PHP file, and loading the plugin bootstrap under plain PHP. CI runs this same build on every PR and `v*` tag; PRs receive an `adct-parish-intake.zip` artifact.
+The build validates the zip by unpacking it, checking its contents, linting every packaged PHP file, and loading the plugin bootstrap and Core autoloader under plain PHP. The zip's small `WordPress\Autoloader` loads the plugin's `src/` classes; Composer's generated PSR-4 autoloader is used in development and tests. CI runs this same build on every PR and `v*` tag; PRs receive an `adct-parish-intake.zip` artifact.
 
 Release tags must match the plugin header version exactly after removing the leading `v`. The build fails on a mismatch; it never edits the plugin header. To exercise that check locally without creating a tag or release:
 
@@ -51,8 +51,12 @@ docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scr
 | Path | What |
 |---|---|
 | `adct-parish-intake.php` | Plugin bootstrap (WordPress entry point) |
-| `src/` | Prototype code, namespace `ADCT\ParishIntake\…`, own autoloader (`src/Autoloader.php`). [#20](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/20) splits it into `src/Core` (no WordPress) and `src/WordPress` (adapters) and moves to Composer PSR-4. |
+| `src/Core/` | Domain parsing pipeline, stages, value objects, pure-PHP helpers and ports; no WordPress functions, classes or globals |
+| `src/WordPress/` | Plugin bootstrap, admin UI, schema/report adapters, OpenRouter provider and WordPress HTTP client |
+| `composer.json` | PSR-4 autoloading for `ADCT\ParishIntake\Core\…` and `ADCT\ParishIntake\WordPress\…`; development/tests load through Composer |
+| `src/WordPress/Autoloader.php` | Small PSR-4 source loader included in the release zip, where Composer's development autoloader is not shipped |
 | `tests/parser_smoke_test.php` | Prototype smoke test; keep it until its cases are ported to PHPUnit with equal or stronger assertions ([#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17)). |
+| `tests/Unit/Architecture/CoreIsolationTest.php` | Token-based check that keeps WordPress APIs out of `src/Core/` |
 | `data/seed/` | Deaneries and parishes CSVs for the directory import and preview sample data |
 | `docs/` | Design, decisions (ADRs), backlog, testing |
 

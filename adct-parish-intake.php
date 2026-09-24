@@ -11,10 +11,10 @@ if (! defined('ABSPATH')) {
 }
 
 require_once __DIR__ . '/vendor-prefixed/autoload.php';
-require_once __DIR__ . '/src/Autoloader.php';
+require_once __DIR__ . '/src/WordPress/Autoloader.php';
 
-ADCT\ParishIntake\Autoloader::register();
+ADCT\ParishIntake\WordPress\Autoloader::register();
 
-register_activation_hook(__FILE__, ['ADCT\\ParishIntake\\Plugin', 'activate']);
+register_activation_hook(__FILE__, ['ADCT\\ParishIntake\\WordPress\\Plugin', 'activate']);
 
-ADCT\ParishIntake\Plugin::boot(__FILE__);
+ADCT\ParishIntake\WordPress\Plugin::boot(__FILE__);

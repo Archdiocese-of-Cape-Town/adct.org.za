@@ -42,6 +42,11 @@ if [ -n "$release_tag" ]; then
     fi
 fi
 
+if [ ! -f src/WordPress/Autoloader.php ]; then
+    printf 'The plugin source autoloader is missing.\n' >&2
+    exit 1
+fi
+
 temp_dir=$(mktemp -d "$ROOT_DIR/.release-build.XXXXXX")
 trap 'rm -rf "$temp_dir"' EXIT HUP INT TERM
 

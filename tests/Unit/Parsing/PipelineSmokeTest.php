@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Tests\Unit\Parsing;
 
-use ADCT\ParishIntake\Parsing\Input\Message;
-use ADCT\ParishIntake\Parsing\PipelineFactory;
+use ADCT\ParishIntake\Core\Parsing\Input\Message;
+use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 

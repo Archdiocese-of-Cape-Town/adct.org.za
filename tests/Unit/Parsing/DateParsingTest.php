@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Tests\Unit\Parsing;
 
-use ADCT\ParishIntake\Parsing\Input\Message;
-use ADCT\ParishIntake\Parsing\PipelineFactory;
-use ADCT\ParishIntake\Support\ClockInterface;
+use ADCT\ParishIntake\Core\Parsing\Input\Message;
+use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
+use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use DateTimeImmutable;
 use DateTimeZone;
 use PHPUnit\Framework\Attributes\DataProvider;

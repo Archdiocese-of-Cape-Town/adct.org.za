@@ -28,11 +28,29 @@ function register_activation_hook($file, $callback): void
 
 require $pluginFile;
 
-if (! class_exists(ADCT\ParishIntake\Autoloader::class, false)
-    || ! class_exists(ADCT\ParishIntake\Plugin::class, false)
+if (! class_exists(ADCT\ParishIntake\WordPress\Autoloader::class, false)
+    || ! class_exists(ADCT\ParishIntake\WordPress\Plugin::class, false)
+    || ! class_exists(ADCT\ParishIntake\Core\Parsing\PipelineFactory::class)
+    || ! class_exists(ADCT\ParishIntake\WordPress\Admin\ParserPage::class, false)
+    || ! class_exists(ADCT\ParishIntake\WordPress\Database\Schema::class, false)
 ) {
     fwrite(STDERR, "Plugin autoloader did not load the bootstrap classes.\n");
     exit(1);
+}
+
+foreach ([
+    ADCT\ParishIntake\Core\Ports\ClockInterface::class,
+    ADCT\ParishIntake\Core\Ports\MailboxInterface::class,
+    ADCT\ParishIntake\Core\Ports\MailerInterface::class,
+    ADCT\ParishIntake\Core\Ports\EventRepositoryInterface::class,
+    ADCT\ParishIntake\Core\Ports\AiProviderInterface::class,
+    ADCT\ParishIntake\Core\Ports\OcrProviderInterface::class,
+    ADCT\ParishIntake\Core\Ports\HttpClientInterface::class,
+] as $coreInterface) {
+    if (! interface_exists($coreInterface)) {
+        fwrite(STDERR, "Plugin source autoloader did not load {$coreInterface}.\n");
+        exit(1);
+    }
 }
 
 fwrite(STDOUT, "Plugin bootstrap loaded under plain PHP.\n");
