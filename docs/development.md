@@ -26,6 +26,26 @@ These commands were checked on 2026-09-24: the smoke test passes, lint is clean,
 
 GitHub Actions (added in [#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17)) runs the same tests on PHP 8.2, 8.3 and 8.4 for every PR. CI is the final judge.
 
+## Build the release zip
+
+Build the installable package from the repository root in PowerShell:
+
+```powershell
+docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
+```
+
+This creates `dist/adct-parish-intake.zip`. The script installs production dependencies with `composer install --no-dev`, prefixes them with the pinned Strauss release into `vendor-prefixed/`, then packages only the plugin bootstrap, `src/`, and the prefixed runtime dependencies. Strauss is used instead of PHP-Scoper because it directly copies Composer dependencies into one prefixed directory and generates the autoloader the plugin uses. The current plugin does not read `data/seed/` at runtime, so seed data is not shipped.
+
+The build pins Strauss 0.30.0 and verifies the official [release asset](https://github.com/BrianHenryIE/strauss/releases/download/0.30.0/strauss.phar) against SHA-256 `08c1a8e553594745c22294e158129005fd11ed09ed452d7d4f48566f38c66c96` before running it. To upgrade Strauss, calculate the SHA-256 of the chosen official release asset and update both `STRAUSS_VERSION` and `STRAUSS_SHA256` in `scripts/build-release.sh`, then rebuild the zip locally.
+
+The build validates the zip by unpacking it, checking its contents, linting every packaged PHP file, and loading the plugin bootstrap under plain PHP. CI runs this same build on every PR and `v*` tag; PRs receive an `adct-parish-intake.zip` artifact.
+
+Release tags must match the plugin header version exactly after removing the leading `v`. The build fails on a mismatch; it never edits the plugin header. To exercise that check locally without creating a tag or release:
+
+```powershell
+docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
+```
+
 ## Where things are
 
 | Path | What |

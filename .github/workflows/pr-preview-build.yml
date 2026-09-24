@@ -1,0 +1,59 @@
+name: Build plugin package
+
+on:
+  pull_request:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and validate zip
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+          tools: composer:v2
+
+      - name: Build and validate release zip
+        run: sh scripts/build-release.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adct-parish-intake.zip
+          path: dist/adct-parish-intake.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Attach zip to GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: adct-parish-intake.zip
+          path: dist
+
+      - name: Create release and attach plugin zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: gh release create "$TAG_NAME" dist/adct-parish-intake.zip --verify-tag --generate-notes --title "$TAG_NAME"
