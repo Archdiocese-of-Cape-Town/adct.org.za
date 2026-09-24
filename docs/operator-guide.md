@@ -24,6 +24,25 @@ You need a WordPress administrator account that is allowed to install plugins. U
 
 The upload replaces the plugin files; it is not an instruction to delete the plugin from the Installed Plugins page. If WordPress reports an error or the plugin is no longer active, stop and contact the person who looks after the website rather than deleting files manually.
 
+## Roles and access
+
+Parish Intake adds these WordPress roles and capabilities:
+
+| Role | Parish Intake access |
+|---|---|
+| Administrator | All five Parish Intake capabilities: settings, directory, review, reports and deanery approval. |
+| Intake manager (`adct_pi_intake_manager`) | Settings, directory, review and reports. |
+| Intake reviewer (`adct_pi_intake_reviewer`) | Review and reports. |
+| Editor | Review and reports. This default is **provisional** and the project owner may change it. |
+| Parish contact (`parish_contact`) | Read only; cannot use `wp-admin` or the admin bar. |
+| Deanery approver (`deanery_approver`) | Deanery approval only; cannot use `wp-admin` or the admin bar. |
+
+Assign a role from **Users → All Users → Edit** (or while adding a user). Role changes are additive: upgrades add missing Parish Intake capabilities and do not replace other capabilities already assigned to a role.
+
+A deanery approver must also have an active assignment to one or more deaneries. The assignment is stored in `adct_pi_deanery_approvers`; the admin screen for managing those assignments will be added later. A role without an active assignment cannot approve deanery items, so do not attempt direct database edits. An archdiocese reviewer with the `adct_pi_review` capability can approve items from any deanery, including parishes with no deanery.
+
+The parish portal, magic-link sign-in and its long-session policy are separate later work. This change establishes roles and access boundaries only; parish contacts and deanery approvers do not gain a `wp-admin` interface.
+
 ## Check database installation and upgrade (staging)
 
 Do this on a staging site with a recent database backup; do not change schema options on the live site.
@@ -60,4 +79,8 @@ Replace `<site>` with the site's hostname. This uses one of the account's ten cr
 
 For more timely triggers, optionally create a free cron-job.org job that sends a GET request to the same URL every **5–10 minutes**. No secret or WordPress login is needed for this public `wp-cron.php` backstop. Check the service's execution history for successful HTTP responses.
 
-To start a registered job manually, open **Parish Intake → Scheduled jobs** and select **Run now** beside it. The action is limited to administrators, protected by a nonce, and uses the same time limit, item limit, lock, and checkpoint as cron. A run that reaches a budget saves its checkpoint so the next run can continue. The currently registered **Framework heartbeat (no work configured)** only checks the framework; it does not read parish email, process events, or send messages. Mailbox and queue jobs will appear there when those features are implemented.
+To start a registered job manually, an Administrator or Intake manager can open **Parish Intake → Scheduled jobs** and select **Run now** beside it. The action requires the settings-management capability, is protected by a nonce, and uses the same time limit, item limit, lock, and checkpoint as cron. A run that reaches a budget saves its checkpoint so the next run can continue. The currently registered **Framework heartbeat (no work configured)** only checks the framework; it does not read parish email, process events, or send messages. Mailbox and queue jobs will appear there when those features are implemented.
+
+## Uninstall and data retention
+
+Uninstalling the plugin removes its custom roles and Parish Intake capabilities from the built-in Administrator and Editor roles. It does **not** drop Parish Intake tables or delete plugin data. Data deletion requires a separate owner decision.

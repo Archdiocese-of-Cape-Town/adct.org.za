@@ -19,7 +19,7 @@ docker run --rm -v "${PWD}:/app" -w /app composer:2 validate --no-check-publish
 docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c "vendor/bin/phpunit && php tests/parser_smoke_test.php"
 
 # Lint every PHP file
-docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c 'find src tests adct-parish-intake.php -name "*.php" -print0 | xargs -0 -n1 php -l > /dev/null && echo lint-ok'
+docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c 'find src tests -name "*.php" -print0 | xargs -0 -n1 php -l > /dev/null && php -l adct-parish-intake.php && php -l uninstall.php && echo lint-ok'
 
 # WordPress integration tests (requires Node.js/npm and Docker Desktop)
 npm ci
@@ -39,7 +39,7 @@ Build the installable package from the repository root in PowerShell:
 docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
 ```
 
-This creates `dist/adct-parish-intake.zip`. The script installs production dependencies with `composer install --no-dev`, prefixes them with the pinned Strauss release into `vendor-prefixed/`, then packages only the plugin bootstrap, `src/`, and the prefixed runtime dependencies. Strauss is used instead of PHP-Scoper because it directly copies Composer dependencies into one prefixed directory and generates the autoloader the plugin uses. The current plugin does not read `data/seed/` at runtime, so seed data is not shipped.
+This creates `dist/adct-parish-intake.zip`. The script installs production dependencies with `composer install --no-dev`, prefixes them with the pinned Strauss release into `vendor-prefixed/`, then packages the plugin bootstrap, `uninstall.php`, `src/`, and the prefixed runtime dependencies. Strauss is used instead of PHP-Scoper because it directly copies Composer dependencies into one prefixed directory and generates the autoloader the plugin uses. The current plugin does not read `data/seed/` at runtime, so seed data is not shipped.
 
 The build pins Strauss 0.30.0 and verifies the official [release asset](https://github.com/BrianHenryIE/strauss/releases/download/0.30.0/strauss.phar) against SHA-256 `08c1a8e553594745c22294e158129005fd11ed09ed452d7d4f48566f38c66c96` before running it. To upgrade Strauss, calculate the SHA-256 of the chosen official release asset and update both `STRAUSS_VERSION` and `STRAUSS_SHA256` in `scripts/build-release.sh`, then rebuild the zip locally.
 

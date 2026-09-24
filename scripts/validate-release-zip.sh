@@ -38,6 +38,7 @@ package_dir="$temp_dir/unpacked/adct-parish-intake"
 
 for required_file in \
     adct-parish-intake.php \
+    uninstall.php \
     src/WordPress/Autoloader.php \
     vendor-prefixed/autoload.php
 do
