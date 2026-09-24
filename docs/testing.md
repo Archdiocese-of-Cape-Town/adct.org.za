@@ -38,10 +38,11 @@ The approval rules ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-re
 ## Scheduling and mail limits test cases
 
 From [ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md) and [ADR 0011](decisions/0011-outbound-email-queue-with-hourly-cap.md):
-- Two triggers at once (visitor + pinger): only one job run does the work (lock).
-- A job that is "due" runs on the first trigger after its due time. Long gaps (2 h) don't cause duplicate or lost work.
-- "Check now" runs the poll and queue within the time budget and needs the right capability and a nonce.
-- Health warning appears when the last run is older than 2 h 15 min.
+- Unit tests cover the time and item budgets, a checkpoint saved after every item, resumption from that checkpoint, due checks, overlapping-run prevention, expired-lock recovery, and stale-token release protection.
+- Unit tests verify that exceptions release the lock and record the last error, and that `last_success_at` advances only after a successful batch.
+- The WordPress adapters are checked for non-autoloaded state and option-backed lock creation, expiry recovery, and token-guarded release.
+- WordPress integration tests should cover the custom ten-minute cron hook, deactivation cleanup, and the Run now capability/nonce flow. The current registered heartbeat does not poll mail or process a queue.
+- The scheduled-jobs page reports per-job state. The health warning after 2 h 15 min remains a future health-dashboard behavior.
 - Mail queue: hourly cap enforced across runs; priority 1 goes before priority 3; notices grouped per approver; retries with backoff; Test mode suppresses non-allow-listed recipients.
 
 ## Parser fixture corpus

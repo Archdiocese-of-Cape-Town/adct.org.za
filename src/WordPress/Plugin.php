@@ -4,10 +4,14 @@ namespace ADCT\ParishIntake\WordPress;
 
 use ADCT\ParishIntake\Core\Database\CreateSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MigrationRunner;
+use ADCT\ParishIntake\Core\Jobs\FrameworkHeartbeatJob;
+use ADCT\ParishIntake\Core\Jobs\JobRunner;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
+use ADCT\ParishIntake\Core\Support\SystemClock;
+use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
 use ADCT\ParishIntake\WordPress\Admin\ParserPage;
 use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
 use ADCT\ParishIntake\WordPress\Database\DbDeltaSchemaInstaller;
@@ -17,6 +21,9 @@ use ADCT\ParishIntake\WordPress\Database\WordPressMigrationLogger;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationVersionStore;
 use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
 use ADCT\ParishIntake\WordPress\Http\WordPressHttpClient;
+use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
+use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
+use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
 
 final class Plugin
 {
@@ -27,6 +34,8 @@ final class Plugin
     private PipelineFactory $pipelineFactory;
     private ParserPage $parserPage;
     private HttpClientInterface $httpClient;
+    private WordPressJobScheduler $jobScheduler;
+    private ScheduledJobsPage $scheduledJobsPage;
 
     private function __construct(string $pluginFile)
     {
@@ -39,6 +48,27 @@ final class Plugin
             $this->pipelineFactory,
             new StaticReportGenerator($this->schema),
             $this->httpClient
+        );
+
+        $clock = new SystemClock();
+        $stateStore = new WordPressJobStateStore();
+        $jobRunner = new JobRunner(
+            new WordPressJobLock(),
+            $stateStore,
+            $clock,
+            JobRunner::DEFAULT_TIME_BUDGET_SECONDS,
+            JobRunner::DEFAULT_ITEM_BUDGET,
+            JobRunner::DEFAULT_LOCK_TTL_SECONDS
+        );
+        $this->jobScheduler = new WordPressJobScheduler(
+            [new FrameworkHeartbeatJob()],
+            $jobRunner,
+            $clock
+        );
+        $this->scheduledJobsPage = new ScheduledJobsPage(
+            $this->jobScheduler,
+            $jobRunner,
+            $stateStore
         );
     }
 
@@ -65,6 +95,13 @@ final class Plugin
 
         (new Schema())->install();
         self::createMigrationRunner()->run();
+    }
+
+    public static function deactivate(): void
+    {
+        if (self::$instance instanceof self) {
+            self::$instance->jobScheduler->clearScheduledEvents();
+        }
     }
 
     public function maybeRunDatabaseMigrations(): void
@@ -95,9 +132,13 @@ final class Plugin
         }
 
         add_action('admin_menu', [$this->parserPage, 'registerMenu']);
+        add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
         add_action('admin_init', [$this, 'maybeRunDatabaseMigrations'], 5);
         add_action('admin_init', [$this->parserPage, 'maybeHandleSettings']);
+        add_action('admin_post_adct_pi_run_job', [$this->scheduledJobsPage, 'handleRunNow']);
         add_action('admin_notices', [$this, 'renderMigrationNotice']);
+        add_action('admin_notices', [$this->scheduledJobsPage, 'renderResultNotice']);
+        $this->jobScheduler->registerHooks();
     }
 
     private static function createMigrationRunner(): MigrationRunner

@@ -26,13 +26,19 @@ function register_activation_hook($file, $callback): void
 {
 }
 
+function register_deactivation_hook($file, $callback): void
+{
+}
+
 require $pluginFile;
 
 if (! class_exists(ADCT\ParishIntake\WordPress\Autoloader::class, false)
     || ! class_exists(ADCT\ParishIntake\WordPress\Plugin::class, false)
     || ! class_exists(ADCT\ParishIntake\Core\Parsing\PipelineFactory::class)
     || ! class_exists(ADCT\ParishIntake\WordPress\Admin\ParserPage::class, false)
+    || ! class_exists(ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage::class, false)
     || ! class_exists(ADCT\ParishIntake\WordPress\Database\Schema::class, false)
+    || ! class_exists(ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler::class, false)
 ) {
     fwrite(STDERR, "Plugin autoloader did not load the bootstrap classes.\n");
     exit(1);
@@ -46,6 +52,8 @@ foreach ([
     ADCT\ParishIntake\Core\Ports\AiProviderInterface::class,
     ADCT\ParishIntake\Core\Ports\OcrProviderInterface::class,
     ADCT\ParishIntake\Core\Ports\HttpClientInterface::class,
+    ADCT\ParishIntake\Core\Ports\JobLockInterface::class,
+    ADCT\ParishIntake\Core\Ports\JobStateStoreInterface::class,
 ] as $coreInterface) {
     if (! interface_exists($coreInterface)) {
         fwrite(STDERR, "Plugin source autoloader did not load {$coreInterface}.\n");
