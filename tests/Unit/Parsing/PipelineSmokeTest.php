@@ -14,7 +14,6 @@ use PHPUnit\Framework\TestCase;
  *
  * The smoke script only checked that each case had a title and a known classification.
  * These tests keep those checks and also pin the fields the parser already gets right.
- * Venue extraction currently reads past the venue name, so only the start of the venue is asserted.
  */
 final class PipelineSmokeTest extends TestCase
 {
@@ -53,11 +52,7 @@ final class PipelineSmokeTest extends TestCase
         ];
     }
 
-    /**
-     * A fresh pipeline per message: notes and errors currently leak between parse() calls (#78).
-     *
-     * @return array<string, mixed>
-     */
+    /** @return array<string, mixed> */
     private static function parse(Message $message): array
     {
         return (new PipelineFactory())->create()->parse($message)->toArray();
@@ -96,8 +91,7 @@ final class PipelineSmokeTest extends TestCase
         self::assertSame('St Mary Parish', $fields['parish_name']);
         self::assertSame('18:00', $fields['event_time']);
         self::assertSame('office@stmarysparish.org.za', $fields['contact']);
-        // Venue extraction overshoots past the name (#78); tighten to assertSame once fixed.
-        self::assertStringStartsWith('St Mary Parish Hall', $fields['venue']);
+        self::assertSame('St Mary Parish Hall', $fields['venue']);
         self::assertSame('secretary@stmarysparish.org.za', $fields['sender_email']);
 
         self::assertSame('monthly', $result['recurrence']['frequency']);
@@ -120,10 +114,67 @@ final class PipelineSmokeTest extends TestCase
         self::assertSame('2026-10-12', $fields['event_date']);
         self::assertSame('19:00', $fields['event_time']);
         self::assertSame('021 555 1111', $fields['contact']);
-        // Venue extraction overshoots past the name (#78); tighten to assertSame once fixed.
-        self::assertStringStartsWith('Holy Family Hall', $fields['venue']);
+        self::assertSame('Holy Family Hall', $fields['venue']);
 
         self::assertSame([], $result['recurrence']);
         self::assertGreaterThanOrEqual(0.9, $result['confidence']);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function venueTerminationCases(): array
+    {
+        return [
+            'event description after venue' => [
+                'The event is at St Mary Parish Hall for a healing Mass.',
+                'St Mary Parish Hall',
+            ],
+            'period in abbreviated venue name' => [
+                'The meeting is at St. Example Parish Hall at 7pm.',
+                'St. Example Parish Hall',
+            ],
+            'time after venue' => [
+                'The meeting is at Example Parish Hall at 7pm.',
+                'Example Parish Hall',
+            ],
+            'weekday after venue' => [
+                'The meeting is at Fictional Community Centre on Saturday.',
+                'Fictional Community Centre',
+            ],
+            'comma after venue' => [
+                'Location: Sample Parish Hall, near the entrance.',
+                'Sample Parish Hall',
+            ],
+            'labelled address beginning with a number' => [
+                "Venue: 12 Example Road\nDoors open at 7pm.",
+                '12 Example Road',
+            ],
+            'short labelled venue' => [
+                'Where: Hall.',
+                'Hall',
+            ],
+            'newline after venue' => [
+                "The gathering is at Invented Hall\nPlease arrive early.",
+                'Invented Hall',
+            ],
+        ];
+    }
+
+    #[DataProvider('venueTerminationCases')]
+    public function testVenueExtractionStopsAtVenueName(string $body, string $expectedVenue): void
+    {
+        $message = new Message(
+            'email',
+            'venue-test',
+            'events@example.test',
+            'Example Parish Office',
+            'Example event',
+            $body
+        );
+
+        $result = self::parse($message);
+
+        self::assertSame($expectedVenue, $result['fields']['venue'] ?? null);
     }
 }

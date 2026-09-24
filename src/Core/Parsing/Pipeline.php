@@ -19,6 +19,7 @@ final class Pipeline
 
     public function parse(Message $message): ParseResult
     {
+        $this->context->reset();
         $result = new ParseResult();
         $result->setParserVersion((string) $this->context->getOption('parser_version', '0.1.0'));
 
