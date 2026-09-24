@@ -1,0 +1,11 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Example Parish family retreat",
+    "parish_name": "Example Parish",
+    "event_date": "2026-10-05",
+    "event_end_date": "2026-10-06",
+    "event_time": "09:00",
+    "venue": "Example Parish Hall"
+  }
+}

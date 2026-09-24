@@ -1,0 +1,13 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Cancellation: evening gathering",
+    "parish_name": "Example Parish",
+    "event_date": "2026-10-12",
+    "event_time": "18:00"
+  },
+  "match_kind": "cancellation",
+  "known_failures": {
+    "match_kind": "#46"
+  }
+}

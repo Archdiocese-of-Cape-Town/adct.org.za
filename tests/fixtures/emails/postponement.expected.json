@@ -1,0 +1,17 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Postponement: parish market",
+    "parish_name": "Example Parish",
+    "event_date": "2026-10-17",
+    "event_time": "10:00"
+  },
+  "match_kind": "update",
+  "event_status": "postponed",
+  "known_failures": {
+    "fields.event_date": "#46",
+    "fields.event_time": "#46",
+    "match_kind": "#46",
+    "event_status": "#46"
+  }
+}

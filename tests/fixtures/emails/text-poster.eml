@@ -1,0 +1,21 @@
+From: Example Parish Office <events@example.test>
+Subject: Example Parish community festival poster
+Date: Thu, 01 Oct 2026 09:00:00 +0200
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="poster-boundary"
+
+--poster-boundary
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: quoted-printable
+Content-Disposition: inline
+
+Parish=3A Example Parish
+Community Festival
+Join us on Saturday 24 October 2026 from 10:00 to 14:00 at Example Parish Hall.
+--poster-boundary
+Content-Type: application/pdf; name="example-parish-festival.pdf"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="example-parish-festival.pdf"
+
+aW52ZW50ZWQtcGRmLWJ5dGVz
+--poster-boundary--

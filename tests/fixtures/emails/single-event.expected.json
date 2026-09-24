@@ -1,0 +1,11 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Community supper invitation",
+    "parish_name": "Example Parish",
+    "event_date": "2026-10-12",
+    "event_time": "18:30",
+    "venue": "Example Parish Hall",
+    "contact": "021 555 0101"
+  }
+}

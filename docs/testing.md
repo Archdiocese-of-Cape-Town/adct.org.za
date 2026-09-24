@@ -51,9 +51,12 @@ From [ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md) and [AD
 Real samples reviewed so far, and what they taught us, are in [parser findings](parser-samples.md). The originals are kept privately (not in this public repository).
 
 - Collect real examples: bulletins, posters (PDF/image), one-line notices, forwarded emails, replies with quoted text, recurring schedules, cancellations, changes.
-- Anonymise personal names, phone numbers, personal email addresses, bank details and private addresses before committing. Replace sick lists and Mass intentions with fake names but keep their headings (the skip-section tests need them). Parish names, public church addresses and `@adct.org.za` office addresses can stay.
-- Include each sample type: text-layer bulletin (multi-column), multi-church bulletin, printed Mailchimp email, text-layer poster, image-only poster.
-- Each fixture has an expected JSON with only the fields that matter (e.g. number of events, title, start date/time, recurrence, parish). A test runner compares the parser's output with it and prints a readable diff.
+- The current fixture corpus uses **invented examples only**. The issue's "10 anonymised real samples" criterion is deferred to a human; these fixtures do not satisfy or claim that criterion. Do not open, copy, or send the private originals to this public repository or an automated agent.
+- Before a person adds any real-derived example, follow the [fixture anonymisation guide](fixture-anonymisation.md). Replace personal names, phone numbers, personal email addresses, bank details and private addresses. Replace names in sick lists and Mass intentions but keep their headings. Parish names, public church addresses and `@adct.org.za` office addresses must also be replaced in this public repo.
+- Cover the structures described in [parser findings](parser-samples.md): text-layer and multi-church bulletins, printed-email style notices, text posters, image-only posters, forwarded messages, replies with quoted text, recurring schedules, date ranges, cancellations/postponements, and administrative notices.
+- Each fixture is a pair: `tests/fixtures/emails/<name>.eml` and `tests/fixtures/emails/<name>.expected.json`. Expected JSON contains only the `ParseResult::toArray()` fields that matter. A missing expected key is not checked; list lengths are checked. `known_failures` maps an output path (or parent path) to an existing issue, such as `{"fields.description":"#74"}`. Mismatches covered by known issues are reported as incomplete; any untracked mismatch fails with a per-field diff. Keep the fixture and update the expectation only when the relevant issue is fixed.
+- Every `.eml` must have a `Date` header with an explicit timezone so relative dates stay deterministic. The test-only loader handles common headers, plain-text MIME, quoted-printable/base64 bodies, and multipart attachment names/MIME types; attachments are not extracted.
+- To add a fixture, add those two files, then run `composer test` and `composer fixture-score`. The PHPUnit provider discovers fixture pairs automatically.
 - A **score report** (fields right / total) is printed in CI. When parsing rules improve, the score should not go down.
 - Every parser bug report should add a fixture first (failing), then the fix.
 
@@ -90,6 +93,7 @@ With PHP and Composer installed:
 composer install
 composer test        # PHPUnit (tests/Unit) + prototype smoke test
 composer test:unit   # PHPUnit only
+composer fixture-score # Per-fixture and overall golden-field score
 composer test:integration # WordPress integration tests; requires npm ci and a built release zip
 ```
 
@@ -109,4 +113,4 @@ The test runner creates and stops its own isolated `wp-env` environment. Its tes
 
 `wp-env` is used instead of the Playground CLI for integration tests because it supplies a normal WordPress/MySQL environment and WP-CLI in Docker. That lets CI install the exact release zip and exercise the admin menu/page without browser automation.
 
-A `composer test:fixtures` command for the fixture corpus score report will be added with the fixture work.
+The PHP 8.2 CI matrix job appends the fixture-score table to the GitHub Actions step summary. The score command exits successfully for parser mismatches so it reports quality without hiding failures from the PHPUnit golden tests; it exits unsuccessfully only if a fixture cannot be loaded or parsed.

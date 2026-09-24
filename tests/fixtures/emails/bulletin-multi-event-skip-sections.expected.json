@@ -1,0 +1,28 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Example Parish weekly bulletin",
+    "parish_name": "Example Parish",
+    "event_date": "2026-10-10",
+    "event_time": "16:00",
+    "venue": "Example Parish Hall",
+    "description": "- Join us for a youth gathering on Saturday 10 October 2026 at 16:00 at Example Parish Hall.\n- The family picnic is on Sunday 11 October 2026 at 12:00 at Fictional Community Gardens."
+  },
+  "events": [
+    {
+      "title": "Youth gathering",
+      "event_date": "2026-10-10",
+      "event_time": "16:00"
+    },
+    {
+      "title": "Family picnic",
+      "event_date": "2026-10-11",
+      "event_time": "12:00"
+    }
+  ],
+  "known_failures": {
+    "classification": "#40",
+    "events": "#40",
+    "fields.description": "#74"
+  }
+}

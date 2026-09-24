@@ -1,0 +1,19 @@
+From: Example Parish Office <events@example.test>
+Subject: Image-only poster
+Date: Thu, 01 Oct 2026 09:00:00 +0200
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="image-boundary"
+
+--image-boundary
+Content-Type: text/plain; charset=UTF-8
+Content-Disposition: inline
+
+Parish: Example Parish
+Please see the attached image-only poster.
+--image-boundary
+Content-Type: image/jpeg; name="example-event-poster.jpg"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="example-event-poster.jpg"
+
+aW52ZW50ZWQtZmljdGlvbmFsLWltYWdl
+--image-boundary--

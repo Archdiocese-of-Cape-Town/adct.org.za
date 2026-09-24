@@ -1,0 +1,14 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Example Parish community day",
+    "parish_name": "Example Parish",
+    "event_date": "2026-10-24",
+    "event_time": "11:00",
+    "venue": "Example Parish Hall",
+    "description": "Join us for Community Day on Saturday 24 October 2026 at 11:00 at Example Parish Hall."
+  },
+  "known_failures": {
+    "fields.description": "#37"
+  }
+}
