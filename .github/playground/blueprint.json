@@ -1,0 +1,24 @@
+{
+  "$schema": "https://playground.wordpress.net/blueprint-schema.json",
+  "preferredVersions": {
+    "php": "8.2",
+    "wp": "latest"
+  },
+  "landingPage": "/wp-admin/admin.php?page=adct-parish-intake-manual-parser",
+  "steps": [
+    {
+      "step": "login",
+      "username": "admin"
+    },
+    {
+      "step": "installPlugin",
+      "pluginData": {
+        "resource": "url",
+        "url": "{{ARTIFACT_URL:parish-intake}}"
+      },
+      "options": {
+        "activate": true
+      }
+    }
+  ]
+}

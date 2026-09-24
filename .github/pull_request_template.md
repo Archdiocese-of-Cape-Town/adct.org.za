@@ -25,3 +25,7 @@ Closes #
 ## Notes for reviewers
 
 <!-- Trade-offs, follow-ups, anything surprising. -->
+
+## Preview in Playground
+
+When `pr-preview-publish.yml` is present on `main`, the "Preview in WordPress Playground" button is published after the package-build workflow completes. Changes to the publisher only take effect after they are merged to `main`.

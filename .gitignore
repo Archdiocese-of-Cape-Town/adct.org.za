@@ -1,6 +1,7 @@
 /vendor/
 /vendor-prefixed/
 /dist/
+/node_modules/
 /.release-build.*/
 /.phpunit.cache/
 /.phpunit.result.cache
