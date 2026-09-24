@@ -1,7 +1,16 @@
 <?php
 
 use ADCT\ParishIntake\Core\Auth\Capabilities;
+use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
+use ADCT\ParishIntake\Core\Directory\ImportRow;
+use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
+use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
+use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
+use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
+use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
 
 require_once ABSPATH . 'wp-admin/includes/plugin.php';
 
@@ -195,4 +204,217 @@ if (strpos($manualParserHtml, 'name="body"') === false) {
     $fail('The Manual parser message form did not render.');
 }
 
-WP_CLI::success('Release ZIP activation, schema v1, and Manual parser integration checks passed.');
+$seedDeaneriesCsv = file_get_contents(__DIR__ . '/seed/deaneries.csv');
+$seedParishesCsv = file_get_contents(__DIR__ . '/seed/parishes.csv');
+
+if (! is_string($seedDeaneriesCsv) || ! is_string($seedParishesCsv)) {
+    $fail('The directory seed CSV files are not mounted in the integration environment.');
+}
+
+$database = new WordPressDatabaseConnection($wpdb);
+$parishRepository = new ParishRepository($database);
+$deaneryRepository = new DeaneryRepository($database);
+$importService = new DirectoryImportService(
+    new ParishCsvImporter(),
+    new DeaneryCsvImporter(),
+    $parishRepository,
+    $deaneryRepository,
+    new ParishContactRepository($database),
+    new SystemClock()
+);
+$contactTable = $wpdb->prefix . 'adct_pi_parish_contacts';
+$parishTable = $wpdb->prefix . 'adct_pi_parishes';
+$deaneryTable = $wpdb->prefix . 'adct_pi_deaneries';
+
+foreach ([$contactTable, $parishTable, $deaneryTable] as $table) {
+    if ($wpdb->query("DELETE FROM {$table}") === false) {
+        $fail('The integration directory tables could not be reset.');
+    }
+}
+
+$firstDeaneryImport = $importService->importDeaneries($seedDeaneriesCsv);
+$firstParishImport = $importService->importParishes($seedParishesCsv);
+
+if (
+    $firstDeaneryImport->counts()[ImportRow::CREATE] !== 8
+    || $firstDeaneryImport->counts()['errors'] !== 0
+) {
+    $fail('The seed deaneries CSV did not create 8 deaneries without errors.');
+}
+
+if (
+    $firstParishImport->counts()[ImportRow::CREATE] !== 124
+    || $firstParishImport->counts()['errors'] !== 0
+) {
+    $fail('The seed parishes CSV did not create 124 parishes without errors.');
+}
+
+if ((int) $wpdb->get_var("SELECT COUNT(*) FROM {$deaneryTable}") !== 8) {
+    $fail('The deanery import did not produce 8 database rows.');
+}
+
+if ((int) $wpdb->get_var("SELECT COUNT(*) FROM {$parishTable}") !== 124) {
+    $fail('The parish import did not produce 124 database rows.');
+}
+
+$seedStream = fopen('php://temp', 'r+');
+if (! is_resource($seedStream) || fwrite($seedStream, $seedParishesCsv) !== strlen($seedParishesCsv)) {
+    $fail('The parish seed CSV could not be parsed for contact assertions.');
+}
+rewind($seedStream);
+$seedHeaders = fgetcsv($seedStream, null, ',', '"', '');
+$emailIndex = is_array($seedHeaders) ? array_search('office_email', $seedHeaders, true) : false;
+$slugIndex = is_array($seedHeaders) ? array_search('slug', $seedHeaders, true) : false;
+$firstOfficeEmail = null;
+$firstOfficeParishSlug = null;
+$officeEmailCount = 0;
+
+if (! is_int($emailIndex) || ! is_int($slugIndex)) {
+    $fail('The parish seed CSV is missing its email or slug column.');
+}
+
+while (($seedRow = fgetcsv($seedStream, null, ',', '"', '')) !== false) {
+    $email = trim((string) ($seedRow[$emailIndex] ?? ''));
+
+    if ($email !== '') {
+        ++$officeEmailCount;
+
+        if ($firstOfficeEmail === null) {
+            $firstOfficeEmail = strtolower($email);
+            $firstOfficeParishSlug = (string) ($seedRow[$slugIndex] ?? '');
+        }
+    }
+}
+fclose($seedStream);
+
+$contactsAfterFirstImport = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$contactTable}");
+$verifiedAfterFirstImport = (int) $wpdb->get_var(
+    "SELECT COUNT(*) FROM {$contactTable} WHERE trust = 'verified' AND verified_at IS NOT NULL"
+);
+
+if ($contactsAfterFirstImport !== $officeEmailCount || $verifiedAfterFirstImport !== $officeEmailCount) {
+    $fail('Imported office emails were not all created as verified parish contacts.');
+}
+
+if ($firstOfficeEmail === null || $firstOfficeParishSlug === null) {
+    $fail('The parish seed CSV does not contain an office email for the trust-preservation check.');
+}
+
+$firstParishId = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT id FROM {$parishTable} WHERE slug = %s LIMIT 1",
+    $firstOfficeParishSlug
+));
+$firstContactId = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT id FROM {$contactTable} WHERE parish_id = %d AND email = %s LIMIT 1",
+    $firstParishId,
+    $firstOfficeEmail
+));
+
+if ($firstParishId < 1 || $firstContactId < 1) {
+    $fail('An imported parish office contact could not be found.');
+}
+
+if ($wpdb->query($wpdb->prepare(
+    "UPDATE {$contactTable} SET trust = %s, verified_at = NULL WHERE id = %d",
+    'blocked',
+    $firstContactId
+)) === false) {
+    $fail('The integration trust-preservation fixture could not be prepared.');
+}
+
+$secondDeaneryImport = $importService->importDeaneries($seedDeaneriesCsv);
+$secondParishImport = $importService->importParishes($seedParishesCsv);
+
+if (
+    $secondDeaneryImport->counts()[ImportRow::CREATE] !== 0
+    || $secondDeaneryImport->counts()[ImportRow::UPDATE] !== 0
+    || $secondDeaneryImport->counts()[ImportRow::UNCHANGED] !== 8
+) {
+    $fail('A second deanery import did not leave all 8 rows unchanged.');
+}
+
+if (
+    $secondParishImport->counts()[ImportRow::CREATE] !== 0
+    || $secondParishImport->counts()[ImportRow::UPDATE] !== 0
+    || $secondParishImport->counts()[ImportRow::UNCHANGED] !== 124
+) {
+    $fail('A second parish import created or updated rows instead of leaving all 124 unchanged.');
+}
+
+$contactAfterRepeat = $wpdb->get_row($wpdb->prepare(
+    "SELECT trust, verified_at FROM {$contactTable} WHERE id = %d LIMIT 1",
+    $firstContactId
+), ARRAY_A);
+
+if (
+    ! is_array($contactAfterRepeat)
+    || $contactAfterRepeat['trust'] !== 'blocked'
+    || $contactAfterRepeat['verified_at'] !== null
+) {
+    $fail('A repeated import changed an existing parish contact trust value.');
+}
+
+$parentSlug = 'adct-parish-intake';
+$parishesSlug = 'adct-parish-intake-parishes';
+$parishItems = array_values(array_filter(
+    $GLOBALS['submenu'][$parentSlug] ?? [],
+    static fn ($item): bool => is_array($item) && ($item[2] ?? null) === $parishesSlug
+));
+
+if (count($parishItems) !== 1 || $parishItems[0][0] !== 'Parishes') {
+    $fail('The Parishes admin submenu was not registered for a directory manager.');
+}
+
+if (! current_user_can(Capabilities::MANAGE_DIRECTORY)) {
+    $fail('The administrator does not have directory-management capability.');
+}
+
+$parishesPageHook = get_plugin_page_hookname($parishesSlug, $parentSlug);
+if (has_action($parishesPageHook) === false) {
+    $fail('The Parishes page callback was not registered.');
+}
+
+ob_start();
+try {
+    do_action($parishesPageHook);
+} finally {
+    $parishesHtml = (string) ob_get_clean();
+}
+
+if (strpos($parishesHtml, '<h1 class="wp-heading-inline">Parishes</h1>') === false) {
+    $fail('The Parishes page did not render for a directory manager.');
+}
+
+if (strpos($parishesHtml, 'name="search"') === false || strpos($parishesHtml, 'name="csv_file"') === false) {
+    $fail('The Parishes screen is missing its search or CSV import controls.');
+}
+
+$previousGet = $_GET;
+$_GET = ['action' => 'add'];
+ob_start();
+try {
+    do_action($parishesPageHook);
+} finally {
+    $parishFormHtml = (string) ob_get_clean();
+    $_GET = $previousGet;
+}
+
+foreach ([
+    'name="name"',
+    'name="slug"',
+    'name="deanery_id"',
+    'name="parent_parish_id"',
+    'name="latitude"',
+    'name="longitude"',
+    'name="expected_cadence_days"',
+    'name="reminders_enabled"',
+    'name="status"',
+    'name="notes"',
+    'Find on Google Maps',
+] as $formField) {
+    if (strpos($parishFormHtml, $formField) === false) {
+        $fail('The parish form is missing a required field or map helper: ' . $formField);
+    }
+}
+
+WP_CLI::success('Release ZIP activation, directory CSV imports, Parishes admin screen and Manual parser integration checks passed.');
