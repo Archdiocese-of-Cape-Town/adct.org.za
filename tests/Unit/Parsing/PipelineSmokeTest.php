@@ -146,6 +146,14 @@ final class PipelineSmokeTest extends TestCase
                 'Location: Sample Parish Hall, near the entrance.',
                 'Sample Parish Hall',
             ],
+            'labelled address beginning with a number' => [
+                "Venue: 12 Example Road\nDoors open at 7pm.",
+                '12 Example Road',
+            ],
+            'short labelled venue' => [
+                'Where: Hall.',
+                'Hall',
+            ],
             'newline after venue' => [
                 "The gathering is at Invented Hall\nPlease arrive early.",
                 'Invented Hall',

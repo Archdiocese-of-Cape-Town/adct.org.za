@@ -543,14 +543,15 @@ final class RuleBasedExtractionStage implements StageInterface
 
     private function extractVenue(string $text): ?string
     {
-        $venueName = '(?:St\.?\s+)?[A-Z][A-Za-z0-9\'\- &,]{4,80}?';
+        $labelledVenueValue = '[^\r\n]+?';
+        $unlabelledVenueName = '(?:St\.?\s+)?[A-Z][A-Za-z0-9\'\- &,]{4,80}?';
         $time = '(?:\d{1,2}(?:[:.]\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)|\d{1,2}[:.]\d{2})';
         $venueEnd = '(?=\s+(?:for\s+(?:a|an|the)\b'
             . '|at\s+' . $time . '\b'
-            . '|on\s+' . self::WEEKDAY_PATTERN . '\b)|[,;]|\R|\.|$)';
+            . '|on\s+' . self::WEEKDAY_PATTERN . '\b)|[,;]|\R|(?<!St)\.(?=\s|$)|$)';
         $patterns = [
-            '/(?:venue|where|location)\s*[:\-]\s*(' . $venueName . ')' . $venueEnd . '/iu',
-            '/\bat\s+(' . $venueName . ')' . $venueEnd . '/u',
+            '/(?:venue|where|location)\s*[:\-]\s*(' . $labelledVenueValue . ')' . $venueEnd . '/iu',
+            '/\bat\s+(' . $unlabelledVenueName . ')' . $venueEnd . '/u',
         ];
 
         foreach ($patterns as $pattern) {
