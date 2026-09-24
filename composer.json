@@ -1,0 +1,38 @@
+{
+    "name": "adct/parish-intake",
+    "description": "Parish event intake for adct.org.za: offline-first parsing of parish emails, confirmation, approval and publishing.",
+    "type": "wordpress-plugin",
+    "require": {
+        "php": ">=8.2"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "ADCT\\ParishIntake\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "ADCT\\ParishIntake\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "platform": {
+            "php": "8.2.0"
+        },
+        "sort-packages": true
+    },
+    "scripts": {
+        "test": [
+            "phpunit",
+            "@php tests/parser_smoke_test.php"
+        ],
+        "test:unit": "phpunit --testsuite unit"
+    },
+    "scripts-descriptions": {
+        "test": "Run the PHPUnit suite and the prototype smoke test.",
+        "test:unit": "Run only the unit test suite."
+    }
+}

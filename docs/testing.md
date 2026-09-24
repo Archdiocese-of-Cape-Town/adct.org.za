@@ -81,16 +81,14 @@ There is no permanent staging site. Before the first launch (and optionally befo
 
 ## Running tests locally
 
-Once Phase 0 CI setup is done, these will be available:
+With PHP and Composer installed:
 
 ```bash
 composer install
-composer test            # unit + fixture tests
-composer test:fixtures   # fixture corpus with score report
+composer test        # PHPUnit (tests/Unit) + prototype smoke test
+composer test:unit   # PHPUnit only
 ```
 
-Until then, the prototype smoke test runs with the command below, or through Docker as shown in the [development guide](development.md#local-setup-windows-no-php-install-needed):
+Without a local PHP, use the Docker commands in the [development guide](development.md#local-setup-windows-no-php-install-needed). CI (`.github/workflows/ci.yml`) runs `composer validate`, a `php -l` lint and `composer test` on PHP 8.2, 8.3 and 8.4 for every PR and push to `main`.
 
-```bash
-php tests/parser_smoke_test.php
-```
+A `composer test:fixtures` command for the fixture corpus score report will be added with the fixture work.
