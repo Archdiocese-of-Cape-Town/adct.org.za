@@ -9,6 +9,9 @@ final class ParseResult
     private array $fields = [];
     private array $recurrence = [];
     private float $confidence = 0.0;
+    private bool $dateWeekdayMismatch = false;
+    private bool $rangeEndBeforeStart = false;
+    private bool $nextWeekdayAmbiguous = false;
     private array $notes = [];
     private array $errors = [];
     private array $strategies = [];
@@ -85,6 +88,36 @@ final class ParseResult
     public function getConfidence(): float
     {
         return $this->confidence;
+    }
+
+    public function markDateWeekdayMismatch(): void
+    {
+        $this->dateWeekdayMismatch = true;
+    }
+
+    public function hasDateWeekdayMismatch(): bool
+    {
+        return $this->dateWeekdayMismatch;
+    }
+
+    public function markRangeEndBeforeStart(): void
+    {
+        $this->rangeEndBeforeStart = true;
+    }
+
+    public function hasRangeEndBeforeStart(): bool
+    {
+        return $this->rangeEndBeforeStart;
+    }
+
+    public function markNextWeekdayAmbiguous(): void
+    {
+        $this->nextWeekdayAmbiguous = true;
+    }
+
+    public function hasAmbiguousNextWeekday(): bool
+    {
+        return $this->nextWeekdayAmbiguous;
     }
 
     public function addNote(string $note): void

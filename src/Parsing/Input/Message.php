@@ -2,6 +2,8 @@
 
 namespace ADCT\ParishIntake\Parsing\Input;
 
+use DateTimeImmutable;
+
 final class Message
 {
     private string $sourceType;
@@ -10,6 +12,7 @@ final class Message
     private string $senderName;
     private string $subject;
     private string $body;
+    private ?DateTimeImmutable $receivedAt;
 
     /** @var Attachment[] */
     private array $attachments;
@@ -21,7 +24,8 @@ final class Message
         string $senderName,
         string $subject,
         string $body,
-        array $attachments = []
+        array $attachments = [],
+        ?DateTimeImmutable $receivedAt = null
     ) {
         $this->sourceType = $sourceType;
         $this->sourceIdentifier = $sourceIdentifier;
@@ -30,6 +34,7 @@ final class Message
         $this->subject = $subject;
         $this->body = $body;
         $this->attachments = $attachments;
+        $this->receivedAt = $receivedAt;
     }
 
     public function getSourceType(): string
@@ -60,6 +65,11 @@ final class Message
     public function getBody(): string
     {
         return $this->body;
+    }
+
+    public function getReceivedAt(): ?DateTimeImmutable
+    {
+        return $this->receivedAt;
     }
 
     /** @return Attachment[] */
