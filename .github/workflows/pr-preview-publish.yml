@@ -1,0 +1,19 @@
+name: Publish WordPress Playground preview
+
+on:
+  workflow_run:
+    workflows: ["Build plugin package"]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  publish:
+    # Do not check out or execute pull request code in this privileged workflow.
+    # The reusable publisher treats the artifact bundle as untrusted data.
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: WordPress/action-wp-playground-pr-preview/.github/workflows/preview-publish.yml@v4
+    with:
+      blueprint-from-artifact: true

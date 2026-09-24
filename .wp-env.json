@@ -1,0 +1,15 @@
+{
+  "$schema": "https://schemas.wp.org/trunk/wp-env.json",
+  "core": null,
+  "phpVersion": "8.2",
+  "plugins": [],
+  "port": 18088,
+  "config": {
+    "WP_DEBUG": true,
+    "WP_DEBUG_DISPLAY": false
+  },
+  "mappings": {
+    "wp-content/test-packages": "./dist",
+    "wp-content/test-harness": "./tests/Integration"
+  }
+}

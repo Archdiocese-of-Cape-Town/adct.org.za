@@ -10,18 +10,18 @@ Tests protect the project from breaking as more people and sessions work on it.
 |---|---|---|---|
 | 1. Unit | Domain core: parsing stages, date/recurrence, matching, trust rules, tokens, MIME parsing. Includes a token-based check that `src/Core/` has no WordPress dependencies. | GitHub Actions + locally | Every push / PR |
 | 2. Parser fixtures ("golden" tests) | Anonymised real parish emails (`tests/fixtures/emails/*.eml`) with expected output (`*.expected.json`). | GitHub Actions + locally | Every push / PR |
-| 3. WordPress integration | Plugin activation, migrations, post type, roles/capabilities, token pages, ICS output, REST filters. | GitHub Actions using `wp-env` (Docker) or WordPress Playground CLI | Every PR |
+| 3. WordPress integration | Activation from the built release zip without PHP errors/notices; the Parish Intake admin menu and Manual parser page register and render for an administrator. | GitHub Actions using `wp-env` (Docker) and WP-CLI | Every PR |
 | 4. IMAP integration | Polling, duplicate prevention, checkpoints, folder moves, retention, against a throwaway IMAP server (GreenMail in a Docker service container). | GitHub Actions | Every PR touching ingestion |
 | 5. Manual preview | Click-through of admin/portal/approver/public UI. | WordPress Playground **PR preview button** (every PR); InstaWP / TasteWP with the CI-built zip for real mail | Every PR (Playground); as needed (InstaWP/TasteWP) |
 | 6. Pre-launch check | Real xneelo PHP/cron/mail limits with a test mailbox. | A **temporary** staging instance on xneelo, removed afterwards (no permanent staging) | Once before launch; optionally before big releases |
 
-The CI matrix runs PHP **8.2** (production), **8.3** and **8.4**.
+The unit-test CI matrix runs PHP **8.2** (production), **8.3** and **8.4**. The WordPress integration job runs separately on PHP 8.2.
 
 See [ADR 0009](decisions/0009-preview-and-test-environments.md) for why previews and test sites are set up this way.
 
-## Approval flow test cases
+## Planned approval flow test cases
 
-The approval rules ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md)) are covered by unit tests in the core and integration tests in WordPress:
+The following cases will be added alongside the approval work ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md)). The current WordPress integration suite covers plugin activation and the Manual parser admin screen only:
 - A new event from a verified contact doesn't publish after confirmation alone. It goes to `awaiting_approval`.
 - An awaiting item is visible to the parish's deanery approvers **and** to archdiocese reviewers, and not to approvers of other deaneries.
 - First to act wins: two approvals (or an approve and a reject) for the same item leave exactly one decision. The second action gets "already decided".
@@ -62,10 +62,10 @@ All of these use the **same zip that CI builds**. The plugin bundles prefixed Co
 - `.github/workflows/pr-preview-build.yml` builds `adct-parish-intake.zip` on every PR and `v*` tag. Before uploading the artifact, it verifies the archive layout and excluded paths, lints all packaged PHP files, and loads the plugin bootstrap under plain PHP.
 - **WordPress Playground PR previews** (`playground.wordpress.net`): free, no account, runs WordPress in the browser.
   - The official [`WordPress/action-wp-playground-pr-preview`](https://github.com/WordPress/action-wp-playground-pr-preview) Action adds a **"Preview in WordPress Playground"** button to every PR. It uses two workflows:
-    - `pr-preview-build.yml` builds the zip.
-    - `pr-preview-publish.yml` uploads it to a `ci-artifacts` prerelease and adds the button. This one must be merged to `main` before it runs.
-  - The blueprint `.github/playground/blueprint.json` loads anonymised sample parishes, deaneries, approver and contact users, and messages.
-  - Limitation: no raw socket connections, so IMAP polling can't be tested there. Use the sample messages and the manual "paste an email" tool instead.
+    - `pr-preview-build.yml` uses the Action's read-only build workflow to run `scripts/build-release.sh` and bundle the release zip plus the Blueprint.
+    - `pr-preview-publish.yml` uses the Action's `workflow_run` publisher to upload the bundle's zip to a public `ci-artifacts` prerelease and add the button. GitHub reads this privileged workflow from `main`, so the publisher only takes effect after it is merged there. It never checks out or executes pull request code; it treats the artifact as untrusted data.
+  - The blueprint `.github/playground/blueprint.json` installs and activates the release zip, logs in as `admin`, and opens the Manual parser page. **TODO (follow-up to #22):** add anonymised parish and event sample data after the schema and migrations exist; the current blueprint does not invent or load a data structure that is not implemented yet.
+  - Limitation: no raw socket connections, so IMAP polling can't be tested there.
 - **InstaWP / TasteWP**: free temporary WordPress sites on real servers.
   - Install the CI-built zip by URL. They can reach external IMAP/SMTP, so use them to try a test mailbox end to end, with **Test mode** on (outbound email only to allow-listed addresses).
   - InstaWP can also deploy from a GitHub branch and has a per-PR GitHub Action. Its Composer step is a paid feature, so the zip is simpler.
@@ -88,10 +88,23 @@ With PHP and Composer installed:
 composer install
 composer test        # PHPUnit (tests/Unit) + prototype smoke test
 composer test:unit   # PHPUnit only
+composer test:integration # WordPress integration tests; requires npm ci and a built release zip
 ```
 
 `composer test` includes `CoreIsolationTest`, which tokenizes every PHP file under `src/Core/` and rejects WordPress function calls (`wp_*`, `esc_*`, `sanitize_*`, translation helpers such as `__()`/`_e()`, and the listed global WordPress APIs including `get_option`, `add_action`, `current_user_can`, and `dbDelta`), `WP_*` classes, WordPress constants such as `ABSPATH`/`ARRAY_A`, and WordPress globals such as `$wpdb`/`$wp`. It also catches `function_exists()` checks for those APIs. Comments and ordinary strings are ignored; PHP-native helpers such as `function_exists('mb_strtolower')` are allowed.
 
 Without a local PHP, use the Docker commands in the [development guide](development.md#local-setup-windows-no-php-install-needed). CI (`.github/workflows/ci.yml`) runs `composer validate`, a `php -l` lint and `composer test` on PHP 8.2, 8.3 and 8.4 for every PR and push to `main`.
+
+The integration suite runs against a disposable `wp-env` Docker environment and installs `dist/adct-parish-intake.zip` with WP-CLI. The raw repository checkout is not activated or used as the plugin. With Node.js/npm and Docker Desktop installed, run:
+
+```powershell
+npm ci
+docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
+npm run test:integration
+```
+
+The test runner creates and stops its own isolated `wp-env` environment. Its test-only Docker data is retained under the system temporary directory for faster local reruns; CI runners discard it with the job. `composer test` remains the unit/smoke suite and does not start WordPress. CI (`.github/workflows/ci.yml`) runs `composer validate`, a `php -l` lint and `composer test` on PHP 8.2, 8.3 and 8.4 for every PR and push to `main`, plus the WordPress integration job on PHP 8.2.
+`wp-env` is used instead of the Playground CLI for integration tests because it supplies a normal WordPress/MySQL environment and WP-CLI in Docker. That lets CI install the exact release zip and exercise the admin menu/page without browser automation.
+`wp-env` is used instead of the Playground CLI for integration tests because it supplies a normal WordPress/MySQL environment and WP-CLI in Docker. That lets CI install the exact release zip and exercise the admin menu/page without browser automation.
 
 A `composer test:fixtures` command for the fixture corpus score report will be added with the fixture work.

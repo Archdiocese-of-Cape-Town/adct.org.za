@@ -1,0 +1,10 @@
+{
+  "name": "adct-parish-intake-test-harness",
+  "private": true,
+  "scripts": {
+    "test:integration": "node scripts/test-integration.mjs"
+  },
+  "devDependencies": {
+    "@wordpress/env": "10.17.0"
+  }
+}

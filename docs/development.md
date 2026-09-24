@@ -20,11 +20,16 @@ docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c "vendor/bin/phpunit &
 
 # Lint every PHP file
 docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c 'find src tests adct-parish-intake.php -name "*.php" -print0 | xargs -0 -n1 php -l > /dev/null && echo lint-ok'
+
+# WordPress integration tests (requires Node.js/npm and Docker Desktop)
+npm ci
+docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
+npm run test:integration
 ```
 
-These commands were checked on 2026-09-24: the smoke test passes, lint is clean, and PHPUnit 11 runs on `php:8.2-cli` with the platform pin. Use **PHPUnit 11** (PHPUnit 12 needs PHP 8.3).
+These commands were checked on 2026-09-24: the smoke test passes, lint is clean, and PHPUnit 11 runs on `php:8.2-cli` with the platform pin. Use **PHPUnit 11** (PHPUnit 12 needs PHP 8.3). The integration command starts a dedicated `wp-env` Docker environment, installs the built zip with WP-CLI, runs the public-behaviour checks through WP-CLI, and stops that environment; it never activates the raw checkout. It retains only its disposable Docker data under the system temporary directory for faster local reruns.
 
-GitHub Actions (added in [#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17)) runs the same tests on PHP 8.2, 8.3 and 8.4 for every PR. CI is the final judge.
+GitHub Actions (added in [#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17)) runs the unit tests on PHP 8.2, 8.3 and 8.4 and the WordPress integration suite on PHP 8.2 for every PR. CI is the final judge.
 
 ## Build the release zip
 
@@ -57,6 +62,8 @@ docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scr
 | `src/WordPress/Autoloader.php` | Small PSR-4 source loader included in the release zip, where Composer's development autoloader is not shipped |
 | `tests/parser_smoke_test.php` | Prototype smoke test; keep it until its cases are ported to PHPUnit with equal or stronger assertions ([#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17)). |
 | `tests/Unit/Architecture/CoreIsolationTest.php` | Token-based check that keeps WordPress APIs out of `src/Core/` |
+| `tests/Integration/` | WordPress PHPUnit tests against the plugin installed from the release zip; separate from `composer test`. |
+| `.wp-env.json` | Isolated wp-env configuration that exposes the built zip and integration tests without mapping/activating the raw plugin checkout. |
 | `data/seed/` | Deaneries and parishes CSVs for the directory import and preview sample data |
 | `docs/` | Design, decisions (ADRs), backlog, testing |
 
@@ -76,7 +83,7 @@ docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scr
 ## Definition of done (per PR)
 
 - Acceptance criteria of the issue met, and ticked in the PR description.
-- Tests added or updated; the full suite passes locally (Docker) and in CI on PHP 8.2–8.4.
+- Tests added or updated; unit tests pass in CI on PHP 8.2–8.4 and the separate WordPress integration job passes on PHP 8.2 using the built zip.
 - No new WordPress calls in the core; lint clean.
 - Docs updated where affected; no personal data or secrets in the diff.
 - The plugin still activates and the existing **Parish Intake → Manual parser** screen still works (check in the Playground preview once #27 is in).

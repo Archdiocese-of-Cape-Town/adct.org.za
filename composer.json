@@ -40,10 +40,12 @@
             "phpunit",
             "@php tests/parser_smoke_test.php"
         ],
-        "test:unit": "phpunit --testsuite unit"
+        "test:unit": "phpunit --testsuite unit",
+        "test:integration": "npm run test:integration"
     },
     "scripts-descriptions": {
         "test": "Run the PHPUnit suite and the prototype smoke test.",
-        "test:unit": "Run only the unit test suite."
+        "test:unit": "Run only the unit test suite.",
+        "test:integration": "Run WordPress integration tests against the built release zip."
     }
 }

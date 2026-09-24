@@ -2,6 +2,7 @@ name: Build plugin package
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   push:
     tags:
       - 'v*'
@@ -15,7 +16,20 @@ concurrency:
 
 jobs:
   build:
-    name: Build and validate zip
+    name: Build Playground artifact
+    if: ${{ github.event_name == 'pull_request' }}
+    uses: WordPress/action-wp-playground-pr-preview/.github/workflows/preview-build.yml@v4
+    with:
+      artifacts: parish-intake=dist/adct-parish-intake.zip
+      php-version: '8.2'
+      build-command: |
+        set -euo pipefail
+        sh scripts/build-release.sh
+      blueprint-from-build: .github/playground/blueprint.json
+
+  tag-build:
+    name: Build release zip
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -41,7 +55,7 @@ jobs:
   release:
     name: Attach zip to GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: tag-build
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -41,3 +41,29 @@ jobs:
 
       - name: Run tests
         run: composer test
+
+  wordpress-integration:
+    name: WordPress integration (PHP 8.2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+          tools: composer:v2
+
+      - name: Install wp-env
+        run: npm ci
+
+      - name: Build the installable plugin zip
+        run: sh scripts/build-release.sh
+
+      - name: Run WordPress integration tests
+        run: composer test:integration
