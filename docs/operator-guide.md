@@ -11,6 +11,7 @@ You need a WordPress administrator account that is allowed to install plugins. U
 3. Choose `adct-parish-intake.zip`, then select **Install Now**.
 4. When WordPress says the installation is complete, select **Activate Plugin**.
 5. Return to **Plugins → Installed Plugins** and check that **ADCT Parish Intake** is marked **Active**.
+6. Open **Parish Intake → Manual parser** and check that the page loads.
 
 ### Upgrade an existing installation
 
@@ -19,5 +20,6 @@ You need a WordPress administrator account that is allowed to install plugins. U
 3. In WordPress, open **Plugins → Add New** (sometimes labelled **Add New Plugin**) and select **Upload Plugin**. Choose the zip and select **Install Now**.
 4. If WordPress asks what to do with the existing plugin, select **Replace current with uploaded**.
 5. Return to **Plugins → Installed Plugins** and check that **ADCT Parish Intake** is marked **Active**. If WordPress asks you to activate it, select **Activate**.
+6. Open **Parish Intake → Manual parser** and check that the page loads.
 
 The upload replaces the plugin files; it is not an instruction to delete the plugin from the Installed Plugins page. If WordPress reports an error or the plugin is no longer active, stop and contact the person who looks after the website rather than deleting files manually.
