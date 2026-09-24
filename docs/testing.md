@@ -104,7 +104,7 @@ npm run test:integration
 ```
 
 The test runner creates and stops its own isolated `wp-env` environment. Its test-only Docker data is retained under the system temporary directory for faster local reruns; CI runners discard it with the job. `composer test` remains the unit/smoke suite and does not start WordPress. CI (`.github/workflows/ci.yml`) runs `composer validate`, a `php -l` lint and `composer test` on PHP 8.2, 8.3 and 8.4 for every PR and push to `main`, plus the WordPress integration job on PHP 8.2.
-`wp-env` is used instead of the Playground CLI for integration tests because it supplies a normal WordPress/MySQL environment and WP-CLI in Docker. That lets CI install the exact release zip and exercise the admin menu/page without browser automation.
+
 `wp-env` is used instead of the Playground CLI for integration tests because it supplies a normal WordPress/MySQL environment and WP-CLI in Docker. That lets CI install the exact release zip and exercise the admin menu/page without browser automation.
 
 A `composer test:fixtures` command for the fixture corpus score report will be added with the fixture work.

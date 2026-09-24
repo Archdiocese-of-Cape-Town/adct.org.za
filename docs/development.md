@@ -62,7 +62,7 @@ docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scr
 | `src/WordPress/Autoloader.php` | Small PSR-4 source loader included in the release zip, where Composer's development autoloader is not shipped |
 | `tests/parser_smoke_test.php` | Prototype smoke test; keep it until its cases are ported to PHPUnit with equal or stronger assertions ([#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17)). |
 | `tests/Unit/Architecture/CoreIsolationTest.php` | Token-based check that keeps WordPress APIs out of `src/Core/` |
-| `tests/Integration/` | WordPress PHPUnit tests against the plugin installed from the release zip; separate from `composer test`. |
+| `tests/Integration/` | WP-CLI integration checks against the plugin installed from the release zip; separate from `composer test`. |
 | `.wp-env.json` | Isolated wp-env configuration that exposes the built zip and integration tests without mapping/activating the raw plugin checkout. |
 | `data/seed/` | Deaneries and parishes CSVs for the directory import and preview sample data |
 | `docs/` | Design, decisions (ADRs), backlog, testing |
