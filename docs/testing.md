@@ -59,6 +59,7 @@ Real samples reviewed so far, and what they taught us, are in [parser findings](
 
 All of these use the **same zip that CI builds**. The plugin bundles prefixed Composer dependencies, so the raw repository folder can't be installed directly.
 
+- `.github/workflows/pr-preview-build.yml` builds `adct-parish-intake.zip` on every PR and `v*` tag. Before uploading the artifact, it verifies the archive layout and excluded paths, lints all packaged PHP files, and loads the plugin bootstrap under plain PHP.
 - **WordPress Playground PR previews** (`playground.wordpress.net`): free, no account, runs WordPress in the browser.
   - The official [`WordPress/action-wp-playground-pr-preview`](https://github.com/WordPress/action-wp-playground-pr-preview) Action adds a **"Preview in WordPress Playground"** button to every PR. It uses two workflows:
     - `pr-preview-build.yml` builds the zip.

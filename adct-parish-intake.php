@@ -10,6 +10,7 @@ if (! defined('ABSPATH')) {
     exit;
 }
 
+require_once __DIR__ . '/vendor-prefixed/autoload.php';
 require_once __DIR__ . '/src/Autoloader.php';
 
 ADCT\ParishIntake\Autoloader::register();

@@ -24,6 +24,16 @@
         },
         "sort-packages": true
     },
+    "extra": {
+        "strauss": {
+            "target_directory": "vendor-prefixed",
+            "namespace_prefix": "ADCT\\ParishIntake\\Dependencies\\",
+            "classmap_prefix": "ADCT_ParishIntake_Dependencies_",
+            "constant_prefix": "ADCT_PI_DEP_",
+            "classmap_output": true,
+            "exclude_git_files": true
+        }
+    },
     "scripts": {
         "test": [
             "phpunit",

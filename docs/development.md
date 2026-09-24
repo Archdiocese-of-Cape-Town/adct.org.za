@@ -26,6 +26,24 @@ These commands were checked on 2026-09-24: the smoke test passes, lint is clean,
 
 GitHub Actions (added in [#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17)) runs the same tests on PHP 8.2, 8.3 and 8.4 for every PR. CI is the final judge.
 
+## Build the release zip
+
+Build the installable package from the repository root in PowerShell:
+
+```powershell
+docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
+```
+
+This creates `dist/adct-parish-intake.zip`. The script installs production dependencies with `composer install --no-dev`, prefixes them with the pinned Strauss release into `vendor-prefixed/`, then packages only the plugin bootstrap, `src/`, and the prefixed runtime dependencies. Strauss is used instead of PHP-Scoper because it directly copies Composer dependencies into one prefixed directory and generates the autoloader the plugin uses. The current plugin does not read `data/seed/` at runtime, so seed data is not shipped.
+
+The build validates the zip by unpacking it, checking its contents, linting every packaged PHP file, and loading the plugin bootstrap under plain PHP. CI runs this same build on every PR and `v*` tag; PRs receive an `adct-parish-intake.zip` artifact.
+
+Release tags must match the plugin header version exactly after removing the leading `v`. The build fails on a mismatch; it never edits the plugin header. To exercise that check locally without creating a tag or release:
+
+```powershell
+docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
+```
+
 ## Where things are
 
 | Path | What |
