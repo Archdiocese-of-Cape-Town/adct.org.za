@@ -68,7 +68,22 @@ This review compares the first generated backlog (`docs/parish-intake-project-ba
 
 - Stay with a WordPress plugin on xneelo shared hosting.
 - Use an xneelo IMAP mailbox for intake. Access goes through an adapter, so another provider (such as Outlook.com, which needs OAuth2) can be added later.
-- A known parish sender who confirms publishes immediately. Unknown senders need an admin to approve.
+- A known parish sender who confirms publishes immediately. Unknown senders need an admin to approve. *(Revised; see below.)*
 - Parsing is English only.
 - Publish to a new WordPress events page with filters and an ICS feed. The existing Google Calendar becomes an input.
 - No opt-out feature; outgoing emails include contact details.
+
+## Revisions after review (2026-09-24)
+
+- **Approval:** every new event now needs approval. The submitter confirms, then the parish's dean or any archdiocese reviewer approves.
+  - Both queues get the item at once, and the first to act wins.
+  - Self-approval is allowed.
+  - A verified contact's changes to published events go live immediately, with a change notice and one-click revert.
+  - See [ADR 0008](../decisions/0008-approval-by-dean-or-archdiocese-reviewer.md). New issues: #68, #69, #70, #71, #72.
+- **Database:** the plugin uses the site's existing WordPress MySQL database (MariaDB 10.11 on xneelo, which is MySQL-compatible) and only portable SQL.
+- **Testing and staging:**
+  - No permanent staging site.
+  - Every PR gets a WordPress Playground preview button built from the CI zip.
+  - InstaWP/TasteWP use the same zip for real mail tests.
+  - A temporary xneelo staging instance is used once, as the final check before launch.
+  - See [ADR 0009](../decisions/0009-preview-and-test-environments.md).

@@ -12,10 +12,26 @@ Tests protect the project from breaking as more people and sessions work on it.
 | 2. Parser fixtures ("golden" tests) | Anonymised real parish emails (`tests/fixtures/emails/*.eml`) with expected output (`*.expected.json`). | GitHub Actions + locally | Every push / PR |
 | 3. WordPress integration | Plugin activation, migrations, post type, roles/capabilities, token pages, ICS output, REST filters. | GitHub Actions using `wp-env` (Docker) or WordPress Playground CLI | Every PR |
 | 4. IMAP integration | Polling, duplicate prevention, checkpoints, folder moves, retention, against a throwaway IMAP server (GreenMail in a Docker service container). | GitHub Actions | Every PR touching ingestion |
-| 5. Manual preview | Click-through of admin/portal/public UI. | WordPress Playground, TasteWP, InstaWP | As needed |
-| 6. Staging | Real xneelo PHP/cron/mail limits with a test mailbox. | `staging.adct.org.za` | Before every release |
+| 5. Manual preview | Click-through of admin/portal/approver/public UI. | WordPress Playground **PR preview button** (every PR); InstaWP / TasteWP with the CI-built zip for real mail | Every PR (Playground); as needed (InstaWP/TasteWP) |
+| 6. Pre-launch check | Real xneelo PHP/cron/mail limits with a test mailbox. | A **temporary** staging instance on xneelo, removed afterwards (no permanent staging) | Once before launch; optionally before big releases |
 
 The CI matrix runs PHP **8.2** (production), **8.3** and **8.4**.
+
+See [ADR 0009](decisions/0009-preview-and-test-environments.md) for why previews and test sites are set up this way.
+
+## Approval flow test cases
+
+The approval rules ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md)) are covered by unit tests in the core and integration tests in WordPress:
+- A new event from a verified contact doesn't publish after confirmation alone. It goes to `awaiting_approval`.
+- An awaiting item is visible to the parish's deanery approvers **and** to archdiocese reviewers, and not to approvers of other deaneries.
+- First to act wins: two approvals (or an approve and a reject) for the same item leave exactly one decision. The second action gets "already decided".
+- Self-approval: a dean submitting for a parish in their deanery, or a reviewer submitting anything, publishes on confirmation with `approved_via = self`.
+- A dean submitting for a parish **outside** their deanery still needs approval.
+- A change or cancellation by a verified contact to a published event publishes immediately, writes `event_changes`, and notifies approvers. Revert restores the previous version.
+- A change from an unknown sender or a monitored source needs approval.
+- A group without a deanery goes to reviewers only.
+- Approver digest mode sends one daily email instead of one per item. Reminders respect the on/off switches.
+- Approve/reject links: a GET never changes state, and tokens are single-use and expire.
 
 ## Parser fixture corpus
 
@@ -27,15 +43,27 @@ The CI matrix runs PHP **8.2** (production), **8.3** and **8.4**.
 
 ## Manual preview options
 
-- **WordPress Playground** (`playground.wordpress.net`): free, no account, runs WordPress in the browser. A blueprint in `.github/playground/blueprint.json` can install the latest release zip and sample data, so a PR can include a "Preview in Playground" link. Limitation: no raw socket connections, so IMAP polling can't be tested there. Use the manual parser and sample data instead.
-- **TasteWP / InstaWP**: free temporary WordPress sites on real servers. Upload the release zip. They can reach external IMAP/SMTP, so they're useful for trying a test mailbox end-to-end. Sites expire, so don't keep anything important there, and use only a **test** mailbox with a throwaway password.
+All of these use the **same zip that CI builds**. The plugin bundles prefixed Composer dependencies, so the raw repository folder can't be installed directly.
+
+- **WordPress Playground PR previews** (`playground.wordpress.net`): free, no account, runs WordPress in the browser.
+  - The official [`WordPress/action-wp-playground-pr-preview`](https://github.com/WordPress/action-wp-playground-pr-preview) Action adds a **"Preview in WordPress Playground"** button to every PR. It uses two workflows:
+    - `pr-preview-build.yml` builds the zip.
+    - `pr-preview-publish.yml` uploads it to a `ci-artifacts` prerelease and adds the button. This one must be merged to `main` before it runs.
+  - The blueprint `.github/playground/blueprint.json` loads anonymised sample parishes, deaneries, approver and contact users, and messages.
+  - Limitation: no raw socket connections, so IMAP polling can't be tested there. Use the sample messages and the manual "paste an email" tool instead.
+- **InstaWP / TasteWP**: free temporary WordPress sites on real servers.
+  - Install the CI-built zip by URL. They can reach external IMAP/SMTP, so use them to try a test mailbox end to end, with **Test mode** on (outbound email only to allow-listed addresses).
+  - InstaWP can also deploy from a GitHub branch and has a per-PR GitHub Action. Its Composer step is a paid feature, so the zip is simpler.
+  - Sites expire, so don't keep anything important there, and use only a **test** mailbox with a throwaway password.
 - **Local**: `wp-env` (needs Docker) or Local (by WP Engine) for developers.
 
-## Staging on xneelo
+## Pre-launch check on a temporary staging instance
 
-- `staging.adct.org.za` with its own database, the plugin release zip, and a separate `events-test@adct.org.za` mailbox.
-- Outgoing email on staging should only go to an allow-list of test addresses (setting: "Staging mode – only send to: …").
-- Release checklist: install zip → run migrations → send test emails (single event, bulletin, poster PDF, recurring event) → confirm via the emailed links → check the events page and ICS feed → check the health dashboard.
+There is no permanent staging site. Before the first launch (and optionally before big releases):
+- Create a temporary xneelo instance (e.g. a subdomain with its own database) with the release zip and a separate test mailbox (e.g. `events-test@adct.org.za`).
+- Turn on **Test mode**, so outgoing email only goes to an allow-list of test addresses.
+- Release checklist: install zip → run migrations → send test emails (single event, bulletin, poster PDF, recurring event) → confirm via the emailed links → approve as a dean and as a reviewer → make a change as a verified contact and revert it → check the events page and ICS feed → check the health dashboard and that the real cron runs jobs within the time budget.
+- Remove the instance afterwards. Launch starts with a few pilot parishes.
 
 ## Running tests locally
 

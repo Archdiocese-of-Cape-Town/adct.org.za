@@ -8,7 +8,7 @@ Production runs on **xneelo shared hosting**, alongside the main adct.org.za Wor
 |---|---|
 | PHP | 8.2.33, 64-bit, `fpm-fcgi` |
 | curl | 8.14.1, OpenSSL 3.5.7 |
-| Database | MariaDB 10.11.19 (mysqli / mysqlnd) |
+| Database | MySQL-compatible: MariaDB 10.11.19 (mysqli / mysqlnd). This is the database the WordPress site already uses. |
 | `max_execution_time` | 90 s |
 | `memory_limit` | 256M |
 | `upload_max_filesize` / `post_max_size` | 64M / 64M |
@@ -26,16 +26,16 @@ Update this table whenever the host is upgraded.
 - **256M memory.** Large attachments are streamed to disk. Per-attachment size cap (default 15 MB). PDFs over a page limit are skipped for text extraction and flagged for manual entry.
 - **WP-Cron needs a real trigger.** Set up a konsoleH cron job every 5 minutes calling `wp-cron.php` (or WP-CLI if available) and set `define('DISABLE_WP_CRON', true);` in `wp-config.php`.
 - **Composer dependencies** are bundled into the release zip and namespace-prefixed (Strauss or PHP-Scoper) so they can't clash with other plugins.
-- **MariaDB 10.11** supports JSON columns/functions; JSON is still stored in `longtext` with `JSON_VALID` checks for `dbDelta` compatibility.
+- **Database: the site's existing MySQL database.** The plugin adds its own `wp_adct_pi_*` tables to the WordPress database through `$wpdb`, and needs no separate database. xneelo runs MariaDB 10.11, which is MySQL-compatible. Only SQL that works on both MySQL 8 and MariaDB 10.11 is used. JSON is stored in `longtext` with `JSON_VALID` checks (for `dbDelta` compatibility).
 - **Mailbox space.** Processed mail is moved to a `Processed` folder and deleted after the retention period. Raw copies needed for re-parsing are kept on disk under `wp-content/uploads/adct-parish-intake/` (protected by deny rules).
-- **Outbound mail.** `wp_mail` through xneelo SMTP (an SMTP plugin, or the plugin's own SMTP settings). Confirmation emails are low-volume (~tens per day), so they stay well within shared-host sending limits. SPF/DKIM for adct.org.za must include the sending server.
+- **Outbound mail.** `wp_mail` through xneelo SMTP (an SMTP plugin, or the plugin's own SMTP settings). Confirmation, approver and change-notice emails are low-volume (tens per day; approvers can switch to a daily digest), so they stay well within shared-host sending limits. SPF/DKIM for adct.org.za must include the sending server.
 
 ## Still to confirm (Phase 0 hosting spike)
 
 - Is a konsoleH cron job available for this site, and at what minimum interval?
 - Is WP-CLI available over SSH?
 - Outbound SMTP rate limits per hour/day.
-- Can a staging subdomain (`staging.adct.org.za`) with its own database and a test mailbox be created?
+- Can a **temporary** staging instance (e.g. a subdomain with its own database and a test mailbox) be set up for the one-off pre-launch check, and removed afterwards? No permanent staging site is planned ([ADR 0009](decisions/0009-preview-and-test-environments.md)).
 - Are outbound HTTPS calls to external APIs (OpenRouter, OCR.space, Google ICS) allowed? (curl is present, so this is expected to work.)
 
 ## Other mailbox providers

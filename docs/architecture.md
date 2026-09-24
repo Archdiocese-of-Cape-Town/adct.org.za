@@ -7,7 +7,7 @@ The parish intake system is a single WordPress plugin (`adct-parish-intake`) run
 - Mostly **non-technical operators**: no extra servers, no daemons, no command line needed day to day.
 - **Runs within shared-hosting limits** (see [hosting environment](hosting-environment.md)).
 - **Offline first**: deterministic parsing by default; AI and OCR are optional plug-ins that always fall back.
-- **Human in the loop at low cost**: the submitter confirms their own events by email; admins only handle exceptions.
+- **Human in the loop at low cost**: the submitter confirms their own events by email, then a dean or an archdiocese reviewer approves them, straight from an email if they like.
 - **Testable**: the domain core runs without WordPress.
 
 ## High-level flow
@@ -28,8 +28,8 @@ flowchart LR
         X[Text extraction<br/>PDF / optional OCR]
         PA[Parsing pipeline<br/>rules → gazetteer → recurrence → score → optional AI]
         C[(Event candidates)]
-        T{Trust &<br/>confirmation}
-        Q[Admin review queue]
+        T{Submitter<br/>confirmation}
+        Q[Approval queues<br/>dean + archdiocese reviewers<br/>first to act wins]
         EV[(adct_event posts<br/>+ occurrences)]
         MON[Monitoring & reminders]
     end
@@ -37,14 +37,17 @@ flowchart LR
     subgraph Outputs
         W[Public events page<br/>near me / type / date]
         F[ICS feed]
-        N[Emails: confirmation,<br/>reminders, alerts]
+        N[Emails: confirmation, approval,<br/>change notices, reminders, alerts]
     end
 
     E & G & P & S --> I --> R --> X --> PA --> C --> T
     M --> C
-    T -- known sender confirms --> EV
-    T -- unknown / low confidence / secondary --> Q --> EV
-    T --> N
+    T -- confirmed --> Q
+    T -- submitter is an approver --> EV
+    Q -- approved --> EV
+    C -- change by verified contact --> EV
+    EV -- change notice --> N
+    T & Q --> N
     EV --> W & F
     I --> MON --> N
 ```
@@ -56,15 +59,17 @@ Pure PHP 8.2, covered by unit tests:
 - `Parsing` – the stage pipeline (normalise → split into blocks → rule extraction → gazetteer lookup → date/time → recurrence → classification → confidence → optional AI).
 - `Recurrence` – RRULE model and expansion of upcoming occurrences (Africa/Johannesburg).
 - `Matching` – duplicate/update detection between candidates and existing events.
-- `Trust` – decides the next step for a candidate (auto-publish after confirmation, admin review, ignore).
+- `Trust` – decides the next step for a candidate: send for confirmation, route to the approval queues, publish (self-approval or a verified contact's change to a published event), or ignore.
+- `Approval` – parallel dean/reviewer queues, atomic "first to act wins", self-approval, reminders.
 - `Mail` – MIME parsing into `Message` + `Attachment`, auto-reply/bounce detection.
 - `Tokens` – signed, single-use action tokens.
 
 The core talks to the outside through interfaces (ports): `MailboxInterface`, `ClockInterface`, `EventRepositoryInterface`, `AiProviderInterface`, `OcrProviderInterface`, `MailerInterface`.
 
 ### 2. WordPress adapters (`src/WordPress/…`)
-- Repositories using `$wpdb` (custom tables) and the `adct_event` post type.
-- Admin screens (dashboard, review queue, parishes, sources, settings, health).
+- Repositories using `$wpdb` (custom tables in the site's existing WordPress MySQL database) and the `adct_event` post type.
+- Admin screens (dashboard, review/approval queue, parishes, deaneries and approvers, sources, settings, health).
+- Front-end approver queue for deans (magic-link login, no wp-admin).
 - Public views: shortcode/block for the events page, single event template, ICS endpoint, REST endpoints for filtering.
 - Scheduled jobs via WP-Cron hooks, triggered by a real xneelo cron job.
 - `wp_mail` mailer, `wp_remote_*` HTTP client, roles and capabilities.
@@ -83,22 +88,28 @@ All jobs follow the same pattern: take a lock (transient/option with expiry), wo
 | Job | Default interval | Work |
 |---|---|---|
 | `poll_mailboxes` | every 5–10 min | Fetch new mail, store raw message + attachments, queue for parsing. |
-| `process_queue` | every 5 min | Extract text, parse, create candidates, send confirmation emails. |
+| `process_queue` | every 5 min | Extract text, parse, create candidates, send confirmation and approver emails. |
 | `poll_sources` | hourly | ICS/PDF/secondary sources, a few sources per run (oldest `last_checked_at` first). |
 | `expand_occurrences` | daily | Refresh the occurrence table for the next 12 months. |
-| `monitoring` | daily | Update source health, create reminder candidates, send reminders (if enabled). |
+| `monitoring` | daily | Update source health, create reminder candidates, send inactivity reminders, approval reminders and approver digests (each can be switched off). |
 | `retention` | daily | Delete raw messages/attachments past retention, prune tokens and logs. |
 
 A real cron job on xneelo calls `wp-cron.php` (or `wp cron event run --due-now`) every 5 minutes. `DISABLE_WP_CRON` is set so visitor traffic doesn't trigger it.
 
-## Trust and confirmation (summary)
+## Trust, confirmation and approval (summary)
 
-See [ADR 0004](decisions/0004-trust-and-confirmation-model.md).
+See [ADR 0004](decisions/0004-trust-and-confirmation-model.md) (confirmation, safe links) and [ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md) (approval).
 
-- **Known sender** (a verified address linked to a parish) → confirmation email with preview → *Approve* publishes immediately.
-- **Unknown sender** → confirmation email still sent (proves mailbox ownership) → admin review queue. The admin can link the address to a parish; the address then becomes known.
-- **Secondary/monitored source** → "we found this on X, do you want it published?" email to the parish's known contacts → approval publishes.
-- Changes: reply with changes, or click *Edit* (magic link) to edit in the portal.
+- **Every new event** goes through two steps:
+  1. The **submitter confirms** the emailed preview.
+  2. It then appears **at the same time** in the queue of the parish's **deanery approvers** (the dean) and of the **archdiocese reviewers**. The first to Approve or Reject decides.
+- Approvers get an email with the preview and Approve / Reject / Edit links, or a daily digest. Reminders go out after N days (can be switched off).
+- **Self-approval:** if the submitter is an approver for that parish, their confirmation publishes directly.
+- **Known sender** (a verified address linked to a parish): parish and venue are filled in automatically. Their **changes and cancellations to published events publish immediately**, and approvers get a change notice with Revert / Unpublish.
+- **Unknown sender:** same two steps. Approvers see an "unknown sender" warning and can link the address to a parish, which makes it known.
+- **Secondary/monitored source:** a "we found this on X, do you want it published?" email goes to the parish's known contacts. Their "yes" counts as the confirmation, and approval follows.
+- **Groups without a deanery** go to archdiocese reviewers only.
+- To change an event, reply with the changes, or click *Edit* (magic link) and edit it in the portal.
 
 ## Parish self-service
 

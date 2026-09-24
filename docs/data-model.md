@@ -1,6 +1,6 @@
 # Data model
 
-All custom tables use the WordPress table prefix (shown as `wp_` here) and the `adct_pi_` namespace. Every table has `created_at` / `updated_at` (UTC). Local-time values are stored with the timezone `Africa/Johannesburg`. Schema changes go through versioned migrations (a `adct_pi_db_version` option plus `dbDelta`).
+All custom tables live in the **site's existing WordPress database** (MySQL; on xneelo this is MariaDB 10.11, a MySQL-compatible server). No separate database is needed. SQL must work on both MySQL 8 and MariaDB 10.11: no engine-specific features, and JSON is stored in `longtext`. Tables use the WordPress table prefix (shown as `wp_` here) and the `adct_pi_` namespace. Every table has `created_at` / `updated_at` (UTC). Local-time values are stored with the timezone `Africa/Johannesburg`. Schema changes go through versioned migrations (a `adct_pi_db_version` option plus `dbDelta`).
 
 The prototype table `wp_adct_parish_intake_items` is replaced. Its rows can be migrated into `inbound_messages` + `event_candidates`, or dropped if they are only test data.
 
@@ -8,6 +8,8 @@ The prototype table `wp_adct_parish_intake_items` is replaced. Its rows can be m
 
 ```mermaid
 erDiagram
+    DEANERY ||--o{ PARISH : groups
+    DEANERY ||--o{ DEANERY_APPROVER : "approved by"
     PARISH ||--o{ PARISH_CONTACT : has
     PARISH ||--o{ SOURCE : has
     PARISH ||--o{ VENUE : has
@@ -16,11 +18,33 @@ erDiagram
     INBOUND_MESSAGE ||--o{ EVENT_CANDIDATE : "parsed into (1..n)"
     EVENT_CANDIDATE }o--o| EVENT : "creates / updates"
     EVENT ||--o{ OCCURRENCE : expands
-    EVENT_CANDIDATE ||--o{ ACTION_TOKEN : "approve / deny / edit"
+    EVENT ||--o{ EVENT_CHANGE : "history"
+    EVENT_CANDIDATE ||--o{ ACTION_TOKEN : "confirm / approve / edit"
     PARISH ||--o{ FOLLOW_UP : reminders
 ```
 
 ## Tables
+
+### `adct_pi_deaneries`
+| Column | Notes |
+|---|---|
+| id | PK |
+| name, slug | e.g. "Southern Suburbs Deanery" |
+| status | `active`, `inactive` |
+
+### `adct_pi_deanery_approvers`
+| Column | Notes |
+|---|---|
+| id | PK |
+| deanery_id | FK |
+| wp_user_id | WordPress user with the `deanery_approver` role |
+| email | where approval emails go |
+| label | e.g. "Dean", "Assistant" |
+| notify_mode | `each` (email per item, default) or `digest` (daily) |
+| reminders_enabled | bool |
+| active | bool; a deanery can have several active approvers |
+
+Archdiocese reviewers aren't listed here. They are WordPress users with the `adct_pi_review` capability and approve anything.
 
 ### `adct_pi_parishes`
 | Column | Notes |
@@ -28,7 +52,7 @@ erDiagram
 | id | PK |
 | name, slug | e.g. "St Mary's, Woodstock" |
 | kind | `parish`, `mission`, `group`, `archdiocese`, `school`, `other` |
-| deanery | optional |
+| deanery_id | FK → deaneries; null for groups/offices without a deanery (their events go to archdiocese reviewers only) |
 | address, suburb | |
 | latitude, longitude | decimal(9,6); used for "near me" |
 | website, phone | |
@@ -54,7 +78,7 @@ Named places for a parish (church, hall, outstation), each with its own address 
 | last_seen_at | last message received from this address |
 | receives_reminders | bool |
 
-Learning rule: when an unknown address submits, a `pending` row is created with a best-guess parish (from the parser/gazetteer). An admin confirms the link and it becomes `verified`.
+Learning rule: when an unknown address submits, a `pending` row is created with a best-guess parish (from the parser/gazetteer). An approver or admin confirms the link, and the contact becomes `verified`. Being verified fills in parish/venue automatically and lets the contact change published events instantly. It does **not** skip approval for new events ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md)).
 
 ### `adct_pi_sources`
 | Column | Notes |
@@ -104,7 +128,10 @@ message_id, filename, mime_type, size_bytes, storage_path, content_hash, `extrac
 | ai_used, ai_provider, ai_model | provenance |
 | match_event_id, match_kind | `new`, `update`, `duplicate`, `cancellation` |
 | status | see state machine |
-| decided_by, decided_at, decision_note | audit |
+| confirmed_by, confirmed_at | submitter confirmation (email or user) |
+| approved_by, approved_at | approver (user id or email) |
+| approved_via | `dean`, `reviewer`, `self`, `contact_change` (instant change to a published event) |
+| decided_by, decided_at, decision_note | audit (reject/other decisions) |
 
 ### `adct_event` (WordPress custom post type)
 Post title/content hold the public text. Post meta holds: `parish_id`, `venue_id`, `start_local`, `end_local`, `all_day`, `rrule`, `exdates` (JSON), `rdates`, `featured`, `status_flag` (`scheduled`, `cancelled`, `postponed`), `source_candidate_id`, `contact`. Taxonomy: `adct_event_type`.
@@ -114,11 +141,14 @@ A post type (rather than only custom tables) gives WordPress revisions, search, 
 ### `adct_pi_occurrences`
 event_id, start_utc, end_utc, start_local_date, parish_id, event_type_term_id, latitude, longitude, is_cancelled. It is rebuilt for an event whenever the event is saved, and refreshed daily for a rolling 12-month window. All public listing queries read from this table.
 
+### `adct_pi_event_changes`
+event_id, candidate_id (nullable), actor (user id / email), kind (`update`, `cancel`, `postpone`, `revert`, `unpublish`), before JSON, after JSON, notified_at, reverted_by, reverted_at. Every change to a published event is written here, so approvers can see what changed and **revert with one click** ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md)).
+
 ### `adct_pi_action_tokens`
-token_hash, purpose (`approve`, `deny`, `edit`, `login`, `publish_found`), subject_type/subject_id, email, expires_at, used_at, created_ip.
+token_hash, purpose (`confirm`, `deny`, `edit`, `login`, `publish_found`, `approve_event`, `reject_event`, `revert_change`), subject_type/subject_id, email, expires_at, used_at, created_ip.
 
 ### `adct_pi_follow_ups`
-parish_id, kind (`inactivity_reminder`, `found_on_secondary`, `unknown_sender`), channel, sent_at, outcome, note.
+parish_id, kind (`inactivity_reminder`, `found_on_secondary`, `unknown_sender`, `approval_reminder`), channel, sent_at, outcome, note.
 
 ### `adct_pi_audit_log`
 actor (user id / email / `system`), action, subject_type, subject_id, details JSON, created_at.
@@ -142,17 +172,20 @@ stateDiagram-v2
 stateDiagram-v2
     [*] --> draft
     draft --> awaiting_submitter: confirmation email sent
-    draft --> awaiting_admin: unknown sender with no reply-to, or confirmations disabled
-    awaiting_submitter --> published: approved by known sender
-    awaiting_submitter --> awaiting_admin: approved by unknown sender
-    awaiting_submitter --> rejected: denied
+    draft --> awaiting_approval: no usable reply address (auto-reply, noreply), or manual entry by an admin
+    draft --> published: change to a published event by a verified contact (instant, approvers notified)
+    awaiting_submitter --> awaiting_approval: submitter confirms
+    awaiting_submitter --> published: submitter is an approver for this parish (self-approval)
+    awaiting_submitter --> rejected: submitter denies
     awaiting_submitter --> expired: no response in N days
-    expired --> awaiting_admin: if configured
-    awaiting_admin --> published: admin approves
-    awaiting_admin --> rejected: admin rejects
+    expired --> awaiting_approval: if configured
+    awaiting_approval --> published: dean or reviewer approves (first to act wins)
+    awaiting_approval --> rejected: dean or reviewer rejects
     draft --> duplicate: matches existing event, no changes
     published --> superseded: a newer candidate updated the event
 ```
+
+`awaiting_approval` items appear in the queue of every active approver of the parish's deanery **and** in the archdiocese reviewers' queue. The move out of `awaiting_approval` is a single conditional update (`… SET status = 'published' WHERE id = ? AND status = 'awaiting_approval'`), so only the first approver's action takes effect. Later clicks show "already decided by …".
 
 ### Published event
 `scheduled` → `cancelled` / `postponed` (still visible, clearly marked) → the event is trashed only by an admin. Past events stay visible in an archive view.
@@ -161,5 +194,6 @@ stateDiagram-v2
 
 - Raw `.eml` files and attachments: default **12 months** after receipt (configurable), then deleted. Extracted candidates and published events stay.
 - Action tokens: deleted 30 days after expiry.
+- Event change history (`event_changes`): kept while the event exists, then deleted with it.
 - Audit log: 24 months.
 - Outgoing emails show the archdiocese's contact details for questions about personal information.
