@@ -2,13 +2,19 @@
 
 namespace ADCT\ParishIntake\WordPress;
 
+use ADCT\ParishIntake\Core\Database\CreateSchemaMigration;
+use ADCT\ParishIntake\Core\Database\MigrationRunner;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\WordPress\Admin\ParserPage;
 use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
+use ADCT\ParishIntake\WordPress\Database\DbDeltaSchemaInstaller;
 use ADCT\ParishIntake\WordPress\Database\Schema;
+use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
+use ADCT\ParishIntake\WordPress\Database\WordPressMigrationLogger;
+use ADCT\ParishIntake\WordPress\Database\WordPressMigrationVersionStore;
 use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
 use ADCT\ParishIntake\WordPress\Http\WordPressHttpClient;
 
@@ -58,6 +64,28 @@ final class Plugin
         add_option('adct_parish_intake_ai_threshold', '0.55');
 
         (new Schema())->install();
+        self::createMigrationRunner()->run();
+    }
+
+    public function maybeRunDatabaseMigrations(): void
+    {
+        self::createMigrationRunner()->run();
+    }
+
+    public function renderMigrationNotice(): void
+    {
+        if (! function_exists('current_user_can') || ! current_user_can('manage_options')) {
+            return;
+        }
+
+        $message = get_option('adct_pi_db_migration_error', '');
+
+        if (! is_string($message) || $message === '') {
+            return;
+        }
+        ?>
+        <div class="notice notice-error"><p><?php echo esc_html($message); ?></p></div>
+        <?php
     }
 
     private function registerHooks(): void
@@ -67,7 +95,20 @@ final class Plugin
         }
 
         add_action('admin_menu', [$this->parserPage, 'registerMenu']);
+        add_action('admin_init', [$this, 'maybeRunDatabaseMigrations'], 5);
         add_action('admin_init', [$this->parserPage, 'maybeHandleSettings']);
+        add_action('admin_notices', [$this, 'renderMigrationNotice']);
+    }
+
+    private static function createMigrationRunner(): MigrationRunner
+    {
+        $database = new WordPressDatabaseConnection();
+
+        return new MigrationRunner(
+            [new CreateSchemaMigration(new DbDeltaSchemaInstaller($database))],
+            new WordPressMigrationVersionStore(),
+            new WordPressMigrationLogger()
+        );
     }
 
     public function makeAiProvider(): AiProviderInterface
