@@ -49,6 +49,14 @@ final class ConfidenceScoringStage implements StageInterface
             $score -= 0.15;
         }
 
+        if ($result->hasDateWeekdayMismatch()) {
+            $score -= 0.15;
+        }
+
+        if ($result->hasRangeEndBeforeStart()) {
+            $score -= 0.15;
+        }
+
         $score = max(0.0, min(1.0, $score));
         $result->setConfidence($score);
         $result->setNeedsReprocess($result->needsReprocess() || $score < 0.45);
