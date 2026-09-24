@@ -69,7 +69,10 @@ body:
         - label: Parsing
         - label: Admin UI
         - label: Publishing
+        - label: Notifications
+        - label: Auth
         - label: Operations
+        - label: Testing/CI
     validations:
       required: true
   - type: textarea

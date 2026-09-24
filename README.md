@@ -20,18 +20,26 @@ AI is disabled by default. If enabled in the admin screen, OpenRouter can be use
 
 Automated inbox polling and mailbox connection settings are not part of this prototype yet. The current workflow is to configure AI fallback in **Parish Intake → Settings** and test messages manually in **Parish Intake → Manual parser**.
 
+### Roadmap and design
+
+The plan is to grow this prototype into an email-first intake loop: parishes email `events@adct.org.za`, confirm a preview of their events by email, and approved events appear on a filterable public events page and ICS feed. See [`docs/`](docs/README.md), especially:
+
+- [Backlog and phases](docs/parish-intake-project-backlog.md)
+- [Architecture](docs/architecture.md) and [data model](docs/data-model.md)
+- [Decisions (ADRs)](docs/decisions/README.md)
+
 ### Project coordination
 
 Use GitHub Issues plus a GitHub Project to coordinate work across sessions. Repository-side scaffolding for this lives in:
 
-- `/home/runner/work/adct.org.za/adct.org.za/.github/ISSUE_TEMPLATE/epic.yml`
-- `/home/runner/work/adct.org.za/adct.org.za/.github/ISSUE_TEMPLATE/work-item.yml`
-- `/home/runner/work/adct.org.za/adct.org.za/docs/parish-intake-project-backlog.md`
+- [`.github/ISSUE_TEMPLATE/epic.yml`](.github/ISSUE_TEMPLATE/epic.yml)
+- [`.github/ISSUE_TEMPLATE/work-item.yml`](.github/ISSUE_TEMPLATE/work-item.yml)
+- [`docs/parish-intake-project-backlog.md`](docs/parish-intake-project-backlog.md)
 
 ### Validation
 
-A simple smoke test is available:
+A simple smoke test is available (see [`docs/testing.md`](docs/testing.md) for the planned test layers):
 
 ```bash
-php /home/runner/work/adct.org.za/adct.org.za/tests/parser_smoke_test.php
+php tests/parser_smoke_test.php
 ```
