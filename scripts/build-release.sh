@@ -2,6 +2,8 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+STRAUSS_VERSION=0.30.0
+STRAUSS_SHA256=08c1a8e553594745c22294e158129005fd11ed09ed452d7d4f48566f38c66c96
 cd "$ROOT_DIR"
 
 ZIP_PATH=${1:-"$ROOT_DIR/dist/adct-parish-intake.zip"}
@@ -49,8 +51,12 @@ composer install --no-dev --no-interaction --no-progress --prefer-dist --optimiz
 
 strauss_phar="$temp_dir/strauss.phar"
 curl --fail --location --silent --show-error \
-    https://github.com/BrianHenryIE/strauss/releases/download/0.30.0/strauss.phar \
+    "https://github.com/BrianHenryIE/strauss/releases/download/$STRAUSS_VERSION/strauss.phar" \
     --output "$strauss_phar"
+if ! printf '%s  %s\n' "$STRAUSS_SHA256" "$strauss_phar" | sha256sum -c -; then
+    printf 'Strauss %s failed SHA-256 verification; refusing to execute it.\n' "$STRAUSS_VERSION" >&2
+    exit 1
+fi
 rm -rf vendor-prefixed
 php "$strauss_phar"
 
