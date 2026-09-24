@@ -63,6 +63,7 @@ final class Plugin
         $this->jobScheduler = new WordPressJobScheduler(
             [new FrameworkHeartbeatJob()],
             $jobRunner,
+            $stateStore,
             $clock
         );
         $this->scheduledJobsPage = new ScheduledJobsPage(
@@ -99,8 +100,17 @@ final class Plugin
 
     public static function deactivate(): void
     {
-        if (self::$instance instanceof self) {
+        if (! (self::$instance instanceof self)) {
+            return;
+        }
+
+        try {
             self::$instance->jobScheduler->clearScheduledEvents();
+        } catch (\Throwable $failure) {
+            error_log(
+                '[ADCT Parish Intake] Could not clear scheduled job hooks during deactivation ('
+                . get_class($failure) . ').'
+            );
         }
     }
 

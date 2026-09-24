@@ -7,6 +7,7 @@ namespace ADCT\ParishIntake\WordPress\Jobs;
 use ADCT\ParishIntake\Core\Ports\JobLockInterface;
 use DateTimeImmutable;
 use InvalidArgumentException;
+use JsonException;
 use RuntimeException;
 
 final class WordPressJobLock implements JobLockInterface
@@ -41,6 +42,11 @@ final class WordPressJobLock implements JobLockInterface
 
             $existingLock = $this->decodeLock($existingValue);
 
+            if ($existingLock === null) {
+                $this->deleteIfUnchanged($optionName, $existingValue);
+                continue;
+            }
+
             if ($existingLock['expires_at'] > $now->getTimestamp()) {
                 return null;
             }
@@ -61,6 +67,10 @@ final class WordPressJobLock implements JobLockInterface
 
         $lock = $this->decodeLock($value);
 
+        if ($lock === null) {
+            return false;
+        }
+
         return $lock['expires_at'] > $now->getTimestamp()
             && hash_equals($lock['token'], $token);
     }
@@ -75,6 +85,10 @@ final class WordPressJobLock implements JobLockInterface
         }
 
         $lock = $this->decodeLock($value);
+
+        if ($lock === null) {
+            return false;
+        }
 
         if (! hash_equals($lock['token'], $token)) {
             return false;
@@ -93,11 +107,15 @@ final class WordPressJobLock implements JobLockInterface
     }
 
     /**
-     * @return array{token: string, expires_at: int}
+     * @return array{token: string, expires_at: int}|null
      */
-    private function decodeLock(string $value): array
+    private function decodeLock(string $value): ?array
     {
-        $lock = json_decode($value, true, 512, JSON_THROW_ON_ERROR);
+        try {
+            $lock = json_decode($value, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return null;
+        }
 
         if (
             ! is_array($lock)
@@ -106,7 +124,7 @@ final class WordPressJobLock implements JobLockInterface
             || preg_match('/\A[a-f0-9]{64}\z/', $lock['token']) !== 1
             || ! is_int($lock['expires_at'])
         ) {
-            throw new RuntimeException('A stored job lock is invalid.');
+            return null;
         }
 
         return [
