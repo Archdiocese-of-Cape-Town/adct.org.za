@@ -1,8 +1,10 @@
 # Data model
 
-All custom tables live in the **site's existing WordPress database** (MySQL; on xneelo this is MariaDB 10.11, a MySQL-compatible server). No separate database is needed. SQL must work on both MySQL 8 and MariaDB 10.11: no engine-specific features, and JSON is stored in `longtext`. Tables use the WordPress table prefix (shown as `wp_` here) and the `adct_pi_` namespace. Every table has `created_at` / `updated_at` (UTC). Local-time values are stored with the timezone `Africa/Johannesburg`. Schema changes go through versioned migrations (a `adct_pi_db_version` option plus `dbDelta`).
+All custom tables live in the **site's existing WordPress database** (MySQL; on xneelo this is MariaDB 10.11, a MySQL-compatible server). No separate database is needed. SQL must work on both MySQL 8 and MariaDB 10.11: no engine-specific features, and JSON is stored in `longtext`. Tables use the WordPress table prefix (shown as `wp_` here) and the `adct_pi_` namespace. Every table has an auto-incrementing `bigint(20) unsigned` `id` and UTC `created_at` / `updated_at` columns. Local-time values are stored with the timezone `Africa/Johannesburg`. Schema changes go through ordered, versioned migrations (`adct_pi_db_version` plus `dbDelta`).
 
-The prototype table `wp_adct_parish_intake_items` is replaced. Its rows can be migrated into `inbound_messages` + `event_candidates`, or dropped if they are only test data.
+**Current schema version: 1.** It creates the 15 `adct_pi_*` tables listed below; `adct_event` remains a WordPress custom post type and is not a custom table migration. Schema v1 stores JSON in `longtext`, booleans in `tinyint(1)`, and uses indexed `varchar` columns no longer than 191 characters for utf8mb4 key limits. Relationships shown as foreign keys below are logical references; physical foreign-key constraints are intentionally not used so `dbDelta` can upgrade the schema on both supported database servers. For columns whose prose description did not specify storage types, v1 uses unsigned `bigint(20)` for WordPress and relationship IDs, `datetime` for UTC instants, and `date` for `occurrences.start_local_date`; enum-like values use `varchar` rather than database `ENUM`. `attachments.size_bytes` is unsigned `bigint(20)`, and `event_candidates.confidence` is `decimal(4,3)`. `mail_queue.subject` is `varchar(255)`, action-token `created_ip` is `varchar(45)`, and event-change snapshots use `before_payload` / `after_payload` `longtext` columns.
+
+The prototype table `wp_adct_parish_intake_items` is retained as a legacy table. Versioned migrations neither alter, drop, nor migrate it; the current Manual parser and static report continue using it unchanged. Its future disposition is pending an explicit owner decision: migrate its rows into `inbound_messages` + `event_candidates`, or drop it only after explicit admin confirmation. It must never be dropped silently.
 
 ## Entity overview
 
@@ -151,7 +153,7 @@ A post type (rather than only custom tables) gives WordPress revisions, search, 
 event_id, start_utc, end_utc, start_local_date, parish_id, event_type_term_id, latitude, longitude, is_cancelled. It is rebuilt for an event whenever the event is saved, and refreshed daily for a rolling 12-month window. All public listing queries read from this table.
 
 ### `adct_pi_event_changes`
-event_id, candidate_id (nullable), actor (user id / email), kind (`update`, `cancel`, `postpone`, `revert`, `unpublish`), before JSON, after JSON, notified_at, reverted_by, reverted_at. Every change to a published event is written here, so approvers can see what changed and **revert with one click** ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md)).
+event_id, candidate_id (nullable), actor (user id / email), kind (`update`, `cancel`, `postpone`, `revert`, `unpublish`), before_payload JSON, after_payload JSON, notified_at, reverted_by, reverted_at. The JSON snapshots are stored as `longtext`. Every change to a published event is written here, so approvers can see what changed and **revert with one click** ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md)).
 
 ### `adct_pi_action_tokens`
 token_hash, purpose (`confirm`, `deny`, `edit`, `login`, `publish_found`, `approve_event`, `reject_event`, `revert_change`), subject_type/subject_id, email, expires_at, used_at, created_ip.
@@ -163,7 +165,7 @@ parish_id, kind (`inactivity_reminder`, `found_on_secondary`, `unknown_sender`, 
 recipient, subject, body_html, body_text, priority (1 = login/confirmation, 2 = approver/change notice, 3 = reminder/digest), group_key (to bundle notices per approver), status (`queued`, `sent`, `failed`, `suppressed`), attempts, next_attempt_at, sent_at, error. The sender respects an hourly cap (default 100) because the host allows 500 emails per hour for the whole account ([ADR 0011](decisions/0011-outbound-email-queue-with-hourly-cap.md)). Sent rows are pruned after 30 days.
 
 ### `adct_pi_audit_log`
-actor (user id / email / `system`), action, subject_type, subject_id, details JSON, created_at.
+actor (user id / email / `system`), action, subject_type, subject_id, details JSON, created_at, updated_at.
 
 ## State machines
 
