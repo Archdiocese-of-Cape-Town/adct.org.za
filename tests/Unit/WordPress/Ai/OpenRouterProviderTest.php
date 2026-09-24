@@ -63,6 +63,31 @@ final class OpenRouterProviderTest extends TestCase
         self::assertSame([], $unavailableProvider->enrich($message, new ParseResult()));
         self::assertNull($unavailableClient->url);
     }
+
+    public function testSubstitutesInvalidUtf8BeforeSendingRequest(): void
+    {
+        $client = new RecordingHttpClient(null);
+        $message = new Message(
+            'email',
+            'invalid-utf8-test',
+            '',
+            '',
+            '',
+            'Parish notice ' . "\xFF" . ' continued'
+        );
+        $provider = new OpenRouterProvider('test-key', 'test/model', $client);
+
+        $provider->enrich($message, new ParseResult());
+
+        self::assertIsString($client->body);
+        self::assertSame(1, preg_match('//u', $client->body));
+        $request = json_decode($client->body, true);
+        self::assertIsArray($request);
+        self::assertSame(
+            'Parish notice ' . "\xEF\xBF\xBD" . ' continued',
+            $request['messages'][1]['content']
+        );
+    }
 }
 
 final class RecordingHttpClient implements HttpClientInterface

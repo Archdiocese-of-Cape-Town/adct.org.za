@@ -36,7 +36,7 @@ final class OpenRouterProvider implements AiProviderInterface
             return [];
         }
 
-        $requestBody = json_encode([
+        $payload = [
             'model' => $this->model,
             'response_format' => ['type' => 'json_object'],
             'messages' => [
@@ -49,7 +49,8 @@ final class OpenRouterProvider implements AiProviderInterface
                     'content' => $message->fullText(),
                 ],
             ],
-        ]);
+        ];
+        $requestBody = json_encode($payload, JSON_INVALID_UTF8_SUBSTITUTE);
 
         if ($requestBody === false) {
             return [];
