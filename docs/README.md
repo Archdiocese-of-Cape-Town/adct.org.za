@@ -4,6 +4,7 @@ Design and knowledge for the ADCT parish intake plugin.
 
 | Document | What it covers |
 |---|---|
+| [Development guide](development.md) | Local setup with Docker, rules, definition of done, first build order |
 | [Backlog and coordination guide](parish-intake-project-backlog.md) | Phases, epics, work items, how to work on issues |
 | [Architecture](architecture.md) | Components, data flow, scheduled jobs, trust model, security |
 | [Data model](data-model.md) | Tables, event post type, state machines, retention |

@@ -17,7 +17,8 @@ Production runs on **xneelo shared hosting**, alongside the main adct.org.za Wor
 | Mail | xneelo mailboxes, IMAP over TLS |
 | Cron jobs | At most **once every 2 hours**; at most **10 active cron jobs** per account |
 | WP-CLI | **Not available** |
-| Outbound email | **500 emails per hour** (or 1 email to at most 500 recipients per hour) |
+| Outbound email | **500 recipients per hour per hosting account or domain** (shared with the rest of adct.org.za) |
+| SPF / DKIM | SPF passes if the record includes `include:spf.host-h.net`. DKIM signing needs **authenticated SMTP** through xneelo; plain PHP `mail()` often isn't signed. |
 | Email size | **30 MB** per message, including attachments |
 | Outbound HTTP(S) | Allowed |
 
@@ -34,12 +35,12 @@ Update this table whenever the host is upgraded.
 - **Composer dependencies** are bundled into the release zip and namespace-prefixed (Strauss or PHP-Scoper) so they can't clash with other plugins.
 - **Database: the site's existing MySQL database.** The plugin adds its own `wp_adct_pi_*` tables to the WordPress database through `$wpdb`, and needs no separate database. xneelo runs MariaDB 10.11, which is MySQL-compatible. Only SQL that works on both MySQL 8 and MariaDB 10.11 is used. JSON is stored in `longtext` with `JSON_VALID` checks (for `dbDelta` compatibility).
 - **Mailbox space.** Processed mail is moved to a `Processed` folder and deleted after the retention period. Raw copies needed for re-parsing are kept on disk under `wp-content/uploads/adct-parish-intake/` (protected by deny rules).
-- **Outbound mail.** `wp_mail` through xneelo SMTP (an SMTP plugin, or the plugin's own SMTP settings). The 500/hour limit is most likely shared by the whole account. So all plugin mail goes through a queue with a configurable hourly cap (default 100) and priorities: login links and confirmations are sent first, reminders and digests last ([ADR 0011](decisions/0011-outbound-email-queue-with-hourly-cap.md)). Outbound emails contain no attachments. SPF/DKIM for adct.org.za must include the sending server.
+- **Outbound mail.** `wp_mail` sent through xneelo's **authenticated SMTP**, set up once for the whole site with an SMTP plugin (**FluentSMTP** recommended; free). This gives SPF and DKIM for every email the site sends, not only ours, so the parish intake plugin has **no SMTP settings of its own**. Its health dashboard warns if no SMTP plugin is set up (mail would fall back to PHP `mail()` without DKIM). Check that the adct.org.za SPF record includes `include:spf.host-h.net` and that DKIM is switched on in konsoleH. The 500/hour limit applies to the whole account or domain. So all plugin mail goes through a queue with a configurable hourly cap (default 100) and priorities: login links and confirmations are sent first, reminders and digests last ([ADR 0011](decisions/0011-outbound-email-queue-with-hourly-cap.md)). Outbound emails contain no attachments.
 
 ## Still to confirm (Phase 0 hosting spike)
 
-- Are the cron and email limits per hosting account or per site? Assume per account (shared with the main site) until confirmed.
-- Does SPF/DKIM for adct.org.za already cover mail sent from the web server through SMTP?
+Answered on 2026-09-24: the limits are per account/domain, and SPF/DKIM work through authenticated SMTP (see above). Still open (none of these block the first build):
+
 - Can a **temporary** staging instance (e.g. a subdomain with its own database and a test mailbox) be set up for the one-off pre-launch check, and removed afterwards? No permanent staging site is planned ([ADR 0009](decisions/0009-preview-and-test-environments.md)).
 - Does the loopback request WP-Cron needs work on this host (Site Health > "loopback request")?
 

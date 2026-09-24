@@ -89,7 +89,7 @@ composer test            # unit + fixture tests
 composer test:fixtures   # fixture corpus with score report
 ```
 
-Until then, the prototype smoke test runs with:
+Until then, the prototype smoke test runs with the command below, or through Docker as shown in the [development guide](development.md#local-setup-windows-no-php-install-needed):
 
 ```bash
 php tests/parser_smoke_test.php

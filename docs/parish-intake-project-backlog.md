@@ -69,7 +69,7 @@ Phase 0, 1 and 1.5 items have GitHub issues. Phase 2 and 3 items are listed as c
 ### E0 – Foundations ([E0](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/3))
 | ID | Item | Pri | Dep | Acceptance (summary) |
 |---|---|---|---|---|
-| [E0.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/18) | Hosting spike: cron, WP-CLI, SMTP limits, temporary staging for the pre-launch check, outbound HTTPS | P0 | – | **Mostly answered:** cron every 2 h at most, no WP-CLI, 500 emails/h, 30 MB, HTTPS OK (ADR 0010/0011). Still open: per-account vs per-site limits, SPF/DKIM, loopback check, temporary staging. |
+| [E0.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/18) | Hosting spike: cron, WP-CLI, SMTP limits, temporary staging for the pre-launch check, outbound HTTPS | P0 | – | **Mostly answered:** cron every 2 h at most, no WP-CLI, 500 recipients/h per account, 30 MB, HTTPS OK, SPF/DKIM through authenticated SMTP (FluentSMTP) (ADR 0010/0011). Still open: loopback check, temporary staging. |
 | [E0.2](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17) | Composer, PHPUnit and GitHub Actions CI (PHP 8.2/8.3/8.4) | P0 | – | CI green on PRs; existing smoke test cases ported to PHPUnit with **equal or stronger** assertions. |
 | [E0.3](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/20) | Separate domain core from WordPress adapters | P0 | E0.2 | `src/Core` has no WordPress calls; ports defined; unit tests run without WordPress. |
 | [E0.4](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/19) | Parser fixture corpus and golden-test harness | P0 | E0.2 | `tests/fixtures/emails/*.eml` + expected JSON; readable diff; score report in CI; ≥10 anonymised real samples covering the types in [parser findings](parser-samples.md). |
@@ -122,7 +122,7 @@ Phase 0, 1 and 1.5 items have GitHub issues. Phase 2 and 3 items are listed as c
 | [E4.4](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/48) | Test mode: outbound email allow-list | P1 | E4.2 | When enabled (test sites, pre-launch check), email only goes to listed addresses; banner in admin. |
 | [E4.5](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/69) | Approver emails with Approve / Reject / Edit (per item or daily digest) | P0 | E4.1, E4.3, E1.6 | Dean and reviewers emailed in parallel; first to act wins (atomic); others see who acted; submitter told when live. |
 | [E4.6](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/70) | Approval reminders with on/off switches | P1 | E4.5, E0.7 | One reminder after N days (default 3); global and per-approver off switch; never after a decision. |
-| [E4.7](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/76) | Outbound email queue with hourly cap and priorities | P0 | E0.6, E0.7 | All plugin mail queued; cap default 100/h (host limit 500/h per account); login links and confirmations first; retries; queue shown on health dashboard (ADR 0011). |
+| [E4.7](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/76) | Outbound email queue with hourly cap and priorities | P0 | E0.6, E0.7 | All plugin mail queued; cap default 100/h (host limit 500/h per account; delivery through the site-wide SMTP plugin); login links and confirmations first; retries; queue shown on health dashboard (ADR 0011). |
 
 ### E5 – Events model and publishing ([E5](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/7))
 | ID | Item | Pri | Dep | Acceptance |
@@ -215,14 +215,13 @@ flowchart LR
 Phase 0, in this order:
 1. **Archdiocese (no code needed):**
    - Hosting answers are in (see [hosting environment](hosting-environment.md)). Still open in [#18](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/18):
-     - Are the cron and mail limits per account?
-     - Does SPF/DKIM cover mail sent from the site?
      - Does the WP-Cron loopback work (Site Health)?
      - Can a temporary staging instance be set up later?
+   - Set up **FluentSMTP** on adct.org.za with xneelo's authenticated SMTP, and check SPF (`include:spf.host-h.net`) and DKIM in konsoleH. This helps all site email, not just this plugin.
    - Create a free cron-job.org account (or agree to use GitHub Actions) for the external pinger ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
    - Real samples: 13 are in and reviewed ([parser findings](parser-samples.md)). Keep collecting, especially one-line email notices, forwarded emails and changes/cancellations ([#19](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/19)).
    - Deaneries and parishes are seeded ([`data/seed`](../data/seed/README.md)). When you are ready, give the deans' email addresses to set them up as approvers. Until then, reviewers approve everything ([#68](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/68)).
-2. **Build, in parallel:**
+2. **Build** (see the [development guide](development.md#first-build-session) for the order and rules):
    - [#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17) CI and PHPUnit
    - [#20](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/20) domain core split
    - [#21](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/21) date bug fix, test first
