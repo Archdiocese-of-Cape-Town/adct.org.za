@@ -20,6 +20,14 @@ AI is disabled by default. If enabled in the admin screen, OpenRouter can be use
 
 Automated inbox polling and mailbox connection settings are not part of this prototype yet. The current workflow is to configure AI fallback in **Parish Intake → Settings** and test messages manually in **Parish Intake → Manual parser**.
 
+### Project coordination
+
+Use GitHub Issues plus a GitHub Project to coordinate work across sessions. Repository-side scaffolding for this lives in:
+
+- `/home/runner/work/adct.org.za/adct.org.za/.github/ISSUE_TEMPLATE/epic.yml`
+- `/home/runner/work/adct.org.za/adct.org.za/.github/ISSUE_TEMPLATE/work-item.yml`
+- `/home/runner/work/adct.org.za/adct.org.za/docs/parish-intake-project-backlog.md`
+
 ### Validation
 
 A simple smoke test is available:

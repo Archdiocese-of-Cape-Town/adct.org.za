@@ -1,0 +1,102 @@
+name: Work item
+description: Track a session-sized implementation task for the parish intake project.
+title: "Work item: "
+labels:
+  - work-item
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for a single deliverable that one session can meaningfully progress or finish.
+  - type: input
+    id: goal
+    attributes:
+      label: Goal
+      description: What user-visible outcome should this issue produce?
+      placeholder: Add inbox configuration records to store mailbox connection details.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Describe the specific changes included in this work item.
+      placeholder: |
+        - Add data model changes
+        - Add admin settings UI
+        - Save configuration state
+    validations:
+      required: true
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+      description: Note related work that should stay in other issues.
+      placeholder: |
+        - Mailbox polling
+        - Duplicate detection
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Link required issues, epics, decisions, or blockers.
+      placeholder: |
+        - Depends on #123
+        - Blocked by a source strategy decision
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance criteria
+      description: List the observable conditions for completion.
+      placeholder: |
+        - Operators can store mailbox configuration in the admin UI.
+        - Configuration survives reloads.
+        - Validation errors are shown for invalid values.
+    validations:
+      required: true
+  - type: checkboxes
+    id: change_areas
+    attributes:
+      label: Change areas
+      description: Mark every area touched by this issue.
+      options:
+        - label: Data model
+        - label: Ingestion
+        - label: Parsing
+        - label: Admin UI
+        - label: Publishing
+        - label: Operations
+    validations:
+      required: true
+  - type: textarea
+    id: notes_next_session
+    attributes:
+      label: Notes for next session
+      description: Leave handoff notes before closing or pausing work.
+      placeholder: Capture implementation notes, follow-up tasks, or blockers here.
+  - type: input
+    id: related_epic
+    attributes:
+      label: Related epic
+      description: Link the epic that owns this work item.
+      placeholder: "#123"
+    validations:
+      required: true
+  - type: textarea
+    id: project_fields
+    attributes:
+      label: Suggested project field values
+      description: Record the intended GitHub Project values for quick copy/paste.
+      value: |
+        Status: Ready
+        Priority: P1
+        Phase: Phase 1
+        Area: Ingestion
+        Depends on: #123
+        Outcome type: Feature
+    validations:
+      required: true
