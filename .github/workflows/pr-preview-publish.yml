@@ -9,11 +9,12 @@ permissions: {}
 
 jobs:
   publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request' }}
     # Do not check out or execute pull request code in this privileged workflow.
     # The reusable publisher treats the artifact bundle as untrusted data.
     permissions:
       contents: write
       pull-requests: write
-    uses: WordPress/action-wp-playground-pr-preview/.github/workflows/preview-publish.yml@v4
+    uses: WordPress/action-wp-playground-pr-preview/.github/workflows/preview-publish.yml@1b15093d61b5e98cdfeb31466f34ade495762cd7 # v4.0.0
     with:
       blueprint-from-artifact: true
