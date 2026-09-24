@@ -8,7 +8,7 @@ Design and knowledge for the ADCT parish intake plugin.
 | [Architecture](architecture.md) | Components, data flow, scheduled jobs, trust model, security |
 | [Data model](data-model.md) | Tables, event post type, state machines, retention |
 | [Hosting environment](hosting-environment.md) | xneelo limits and what follows from them |
-| [Testing](testing.md) | Test layers, fixtures, preview sites, staging |
+| [Testing](testing.md) | Test layers, fixtures, PR previews, test sites, pre-launch check |
 | [Decisions (ADRs)](decisions/README.md) | Why things are built the way they are |
 | [Reviews](reviews/) | Plan and design reviews, e.g. [2026-09 initial plan review](reviews/2026-09-initial-plan-review.md) |
 

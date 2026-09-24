@@ -1,7 +1,9 @@
 # ADR 0004: Trust and confirmation model
 
-- Status: Accepted
+- Status: Accepted; point 4 (publishing outcome by sender trust) superseded by [ADR 0008](0008-approval-by-dean-or-archdiocese-reviewer.md)
 - Date: 2026-09-24
+
+> **Note (2026-09-24):** Every new event now also needs approval by a dean or an archdiocese reviewer after the submitter confirms. A verified sender's confirmation no longer publishes on its own. See ADR 0008. The other points here (confirmation email, safe links, tokens, auto-reply handling, SPF/DKIM) still apply.
 
 ## Context
 Anyone can email `events@adct.org.za`, and From addresses can be faked. Admin time is limited, and parishes should see how their event will look before it goes live. Email security scanners (e.g. Microsoft Safe Links) open links automatically.
