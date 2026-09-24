@@ -1,0 +1,85 @@
+name: Epic
+description: Track a multi-issue body of work for the parish intake project.
+title: "Epic: "
+labels:
+  - epic
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for a project-level workstream. Epics should group multiple smaller issues that can be completed across separate sessions.
+  - type: input
+    id: goal
+    attributes:
+      label: Goal
+      description: What outcome should this epic achieve?
+      placeholder: Build the shared data model for parishes, sources, and checkpoints.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: List the responsibilities covered by this epic.
+      placeholder: |
+        - Add parish records
+        - Add source records
+        - Track source status and checkpoints
+    validations:
+      required: true
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+      description: Prevent scope creep by listing what this epic does not include.
+      placeholder: |
+        - Mailbox polling
+        - WhatsApp ingestion
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Link prerequisite issues, epics, or decisions.
+      placeholder: |
+        - None
+        - Depends on Epic: Email intake and message ingestion
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance criteria
+      description: Define the user-visible outcomes that signal this epic is complete.
+      placeholder: |
+        - Parish/source records can be created and stored.
+        - Source status and checkpoints are available for later workflows.
+    validations:
+      required: true
+  - type: textarea
+    id: notes_next_session
+    attributes:
+      label: Notes for next session
+      description: Leave handoff guidance for the next contributor.
+      placeholder: Capture implementation notes, decisions, blockers, or suggested next issues here.
+  - type: input
+    id: related_epic
+    attributes:
+      label: Related epic
+      description: Leave blank for top-level epics, or link a parent epic if this is nested.
+      placeholder: "#123"
+  - type: textarea
+    id: project_fields
+    attributes:
+      label: Suggested project field values
+      description: Record the intended GitHub Project values for quick copy/paste.
+      value: |
+        Status: Backlog
+        Priority: P2
+        Phase: Phase 1
+        Area: Operations
+        Depends on: None
+        Outcome type: Epic
+    validations:
+      required: true

@@ -26,12 +26,32 @@ final class ParserPage
 
     public function registerMenu(): void
     {
-        add_management_page(
-            'Parish Intake Parser',
-            'Parish Intake Parser',
+        add_menu_page(
+            'Parish Intake',
+            'Parish Intake',
             self::CAPABILITY,
-            'adct-parish-intake-parser',
-            [$this, 'render']
+            'adct-parish-intake',
+            [$this, 'renderSettingsPage'],
+            'dashicons-email-alt2',
+            58
+        );
+
+        add_submenu_page(
+            'adct-parish-intake',
+            'Parish Intake Settings',
+            'Settings',
+            self::CAPABILITY,
+            'adct-parish-intake',
+            [$this, 'renderSettingsPage']
+        );
+
+        add_submenu_page(
+            'adct-parish-intake',
+            'Parish Intake Manual Parser',
+            'Manual parser',
+            self::CAPABILITY,
+            'adct-parish-intake-manual-parser',
+            [$this, 'renderManualParserPage']
         );
     }
 
@@ -58,7 +78,78 @@ final class ParserPage
         update_option('adct_parish_intake_ai_threshold', (string) max(0, min(1, (float) wp_unslash($_POST['ai_threshold'] ?? '0.55'))));
     }
 
-    public function render(): void
+    public function renderSettingsPage(): void
+    {
+        if (! current_user_can(self::CAPABILITY)) {
+            wp_die(esc_html__('You do not have permission to access this page.', 'adct-parish-intake'));
+        }
+
+        $settings = $this->settings();
+        ?>
+        <div class="wrap">
+            <h1>Parish Intake Settings</h1>
+            <p>Use this screen to configure the parser. Manual test parsing is available under <strong>Parish Intake → Manual parser</strong>.</p>
+
+            <?php if (isset($_POST['adct_parish_intake_save_settings'])) : ?>
+                <div class="notice notice-success is-dismissible"><p>Settings saved.</p></div>
+            <?php endif; ?>
+
+            <h2>AI fallback</h2>
+            <p>The parser runs locally first. AI is only used when you enable it and a message scores below the confidence threshold.</p>
+            <form method="post">
+                <?php wp_nonce_field('adct_parish_intake_save_settings', 'adct_parish_intake_settings_nonce'); ?>
+                <input type="hidden" name="adct_parish_intake_save_settings" value="1" />
+                <table class="form-table" role="presentation">
+                    <tr>
+                        <th scope="row">Enable AI fallback</th>
+                        <td>
+                            <label><input type="checkbox" name="ai_enabled" value="1" <?php checked($settings['ai_enabled']); ?> /> Use AI only when the rule-based parser is not confident enough.</label>
+                            <p class="description">Leave this off if you want all parsing to stay fully deterministic and offline-first.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Provider</th>
+                        <td>
+                            <select name="ai_provider">
+                                <option value="none" <?php selected($settings['ai_provider'], 'none'); ?>>None</option>
+                                <option value="openrouter" <?php selected($settings['ai_provider'], 'openrouter'); ?>>OpenRouter</option>
+                            </select>
+                            <p class="description">Choose which AI provider to call when fallback is enabled.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">OpenRouter model</th>
+                        <td>
+                            <input class="regular-text" type="text" name="openrouter_model" value="<?php echo esc_attr($settings['openrouter_model']); ?>" />
+                            <p class="description">Example: <code>openrouter/auto</code>. This is ignored unless OpenRouter is selected above.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">OpenRouter API key</th>
+                        <td>
+                            <input class="regular-text" type="password" name="openrouter_api_key" value="" placeholder="Leave blank to keep existing key" />
+                            <p class="description">Paste a valid API key only when you need to add or replace it.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">AI threshold</th>
+                        <td>
+                            <input type="number" step="0.05" min="0" max="1" name="ai_threshold" value="<?php echo esc_attr((string) $settings['ai_threshold']); ?>" />
+                            <p class="description">Messages scoring below this confidence value will be sent to the AI fallback when enabled.</p>
+                        </td>
+                    </tr>
+                </table>
+                <?php submit_button('Save settings'); ?>
+            </form>
+
+            <h2>Email inbox parsing</h2>
+            <p>This prototype does not yet include automated inbox polling or IMAP/mailbox connection settings.</p>
+            <p class="description">Right now, the available workflow is manual testing through <strong>Parish Intake → Manual parser</strong>. When inbox ingestion is built, its connection and scheduling options will appear here.</p>
+        </div>
+        <?php
+    }
+
+    public function renderManualParserPage(): void
     {
         if (! current_user_can(self::CAPABILITY)) {
             wp_die(esc_html__('You do not have permission to access this page.', 'adct-parish-intake'));
@@ -96,45 +187,10 @@ final class ParserPage
         }
 
         $recent = $this->schema->fetchRecent();
-        $settings = $this->settings();
         ?>
         <div class="wrap">
-            <h1>Parish Intake Parser</h1>
-            <p>Offline-first extraction runs locally with deterministic rules; AI is optional and only used as a fallback.</p>
-
-            <h2>AI settings</h2>
-            <form method="post">
-                <?php wp_nonce_field('adct_parish_intake_save_settings', 'adct_parish_intake_settings_nonce'); ?>
-                <input type="hidden" name="adct_parish_intake_save_settings" value="1" />
-                <table class="form-table" role="presentation">
-                    <tr>
-                        <th scope="row">Enable AI fallback</th>
-                        <td><label><input type="checkbox" name="ai_enabled" value="1" <?php checked($settings['ai_enabled']); ?> /> Only use AI on low-confidence parses</label></td>
-                    </tr>
-                    <tr>
-                        <th scope="row">Provider</th>
-                        <td>
-                            <select name="ai_provider">
-                                <option value="none" <?php selected($settings['ai_provider'], 'none'); ?>>None</option>
-                                <option value="openrouter" <?php selected($settings['ai_provider'], 'openrouter'); ?>>OpenRouter</option>
-                            </select>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row">OpenRouter model</th>
-                        <td><input class="regular-text" type="text" name="openrouter_model" value="<?php echo esc_attr($settings['openrouter_model']); ?>" /></td>
-                    </tr>
-                    <tr>
-                        <th scope="row">OpenRouter API key</th>
-                        <td><input class="regular-text" type="password" name="openrouter_api_key" value="" placeholder="Leave blank to keep existing key" /></td>
-                    </tr>
-                    <tr>
-                        <th scope="row">AI threshold</th>
-                        <td><input type="number" step="0.05" min="0" max="1" name="ai_threshold" value="<?php echo esc_attr((string) $settings['ai_threshold']); ?>" /></td>
-                    </tr>
-                </table>
-                <?php submit_button('Save AI settings'); ?>
-            </form>
+            <h1>Parish Intake Manual Parser</h1>
+            <p>Use this screen to test the parser with a pasted message and store the result. Configuration lives under <strong>Parish Intake → Settings</strong>.</p>
 
             <h2>Parse a message</h2>
             <form method="post">
@@ -143,11 +199,17 @@ final class ParserPage
                 <table class="form-table" role="presentation">
                     <tr>
                         <th scope="row">Source type</th>
-                        <td><input type="text" class="regular-text" name="source_type" value="email" /></td>
+                        <td>
+                            <input type="text" class="regular-text" name="source_type" value="email" />
+                            <p class="description">The channel this message came from, for example <code>email</code>, <code>webform</code>, or <code>manual-test</code>.</p>
+                        </td>
                     </tr>
                     <tr>
-                        <th scope="row">Source identifier</th>
-                        <td><input type="text" class="regular-text" name="source_identifier" value="manual-admin" /></td>
+                        <th scope="row">Message identifier</th>
+                        <td>
+                            <input type="text" class="regular-text" name="source_identifier" value="manual-admin" />
+                            <p class="description">A reference that helps you trace the original item later, for example an inbox UID, message ID, or a label like <code>manual-admin</code>.</p>
+                        </td>
                     </tr>
                     <tr>
                         <th scope="row">Sender email</th>
