@@ -155,6 +155,7 @@ See [ADR 0004](decisions/0004-trust-and-confirmation-model.md) (confirmation, sa
 - **Every new event** goes through two steps:
   1. The **submitter confirms** the emailed preview.
   2. It then appears **at the same time** in the queue of the parish's **deanery approvers** (the dean) and of the **archdiocese reviewers**. The first to Approve or Reject decides.
+- The #59 admin queue keeps **Awaiting approval** as an all-items scoped view while assigning each non-final candidate exactly one primary category: failed/pending-publication, awaiting submitter, unknown sender, low confidence, or ordinary approval. The first view overlaps the last three by design; primary category counts are disjoint. Rejected decisions are visible separately for 30 days. Ambiguous matches and pending duplicates require manual resolution and cannot bulk-publish. Deanery approvers can use only their review-queue screen in wp-admin; the portal remains future work.
 - The E4.2 job queues the submitter preview only. E4.3 activates Confirm, Deny and Confirm-all through nonce-checked POSTs; Edit remains inactive. A GET never decides an event. Confirmation status remains separate from candidate lifecycle, and suppressed previews cannot be acted on.
 - Approvers get an email with the preview and Approve / Reject / Edit links, or a daily digest. Reminders go out after N days (can be switched off).
 - **Self-approval:** if the submitter is an approver for that parish, their confirmation publishes directly.
