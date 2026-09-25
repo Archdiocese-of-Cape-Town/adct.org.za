@@ -53,6 +53,7 @@ try {
         'name' => 'Private fictional contact',
         'email' => 'private-contact@example.test',
     ]);
+    update_post_meta($seedIds[0], 'raw_mail', 'fictional-raw-message-body');
 
     $placeholderGroups = [];
     $values = [];
@@ -100,9 +101,141 @@ try {
         || ! str_contains($html, 'Social')
         || ! str_contains($html, 'Occurrence integration hall')
         || str_contains($html, 'private-contact@example.test')
+        || str_contains($html, 'fictional-raw-message-body')
     ) {
         $fail('The public date-range listing omitted required cards or exposed private contact details.');
     }
+
+    $spiritual = get_term_by('slug', 'spiritual', EventPostType::TAXONOMY);
+    if (! $spiritual instanceof WP_Term) {
+        $fail('The second event type was not installed.');
+    }
+    wp_set_object_terms($seedIds[0], [(int) $occurrenceType->term_id, (int) $spiritual->term_id], EventPostType::TAXONOMY);
+    wp_set_object_terms($seedIds[5], (int) $spiritual->term_id, EventPostType::TAXONOMY);
+    $deaneriesTable = $wpdb->prefix . 'adct_pi_deaneries';
+    if ($wpdb->insert($deaneriesTable, [
+        'name' => 'Fictional filter deanery',
+        'slug' => 'fictional-filter-deanery',
+        'status' => 'active',
+        'created_at' => gmdate('Y-m-d H:i:s'),
+        'updated_at' => gmdate('Y-m-d H:i:s'),
+    ]) !== 1) {
+        $fail('Could not seed a listing deanery.');
+    }
+    $listingDeanery = (int) $wpdb->insert_id;
+    if ($wpdb->update($wpdb->prefix . 'adct_pi_parishes', ['deanery_id' => $listingDeanery], [
+        'id' => $parishIds[5],
+    ]) !== 1) {
+        $fail('Could not associate the parish with the listing deanery.');
+    }
+    $beforeFilteredCache = $transientCount();
+    $_GET = $listingPeriod + [
+        'adct_types' => [(string) $spiritual->term_id, (string) $occurrenceType->term_id],
+        'adct_parish' => (string) $parishIds[5],
+        'adct_deanery' => (string) $listingDeanery,
+    ];
+    $filtered = do_shortcode('[adct_events]');
+    if (
+        ! str_contains($filtered, 'Fictional listing event 5')
+        || str_contains($filtered, 'Fictional listing event 0')
+        || $transientCount() !== $beforeFilteredCache
+    ) {
+        $fail('Combined multi-type, parish/deanery selection or cache bypass failed.');
+    }
+    $_GET = ['adct_period' => 'upcoming', 'adct_types' => [
+        (string) $spiritual->term_id, (string) $occurrenceType->term_id,
+    ]];
+    $multiPage = do_shortcode('[adct_events]');
+    if (! preg_match('/href="([^"]+)">More events<\/a>/', $multiPage, $matches)) {
+        $fail('The type-filtered result has no next-page URL.');
+    }
+    $nextUrl = html_entity_decode($matches[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    parse_str((string) wp_parse_url($nextUrl, PHP_URL_QUERY), $sharedFilters);
+    if (
+        ($sharedFilters['adct_page'] ?? null) !== '2'
+        || count($sharedFilters['adct_types'] ?? []) !== 2
+    ) {
+        $fail('Paging dropped the shareable multi-type selection.');
+    }
+    $_GET = $sharedFilters;
+    if (! str_contains(do_shortcode('[adct_events]'), 'Previous page')) {
+        $fail('A shared filtered URL did not reproduce the second page.');
+    }
+    $_GET = $listingPeriod + [
+        'adct_types' => [(string) $spiritual->term_id],
+    ];
+    $_GET['adct_types'] = [(string) $spiritual->term_id];
+    $_GET['adct_parish'] = (string) $parishIds[0];
+    unset($_GET['adct_deanery']);
+    if (! str_contains(do_shortcode('[adct_events]'), 'Fictional listing event 0')) {
+        $fail('A second assigned type did not match an event whose stored occurrence type differs.');
+    }
+    $_GET['adct_deanery'] = (string) $listingDeanery;
+    if (str_contains(do_shortcode('[adct_events]'), 'Fictional listing event 0')) {
+        $fail('A parish outside the chosen deanery matched both filters.');
+    }
+    $_GET['adct_parish'] = (string) $parishIds[5];
+    $filterBlock = do_blocks('<!-- wp:adct/events /-->');
+    if (! str_contains($filterBlock, 'Fictional listing event 5')) {
+        $fail('The event block did not apply the same filters as the shortcode.');
+    }
+
+    $restListing = static function (array $params): WP_REST_Response|WP_Error {
+        $request = new WP_REST_Request('GET', '/adct-parish-intake/v1/events');
+        $request->set_query_params($params + ['page_url' => home_url('/events/')]);
+        return rest_do_request($request);
+    };
+    $restParams = $listingPeriod + [
+        'adct_types' => [(string) $spiritual->term_id],
+        'adct_parish' => (string) $parishIds[5],
+        'adct_deanery' => (string) $listingDeanery,
+    ];
+    $restResult = $restListing($restParams);
+    if (
+        $restResult->get_status() !== 200
+        || ! str_contains((string) ($restResult->get_data()['html'] ?? ''), 'Fictional listing event 5')
+        || str_contains((string) ($restResult->get_data()['html'] ?? ''), 'private-contact@example.test')
+        || str_contains((string) ($restResult->get_data()['html'] ?? ''), 'fictional-raw-message-body')
+    ) {
+        $fail('The public REST selection did not match the listing or leaked a private contact.');
+    }
+    foreach (['page_id', 'p'] as $pageKey) {
+        $plainResult = $restListing([
+            'page_url' => home_url('/?' . $pageKey . '=123'),
+            'adct_period' => 'upcoming',
+            'adct_types' => [(string) $spiritual->term_id, (string) $occurrenceType->term_id],
+        ]);
+        $plainHtml = (string) ($plainResult->get_data()['html'] ?? '');
+        if (
+            $plainResult->get_status() !== 200
+            || ! str_contains($plainHtml, 'name="' . $pageKey . '" value="123"')
+            || ! preg_match('/href="([^"]+)">More events<\/a>/', $plainHtml, $plainMatch)
+        ) {
+            $fail('The progressive listing dropped the plain-permalink page selector.');
+        }
+        parse_str((string) wp_parse_url(html_entity_decode($plainMatch[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'), PHP_URL_QUERY), $plainQuery);
+        if (
+            ($plainQuery[$pageKey] ?? null) !== '123'
+            || ($plainQuery['adct_page'] ?? null) !== '2'
+            || count($plainQuery['adct_types'] ?? []) !== 2
+        ) {
+            $fail('The progressive listing lost the plain permalink or selection when paging.');
+        }
+    }
+    foreach ([
+        ['adct_types' => [['1']]],
+        ['adct_types' => range(1, 21)],
+        ['adct_parish' => ['1']],
+        ['adct_page' => '101'],
+        ['page_url' => 'https://outside.example.test/events/'],
+        ['page_url' => home_url('/?page_id=0')],
+        ['page_url' => home_url('/?page_id=123&private=1')],
+    ] as $invalid) {
+        if ($restListing($invalid)->get_status() !== 400) {
+            $fail('The public REST listing accepted malformed or oversized input.');
+        }
+    }
+    $_GET = $listingPeriod;
 
     $_GET = ['adct_period' => 'upcoming'];
     wp_cache_flush();
@@ -144,6 +277,26 @@ try {
         $fail('The server-rendered event block did not show the same public occurrences.');
     }
 
+    $oldRequestUri = $_SERVER['REQUEST_URI'] ?? null;
+    try {
+        $_SERVER['REQUEST_URI'] = '/?page_id=123&adct_period=upcoming';
+        $_GET = ['page_id' => '123', 'adct_period' => 'upcoming'];
+        $noJsPlain = do_shortcode('[adct_events]');
+        if (
+            ! str_contains($noJsPlain, 'name="page_id" value="123"')
+            || ! preg_match('/href="([^"]+)">More events<\/a>/', $noJsPlain, $noJsMatch)
+            || ! str_contains(html_entity_decode($noJsMatch[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'), 'page_id=123')
+        ) {
+            $fail('The no-JavaScript listing lost a plain-permalink page selector.');
+        }
+    } finally {
+        if ($oldRequestUri === null) {
+            unset($_SERVER['REQUEST_URI']);
+        } else {
+            $_SERVER['REQUEST_URI'] = $oldRequestUri;
+        }
+    }
+
     foreach (['week', 'month'] as $preset) {
         $_GET = ['adct_period' => $preset];
         $presetHtml = do_shortcode('[adct_events]');
@@ -167,6 +320,17 @@ try {
     if (! str_contains(do_shortcode('[adct_events]'), 'role="alert"')) {
         $fail('The listing accepted an array-valued page.');
     }
+    foreach ([
+        ['adct_types' => ['999999999999999999999']],
+        ['adct_types' => range(1, 21)],
+        ['adct_parish' => ['1']],
+    ] as $invalid) {
+        $_GET = $listingPeriod + $invalid;
+        if (! str_contains(do_shortcode('[adct_events]'), 'role="alert"')) {
+            $fail('The no-JavaScript listing accepted an invalid event selection.');
+        }
+    }
+    $_GET = $listingPeriod;
     unset($_GET['adct_page']);
     $_GET['adct_from'] = '2026-02-30';
     if (! str_contains(do_shortcode('[adct_events]'), 'role="alert"')) {
@@ -178,6 +342,9 @@ try {
     wp_update_post(['ID' => $privateId, 'post_status' => 'private']);
     if (str_contains(do_shortcode('[adct_events]'), 'Fictional listing event 0')) {
         $fail('A cached public page exposed an event after it became private.');
+    }
+    if (str_contains((string) ($restListing($listingPeriod)->get_data()['html'] ?? ''), 'Fictional listing event 0')) {
+        $fail('The public REST listing exposed a newly private event.');
     }
     $beforeTitleGeneration = get_option('adct_pi_event_listing_generation');
     $movedStart = $listingStart->modify('-4 days');
@@ -240,6 +407,9 @@ try {
         $_GET['adct_to'] = $hiddenStart->format('Y-m-d');
         if (str_contains(do_shortcode('[adct_events]'), 'Hidden fictional ' . $status . ' event')) {
             $fail('The public listing exposed a stale ' . $status . ' occurrence.');
+        }
+        if (str_contains((string) ($restListing($listingPeriod)->get_data()['html'] ?? ''), 'Hidden fictional ' . $status . ' event')) {
+            $fail('The public REST listing exposed a stale ' . $status . ' occurrence.');
         }
     }
 

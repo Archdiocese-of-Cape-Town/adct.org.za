@@ -131,6 +131,8 @@ docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
 npm run test:integration
 ```
 
+The event-listing check also seeds 150 fictional parishes and 1,800 occurrences. It measures cold/warm listing cost, exercises multi-type (including secondary assigned types), parish/deanery combinations and bookmarked paging, and checks that REST and no-JavaScript output reject oversized inputs and hide unpublished events and private contact data.
+
 The test runner creates and stops its own isolated `wp-env` environment. Its test-only Docker data is retained under the system temporary directory for faster local reruns; CI runners discard it with the job. `composer test` remains the unit/smoke suite and does not start WordPress. CI (`.github/workflows/ci.yml`) runs `composer validate`, a `php -l` lint and `composer test` on PHP 8.2, 8.3 and 8.4 for every PR and push to `main`, plus separate WordPress and GreenMail integration jobs on PHP 8.2.
 
 `wp-env` is used instead of the Playground CLI for integration tests because it supplies a normal WordPress/MySQL environment and WP-CLI in Docker. That lets CI install the exact release zip and exercise the admin menu/page without browser automation.
