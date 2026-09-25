@@ -19,6 +19,8 @@ final class ParseResult
     private bool $aiUsed = false;
     private ?string $aiProvider = null;
     private bool $reprocessNeeded = false;
+    private ?int $blockIndex = null;
+    private string $sourceSnippet = '';
 
     public function setNormalizedText(string $text): void
     {
@@ -188,11 +190,32 @@ final class ParseResult
         return $this->reprocessNeeded;
     }
 
+    public function setBlockMetadata(int $blockIndex, string $sourceText): void
+    {
+        $this->blockIndex = max(0, $blockIndex);
+        $sourceText = trim($sourceText);
+        $this->sourceSnippet = function_exists('mb_substr')
+            ? mb_substr($sourceText, 0, 2000, 'UTF-8')
+            : substr($sourceText, 0, 2000);
+    }
+
+    public function getBlockIndex(): ?int
+    {
+        return $this->blockIndex;
+    }
+
+    public function getSourceSnippet(): string
+    {
+        return $this->sourceSnippet;
+    }
+
     public function toArray(): array
     {
         return [
             'normalized_text' => $this->normalizedText,
             'classification' => $this->classification,
+            'block_index' => $this->blockIndex,
+            'source_snippet' => $this->sourceSnippet,
             'fields' => $this->fields,
             'recurrence' => $this->recurrence,
             'confidence' => $this->confidence,

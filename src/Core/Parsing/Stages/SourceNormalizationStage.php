@@ -26,12 +26,14 @@ final class SourceNormalizationStage implements StageInterface
             $message->isForwarded()
         );
         $body = $cleaned->getBody();
+        $sharedSignature = (string) $context->getRuntimeValue('shared_signature_text', '');
+        $sharedQuoted = (string) $context->getRuntimeValue('shared_quoted_text', '');
         $signature = $message->getSignatureText() !== ''
             ? $message->getSignatureText()
-            : $cleaned->getSignatureText();
+            : ($sharedSignature !== '' ? $sharedSignature : $cleaned->getSignatureText());
         $quoted = $message->getQuotedText() !== ''
             ? $message->getQuotedText()
-            : $cleaned->getQuotedText();
+            : ($sharedQuoted !== '' ? $sharedQuoted : $cleaned->getQuotedText());
         $normalized = Text::normalizeWhitespace($message->getSubject() . "\n\n" . $body);
 
         $result->setNormalizedText($normalized);

@@ -83,7 +83,29 @@ final class EmailFixtureCorpusTest extends TestCase
 
         self::assertInstanceOf(DateTimeImmutable::class, $message->getReceivedAt());
 
-        $actual = (new PipelineFactory())->create()->parse($message)->toArray();
+        $outcome = (new PipelineFactory())->create()->parseAll($message);
+        $actual = array_merge(
+            $outcome->getPrimaryResult()->toArray(),
+            $outcome->toArray()
+        );
+
+        if (isset($expected['candidate_count']) && ! is_int($expected['candidate_count'])) {
+            self::fail('candidate_count must be an integer: ' . basename($expectedPath));
+        }
+
+        if (isset($expected['candidates'])) {
+            if (! is_array($expected['candidates']) || ! array_is_list($expected['candidates'])) {
+                self::fail('candidates must be a list: ' . basename($expectedPath));
+            }
+
+            if (
+                isset($expected['candidate_count'])
+                && $expected['candidate_count'] !== count($expected['candidates'])
+            ) {
+                self::fail('candidate_count must match candidates: ' . basename($expectedPath));
+            }
+        }
+
         $checks = FixtureComparator::compare($expected, $actual);
         $mismatches = array_filter($checks, static fn (array $check): bool => ! $check['matches']);
         $unknownMismatches = [];

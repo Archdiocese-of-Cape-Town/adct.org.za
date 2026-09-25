@@ -26,7 +26,7 @@ flowchart LR
         I[Ingestion jobs<br/>batched, checkpointed]
         R[(Inbound messages<br/>+ attachments)]
         X[Text extraction<br/>PDF / optional OCR]
-        PA[Parsing pipeline<br/>rules → gazetteer → recurrence → score → optional AI]
+        PA[Parsing pipeline<br/>normalise → split blocks → rules → recurrence → score → optional AI]
         C[(Event candidates)]
         T{Submitter<br/>confirmation}
         Q[Approval queues<br/>dean + archdiocese reviewers<br/>first to act wins]
@@ -70,6 +70,10 @@ Pure PHP 8.2, covered by unit tests and loaded through Composer PSR-4:
 The core talks to the outside through interfaces (ports): `MailboxInterface`, `ClockInterface`, `EventRepositoryInterface`, `AiProviderInterface`, `OcrProviderInterface`, `MailerInterface` and `HttpClientInterface`. The parsing pipeline, its stages and value objects live under `Core\Parsing`; shared pure-PHP helpers live under `Core\Support`; contracts live under `Core\Ports`. The mailbox, mailer, candidate repository and OCR method signatures are provisional until their first consumers (E2.1, ADR 0011's mail queue, E5.3 and E12 respectively).
 
 `Message` keeps the received sender/date and envelope subject, plus separate quoted text, signature text, original-forward metadata, and raw values for Message-ID, In-Reply-To, References, Auto-Submitted, List-Id and Authentication-Results. Attachment records identify the corresponding MIME part and Content-ID; attachment bytes remain with the stored raw message for a later attachment-extraction stage. The MIME parser dependency is namespace-prefixed into release packages with Strauss (ADR 0012).
+
+`Pipeline::parseAll(Message)` returns a `ParseOutcome` containing ordered event candidates, shared notes/errors and block metadata. The deterministic `BulletinBlockSplitter` uses headings, blank-line groups, list items, date-led lines and pipe-delimited table rows; it passes parish, month/year and venue context to each candidate without using AI. Each candidate has a zero-based `block_index` and a trimmed `source_snippet` capped at 2,000 characters. To bound work and review output, the provisional `ParseOutcome::MAX_CANDIDATES` limit is 50: an over-limit message returns the first 50 in document order, reports `candidate_limit_exceeded:<total>`, and lowers retained candidates' confidence to zero with reprocessing flagged for manual review. Obvious non-event blocks are reported as notices/skipped blocks rather than event candidates. The existing `Pipeline::parse(Message): ParseResult` API remains compatible and returns the first candidate (or a notice result when none were found); optional AI enrichment remains a later, separate pipeline stage.
+
+The Manual parser displays the full `ParseOutcome`. Until the event-candidate repository is implemented, its legacy prototype table continues to store one row per input message using the first candidate, or the notice result if there are no candidates.
 
 ### 2. WordPress adapters (`src/WordPress/…`)
 - Plugin bootstrap and hook wiring, the manual parser/admin UI, database schema/repository access, static reports, and the WordPress HTTP client.

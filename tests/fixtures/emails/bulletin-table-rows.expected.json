@@ -1,0 +1,25 @@
+{
+  "candidate_count": 2,
+  "candidates": [
+    {
+      "block_index": 0,
+      "fields": {
+        "title": "Harvest market",
+        "parish_name": "Fictional Parish",
+        "event_date": "2026-10-10",
+        "event_time": "10:00",
+        "venue": "Example Parish Hall"
+      }
+    },
+    {
+      "block_index": 1,
+      "fields": {
+        "title": "Music evening",
+        "parish_name": "Fictional Parish",
+        "event_date": "2026-10-17",
+        "event_time": "18:00",
+        "venue": "St Fictional Church"
+      }
+    }
+  ]
+}

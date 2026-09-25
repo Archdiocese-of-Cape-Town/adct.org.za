@@ -95,6 +95,29 @@ final class Message
         return $this->body;
     }
 
+    public function withBody(string $body, ?string $subject = null): self
+    {
+        return new self(
+            $this->sourceType,
+            $this->sourceIdentifier,
+            $this->senderEmail,
+            $this->senderName,
+            $subject ?? $this->subject,
+            $body,
+            $this->attachments,
+            $this->receivedAt,
+            $this->headers,
+            $this->quotedText,
+            $this->signatureText,
+            $this->forwarded,
+            $this->originalSenderEmail,
+            $this->originalSenderName,
+            $this->originalDate,
+            $this->originalSubject,
+            $this->bodyHtmlDerived
+        );
+    }
+
     public function getReceivedAt(): ?DateTimeImmutable
     {
         return $this->receivedAt;
