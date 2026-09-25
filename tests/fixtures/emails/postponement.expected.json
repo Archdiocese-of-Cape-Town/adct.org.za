@@ -6,12 +6,16 @@
     "event_date": "2026-10-17",
     "event_time": "10:00"
   },
-  "match_kind": "update",
-  "event_status": "postponed",
-  "known_failures": {
-    "fields.event_date": "#46",
-    "fields.event_time": "#46",
-    "match_kind": "#46",
-    "event_status": "#46"
-  }
+  "directory_snapshot": "change-notice-directory.json",
+  "existing_event": {
+    "id": 17,
+    "parish_id": 101,
+    "fields": {
+      "title": "Parish market",
+      "event_date": "2026-10-10",
+      "event_time": "09:00"
+    }
+  },
+  "match_kind": "postponement",
+  "event_status": "postponed"
 }
