@@ -70,6 +70,7 @@ use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeSettings;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
+use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
 
 require_once ABSPATH . 'wp-admin/includes/plugin.php';
 require_once ABSPATH . 'wp-admin/includes/user.php';
@@ -3173,6 +3174,7 @@ $processingJob = new InboundMessageProcessingJob(
     new MimeMessageParser(),
     static fn (): Pipeline => $processingPipelineFactory->create(),
     new WordPressEventCandidateStore(new EventCandidateRepository($mailboxDatabase)),
+    new WordPressInboundMessageProcessingFailureLogger(),
     $processingDirectory,
     $processingClock
 );

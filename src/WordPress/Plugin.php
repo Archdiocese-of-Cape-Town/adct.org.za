@@ -105,6 +105,7 @@ use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
+use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailQueueImmediateDispatch;
 use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeRecipientPolicy;
@@ -338,6 +339,7 @@ final class Plugin
             new MimeMessageParser(),
             fn () => $this->parserPage->createConfiguredPipeline(),
             new WordPressEventCandidateStore(new EventCandidateRepository($database)),
+            new WordPressInboundMessageProcessingFailureLogger(),
             $directorySnapshots,
             $clock
         );

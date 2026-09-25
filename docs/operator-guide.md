@@ -168,6 +168,8 @@ Fix the reported problem first, then select **Reprocess** beside one failed mess
 
 Reprocessing uses the current parser settings, including the optional AI fallback if it has been enabled. Review the AI setting before reprocessing if message text must remain fully local.
 
+If the same message still fails after you have checked the note, ask the website administrator to check the PHP error log using the message ID. It records the processing step and exception type, not the email content.
+
 ### Review authentication summaries
 
 The Mailboxes screen labels authentication verdicts from an unconfigured or unknown authserv-id as **unverified claims**. By default no authserv-id is trusted, so an attacker-supplied `Authentication-Results` header cannot establish a verified pass or make a sender trusted.

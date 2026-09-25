@@ -15,6 +15,7 @@ use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\DirectorySnapshotProviderInterface;
 use ADCT\ParishIntake\Core\Ports\EventCandidateStoreInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
+use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingFailureLoggerInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingStoreInterface;
 use Closure;
 use DateTimeZone;
@@ -46,6 +47,7 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
         private MimeMessageParser $mimeParser,
         callable $pipelineFactory,
         private EventCandidateStoreInterface $candidates,
+        private InboundMessageProcessingFailureLoggerInterface $failureLogger,
         DirectorySnapshotProviderInterface $directorySnapshots,
         private ClockInterface $clock
     ) {
@@ -104,7 +106,12 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
 
         try {
             $senderIsBlocked = $this->senderIsBlocked($message);
-        } catch (Throwable) {
+        } catch (Throwable $failure) {
+            $this->logFailure(
+                $message->id,
+                InboundMessageProcessingFailure::CONTEXT_SENDER_LOOKUP,
+                $failure
+            );
             $this->markFailed(
                 $message,
                 'The sender could not be checked safely. Contact the website administrator before reprocessing it.'
@@ -126,7 +133,12 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
                 );
 
                 return JobStepResult::continueAt($checkpoint);
-            } catch (Throwable) {
+            } catch (Throwable $failure) {
+                $this->logFailure(
+                    $message->id,
+                    InboundMessageProcessingFailure::CONTEXT_BLOCKED_MESSAGE_TRANSITION,
+                    $failure
+                );
                 $this->markFailed(
                     $message,
                     'The blocked message could not be safely ignored. Contact the website administrator before reprocessing it.'
@@ -151,13 +163,15 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
             } catch (Throwable $failure) {
                 throw new InboundMessageProcessingFailure(
                     'The saved email could not be decoded. Check the original message format, then reprocess it.',
+                    InboundMessageProcessingFailure::CONTEXT_MIME_DECODE,
                     $failure
                 );
             }
 
             if ($message->receivedAt === null) {
                 throw new InboundMessageProcessingFailure(
-                    'The stored receive date is missing or invalid. Check the message record before reprocessing it.'
+                    'The stored receive date is missing or invalid. Check the message record before reprocessing it.',
+                    InboundMessageProcessingFailure::CONTEXT_MESSAGE_METADATA
                 );
             }
 
@@ -173,6 +187,7 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
             } catch (Throwable $failure) {
                 throw new InboundMessageProcessingFailure(
                     'The email could not be parsed. Check the parser settings, then reprocess it.',
+                    InboundMessageProcessingFailure::CONTEXT_PIPELINE_PARSE,
                     $failure
                 );
             }
@@ -186,6 +201,7 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
             } catch (Throwable $failure) {
                 throw new InboundMessageProcessingFailure(
                     'The parsed event details could not be saved. Reprocess the message, and contact support if this continues.',
+                    InboundMessageProcessingFailure::CONTEXT_CANDIDATE_STORAGE,
                     $failure
                 );
             }
@@ -210,8 +226,18 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
                 );
             }
         } catch (InboundMessageProcessingFailure $failure) {
+            $this->logFailure(
+                $message->id,
+                $failure->diagnosticContext,
+                $failure->getPrevious() ?? $failure
+            );
             $this->markFailed($message, $failure->operatorMessage);
-        } catch (Throwable) {
+        } catch (Throwable $failure) {
+            $this->logFailure(
+                $message->id,
+                InboundMessageProcessingFailure::CONTEXT_PROCESSING,
+                $failure
+            );
             $this->markFailed(
                 $message,
                 'An unexpected processing error occurred. Reprocess the message, and contact support if this continues.'
@@ -255,7 +281,8 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
     {
         if ($message->rawPath === null || trim($message->rawPath) === '') {
             throw new InboundMessageProcessingFailure(
-                'The saved email file is missing. Restore the original message, then reprocess it.'
+                'The saved email file is missing. Restore the original message, then reprocess it.',
+                InboundMessageProcessingFailure::CONTEXT_RAW_MESSAGE_STORAGE
             );
         }
 
@@ -264,17 +291,24 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
         } catch (Throwable $failure) {
             throw new InboundMessageProcessingFailure(
                 'The saved email file is missing or cannot be read. Restore it, then reprocess the message.',
+                InboundMessageProcessingFailure::CONTEXT_RAW_MESSAGE_STORAGE,
                 $failure
             );
         }
 
         if (trim($rawMessage) === '') {
             throw new InboundMessageProcessingFailure(
-                'The saved email is empty. Restore the original message, then reprocess it.'
+                'The saved email is empty. Restore the original message, then reprocess it.',
+                InboundMessageProcessingFailure::CONTEXT_RAW_MESSAGE_STORAGE
             );
         }
 
         return $rawMessage;
+    }
+
+    private function logFailure(int $messageId, string $context, Throwable $failure): void
+    {
+        $this->failureLogger->logFailure($messageId, $context, get_class($failure));
     }
 
     private function markFailed(InboundMessageProcessingRecord $message, string $reason): void

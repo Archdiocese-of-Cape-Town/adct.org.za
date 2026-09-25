@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Tests\Unit\Core\Jobs;
 
 use ADCT\ParishIntake\Core\Directory\DirectorySnapshot;
+use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingFailure;
 use ADCT\ParishIntake\Core\Jobs\InboundMessageProcessingJob;
 use ADCT\ParishIntake\Core\Jobs\JobStepResult;
 use ADCT\ParishIntake\Core\Ingestion\MimeMessageParser;
@@ -16,6 +17,7 @@ use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\DirectorySnapshotProviderInterface;
 use ADCT\ParishIntake\Core\Ports\EventCandidateStoreInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
+use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingFailureLoggerInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingStoreInterface;
 use DateTimeImmutable;
 use DateTimeZone;
@@ -40,6 +42,14 @@ final class InboundMessageProcessingJobTest extends TestCase
         self::assertSame(
             'The saved email is empty. Restore the original message, then reprocess it.',
             $fixture['messages']->errors[self::MESSAGE_ID]
+        );
+        self::assertSame(
+            [[
+                'message_id' => self::MESSAGE_ID,
+                'context' => InboundMessageProcessingFailure::CONTEXT_RAW_MESSAGE_STORAGE,
+                'failure_class' => InboundMessageProcessingFailure::class,
+            ]],
+            $fixture['failureLogger']->failures
         );
         self::assertSame([], $fixture['candidates']->candidates[self::MESSAGE_ID] ?? []);
 
@@ -70,6 +80,120 @@ final class InboundMessageProcessingJobTest extends TestCase
         self::assertSame('parsed', $fixture['messages']->statuses[self::MESSAGE_ID]);
         self::assertCount(1, $fixture['candidates']->candidates[self::MESSAGE_ID]);
         self::assertSame(2, $fixture['candidates']->replaceCalls);
+    }
+
+    public function testSenderLookupFailureLogsOnlySafeDiagnosticDetails(): void
+    {
+        $fixture = $this->fixture(new DirectorySnapshot([], [], []));
+        $fixture['messages']->add($this->message());
+        $fixture['directory']->failure = new RuntimeException('Private sender detail notices@example.test');
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame('failed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        self::assertSame(
+            'The sender could not be checked safely. Contact the website administrator before reprocessing it.',
+            $fixture['messages']->errors[self::MESSAGE_ID]
+        );
+        self::assertSame(
+            [[
+                'message_id' => self::MESSAGE_ID,
+                'context' => InboundMessageProcessingFailure::CONTEXT_SENDER_LOOKUP,
+                'failure_class' => RuntimeException::class,
+            ]],
+            $fixture['failureLogger']->failures
+        );
+        self::assertStringNotContainsString(
+            'Private sender detail',
+            json_encode($fixture['failureLogger']->failures, JSON_THROW_ON_ERROR)
+        );
+    }
+
+    public function testBlockedMessageTransitionFailureIsLoggedBeforeItIsMarkedFailed(): void
+    {
+        $snapshot = new DirectorySnapshot([], [], [[
+            'email' => 'blocked@example.test',
+            'trust' => 'blocked',
+            'parish_id' => 7,
+        ]]);
+        $fixture = $this->fixture($snapshot);
+        $fixture['messages']->add($this->message(senderEmail: 'blocked@example.test'));
+        $fixture['candidates']->discardFailure = new RuntimeException('Private message detail');
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame('failed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        self::assertSame(
+            'The blocked message could not be safely ignored. Contact the website administrator before reprocessing it.',
+            $fixture['messages']->errors[self::MESSAGE_ID]
+        );
+        self::assertSame(
+            [[
+                'message_id' => self::MESSAGE_ID,
+                'context' => InboundMessageProcessingFailure::CONTEXT_BLOCKED_MESSAGE_TRANSITION,
+                'failure_class' => RuntimeException::class,
+            ]],
+            $fixture['failureLogger']->failures
+        );
+        self::assertStringNotContainsString(
+            'Private message detail',
+            json_encode($fixture['failureLogger']->failures, JSON_THROW_ON_ERROR)
+        );
+    }
+
+    public function testUnexpectedProcessingFailureLogsOnlySafeDiagnosticDetails(): void
+    {
+        $fixture = $this->fixture(new DirectorySnapshot([], [], []), pipelineFactoryThrows: true);
+        $fixture['messages']->add($this->message());
+        $fixture['storage']->files['private-message.eml'] = $this->validEmail();
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame('failed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        self::assertSame(
+            'An unexpected processing error occurred. Reprocess the message, and contact support if this continues.',
+            $fixture['messages']->errors[self::MESSAGE_ID]
+        );
+        self::assertSame(
+            [[
+                'message_id' => self::MESSAGE_ID,
+                'context' => InboundMessageProcessingFailure::CONTEXT_PROCESSING,
+                'failure_class' => RuntimeException::class,
+            ]],
+            $fixture['failureLogger']->failures
+        );
+        self::assertStringNotContainsString(
+            'Private pipeline detail',
+            json_encode($fixture['failureLogger']->failures, JSON_THROW_ON_ERROR)
+        );
+    }
+
+    public function testWrappedCandidateStorageFailureLogsCauseClassWithoutItsMessage(): void
+    {
+        $fixture = $this->fixture(new DirectorySnapshot([], [], []));
+        $fixture['messages']->add($this->message());
+        $fixture['storage']->files['private-message.eml'] = $this->validEmail();
+        $fixture['candidates']->replaceFailure = new RuntimeException('Private candidate detail');
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame('failed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        self::assertSame(
+            'The parsed event details could not be saved. Reprocess the message, and contact support if this continues.',
+            $fixture['messages']->errors[self::MESSAGE_ID]
+        );
+        self::assertSame(
+            [[
+                'message_id' => self::MESSAGE_ID,
+                'context' => InboundMessageProcessingFailure::CONTEXT_CANDIDATE_STORAGE,
+                'failure_class' => RuntimeException::class,
+            ]],
+            $fixture['failureLogger']->failures
+        );
+        self::assertStringNotContainsString(
+            'Private candidate detail',
+            json_encode($fixture['failureLogger']->failures, JSON_THROW_ON_ERROR)
+        );
     }
 
     public function testBlockedSenderIsIgnoredWithoutReadingOrPersistingCandidates(): void
@@ -127,10 +251,12 @@ final class InboundMessageProcessingJobTest extends TestCase
      *     job: InboundMessageProcessingJob,
      *     messages: ProcessingMessageStore,
      *     storage: ProcessingFileStorage,
-     *     candidates: ProcessingCandidateStore
+     *     candidates: ProcessingCandidateStore,
+     *     directory: ProcessingDirectorySnapshotProvider,
+     *     failureLogger: ProcessingFailureLogger
      * }
      */
-    private function fixture(DirectorySnapshot $snapshot): array
+    private function fixture(DirectorySnapshot $snapshot, bool $pipelineFactoryThrows = false): array
     {
         $clock = new ProcessingClock();
         $directory = new ProcessingDirectorySnapshotProvider($snapshot);
@@ -138,12 +264,21 @@ final class InboundMessageProcessingJobTest extends TestCase
         $messages = new ProcessingMessageStore();
         $storage = new ProcessingFileStorage();
         $candidates = new ProcessingCandidateStore();
+        $failureLogger = new ProcessingFailureLogger();
+        $createPipeline = static function () use ($pipelineFactory, $pipelineFactoryThrows): Pipeline {
+            if ($pipelineFactoryThrows) {
+                throw new RuntimeException('Private pipeline detail');
+            }
+
+            return $pipelineFactory->create();
+        };
         $job = new InboundMessageProcessingJob(
             $messages,
             $storage,
             new MimeMessageParser(),
-            static fn (): Pipeline => $pipelineFactory->create(),
+            $createPipeline,
             $candidates,
+            $failureLogger,
             $directory,
             $clock
         );
@@ -153,6 +288,8 @@ final class InboundMessageProcessingJobTest extends TestCase
             'messages' => $messages,
             'storage' => $storage,
             'candidates' => $candidates,
+            'directory' => $directory,
+            'failureLogger' => $failureLogger,
         ];
     }
 
@@ -356,11 +493,19 @@ final class ProcessingCandidateStore implements EventCandidateStoreInterface
 
     public int $replaceCalls = 0;
 
+    public ?RuntimeException $replaceFailure = null;
+
+    public ?RuntimeException $discardFailure = null;
+
     public function replaceDraftCandidatesForMessage(
         int $messageId,
         ParseOutcome $outcome,
         string $timestamp
     ): void {
+        if ($this->replaceFailure !== null) {
+            throw $this->replaceFailure;
+        }
+
         ++$this->replaceCalls;
         $this->candidates[$messageId] = [];
 
@@ -377,18 +522,45 @@ final class ProcessingCandidateStore implements EventCandidateStoreInterface
 
     public function discardDraftCandidatesForMessage(int $messageId, string $timestamp): void
     {
+        if ($this->discardFailure !== null) {
+            throw $this->discardFailure;
+        }
+
         $this->candidates[$messageId] = [];
+    }
+}
+
+final class ProcessingFailureLogger implements InboundMessageProcessingFailureLoggerInterface
+{
+    /**
+     * @var list<array{message_id: int, context: string, failure_class: string}>
+     */
+    public array $failures = [];
+
+    public function logFailure(int $messageId, string $context, string $failureClass): void
+    {
+        $this->failures[] = [
+            'message_id' => $messageId,
+            'context' => $context,
+            'failure_class' => $failureClass,
+        ];
     }
 }
 
 final class ProcessingDirectorySnapshotProvider implements DirectorySnapshotProviderInterface
 {
+    public ?RuntimeException $failure = null;
+
     public function __construct(private DirectorySnapshot $snapshot)
     {
     }
 
     public function getSnapshot(): DirectorySnapshot
     {
+        if ($this->failure !== null) {
+            throw $this->failure;
+        }
+
         return $this->snapshot;
     }
 }
