@@ -72,6 +72,24 @@ final class InboundMessageRepository extends AbstractRepository
     }
 
     /**
+     * @return list<array{received_at: string, auth_results: string|null, is_auto_reply: int|string}>
+     */
+    public function findRecentScreeningMessagesBySourceId(int $sourceId, int $limit = 5): array
+    {
+        if ($sourceId < 1) {
+            throw new InvalidArgumentException('A source ID must be positive.');
+        }
+
+        return $this->fetchRows($this->database->prepare(
+            'SELECT received_at, auth_results, is_auto_reply FROM ' . $this->tableName()
+            . ' WHERE source_id = %d AND (is_auto_reply = 1 OR auth_results IS NOT NULL) '
+            . 'ORDER BY id DESC LIMIT %d',
+            $sourceId,
+            max(1, min(20, $limit))
+        ));
+    }
+
+    /**
      * @return list<array{filename: string, mime_type: string, size_bytes: int|string, status: string}>
      */
     public function findRecentSkippedAttachmentsBySourceId(int $sourceId, int $limit = 5): array

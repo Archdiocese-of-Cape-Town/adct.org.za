@@ -153,8 +153,8 @@ Mailbox connection settings are kept separately from source identity and health.
 | received_at | |
 | raw_path | Relative path to the protected, unguessably named raw `.eml` under the private uploads directory |
 | body_text | Extracted plain text; the polling stage leaves this `NULL` and does not parse events |
-| auth_results | JSON: SPF/DKIM/DMARC verdicts |
-| is_auto_reply | bool; auto-replies never get confirmations |
+| auth_results | Nullable version-1 JSON: `version`, plus `spf`, `dkim` and `dmarc` lists of `{authserv_id, result, trusted}` verdicts. Only recognized values are stored; raw header text is not. `trusted` is true only for an explicitly allowlisted authserv-id (the default allowlist is empty). |
+| is_auto_reply | bool; set for declared or likely auto-reply/list signals and blocks confirmations, including to mailing lists |
 | status | see state machine |
 | error | |
 | retention_until | raw data deleted after this date |

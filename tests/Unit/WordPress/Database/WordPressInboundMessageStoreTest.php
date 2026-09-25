@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Database;
 
 use ADCT\ParishIntake\Core\Ingestion\InboundAttachmentRecord;
+use ADCT\ParishIntake\Core\Ingestion\AuthenticationResult;
+use ADCT\ParishIntake\Core\Ingestion\AuthenticationResults;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
@@ -93,6 +95,46 @@ final class WordPressInboundMessageStoreTest extends TestCase
         self::assertTrue($result->duplicate);
         self::assertCount(1, $database->prepared);
         self::assertSame('COMMIT', $database->queries[1]);
+    }
+
+    public function testStoresAutomationFlagAndStructuredAuthenticationResults(): void
+    {
+        $database = new FakeInboundStoreDatabase();
+        $authenticationResults = new AuthenticationResults([
+            new AuthenticationResult('spf', 'pass', 'external.example.test', false),
+            new AuthenticationResult('dmarc', 'fail', 'external.example.test', false),
+        ]);
+        $store = new WordPressInboundMessageStore(
+            $database,
+            new InboundMessageRepository($database),
+            new AttachmentRepository($database)
+        );
+        $message = new InboundMessageRecord(
+            17,
+            '<screened-message@example.test>',
+            null,
+            'no-reply@example.test',
+            null,
+            'Synthetic screening message',
+            new DateTimeImmutable('2026-09-25T04:00:00+00:00'),
+            'screened-message.eml',
+            [],
+            InboundMessageRecord::STATUS_RECEIVED,
+            null,
+            true,
+            $authenticationResults
+        );
+
+        $store->store($message, '2026-09-25 04:01:00');
+
+        $query = $database->prepared[1]['query'];
+        $arguments = $database->prepared[1]['arguments'];
+        $authenticationIndex = array_search($authenticationResults->toJson(), $arguments, true);
+
+        self::assertStringContainsString('`auth_results`', $query);
+        self::assertStringContainsString('`is_auto_reply`', $query);
+        self::assertNotFalse($authenticationIndex);
+        self::assertSame(1, $arguments[$authenticationIndex + 1]);
     }
 }
 

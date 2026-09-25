@@ -26,7 +26,9 @@ final readonly class InboundMessageRecord
         public ?string $rawPath,
         public array $attachments = [],
         public string $status = self::STATUS_RECEIVED,
-        public ?string $error = null
+        public ?string $error = null,
+        public bool $isAutoReply = false,
+        public ?AuthenticationResults $authResults = null
     ) {
         if ($sourceId < 1 || $externalId === '' || strlen($externalId) > 191) {
             throw new InvalidArgumentException('An inbound message needs a valid source and external ID.');

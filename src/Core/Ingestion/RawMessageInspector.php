@@ -9,16 +9,52 @@ use RuntimeException;
 
 final class RawMessageInspector
 {
+    private const INSPECTED_HEADERS = [
+        'Auto-Submitted',
+        'Precedence',
+        'X-Autoreply',
+        'X-Autorespond',
+        'X-Auto-Response-Suppress',
+        'X-Loop',
+        'List-Id',
+        'List-Post',
+        'List-Unsubscribe',
+        'List-Subscribe',
+        'List-Help',
+        'List-Archive',
+        'List-Owner',
+        'Mailing-List',
+        'X-BeenThere',
+        'Return-Path',
+        'Authentication-Results',
+    ];
+
     private const MIME_PARSER_CLASSES = [
         'ZBateson\\MailMimeParser\\MailMimeParser',
         'ADCT\\ParishIntake\\Dependencies\\ZBateson\\MailMimeParser\\MailMimeParser',
     ];
+
+    private AutomatedMailDetector $automatedMailDetector;
+    private AuthenticationResultsParser $authenticationResultsParser;
+
+    public function __construct(
+        ?AuthenticationResultsParser $authenticationResultsParser = null,
+        ?AutomatedMailDetector $automatedMailDetector = null
+    ) {
+        $this->authenticationResultsParser = $authenticationResultsParser ?? new AuthenticationResultsParser();
+        $this->automatedMailDetector = $automatedMailDetector ?? new AutomatedMailDetector();
+    }
 
     public function inspect(string $rawMessage, DateTimeImmutable $fallbackReceivedAt): InspectedInboundMail
     {
         $parserClass = $this->mimeParserClass();
         $mimeMessage = (new $parserClass())->parse($rawMessage, false);
         $attachments = [];
+        $headers = [];
+
+        foreach (self::INSPECTED_HEADERS as $name) {
+            $headers[$name] = $this->headerValues($mimeMessage, $name);
+        }
 
         foreach ($mimeMessage->getAllAttachmentParts() as $index => $part) {
             $content = $part->getContent();
@@ -42,6 +78,11 @@ final class RawMessageInspector
         }
 
         [$senderName, $senderEmail] = $this->sender($mimeMessage);
+        $contentTypes = $this->contentTypes($mimeMessage);
+        $automationAssessment = $this->automatedMailDetector->inspect($headers, $senderEmail, $contentTypes);
+        $authenticationResults = $this->authenticationResultsParser->parse(
+            $headers['Authentication-Results'] ?? []
+        );
 
         return new InspectedInboundMail(
             $this->headerValue($mimeMessage, 'Message-ID'),
@@ -50,8 +91,50 @@ final class RawMessageInspector
             trim((string) $mimeMessage->getSubject()),
             $this->body($mimeMessage),
             $this->receivedAt($mimeMessage, $fallbackReceivedAt),
-            $attachments
+            $attachments,
+            $automationAssessment,
+            $authenticationResults
         );
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function headerValues(mixed $mimeMessage, string $name): array
+    {
+        $values = [];
+
+        foreach ($mimeMessage->getAllHeadersByName($name) as $header) {
+            if (is_object($header) && method_exists($header, 'getRawValue')) {
+                $values[] = (string) $header->getRawValue();
+            }
+        }
+
+        return $values;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function contentTypes(mixed $mimeMessage): array
+    {
+        $contentTypes = $this->headerValues($mimeMessage, 'Content-Type');
+
+        if (is_object($mimeMessage) && method_exists($mimeMessage, 'getAllParts')) {
+            foreach ($mimeMessage->getAllParts() as $part) {
+                if (! is_object($part) || ! method_exists($part, 'getContentType')) {
+                    continue;
+                }
+
+                $contentType = trim((string) $part->getContentType(''));
+
+                if ($contentType !== '') {
+                    $contentTypes[] = $contentType;
+                }
+            }
+        }
+
+        return array_values(array_unique($contentTypes));
     }
 
     private function mimeParserClass(): string

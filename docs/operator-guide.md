@@ -113,7 +113,7 @@ An Administrator or Intake manager with settings access can open **Parish Intake
 
 These safeguards cover Mass times and intentions, sick lists, deceased, anniversaries, raffle winners, collections/finances, banking details and readings. Keep recognizable phrases in each category so these sections stay out of event candidates and AI enrichment. A blank category uses its built-in defaults. Select **Reset section keywords to defaults** to restore all built-in lists; **Save settings** saves the current lists.
 
-To investigate a possible false skip or keyword override, paste the source into **Parish Intake → Manual parser**. The latest outcome reports each skipped block's zero-based `block_index` and category in its `reason`; use the index to find the section in the raw text you supplied. The `section_keyword_overridden` note identifies retained candidates that need a closer look. Skipped text is deliberately absent from the parse outcome. A full viewer for stored inbound messages is not part of the current admin screens.
+To investigate a possible false skip or keyword override, paste the source into **Parish Intake → Manual parser**. The latest outcome reports each skipped block's zero-based `block_index` and category in its `reason`; use the index to find the section in the raw text you supplied. The `section_keyword_overridden` note identifies retained candidates that need a closer look. Skipped text is deliberately absent from the parse outcome. The Mailboxes screen shows recent automated/list flags and structured SPF/DKIM/DMARC summaries, but does not show sender addresses, subjects, raw headers or message bodies. A full viewer for stored inbound messages is not part of the current admin screens.
 
 If an event after a Mass-intentions or prayer list is missed, give the events their own heading (e.g. EVENTS).
 
@@ -138,7 +138,25 @@ TLS certificate and hostname verification is always on for production connection
 
 Enter the mailbox password in the write-only field, or use a password constant described below. The Mailboxes screen never shows a saved password. When a password is saved in the database, leave the field blank to keep it; select **Remove saved password** to delete it. Database-stored passwords are not encrypted by this plugin.
 
-Select **Test connection** on the mailbox row to sign in, count unseen messages in the inbox and check that the Processed folder exists. If the folder is missing, select **Create processed folder** in the test result. The check does not download message bodies or start polling. An active mailbox linked to an active email source, with a configured password, is polled by the scheduled `poll_mailboxes` job; open **Parish Intake → Scheduled jobs** and select **Run now** to start a bounded poll immediately. Each run stops at 60 seconds or 100 mailbox steps and resumes from the saved UID checkpoint. New messages are stored as raw `.eml` files with eligible attachments, de-duplicated, then moved to Processed. This intake stage does not parse events, publish them or send email.
+Select **Test connection** on the mailbox row to sign in, count unseen messages in the inbox and check that the Processed folder exists. If the folder is missing, select **Create processed folder** in the test result. The check does not download message bodies or start polling. An active mailbox linked to an active email source, with a configured password, is polled by the scheduled `poll_mailboxes` job; open **Parish Intake → Scheduled jobs** and select **Run now** to start a bounded poll immediately. Each run stops at 60 seconds or 100 mailbox steps and resumes from the saved UID checkpoint. New messages are stored as raw `.eml` files with eligible attachments, de-duplicated, screened for automated/list signals, then moved to Processed. Declared automation (such as `Auto-Submitted: auto-replied` or a delivery-status report) is distinguished from likely signals (such as list headers, a null `Return-Path` or a no-reply-style address), but both set the no-confirmation flag. SPF/DKIM/DMARC verdicts are saved as structured data; polling does not parse events, publish or modify them, or send email.
+
+### Review authentication summaries
+
+The Mailboxes screen labels authentication verdicts from an unconfigured or unknown authserv-id as **unverified claims**. By default no authserv-id is trusted, so an attacker-supplied `Authentication-Results` header cannot establish a verified pass or make a sender trusted.
+
+Only configure `ADCT_PI_TRUSTED_AUTHSERV_IDS` after confirming that the receiving mail server removes or safely rewrites sender-supplied `Authentication-Results` headers before stamping its own result. Use the exact authserv-id assigned by that trusted receiving server; a matching header value on its own is not proof that the server generated it. The default is an empty list:
+
+```php
+define('ADCT_PI_TRUSTED_AUTHSERV_IDS', []);
+```
+
+If the MTA behavior has been verified, an operator may configure its exact authserv-id (example only):
+
+```php
+define('ADCT_PI_TRUSTED_AUTHSERV_IDS', ['mx.example.test']);
+```
+
+The screen shows verdicts and their configured trust status, not raw headers or message contents. A reported DMARC fail is visibly flagged for review; the Core `InboundMailPolicy::canApplyInstantChange()` also blocks instant changes for that message from a verified contact. The approval route will consume this policy in #71. This screening stage does not send confirmation or approval email.
 
 Raw mail and accepted attachments are kept in a private uploads subdirectory protected by `.htaccess` deny rules and an `index.php` guard. Attachment storage is provisional: PDF, JPEG, PNG, WebP, HEIC and HEIF files are accepted only when the declared MIME type matches the file signature and the file is no larger than 15 MiB. Other attachments are not stored; their metadata and skip reason appear as a warning on the Mailboxes screen. Messages over the mailbox's configured size limit are recorded as skipped, moved to a `Too large` folder created by the poller, and listed with an administrator-visible warning. A failed message remains available for a later retry; check the mailbox health and Scheduled jobs screens for errors.
 

@@ -1,0 +1,29 @@
+{
+  "classification": "none",
+  "signals": [],
+  "blocks_confirmation": false,
+  "auth_results": {
+    "version": 1,
+    "spf": [
+      {
+        "authserv_id": "attacker.example.test",
+        "result": "pass",
+        "trusted": false
+      }
+    ],
+    "dkim": [
+      {
+        "authserv_id": "attacker.example.test",
+        "result": "pass",
+        "trusted": false
+      }
+    ],
+    "dmarc": [
+      {
+        "authserv_id": "attacker.example.test",
+        "result": "pass",
+        "trusted": false
+      }
+    ]
+  }
+}

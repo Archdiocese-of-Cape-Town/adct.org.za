@@ -13,6 +13,8 @@ use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
 use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\Core\Directory\VenueLookup;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxEncryption;
+use ADCT\ParishIntake\Core\Ingestion\AuthenticationResult;
+use ADCT\ParishIntake\Core\Ingestion\AuthenticationResults;
 use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
 use ADCT\ParishIntake\Core\Ingestion\InboundAttachmentRecord;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
@@ -2068,6 +2070,39 @@ if (! $storedContentHashDuplicate->duplicate) {
     $fail('A resent message with a new Message-ID was not de-duplicated by content hash.');
 }
 
+$screeningAuthenticationResults = new AuthenticationResults([
+    new AuthenticationResult('spf', 'pass', 'spoofed.example.test', false),
+    new AuthenticationResult('dkim', 'pass', 'spoofed.example.test', false),
+    new AuthenticationResult('dmarc', 'fail', 'spoofed.example.test', false),
+]);
+$screeningMessage = new InboundMessageRecord(
+    $mailboxSource->id,
+    '<screening-message@example.test>',
+    hash('sha256', 'synthetic screening message body'),
+    'no-reply@example.test',
+    'Synthetic Sender Name Must Not Render',
+    'Synthetic subject must not render',
+    new DateTimeImmutable('2026-09-25T04:03:00+00:00'),
+    'integration-only-screened-message.eml',
+    [],
+    InboundMessageRecord::STATUS_RECEIVED,
+    null,
+    true,
+    $screeningAuthenticationResults
+);
+$screeningStoreResult = $inboundMessageStore->store($screeningMessage, $integrationTimestamp);
+$screeningRows = $inboundMessageRepository->findRecentScreeningMessagesBySourceId($mailboxSource->id, 5);
+
+if (
+    $screeningStoreResult->duplicate
+    || $screeningRows === []
+    || (int) ($screeningRows[0]['is_auto_reply'] ?? 0) !== 1
+    || ! is_string($screeningRows[0]['auth_results'] ?? null)
+    || ! AuthenticationResults::fromJson($screeningRows[0]['auth_results'])->hasReportedDmarcFailure()
+) {
+    $fail('The inbound store did not persist automation and structured authentication flags.');
+}
+
 $secondaryMailboxEmail = 'intake-mailbox-secondary@example.test';
 $secondaryMailboxSource = $sourceRepository->findGlobalEmailSource($secondaryMailboxEmail);
 $secondaryMailboxSource = $sourceRegistry->save(new Source(
@@ -2158,6 +2193,14 @@ if (
     || strpos($mailboxesListHtml, 'Message size 16000001 bytes') === false
     || strpos($mailboxesListHtml, 'Skipped attachments') === false
     || strpos($mailboxesListHtml, 'unsupported MIME type') === false
+    || strpos($mailboxesListHtml, 'Recent message screening') === false
+    || strpos($mailboxesListHtml, 'No confirmation: automated or list mail detected.') === false
+    || strpos($mailboxesListHtml, 'SPF: PASS (unverified claim)') === false
+    || strpos($mailboxesListHtml, 'DMARC: FAIL (unverified claim)') === false
+    || strpos($mailboxesListHtml, 'Review flag: reported DMARC fail') === false
+    || strpos($mailboxesListHtml, 'Synthetic subject must not render') !== false
+    || strpos($mailboxesListHtml, 'Synthetic Sender Name Must Not Render') !== false
+    || strpos($mailboxesListHtml, 'spoofed.example.test') !== false
     || strpos($mailboxesListHtml, $mailboxPassword) !== false
     || strpos($mailboxesEditHtml, $mailboxPassword) !== false
     || $passwordInput === ''
