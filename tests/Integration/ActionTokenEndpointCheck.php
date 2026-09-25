@@ -123,6 +123,32 @@ final class ActionTokenEndpointCheck
             'A token did not act exactly once through the nonce-protected POST endpoint.'
         );
 
+        $concurrentBinding = new ActionTokenBinding(
+            ActionTokenPurpose::CONFIRM,
+            'candidate',
+            $subjectId + 3,
+            'concurrent-' . $testSuffix . '@example.test'
+        );
+        $concurrentToken = $tokens->issue(
+            $concurrentBinding,
+            $clock->now()->modify('+5 minutes')
+        );
+        $concurrentTokenHash = hash('sha256', $concurrentToken->token());
+        $concurrentRecordWasConsumedOnce = self::runConcurrentConsume(
+            $wpdb,
+            $concurrentTokenHash,
+            $concurrentBinding,
+            $clock->now()
+        );
+        $concurrentRecord = $tokenStore->findByHash($concurrentTokenHash);
+
+        $check(
+            $concurrentRecordWasConsumedOnce
+                && $concurrentRecord !== null
+                && $concurrentRecord->usedAt !== null,
+            'Concurrent action-token consumption did not produce exactly one atomic winner.'
+        );
+
         $unverifiedBinding = new ActionTokenBinding(
             ActionTokenPurpose::CONFIRM,
             'candidate',
@@ -366,6 +392,10 @@ final class ActionTokenEndpointCheck
         );
         $wpdb->delete(
             $wpdb->prefix . 'adct_pi_action_tokens',
+            ['subject_type' => 'candidate', 'subject_id' => $subjectId + 3]
+        );
+        $wpdb->delete(
+            $wpdb->prefix . 'adct_pi_action_tokens',
             ['subject_type' => 'candidate', 'subject_id' => $subjectId + 1]
         );
         $wpdb->delete(
@@ -385,6 +415,129 @@ final class ActionTokenEndpointCheck
             "DELETE FROM {$wpdb->prefix}adct_pi_action_tokens WHERE email LIKE %s",
             $ipEmailPrefix . '%@example.test'
         ));
+    }
+
+    private static function runConcurrentConsume(
+        \wpdb $database,
+        string $tokenHash,
+        ActionTokenBinding $binding,
+        DateTimeImmutable $now
+    ): bool {
+        if (! function_exists('mysqli_poll') || ! defined('MYSQLI_ASYNC')) {
+            return false;
+        }
+
+        $newConnection = static function () use ($database): \wpdb {
+            $connection = new \wpdb(
+                (string) $database->dbuser,
+                (string) $database->dbpassword,
+                (string) $database->dbname,
+                (string) $database->dbhost
+            );
+            $connection->set_prefix((string) $database->prefix);
+
+            return $connection;
+        };
+        $locker = $newConnection();
+        $first = $newConnection();
+        $second = $newConnection();
+        $lockHeld = false;
+
+        try {
+            $firstHandle = $first->dbh;
+            $secondHandle = $second->dbh;
+
+            if (! $firstHandle instanceof \mysqli || ! $secondHandle instanceof \mysqli) {
+                return false;
+            }
+
+            $table = '`' . $database->prefix . 'adct_pi_action_tokens`';
+            $nowUtc = $now->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+            $query = $database->prepare(
+                "UPDATE {$table} SET used_at = %s, updated_at = %s "
+                . 'WHERE token_hash = %s AND purpose = %s AND subject_type = %s '
+                . 'AND subject_id = %d AND email = %s AND used_at IS NULL AND expires_at > %s',
+                $nowUtc,
+                $nowUtc,
+                $tokenHash,
+                $binding->purpose->value,
+                $binding->subjectType,
+                $binding->subjectId,
+                $binding->email,
+                $nowUtc
+            );
+            $lockQuery = $locker->prepare(
+                "SELECT token_hash FROM {$table} WHERE token_hash = %s FOR UPDATE",
+                $tokenHash
+            );
+
+            if (
+                $locker->query('START TRANSACTION') === false
+                || $locker->get_var($lockQuery) !== $tokenHash
+            ) {
+                return false;
+            }
+
+            $lockHeld = true;
+
+            if (
+                $firstHandle->query($query, MYSQLI_ASYNC) !== true
+                || $secondHandle->query($query, MYSQLI_ASYNC) !== true
+            ) {
+                return false;
+            }
+
+            usleep(100000);
+
+            if ($locker->query('COMMIT') === false) {
+                return false;
+            }
+
+            $lockHeld = false;
+            $pending = [$firstHandle, $secondHandle];
+            $affectedRows = [];
+
+            for ($attempt = 0; $pending !== [] && $attempt < 10; ++$attempt) {
+                $ready = $pending;
+                $errors = [];
+                $rejected = [];
+                $readyCount = mysqli_poll($ready, $errors, $rejected, 1);
+
+                if ($readyCount === false || $errors !== [] || $rejected !== []) {
+                    return false;
+                }
+
+                foreach ($ready as $readyConnection) {
+                    $result = $readyConnection->reap_async_query();
+
+                    if ($result === false) {
+                        return false;
+                    }
+
+                    if ($result instanceof \mysqli_result) {
+                        $result->free();
+                    }
+
+                    $affectedRows[] = $readyConnection->affected_rows;
+                    $pending = array_values(array_filter(
+                        $pending,
+                        static fn (\mysqli $pendingConnection): bool => $pendingConnection !== $readyConnection
+                    ));
+                }
+            }
+
+            sort($affectedRows);
+
+            return $pending === [] && $affectedRows === [0, 1];
+        } finally {
+            if ($lockHeld) {
+                $locker->query('ROLLBACK');
+            }
+
+            $first->close();
+            $second->close();
+            $locker->close();
+        }
     }
 
     private static function nonceFrom(string $html, callable $fail): string

@@ -39,7 +39,7 @@ The route-resolution subset is covered by #68: unit tests exercise two active ap
 - A parish in a deanery with **no active approver** (dean not set up) goes to reviewers only, is approved by a reviewer, and the dashboard lists that deanery as "no approver".
 - An unchanged repeat of a published or pending event (same parish, title, schedule) is marked `duplicate` and sends **no** confirmation or approval email.
 - Approver digest mode sends one daily email instead of one per item. Reminders respect the on/off switches.
-- Action links: GET renders only a safe preview; nonce-protected POST consumes a token once; invalid, expired and used tokens have friendly states; renewal is queued without exposing recipient data in the page. MariaDB integration tests verify same-second N+1 request denial for both per-email and per-IP limits, and prove no additional queue delivery occurs after the cap. No event approval or login handler is exercised until its separate issue.
+- Action links: GET renders only a safe preview; nonce-protected POST consumes a token once; invalid, expired and used tokens have friendly states; renewal is queued without exposing recipient data in the page. MariaDB integration tests verify that two concurrent conditional token-consume updates admit exactly one winner, same-second N+1 request denial for both per-email and per-IP limits, and no additional queue delivery after the cap. No event approval or login handler is exercised until its separate issue.
 
 ## Scheduling and mail limits test cases
 
