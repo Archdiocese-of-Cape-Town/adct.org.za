@@ -124,6 +124,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Jobs {
     use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
     use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
     use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
+    use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
     use DateTimeImmutable;
     use PHPUnit\Framework\TestCase;
     use RuntimeException;
@@ -153,6 +154,16 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Jobs {
 
             self::assertEquals($state, $store->load('test_job'));
             self::assertFalse($GLOBALS['wpdb']->autoload['adct_pi_job_state_test_job']);
+        }
+
+        public function testInboundProcessingFailureLogContainsOnlyDiagnosticMetadata(): void
+        {
+            $logger = new WordPressInboundMessageProcessingFailureLogger();
+            $logger->logFailure(41, 'pipeline_parse', RuntimeException::class);
+
+            self::assertSame([
+                '[ADCT Parish Intake] Inbound message processing failed (message_id=41 context=pipeline_parse exception=RuntimeException).',
+            ], WordPressCronFixture::$logs);
         }
 
         public function testLockUsesAtomicCreationAndTokenGuardedExpiredLockRecovery(): void

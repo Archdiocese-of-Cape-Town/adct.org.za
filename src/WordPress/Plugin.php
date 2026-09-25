@@ -25,10 +25,12 @@ use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
 use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
 use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\Core\Jobs\FrameworkHeartbeatJob;
+use ADCT\ParishIntake\Core\Jobs\InboundMessageProcessingJob;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
 use ADCT\ParishIntake\Core\Jobs\MailQueueSenderJob;
 use ADCT\ParishIntake\Core\Jobs\OccurrenceExpansionJob;
 use ADCT\ParishIntake\Core\Ingestion\Imap\ImapMailbox;
+use ADCT\ParishIntake\Core\Ingestion\MimeMessageParser;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxConnectionConfig;
 use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
 use ADCT\ParishIntake\Core\Ingestion\AuthenticationResultsParser;
@@ -54,6 +56,7 @@ use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
+use ADCT\ParishIntake\WordPress\Admin\InboundMessagesPage;
 use ADCT\ParishIntake\WordPress\Admin\DeaneriesPage;
 use ADCT\ParishIntake\WordPress\Admin\MailboxesPage;
 use ADCT\ParishIntake\WordPress\Admin\OutboundMailPage;
@@ -79,6 +82,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\MailboxRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\OccurrenceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
@@ -89,6 +93,7 @@ use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenRateLimitStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressMailQueueRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
+use ADCT\ParishIntake\WordPress\Database\WordPressEventCandidateStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationLogger;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationVersionStore;
 use ADCT\ParishIntake\WordPress\Directory\CachedDirectorySnapshotProvider;
@@ -102,6 +107,7 @@ use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
+use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailQueueImmediateDispatch;
 use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeRecipientPolicy;
@@ -143,6 +149,7 @@ final class Plugin
     private CandidatePublisher $candidatePublisher;
     private PublicEventListing $publicEventListing;
     private MailboxesPage $mailboxesPage;
+    private InboundMessagesPage $inboundMessagesPage;
 
     private function __construct(string $pluginFile)
     {
@@ -305,6 +312,7 @@ final class Plugin
             $clock,
             new WordPressMailQueueImmediateDispatch($jobRunner, $mailQueueSenderJob)
         );
+        $protectedInboundMailStorage = new ProtectedInboundMailStorage();
         $this->actionTokenService = new ActionTokenService(
             new WordPressActionTokenStore($database),
             $clock
@@ -328,7 +336,7 @@ final class Plugin
             $mailboxes,
             $sources,
             $inboundMessageStore,
-            new ProtectedInboundMailStorage(),
+            $protectedInboundMailStorage,
             new SourceHealthRecorder($sources, $clock),
             new RawMessageInspector(new AuthenticationResultsParser($trustedAuthservIds)),
             new AttachmentStoragePolicy(),
@@ -353,10 +361,28 @@ final class Plugin
                 ));
             }
         );
+        $inboundMessageProcessingJob = new InboundMessageProcessingJob(
+            $inboundMessageStore,
+            $protectedInboundMailStorage,
+            new MimeMessageParser(),
+            fn () => $this->parserPage->createConfiguredPipeline(),
+            new WordPressEventCandidateStore(new EventCandidateRepository($database)),
+            new WordPressInboundMessageProcessingFailureLogger(),
+            $directorySnapshots,
+            $clock
+        );
+        $this->inboundMessagesPage = new InboundMessagesPage(
+            $inboundMessages,
+            $inboundMessageStore,
+            $inboundMessageProcessingJob,
+            $jobRunner,
+            $clock
+        );
         $this->jobScheduler = new WordPressJobScheduler(
             [
                 new FrameworkHeartbeatJob(),
                 $mailboxPollingJob,
+                $inboundMessageProcessingJob,
                 new OccurrenceExpansionJob($occurrenceMaintenance, $clock, $timezone),
                 $mailQueueSenderJob,
             ],
@@ -592,6 +618,7 @@ final class Plugin
         add_action('admin_menu', [$this->sendersPage, 'registerMenu']);
         add_action('admin_menu', [$this->sourcesPage, 'registerMenu']);
         add_action('admin_menu', [$this->mailboxesPage, 'registerMenu']);
+        add_action('admin_menu', [$this->inboundMessagesPage, 'registerMenu']);
         add_action('admin_menu', [$this->outboundMailPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
         add_action('admin_init', [$this, 'maybeUpgradeRoles'], 1);
@@ -606,6 +633,10 @@ final class Plugin
         add_action('admin_post_adct_pi_parish_contact', [$this->parishesPage, 'handleContactAction']);
         add_action('admin_post_adct_pi_save_source', [$this->sourcesPage, 'handleSaveSource']);
         add_action('admin_post_adct_pi_save_mailbox', [$this->mailboxesPage, 'handleSaveMailbox']);
+        add_action(
+            'admin_post_adct_pi_reprocess_inbound_messages',
+            [$this->inboundMessagesPage, 'handleReprocess']
+        );
         add_action('admin_post_adct_pi_test_mailbox', [$this->mailboxesPage, 'handleTestConnection']);
         add_action(
             'admin_post_adct_pi_create_mailbox_processed_folder',
