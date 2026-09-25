@@ -21,6 +21,9 @@ use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
 use ADCT\ParishIntake\Core\Mail\MailPriority;
 use ADCT\ParishIntake\Core\Mail\MailQueueClaimStatus;
+use ADCT\ParishIntake\Core\Mail\MailQueueConfiguration;
+use ADCT\ParishIntake\Core\Mail\MailQueueDispatchStatus;
+use ADCT\ParishIntake\Core\Mail\MailQueueDispatcher;
 use ADCT\ParishIntake\Core\Mail\MailQueueStatus;
 use ADCT\ParishIntake\Core\Mail\OutboundEmail;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
@@ -44,6 +47,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Database\WordPressMailQueueRepository;
+use ADCT\ParishIntake\WordPress\Admin\OutboundMailPage;
 use ADCT\ParishIntake\WordPress\Plugin;
 use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
@@ -51,6 +55,9 @@ use ADCT\ParishIntake\WordPress\Directory\DeaneryApproverAssignmentService;
 use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
 use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
+use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
+use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeRecipientPolicy;
+use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeSettings;
 
 require_once ABSPATH . 'wp-admin/includes/plugin.php';
 require_once ABSPATH . 'wp-admin/includes/user.php';
@@ -69,6 +76,9 @@ if (! is_file($pluginFile)) {
 if (is_plugin_active($pluginBasename)) {
     $fail('The integration environment must start with the release plugin inactive.');
 }
+
+delete_option('adct_pi_test_mode');
+delete_option('adct_pi_test_allowlist');
 
 $activationMessages = [];
 $previousErrorReporting = error_reporting();
@@ -101,6 +111,13 @@ if ($activationMessages !== []) {
 
 if (! is_plugin_active($pluginBasename)) {
     $fail('The release plugin was not active after activation.');
+}
+
+if (
+    get_option(WordPressTestModeSettings::TEST_MODE_OPTION) !== WordPressTestModeSettings::MODE_DISABLED
+    || get_option(WordPressTestModeSettings::ALLOWLIST_OPTION) !== []
+) {
+    $fail('Fresh plugin activation did not default outbound test mode to off with an empty allow-list.');
 }
 
 if ((int) get_option('adct_pi_db_version', 0) !== 5) {
@@ -580,6 +597,320 @@ if (count($settingsItems) !== 1 || $settingsItems[0][0] !== 'Settings') {
 $settingsHook = get_plugin_page_hookname($settingsSlug, $parentSlug);
 if (has_action($settingsHook) === false) {
     $fail('The Settings page callback was not registered.');
+}
+
+$outboundMailSlug = 'adct-parish-intake-outbound-mail';
+$outboundMailItems = array_values(array_filter(
+    $GLOBALS['submenu'][$parentSlug] ?? [],
+    static fn ($item): bool => is_array($item) && ($item[2] ?? null) === $outboundMailSlug
+));
+
+if (
+    count($outboundMailItems) !== 1
+    || $outboundMailItems[0][0] !== 'Outbound email'
+    || $outboundMailItems[0][1] !== Capabilities::MANAGE_SETTINGS
+) {
+    $fail('The Outbound email settings and suppressed-mail submenu was not registered.');
+}
+
+$outboundMailHook = get_plugin_page_hookname($outboundMailSlug, $parentSlug);
+if (has_action($outboundMailHook) === false) {
+    $fail('The Outbound email page callback was not registered.');
+}
+
+$outboundMailPage = new OutboundMailPage(new WordPressMailQueueRepository(
+    new WordPressDatabaseConnection()
+));
+ob_start();
+try {
+    do_action($outboundMailHook);
+} finally {
+    $outboundMailHtml = (string) ob_get_clean();
+}
+
+if (
+    strpos($outboundMailHtml, 'Test mode') === false
+    || strpos($outboundMailHtml, 'name="test_mode"') === false
+    || strpos($outboundMailHtml, 'name="allowlist"') === false
+    || strpos($outboundMailHtml, 'Suppressed mail log') === false
+    || strpos($outboundMailHtml, 'does not change') === false
+) {
+    $fail('The Outbound email page did not render its safe test-mode settings and suppressed-mail log.');
+}
+
+$originalOutboundMailPost = $_POST;
+$originalOutboundMailRequest = $_REQUEST;
+$originalOutboundMailScreen = $GLOBALS['current_screen'] ?? null;
+set_current_screen('dashboard');
+$_POST = [
+    'adct_pi_save_outbound_mail' => '1',
+    'outbound_mail_nonce' => wp_create_nonce('adct_pi_save_outbound_mail'),
+    'test_mode' => WordPressTestModeSettings::MODE_ENABLED,
+    'allowlist' => "approved@example.test\n@qa.example.test",
+];
+$_REQUEST = $_POST;
+do_action('admin_init');
+
+$outboundPolicy = new WordPressTestModeRecipientPolicy();
+ob_start();
+try {
+    do_action($outboundMailHook);
+} finally {
+    $validSettingsPageHtml = (string) ob_get_clean();
+}
+
+if (
+    get_option(WordPressTestModeSettings::TEST_MODE_OPTION) !== WordPressTestModeSettings::MODE_ENABLED
+    || get_option(WordPressTestModeSettings::ALLOWLIST_OPTION) !== [
+        'approved@example.test',
+        '@qa.example.test',
+    ]
+    || ! $outboundPolicy->allows('approved@example.test')
+    || ! $outboundPolicy->allows('tester@qa.example.test')
+    || $outboundPolicy->allows('parish@example.test')
+    || strpos($validSettingsPageHtml, 'Outbound email settings saved.') === false
+) {
+    $fail('The Outbound email form did not save settings or enforce its exact address/domain allow-list.');
+}
+
+$previewSuffix = bin2hex(random_bytes(8));
+$previewMarker = 'outbound-preview-' . $previewSuffix;
+$previewSubject = '<script>' . $previewMarker . '</script>';
+$previewBody = '<img src=x onerror=' . $previewMarker . '>';
+$previewRecipient = 'suppressed-preview-' . $previewSuffix . '@example.test';
+$previewMail = new OutboundEmail(
+    $previewRecipient,
+    $previewSubject,
+    '<p>' . $previewMarker . '</p>',
+    $previewBody,
+    MailPriority::REMINDER_OR_DIGEST,
+    'integration:test-mode:preview:' . $previewSuffix
+);
+$previewEnqueue = Plugin::mailer()->enqueue($previewMail);
+
+if ($previewEnqueue->status !== MailQueueStatus::SUPPRESSED) {
+    $fail('A non-allow-listed queue recipient was not recorded as suppressed.');
+}
+
+ob_start();
+try {
+    do_action($outboundMailHook);
+} finally {
+    $suppressedPreviewHtml = (string) ob_get_clean();
+}
+
+if (
+    strpos($suppressedPreviewHtml, esc_html($previewSubject)) === false
+    || strpos($suppressedPreviewHtml, esc_html($previewBody)) === false
+    || strpos($suppressedPreviewHtml, $previewSubject) !== false
+    || strpos($suppressedPreviewHtml, $previewBody) !== false
+) {
+    $fail('The suppressed-mail preview did not escape its subject and body before rendering.');
+}
+
+$previewRestRoutes = array_filter(
+    array_keys(rest_get_server()->get_routes()),
+    static fn (string $route): bool => stripos($route, 'mail-queue') !== false
+        || stripos($route, 'outbound-mail') !== false
+);
+
+if ($previewRestRoutes !== []) {
+    $fail('The suppressed mail log was exposed through a public REST route.');
+}
+
+wp_set_current_user(0);
+$publicEventsResponse = rest_do_request(new WP_REST_Request('GET', '/wp/v2/adct_event'));
+$publicEventsJson = $publicEventsResponse instanceof WP_REST_Response
+    ? wp_json_encode($publicEventsResponse->get_data())
+    : '';
+
+if (
+    ! ($publicEventsResponse instanceof WP_REST_Response)
+    || $publicEventsResponse->get_status() !== 200
+    || ! is_string($publicEventsJson)
+    || strpos($publicEventsJson, $previewMarker) !== false
+    || strpos($publicEventsJson, $previewRecipient) !== false
+) {
+    $fail('The public events REST response exposed a suppressed mail preview.');
+}
+
+wp_set_current_user($administrators[0]->ID);
+$accessTestSuffix = bin2hex(random_bytes(8));
+$accessTestUserId = wp_insert_user([
+    'user_login' => 'outbound-preview-reader-' . $accessTestSuffix,
+    'user_pass' => wp_generate_password(24),
+    'user_email' => 'outbound-preview-reader-' . $accessTestSuffix . '@example.test',
+    'role' => 'subscriber',
+]);
+
+if (is_wp_error($accessTestUserId)) {
+    $fail('The synthetic outbound preview access-test user could not be created.');
+}
+
+wp_set_current_user((int) $accessTestUserId);
+$unauthorizedNotice = '';
+ob_start();
+try {
+    do_action('admin_notices');
+} finally {
+    $unauthorizedNotice = (string) ob_get_clean();
+}
+
+$originalUnauthorizedPost = $_POST;
+$originalUnauthorizedRequest = $_REQUEST;
+$_POST = [
+    'adct_pi_save_outbound_mail' => '1',
+    'outbound_mail_nonce' => wp_create_nonce('adct_pi_save_outbound_mail'),
+    'test_mode' => WordPressTestModeSettings::MODE_DISABLED,
+    'allowlist' => '',
+];
+$_REQUEST = $_POST;
+$outboundMailPage->maybeHandleSettings();
+$unauthorizedSettingsChanged = get_option(WordPressTestModeSettings::TEST_MODE_OPTION)
+    !== WordPressTestModeSettings::MODE_ENABLED
+    || get_option(WordPressTestModeSettings::ALLOWLIST_OPTION) !== [
+        'approved@example.test',
+        '@qa.example.test',
+    ];
+$_POST = $originalUnauthorizedPost;
+$_REQUEST = $originalUnauthorizedRequest;
+
+$accessDenied = false;
+$accessDeniedHandler = static function ($message = '', $title = '', $args = []): void {
+    throw new \RuntimeException('Outbound mail page access denied.');
+};
+$accessDeniedHandlerFilter = static function ($handler) use ($accessDeniedHandler) {
+    return $accessDeniedHandler;
+};
+add_filter('wp_die_handler', $accessDeniedHandlerFilter, PHP_INT_MAX, 1);
+
+try {
+    $outboundMailPage->renderPage();
+} catch (\RuntimeException $failure) {
+    $accessDenied = $failure->getMessage() === 'Outbound mail page access denied.';
+} finally {
+    remove_filter('wp_die_handler', $accessDeniedHandlerFilter, PHP_INT_MAX);
+}
+
+if (
+    strpos($unauthorizedNotice, 'TEST MODE IS ON') !== false
+    || $unauthorizedSettingsChanged
+    || ! $accessDenied
+) {
+    $fail('Users without the settings capability could access the suppressed-mail preview.');
+}
+
+wp_set_current_user($administrators[0]->ID);
+wp_delete_user((int) $accessTestUserId);
+$deletedPreview = $wpdb->delete(
+    $mailQueueTable,
+    ['id' => $previewEnqueue->id],
+    ['%d']
+);
+
+if ($deletedPreview !== 1) {
+    $fail('The synthetic suppressed-preview queue fixture could not be removed.');
+}
+
+update_option(WordPressTestModeSettings::ALLOWLIST_OPTION, [], false);
+if ($outboundPolicy->allows('approved@example.test')) {
+    $fail('An empty enabled test-mode allow-list did not fail closed.');
+}
+
+ob_start();
+try {
+    do_action('admin_notices');
+} finally {
+    $emptyAllowlistNotice = (string) ob_get_clean();
+}
+
+if (
+    strpos($emptyAllowlistNotice, 'TEST MODE IS ON') === false
+    || strpos($emptyAllowlistNotice, 'empty allow-list') === false
+) {
+    $fail('An empty enabled allow-list did not produce a conspicuous, clear admin error.');
+}
+
+update_option(WordPressTestModeSettings::ALLOWLIST_OPTION, ['not-a-valid-address'], false);
+if ($outboundPolicy->allows('approved@example.test')) {
+    $fail('An invalid test-mode allow-list did not fail closed.');
+}
+
+ob_start();
+try {
+    do_action('admin_notices');
+} finally {
+    $invalidAllowlistNotice = (string) ob_get_clean();
+}
+
+if (strpos($invalidAllowlistNotice, 'allow-list is invalid') === false) {
+    $fail('An invalid test-mode allow-list did not produce a clear admin error.');
+}
+
+$invalidSettingsPost = [
+    'adct_pi_save_outbound_mail' => '1',
+    'outbound_mail_nonce' => wp_create_nonce('adct_pi_save_outbound_mail'),
+    'test_mode' => WordPressTestModeSettings::MODE_ENABLED,
+    'allowlist' => 'not-a-valid-address',
+];
+$_POST = $invalidSettingsPost;
+$_REQUEST = $_POST;
+do_action('admin_init');
+
+ob_start();
+try {
+    do_action($outboundMailHook);
+} finally {
+    $invalidSettingsPageHtml = (string) ob_get_clean();
+}
+
+if (
+    strpos($invalidSettingsPageHtml, 'Outbound email settings saved.') !== false
+    || strpos($invalidSettingsPageHtml, 'Outbound mail is fail-closed.') === false
+    || strpos($invalidSettingsPageHtml, 'allow-list is invalid') === false
+) {
+    $fail('Invalid outbound email settings showed success or omitted the fail-closed error.');
+}
+
+$rejectAllowlistWrite = static function ($newValue, $oldValue) {
+    return $oldValue;
+};
+add_filter('pre_update_option_adct_pi_test_allowlist', $rejectAllowlistWrite, 10, 2);
+$_POST = [
+    'adct_pi_save_outbound_mail' => '1',
+    'outbound_mail_nonce' => wp_create_nonce('adct_pi_save_outbound_mail'),
+    'test_mode' => WordPressTestModeSettings::MODE_ENABLED,
+    'allowlist' => 'write-failure@example.test',
+];
+$_REQUEST = $_POST;
+
+try {
+    do_action('admin_init');
+} finally {
+    remove_filter('pre_update_option_adct_pi_test_allowlist', $rejectAllowlistWrite, 10);
+}
+
+ob_start();
+try {
+    do_action($outboundMailHook);
+} finally {
+    $failedSavePageHtml = (string) ob_get_clean();
+}
+
+if (
+    strpos($failedSavePageHtml, 'Outbound email settings saved.') !== false
+    || strpos($failedSavePageHtml, 'settings could not be saved') === false
+) {
+    $fail('A failed outbound-mail setting write showed success instead of a persistence error.');
+}
+
+$_POST = $originalOutboundMailPost;
+$_REQUEST = $originalOutboundMailRequest;
+
+if ($originalOutboundMailScreen !== null) {
+    $GLOBALS['current_screen'] = $originalOutboundMailScreen;
+} else {
+    unset($GLOBALS['current_screen']);
 }
 
 $storedTestApiKey = 'sk-test-DO-NOT-ECHO-123';
@@ -3104,6 +3435,13 @@ if ($missingSendersContent !== []) {
         . implode(', ', $missingSendersContent) . ').');
 }
 
+update_option(
+    WordPressTestModeSettings::TEST_MODE_OPTION,
+    WordPressTestModeSettings::MODE_DISABLED,
+    false
+);
+update_option(WordPressTestModeSettings::ALLOWLIST_OPTION, [], false);
+
 $mailQueueTestSuffix = bin2hex(random_bytes(8));
 $mailQueueRecipient = 'queue-login-' . $mailQueueTestSuffix . '@example.test';
 $mailQueueGroupKey = 'integration:mail-queue:login:' . $mailQueueTestSuffix;
@@ -3278,6 +3616,97 @@ $deletedClaimFixtures = $wpdb->query($wpdb->prepare(
 
 if ($deletedClaimFixtures !== 2) {
     $fail('The temporary fake-recipient claim fixtures could not be removed.');
+}
+
+$toggleSuffix = bin2hex(random_bytes(8));
+$toggleRecipient = 'queued-before-test-mode-' . $toggleSuffix . '@example.test';
+$toggleMail = new OutboundEmail(
+    $toggleRecipient,
+    'A fictional queued test-mode notice',
+    '<p>Queued before test mode was enabled.</p>',
+    'Queued before test mode was enabled.',
+    MailPriority::REMINDER_OR_DIGEST,
+    'integration:test-mode:toggle:' . $toggleSuffix
+);
+$toggleEnqueue = Plugin::mailer()->enqueue($toggleMail);
+
+if ($toggleEnqueue->status !== MailQueueStatus::QUEUED) {
+    $fail('A production-mode test recipient was not queued before the test-mode toggle.');
+}
+
+update_option(
+    WordPressTestModeSettings::TEST_MODE_OPTION,
+    WordPressTestModeSettings::MODE_ENABLED,
+    false
+);
+update_option(
+    WordPressTestModeSettings::ALLOWLIST_OPTION,
+    ['approved@example.test'],
+    false
+);
+$attemptedDuringSuppression = [];
+$testModeDispatchGuard = static function ($pre, $arguments) use (&$attemptedDuringSuppression) {
+    $attemptedDuringSuppression[] = $arguments;
+    $recipients = is_array($arguments['to'] ?? null)
+        ? $arguments['to']
+        : [$arguments['to'] ?? null];
+
+    foreach ($recipients as $recipient) {
+        if (! is_string($recipient) || ! str_ends_with(strtolower(trim($recipient)), '@example.test')) {
+            return false;
+        }
+    }
+
+    return true;
+};
+$toggleDispatcher = new MailQueueDispatcher(
+    new WordPressMailQueueRepository(new WordPressDatabaseConnection()),
+    new WordPressMailDeliveryAdapter(),
+    new WordPressTestModeRecipientPolicy(),
+    new SystemClock(),
+    new MailQueueConfiguration()
+);
+$sentBeforeTestModeDispatch = Plugin::mailQueueStats()->sentInLastHour;
+add_filter('pre_wp_mail', $testModeDispatchGuard, 10, 2);
+
+try {
+    $toggleDispatchResult = $toggleDispatcher->dispatchOne();
+} finally {
+    remove_filter('pre_wp_mail', $testModeDispatchGuard, 10);
+}
+
+$toggleRow = $wpdb->get_row($wpdb->prepare(
+    "SELECT status, attempts, sent_at, error FROM {$mailQueueTable} WHERE id = %d LIMIT 1",
+    $toggleEnqueue->id
+), ARRAY_A);
+
+if (
+    $toggleDispatchResult->status !== MailQueueDispatchStatus::SUPPRESSED
+    || $attemptedDuringSuppression !== []
+    || ! is_array($toggleRow)
+    || ($toggleRow['status'] ?? '') !== MailQueueStatus::SUPPRESSED->value
+    || (int) ($toggleRow['attempts'] ?? -1) !== 0
+    || ($toggleRow['sent_at'] ?? null) !== null
+    || ($toggleRow['error'] ?? '') !== 'recipient_not_allowlisted'
+    || Plugin::mailQueueStats()->sentInLastHour !== $sentBeforeTestModeDispatch
+) {
+    $fail('A queued non-allow-listed recipient was not suppressed at dispatch after test mode was enabled.');
+}
+
+update_option(
+    WordPressTestModeSettings::TEST_MODE_OPTION,
+    WordPressTestModeSettings::MODE_DISABLED,
+    false
+);
+update_option(WordPressTestModeSettings::ALLOWLIST_OPTION, [], false);
+$deletedToggleFixture = $wpdb->delete(
+    $mailQueueTable,
+    ['id' => $toggleEnqueue->id],
+    ['%d']
+);
+
+if ($deletedToggleFixture !== 1) {
+    $fail('The queued test-mode toggle fixture could not be removed.');
 }
 
 $assignmentService->deactivateAssignment(

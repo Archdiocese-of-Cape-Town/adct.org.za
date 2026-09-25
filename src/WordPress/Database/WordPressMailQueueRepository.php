@@ -22,6 +22,9 @@ use RuntimeException;
 
 final class WordPressMailQueueRepository implements MailQueueRepositoryInterface
 {
+    public const SUPPRESSED_PREVIEW_LIMIT = 20;
+    public const SUPPRESSED_PREVIEW_BODY_LIMIT = 2000;
+
     private const TABLE_SUFFIX = 'adct_pi_mail_queue';
     private const LOCK_WAIT_SECONDS = 5;
     private const INTERRUPTED_ERROR_CODE = 'delivery_outcome_unknown_after_interruption';
@@ -317,6 +320,51 @@ final class WordPressMailQueueRepository implements MailQueueRepositoryInterface
             $this->integerValue($sent['sent_count'] ?? null, 'sent count'),
             $this->integerValue($failed['failed_count'] ?? null, 'failed count')
         );
+    }
+
+    /**
+     * @return list<array{id: int, recipient: string, subject: string, body_preview: string, suppressed_at: string}>
+     */
+    public function findRecentSuppressed(): array
+    {
+        $this->database->clearLastError();
+        $rows = $this->database->getResults($this->database->prepare(
+            'SELECT id, recipient, subject,'
+            . ' LEFT(CASE WHEN body_text = %s THEN body_html ELSE body_text END, %d) AS body_preview,'
+            . ' updated_at FROM ' . $this->tableName()
+            . ' WHERE status = %s ORDER BY updated_at DESC, id DESC LIMIT %d',
+            '',
+            self::SUPPRESSED_PREVIEW_BODY_LIMIT,
+            MailQueueStatus::SUPPRESSED->value,
+            self::SUPPRESSED_PREVIEW_LIMIT
+        ));
+
+        if ($this->database->lastError() !== '') {
+            throw new RuntimeException('A mail queue suppressed preview read failed.');
+        }
+
+        $messages = [];
+
+        foreach ($rows as $row) {
+            $recipient = $row['recipient'] ?? null;
+            $subject = $row['subject'] ?? null;
+            $bodyPreview = $row['body_preview'] ?? null;
+
+            if (! is_string($recipient) || ! is_string($subject) || ! is_string($bodyPreview)) {
+                throw new RuntimeException('A stored suppressed mail preview has invalid message fields.');
+            }
+
+            $messages[] = [
+                'id' => $this->integerValue($row['id'] ?? null, 'row ID'),
+                'recipient' => $recipient,
+                'subject' => $subject,
+                'body_preview' => $bodyPreview,
+                'suppressed_at' => $this->parseTimestamp($row['updated_at'] ?? null)
+                    ->format('Y-m-d H:i:s'),
+            ];
+        }
+
+        return $messages;
     }
 
     public function pruneSentBefore(DateTimeImmutable $cutoff, int $limit): int
