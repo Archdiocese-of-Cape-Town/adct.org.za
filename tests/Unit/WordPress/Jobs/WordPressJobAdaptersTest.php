@@ -35,6 +35,23 @@ namespace ADCT\ParishIntake\WordPress\Jobs {
         return $changed;
     }
 
+    function delete_option(string $option): bool
+    {
+        $present = array_key_exists($option, $GLOBALS['wpdb']->rows);
+        unset($GLOBALS['wpdb']->rows[$option]);
+        return $present;
+    }
+
+    function is_email(string $address): bool
+    {
+        return filter_var($address, FILTER_VALIDATE_EMAIL) !== false;
+    }
+
+    function admin_url(string $path = ''): string
+    {
+        return 'https://example.test/wp-admin/' . $path;
+    }
+
     function wp_cache_delete(string $key, string $group = ''): bool
     {
         return true;
@@ -120,7 +137,15 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Jobs {
     use ADCT\ParishIntake\Core\Jobs\JobRunner;
     use ADCT\ParishIntake\Core\Jobs\JobState;
     use ADCT\ParishIntake\Core\Jobs\JobStepResult;
+    use ADCT\ParishIntake\Core\Mail\MailQueueEnqueueResult;
+    use ADCT\ParishIntake\Core\Mail\MailQueueStatus;
+    use ADCT\ParishIntake\Core\Mail\OutboundEmail;
+    use ADCT\ParishIntake\Core\Ports\ClockInterface;
     use ADCT\ParishIntake\Core\Ports\JobLockInterface;
+    use ADCT\ParishIntake\Core\Ports\MailerInterface;
+    use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
+    use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
+    use ADCT\ParishIntake\WordPress\Jobs\HealthAlerts;
     use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
     use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
     use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
@@ -154,6 +179,163 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Jobs {
 
             self::assertEquals($state, $store->load('test_job'));
             self::assertFalse($GLOBALS['wpdb']->autoload['adct_pi_job_state_test_job']);
+        }
+
+        public function testLegacyStateLoadsWithoutTriggerOrFailureCount(): void
+        {
+            $GLOBALS['wpdb']->rows['adct_pi_job_state_test_job'] = [
+                'checkpoint' => null, 'last_run_at' => null, 'last_success_at' => null,
+                'last_error_message' => null, 'last_error_at' => null, 'items_processed' => 0,
+            ];
+
+            $state = (new WordPressJobStateStore())->load('test_job');
+
+            self::assertNull($state->lastTrigger);
+            self::assertSame(0, $state->consecutiveFailures);
+        }
+
+        public function testFailureAlertsAreDeduplicatedUntilRecoveryAndRateLimited(): void
+        {
+            $clock = new class implements ClockInterface {
+                public DateTimeImmutable $date;
+                public function __construct()
+                {
+                    $this->date = new DateTimeImmutable('2026-09-25T12:00:00+02:00');
+                }
+                public function now(): DateTimeImmutable
+                {
+                    return $this->date;
+                }
+            };
+            $store = new WordPressJobStateStore();
+            $store->save('framework_heartbeat', new JobState(
+                lastRunAt: $clock->now(),
+                consecutiveFailures: 3
+            ));
+            $mailer = new class implements MailerInterface {
+                /** @var list<OutboundEmail> */
+                public array $sent = [];
+                public function enqueue(OutboundEmail $email): MailQueueEnqueueResult
+                {
+                    $this->sent[] = $email;
+                    return new MailQueueEnqueueResult(count($this->sent), MailQueueStatus::QUEUED, false);
+                }
+            };
+            $database = $this->createMock(DatabaseConnectionInterface::class);
+            $sources = new SourceRepository($database);
+            $database->method('prefix')->willReturn('wp_');
+            $database->method('getResults')->willReturn([]);
+            $database->method('lastError')->willReturn('');
+            $scheduler = new WordPressJobScheduler(
+                [new FrameworkHeartbeatJob()],
+                new JobRunner($this->createMock(JobLockInterface::class), $store, $clock),
+                $store, $clock
+            );
+            $GLOBALS['wpdb']->rows['admin_email'] = 'admin@example.test';
+            $alerts = new HealthAlerts($scheduler, $store, $sources, $mailer, $clock);
+
+            $alerts->check();
+            $alerts->check();
+            self::assertCount(1, $mailer->sent);
+            self::assertSame('health:job_framework_heartbeat:' . $clock->now()->getTimestamp(),
+                $mailer->sent[0]->groupKey);
+
+            $store->save('framework_heartbeat', new JobState(lastRunAt: $clock->now()));
+            $alerts->check();
+            $store->save('framework_heartbeat', new JobState(
+                lastRunAt: $clock->now(), consecutiveFailures: 3
+            ));
+            $alerts->check();
+            self::assertCount(1, $mailer->sent);
+
+            $clock->date = $clock->date->modify('+25 hours');
+            $store->save('framework_heartbeat', new JobState(lastRunAt: $clock->now()));
+            $alerts->check();
+            $store->save('framework_heartbeat', new JobState(
+                lastRunAt: $clock->now(), consecutiveFailures: 3
+            ));
+            $alerts->check();
+            self::assertCount(2, $mailer->sent);
+        }
+
+        public function testStalledHeartbeatAlertsOnlyOnce(): void
+        {
+            $clock = new class implements ClockInterface {
+                public function now(): DateTimeImmutable
+                {
+                    return new DateTimeImmutable('2026-09-25T12:00:00+02:00');
+                }
+            };
+            $mailer = new class implements MailerInterface {
+                public int $count = 0;
+                public function enqueue(OutboundEmail $email): MailQueueEnqueueResult
+                {
+                    return new MailQueueEnqueueResult(++$this->count, MailQueueStatus::QUEUED, false);
+                }
+            };
+            $database = $this->createMock(DatabaseConnectionInterface::class);
+            $database->method('prefix')->willReturn('wp_');
+            $database->method('getResults')->willReturn([]);
+            $database->method('lastError')->willReturn('');
+            $states = new WordPressJobStateStore();
+            $scheduler = new WordPressJobScheduler([new FrameworkHeartbeatJob()],
+                new JobRunner($this->createMock(JobLockInterface::class), $states, $clock), $states, $clock);
+            $GLOBALS['wpdb']->rows['admin_email'] = 'admin@example.test';
+            $GLOBALS['wpdb']->rows['adct_pi_health_started_at'] = $clock->now()->getTimestamp() - 8100;
+            $alerts = new HealthAlerts($scheduler, $states, new SourceRepository($database), $mailer, $clock);
+
+            self::assertFalse($alerts->isStalled());
+            $alerts->check();
+            self::assertSame(0, $mailer->count);
+            $GLOBALS['wpdb']->rows['adct_pi_health_started_at']--;
+            self::assertTrue($alerts->isStalled());
+            $alerts->check();
+            $alerts->check();
+            self::assertSame(1, $mailer->count);
+            $states->save('framework_heartbeat', new JobState(lastRunAt: $clock->now()));
+            self::assertFalse($alerts->isStalled());
+        }
+
+        public function testSourceAlertRequiresThreeFailuresAndResetsAfterRecovery(): void
+        {
+            $clock = new class implements ClockInterface {
+                public function now(): DateTimeImmutable
+                {
+                    return new DateTimeImmutable('2026-09-25T12:00:00+02:00');
+                }
+            };
+            $mailer = new class implements MailerInterface {
+                public int $count = 0;
+                public function enqueue(OutboundEmail $email): MailQueueEnqueueResult
+                {
+                    return new MailQueueEnqueueResult(++$this->count, MailQueueStatus::QUEUED, false);
+                }
+            };
+            $failures = 2;
+            $database = $this->createMock(DatabaseConnectionInterface::class);
+            $database->method('prefix')->willReturn('wp_');
+            $database->method('lastError')->willReturn('');
+            $database->method('getResults')->willReturnCallback(
+                static function () use (&$failures): array {
+                    return [['id' => '19', 'consecutive_failures' => (string) $failures]];
+                }
+            );
+            $states = new WordPressJobStateStore();
+            $states->save('framework_heartbeat', new JobState(lastRunAt: $clock->now()));
+            $scheduler = new WordPressJobScheduler([new FrameworkHeartbeatJob()],
+                new JobRunner($this->createMock(JobLockInterface::class), $states, $clock), $states, $clock);
+            $GLOBALS['wpdb']->rows['admin_email'] = 'admin@example.test';
+            $alerts = new HealthAlerts($scheduler, $states, new SourceRepository($database), $mailer, $clock);
+
+            $alerts->check();
+            self::assertSame(0, $mailer->count);
+            $failures = 3;
+            $alerts->check();
+            $alerts->check();
+            self::assertSame(1, $mailer->count);
+            $failures = 0;
+            $alerts->check();
+            self::assertArrayNotHasKey('adct_pi_health_incident_source_19', $GLOBALS['wpdb']->rows);
         }
 
         public function testInboundProcessingFailureLogContainsOnlyDiagnosticMetadata(): void

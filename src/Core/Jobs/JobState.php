@@ -15,6 +15,8 @@ final class JobState
     public readonly ?string $lastErrorMessage;
     public readonly ?DateTimeImmutable $lastErrorAt;
     public readonly int $itemsProcessed;
+    public readonly ?string $lastTrigger;
+    public readonly int $consecutiveFailures;
 
     public function __construct(
         ?string $checkpoint = null,
@@ -22,9 +24,11 @@ final class JobState
         ?DateTimeImmutable $lastSuccessAt = null,
         ?string $lastErrorMessage = null,
         ?DateTimeImmutable $lastErrorAt = null,
-        int $itemsProcessed = 0
+        int $itemsProcessed = 0,
+        ?string $lastTrigger = null,
+        int $consecutiveFailures = 0
     ) {
-        if ($itemsProcessed < 0) {
+        if ($itemsProcessed < 0 || $consecutiveFailures < 0) {
             throw new InvalidArgumentException('The processed item count cannot be negative.');
         }
 
@@ -38,6 +42,8 @@ final class JobState
         $this->lastErrorMessage = $lastErrorMessage;
         $this->lastErrorAt = $lastErrorAt;
         $this->itemsProcessed = $itemsProcessed;
+        $this->lastTrigger = $lastTrigger;
+        $this->consecutiveFailures = $consecutiveFailures;
     }
 
     public static function empty(): self
@@ -45,7 +51,7 @@ final class JobState
         return new self();
     }
 
-    public function withRunStarted(DateTimeImmutable $startedAt): self
+    public function withRunStarted(DateTimeImmutable $startedAt, string $trigger = 'internal'): self
     {
         return new self(
             $this->checkpoint,
@@ -53,7 +59,9 @@ final class JobState
             $this->lastSuccessAt,
             $this->lastErrorMessage,
             $this->lastErrorAt,
-            0
+            0,
+            $trigger,
+            $this->consecutiveFailures
         );
     }
 
@@ -65,7 +73,9 @@ final class JobState
             $this->lastSuccessAt,
             $this->lastErrorMessage,
             $this->lastErrorAt,
-            $itemsProcessed
+            $itemsProcessed,
+            $this->lastTrigger,
+            $this->consecutiveFailures
         );
     }
 
@@ -77,7 +87,9 @@ final class JobState
             $succeededAt,
             $this->lastErrorMessage,
             $this->lastErrorAt,
-            $itemsProcessed
+            $itemsProcessed,
+            $this->lastTrigger,
+            0
         );
     }
 
@@ -92,7 +104,9 @@ final class JobState
             $this->lastSuccessAt,
             $message,
             $failedAt,
-            $itemsProcessed
+            $itemsProcessed,
+            $this->lastTrigger,
+            $this->consecutiveFailures + 1
         );
     }
 }

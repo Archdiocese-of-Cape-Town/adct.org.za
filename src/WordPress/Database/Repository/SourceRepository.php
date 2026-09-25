@@ -125,6 +125,16 @@ final class SourceRepository extends AbstractRepository implements
         return (int) ($row['total'] ?? 0);
     }
 
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function findHealthFailureCounts(): array
+    {
+        return $this->fetchRows(
+            'SELECT id, consecutive_failures FROM ' . $this->tableName() . ' ORDER BY id ASC'
+        );
+    }
+
     public function saveSource(Source $source, string $timestamp): Source
     {
         $this->beginTransaction();
