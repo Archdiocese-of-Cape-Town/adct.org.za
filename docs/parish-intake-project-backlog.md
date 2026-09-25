@@ -100,7 +100,7 @@ Phase 0, 1 and 1.5 items have GitHub issues. Phase 2 and 3 items are listed as c
 | [E2.4](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/37) | MIME to clean text: HTML, charsets, quoted replies, signatures, forwards | P0 | E0.3 | Fixture tests for Outlook/Gmail/forwarded/reply formats. |
 | [E2.5](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/36) | Auto-reply, bounce and list detection; capture SPF/DKIM results | P1 | E2.4 | Flagged messages never get confirmation emails; auth results stored and shown. |
 | [E2.6](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/39) | Ingest status, errors and reprocess button | P1 | E2.3 | Failed messages visible with error; one-click retry. |
-| [E2.7](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/38) | Retention and mailbox cleanup job | P1 | E2.3 | Raw data deleted after retention; Processed folder pruned; configurable. |
+| [E2.7](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/38) | Retention and mailbox cleanup job | P1 | E2.3 | Raw data deleted after retention; configurable Processed-folder pruning deletes only exact plugin move receipts with matching mailbox identity and UIDVALIDITY; unrelated or untracked mail is left untouched. |
 
 ### E3 – Parsing pipeline ([E3](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/6))
 | ID | Item | Pri | Dep | Acceptance |

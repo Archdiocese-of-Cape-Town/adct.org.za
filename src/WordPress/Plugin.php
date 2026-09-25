@@ -13,6 +13,7 @@ use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
 use ADCT\ParishIntake\Core\Database\CreateSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MailboxSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MigrationRunner;
+use ADCT\ParishIntake\Core\Database\ProcessedMailboxOwnershipSchemaMigration;
 use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
 use ADCT\ParishIntake\Core\Events\EventValidator;
 use ADCT\ParishIntake\Core\Events\IcsCalendar;
@@ -95,6 +96,7 @@ use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenRateLimitStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressMailQueueRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
+use ADCT\ParishIntake\WordPress\Database\WordPressProcessedMailboxMessageStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressEventCandidateStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationLogger;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationVersionStore;
@@ -186,6 +188,7 @@ final class Plugin
             $inboundMessages,
             $attachmentRepository
         );
+        $processedMailboxMessages = new WordPressProcessedMailboxMessageStore($database);
         $secrets = new WordPressSecretResolver();
         $directorySnapshots = new CachedDirectorySnapshotProvider(
             $directoryVersions,
@@ -350,6 +353,7 @@ final class Plugin
             $mailboxes,
             $sources,
             $inboundMessageStore,
+            $processedMailboxMessages,
             $protectedInboundMailStorage,
             new SourceHealthRecorder($sources, $clock),
             new RawMessageInspector(new AuthenticationResultsParser($trustedAuthservIds)),
@@ -389,6 +393,7 @@ final class Plugin
         );
         $retentionCleanupJob = new RetentionCleanupJob(
             $database,
+            $processedMailboxMessages,
             $protectedInboundMailStorage,
             $mailboxes,
             static fn (): RetentionSettings => RetentionSettings::current(),
@@ -769,6 +774,7 @@ final class Plugin
                 new OccurrenceParishNullableMigration($database),
                 new MailQueueGroupKeyMigration($database),
                 new ActionTokenRateLimitSchemaMigration(new DbDeltaSchemaInstaller($database)),
+                new ProcessedMailboxOwnershipSchemaMigration(new DbDeltaSchemaInstaller($database)),
             ],
             new WordPressMigrationVersionStore(),
             new WordPressMigrationLogger()
