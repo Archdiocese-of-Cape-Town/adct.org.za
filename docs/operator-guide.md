@@ -123,7 +123,9 @@ Failed deliveries retry with exponential backoff and become terminally failed af
 
 `group_key` is an idempotency key for one fully composed message to one recipient. Repeating the same key and payload does not create another row; changing content under the same recipient/key is an error, not a silent merge or drop. Compose a complete approver digest before enqueueing it, then use a recipient-specific key.
 
-The Test mode allow-list screen and banner are tracked by #48 and are not available yet. Production currently uses the permissive recipient policy; do not test email delivery on the live site before #48 exists. The Core allowlist seam is covered with synthetic `example.test` recipients in automated tests.
+Use **Parish Intake → Outbound email** to enable Test mode before sending mail from an InstaWP, TasteWP or temporary staging site. Test mode is **off by default** for production. When it is on, only the exact addresses and exact domains in the allow-list can receive Parish Intake queue mail. Enter one entry per line: a full email address such as `test-inbox@example.test`, or an exact domain prefixed with `@` such as `@example.test`. A domain does not include subdomains. This setting applies only to Parish Intake's queue and never forwards, rewrites or blocks mail from other WordPress plugins.
+
+The admin banner remains visible while Test mode is on. A message to a non-allow-listed recipient is recorded as **suppressed** and never reaches `wp_mail()`. Messages already queued are checked against the current settings again before delivery, so enabling Test mode or changing the allow-list also protects rows waiting in the queue. A message already recorded as suppressed is not automatically requeued if the allow-list changes; enqueue it again only if it should be sent. An empty allow-list while Test mode is on, or any invalid setting, blocks all Parish Intake queue delivery and displays a clear admin error. The Outbound email screen shows the latest suppressed messages with escaped, bounded subject/body previews; only users with settings access can open it.
 
 ## Configure parser safeguards
 
