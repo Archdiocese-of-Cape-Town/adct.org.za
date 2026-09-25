@@ -27,7 +27,7 @@ final class WordPressEventOccurrenceMaintenance implements OccurrenceMaintenance
         return $this->occurrences->nextPublishedEventId($eventId);
     }
 
-    public function rebuildEvent(int $eventId, OccurrenceWindow $window): void
+    public function rebuildEvent(int $eventId, OccurrenceWindow $window, bool $transactional = true): void
     {
         if ($eventId < 1) {
             throw new \InvalidArgumentException('An event ID must be positive.');
@@ -72,9 +72,12 @@ final class WordPressEventOccurrenceMaintenance implements OccurrenceMaintenance
             $coordinates['latitude'],
             $coordinates['longitude'],
             $details->statusFlag === 'cancelled',
-            $this->clock->now()
+            $this->clock->now(),
+            $transactional
         );
-        ($this->invalidateListing) && ($this->invalidateListing)();
+        if ($transactional && $this->invalidateListing !== null) {
+            ($this->invalidateListing)();
+        }
     }
 
     public function deleteEventOccurrences(int $eventId): void
