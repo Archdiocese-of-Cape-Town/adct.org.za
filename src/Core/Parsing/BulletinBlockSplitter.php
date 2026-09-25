@@ -74,11 +74,18 @@ final class BulletinBlockSplitter
             $isWeeklyMassTimesTableRow = $this->sectionSkipper->isWeeklyMassTimesTableRow($line);
             $isEventSectionHeading = $this->isEventSectionHeading($line);
             $heading = $this->headingText($line, isset($underlinedHeadings[$lineIndex]));
+            $sectionHeadingReason = $this->sectionSkipper->matchHeadingCategory(
+                $line,
+                $heading !== null
+            );
 
             if ($sectionSkipReason !== null) {
-                if ($sectionReason !== null && $sectionReason !== $sectionSkipReason) {
+                if (
+                    $sectionHeadingReason !== null
+                    && $sectionHeadingReason !== $sectionSkipReason
+                ) {
                     $this->flushCurrent($rawBlocks, $current, $nextIndex);
-                    $sectionSkipReason = $sectionReason;
+                    $sectionSkipReason = $sectionHeadingReason;
                     $sectionSkipMode = 'section';
                     $pendingTitle = null;
                     $tableHeader = null;
@@ -95,7 +102,7 @@ final class BulletinBlockSplitter
                     continue;
                 }
 
-                if ($heading !== null && $sectionReason === null) {
+                if ($heading !== null && $sectionHeadingReason === null) {
                     $this->flushCurrent($rawBlocks, $current, $nextIndex);
                     $sectionSkipReason = null;
                     $sectionSkipMode = null;
@@ -115,9 +122,9 @@ final class BulletinBlockSplitter
                 }
             }
 
-            if ($sectionReason !== null) {
+            if ($sectionHeadingReason !== null) {
                 $this->flushCurrent($rawBlocks, $current, $nextIndex);
-                $sectionSkipReason = $sectionReason;
+                $sectionSkipReason = $sectionHeadingReason;
                 $sectionSkipMode = 'section';
                 $pendingTitle = null;
                 $tableHeader = null;
@@ -144,11 +151,28 @@ final class BulletinBlockSplitter
                 continue;
             }
 
+            if ($sectionReason !== null && $current === null) {
+                $current = [
+                    'lines' => [$line],
+                    'parse_text' => $line,
+                    'context' => $context,
+                    'title' => null,
+                    'skip_reason' => null,
+                    'section_keyword_category' => $sectionReason,
+                    'table_row' => false,
+                    'table_has_date' => false,
+                ];
+                continue;
+            }
+
             $contextUpdate = $this->contextUpdate($line);
 
             if ($contextUpdate !== null) {
                 if ($current === null) {
                     $context = array_merge($context, $contextUpdate);
+                } elseif (isset($current['section_keyword_category'])) {
+                    $current['lines'][] = $line;
+                    $current['parse_text'] .= "\n" . $line;
                 } else {
                     foreach ($contextUpdate as $key => $value) {
                         $context[$key] = $value;
@@ -162,12 +186,17 @@ final class BulletinBlockSplitter
             }
 
             if ($this->isVenueHeading($line)) {
-                $context['venue'] = $line;
-
-                if ($current !== null) {
-                    $current['context']['venue'] = $line;
+                if ($current !== null && isset($current['section_keyword_category'])) {
                     $current['lines'][] = $line;
                     $current['parse_text'] .= "\n" . $line;
+                } else {
+                    $context['venue'] = $line;
+
+                    if ($current !== null) {
+                        $current['context']['venue'] = $line;
+                        $current['lines'][] = $line;
+                        $current['parse_text'] .= "\n" . $line;
+                    }
                 }
                 continue;
             }
@@ -285,6 +314,18 @@ final class BulletinBlockSplitter
 
         $sourceText = trim(implode("\n", $current['lines']));
         $parseText = trim($current['parse_text']);
+        $skipReason = $current['skip_reason'];
+        $sectionKeywordOverride = null;
+
+        if (isset($current['section_keyword_category'])) {
+            $category = $current['section_keyword_category'];
+
+            if ($this->sectionSkipper->hasEventSignalForKeywordOverride($parseText)) {
+                $sectionKeywordOverride = $category;
+            } else {
+                $skipReason = $category;
+            }
+        }
 
         if ($sourceText !== '') {
             $rawBlocks[] = [
@@ -293,7 +334,8 @@ final class BulletinBlockSplitter
                 'parse_text' => $parseText !== '' ? $parseText : $sourceText,
                 'context' => $current['context'],
                 'title' => $current['title'],
-                'skip_reason' => $current['skip_reason'],
+                'skip_reason' => $skipReason,
+                'section_keyword_override' => $sectionKeywordOverride,
                 'table_row' => $current['table_row'] ?? false,
                 'table_has_date' => $current['table_has_date'] ?? false,
                 'classification' => null,
@@ -356,6 +398,7 @@ final class BulletinBlockSplitter
                     ? ['No event blocks were found; the remaining content was kept as a notice.']
                     : [];
                 $notes = $this->appendSkippedSectionSummary($notes, $rawBlocks);
+                $notes = $this->appendSectionKeywordOverrideNotes($notes, $rawBlocks);
 
                 return new BlockSplitResult($blocks, $notes);
             }
@@ -372,6 +415,7 @@ final class BulletinBlockSplitter
                 ? [sprintf('Skipped %d obvious non-event block(s).', $skippedCount)]
                 : [];
             $notes = $this->appendSkippedSectionSummary($notes, $rawBlocks);
+            $notes = $this->appendSectionKeywordOverrideNotes($notes, $rawBlocks);
 
             return new BlockSplitResult($this->toEventBlocks($rawBlocks), $notes);
         }
@@ -477,6 +521,7 @@ final class BulletinBlockSplitter
             $notes[] = sprintf('Classified or skipped %d non-event block(s).', $skippedCount);
         }
         $notes = $this->appendSkippedSectionSummary($notes, $rawBlocks);
+        $notes = $this->appendSectionKeywordOverrideNotes($notes, $rawBlocks);
 
         return new BlockSplitResult($this->toEventBlocks($rawBlocks), $notes);
     }
@@ -508,6 +553,19 @@ final class BulletinBlockSplitter
         return $notes;
     }
 
+    private function appendSectionKeywordOverrideNotes(array $notes, array $rawBlocks): array
+    {
+        foreach ($rawBlocks as $block) {
+            $category = $block['section_keyword_override'] ?? null;
+
+            if (is_string($category) && array_key_exists($category, SectionSkipper::CATEGORIES)) {
+                $notes[] = 'section_keyword_overridden: ' . $category;
+            }
+        }
+
+        return $notes;
+    }
+
     private function toEventBlocks(array $rawBlocks): array
     {
         $blocks = [];
@@ -530,7 +588,10 @@ final class BulletinBlockSplitter
                 is_string($title) && trim($title) !== '' ? trim($title) : null,
                 $block['classification'] ?? 'skipped',
                 $block['reason'],
-                $candidate
+                $candidate,
+                is_string($block['section_keyword_override'] ?? null)
+                    ? $block['section_keyword_override']
+                    : null
             );
         }
 

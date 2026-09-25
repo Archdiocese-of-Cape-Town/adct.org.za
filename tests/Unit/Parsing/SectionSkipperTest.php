@@ -69,6 +69,48 @@ final class SectionSkipperTest extends TestCase
         ];
     }
 
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function eventBearingKeywordCases(): array
+    {
+        return [
+            'collections and finances' => [
+                'collections_finances',
+                'Collection drive for the food bank on Saturday 10 October 2026 at 09:00 at Example Parish Hall.',
+            ],
+            'readings' => [
+                'readings',
+                'Scripture readings evening on Friday 9 October 2026 at 19:00 in the parish hall.',
+            ],
+            'sick list' => [
+                'sick_list',
+                'Please pray for vocations at the Holy Hour on Thursday 8 October 2026 at 19:00.',
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function unaffectedEventCases(): array
+    {
+        return [
+            'readers and ministers meeting' => [
+                'Readers and ministers meeting on Saturday 10 October 2026 at 09:00 at Example Parish Hall.',
+            ],
+            'healing Mass and anointing of the sick' => [
+                'Healing Mass with anointing of the sick on Saturday 10 October 2026 at 09:00 at Example Parish Hall.',
+            ],
+            'marriage anniversaries Mass' => [
+                'Marriage anniversaries Mass on Sunday 11 October 2026 at 09:00 at Example Parish Hall.',
+            ],
+            'date-led Youth Mass' => [
+                'Sat 10 Oct 2026 - Youth Mass at 18:00.',
+            ],
+        ];
+    }
+
     #[DataProvider('sectionCases')]
     public function testSkipsEachSectionCategoryBeforeCandidateCreation(
         string $category,
@@ -117,6 +159,101 @@ final class SectionSkipperTest extends TestCase
         self::assertContains(
             'sick_list',
             array_column($outcome->getBlocks(), 'reason')
+        );
+    }
+
+    public function testRunningKeywordWithoutEventSignalSkipsOnlyItsBlock(): void
+    {
+        $outcome = (new PipelineFactory())->create()->parseAll(self::message(
+            "Please pray for Fictional Person Alpha.\n"
+            . "Parish: Fictional Person Alpha\n\n"
+            . "Saturday 10 October 2026 - Family picnic at 12:00."
+        ));
+
+        self::assertCount(1, $outcome->getCandidates());
+        self::assertSame('Family picnic', $outcome->getCandidates()[0]->getField('title'));
+        self::assertContains('skipped_sections: sick_list=1', $outcome->getNotes());
+        self::assertStringNotContainsString(
+            'Fictional Person Alpha',
+            json_encode($outcome->toArray(), JSON_THROW_ON_ERROR)
+        );
+    }
+
+    #[DataProvider('eventBearingKeywordCases')]
+    public function testKeepsEventBearingRunningKeywordAndLowersConfidence(
+        string $category,
+        string $eventText
+    ): void {
+        $message = self::message($eventText);
+        $outcome = (new PipelineFactory())->create()->parseAll($message);
+
+        self::assertCount(1, $outcome->getCandidates());
+        $candidate = $outcome->getCandidates()[0];
+        $overrideNote = 'section_keyword_overridden: ' . $category;
+
+        self::assertSame('event', $candidate->getClassification());
+        self::assertContains($overrideNote, $outcome->getNotes());
+        self::assertContains($overrideNote, $candidate->getNotes());
+        self::assertNotContains(
+            'skipped_sections: ' . $category . '=1',
+            $outcome->getNotes()
+        );
+
+        $keywordLists = SectionSkipper::defaultKeywordLists();
+        $keywordLists[$category] = ['Keyword override disabled for this test'];
+        $baseline = (new PipelineFactory())->create([
+            'section_keywords' => $keywordLists,
+        ])->parseAll($message);
+
+        self::assertCount(1, $baseline->getCandidates());
+        self::assertEqualsWithDelta(
+            $baseline->getCandidates()[0]->getConfidence() - 0.1,
+            $candidate->getConfidence(),
+            0.000001
+        );
+    }
+
+    #[DataProvider('unaffectedEventCases')]
+    public function testPreviouslyAcceptedEventPhrasesRemainUnchanged(string $eventText): void
+    {
+        $outcome = (new PipelineFactory())->create()->parseAll(self::message($eventText));
+
+        self::assertCount(1, $outcome->getCandidates());
+        self::assertSame('event', $outcome->getCandidates()[0]->getClassification());
+        self::assertSame([], array_values(array_filter(
+            array_merge(
+                $outcome->getNotes(),
+                $outcome->getCandidates()[0]->getNotes()
+            ),
+            static fn (string $note): bool => strpos($note, 'section_keyword_overridden: ') === 0
+        )));
+    }
+
+    public function testDateAndEventNounOverrideDoesNotRequireATime(): void
+    {
+        $message = self::message(
+            'Collection drive for the food bank on Saturday 10 October 2026.'
+        );
+        $outcome = (new PipelineFactory())->create()->parseAll($message);
+
+        self::assertCount(1, $outcome->getCandidates());
+        self::assertContains(
+            'section_keyword_overridden: collections_finances',
+            $outcome->getNotes()
+        );
+        self::assertNull($outcome->getCandidates()[0]->getField('event_time'));
+
+        $keywordLists = SectionSkipper::defaultKeywordLists();
+        $keywordLists['collections_finances'] = ['Keyword override disabled for this test'];
+        $baseline = (new PipelineFactory())->create([
+            'section_keywords' => $keywordLists,
+        ])->parseAll($message);
+
+        self::assertCount(1, $baseline->getCandidates());
+        self::assertEqualsWithDelta(
+            $baseline->getCandidates()[0]->getConfidence() - 0.1,
+            $outcome->getCandidates()[0]->getConfidence(),
+            0.000001
         );
     }
 
@@ -195,6 +332,31 @@ TEXT));
             'skipped_sections: sick_list=1',
             $outcome->getNotes()
         );
+    }
+
+    public function testHeadingMatchSkipsDatedContentAndKeepsTextOutOfAiInput(): void
+    {
+        $sensitiveText = 'Fictional Person Alpha';
+        $provider = new CapturingAiProvider();
+        $outcome = (new PipelineFactory())->create([
+            'ai_enabled' => true,
+            'ai_threshold' => 1.1,
+            'ai_provider' => $provider,
+        ])->parseAll(self::message(
+            "PLEASE PRAY FOR:\n"
+            . $sensitiveText . "\n"
+            . "Saturday 10 October 2026 at 09:00 - prayer intentions for " . $sensitiveText . ".\n\n"
+            . "UPCOMING EVENTS\nSunday 11 October 2026 - Youth picnic at 12:00."
+        ));
+
+        self::assertCount(1, $outcome->getCandidates());
+        self::assertContains('skipped_sections: sick_list=1', $outcome->getNotes());
+        self::assertNotSame('', $provider->capturedInput);
+        self::assertStringNotContainsString(
+            $sensitiveText,
+            json_encode($outcome->toArray(), JSON_THROW_ON_ERROR)
+        );
+        self::assertStringNotContainsString($sensitiveText, $provider->capturedInput);
     }
 
     public function testSkippedTextIsAbsentFromOutcomeAndAiProviderInput(): void

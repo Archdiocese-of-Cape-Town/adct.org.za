@@ -82,11 +82,11 @@ An `office_email` in the CSV is added as a verified parish contact with a verifi
 
 ## Configure parser safeguards
 
-An Administrator or Intake manager with settings access can open **Parish Intake → Settings** and edit the non-event section phrases. Enter one heading or leading phrase per line in each category. Matching ignores case and punctuation; a recognized section is skipped through the next heading. Weekly Mass-times tables with weekday/time rows that identify Mass or Service are also skipped automatically.
+An Administrator or Intake manager with settings access can open **Parish Intake → Settings** and edit the non-event section phrases. Enter one heading or leading phrase per line in each category. Matching ignores case and punctuation. A standalone category phrase or a match formatted as a Markdown/underlined, all-caps or colon-terminated heading skips through the next heading, even when that section contains dates or times. A phrase at the start of running text skips only its block when there is no explicit date plus time or event noun. If that event signal is present, the candidate is kept with a text-free `section_keyword_overridden: <category>` note and its confidence is reduced by 0.1 for closer review. Weekly Mass-times tables with weekday/time rows that identify Mass or Service are also skipped automatically.
 
 These safeguards cover Mass times and intentions, sick lists, deceased, anniversaries, raffle winners, collections/finances, banking details and readings. Keep recognizable phrases in each category so these sections stay out of event candidates and AI enrichment. A blank category uses its built-in defaults. Select **Reset section keywords to defaults** to restore all built-in lists; **Save settings** saves the current lists.
 
-To investigate a possible false skip, paste the source into **Parish Intake → Manual parser**. The latest outcome reports each skipped block's zero-based `block_index` and category in its `reason`; use the index to find the section in the raw text you supplied. Skipped text is deliberately absent from the parse outcome. A full viewer for stored inbound messages is not part of the current admin screens.
+To investigate a possible false skip or keyword override, paste the source into **Parish Intake → Manual parser**. The latest outcome reports each skipped block's zero-based `block_index` and category in its `reason`; use the index to find the section in the raw text you supplied. The `section_keyword_overridden` note identifies retained candidates that need a closer look. Skipped text is deliberately absent from the parse outcome. A full viewer for stored inbound messages is not part of the current admin screens.
 
 ## Check database installation and upgrade (staging)
 

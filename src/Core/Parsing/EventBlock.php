@@ -12,6 +12,7 @@ final class EventBlock
     private string $classification;
     private ?string $reason;
     private bool $candidate;
+    private ?string $sectionKeywordOverride;
 
     /**
      * @param array<string, string|int> $context
@@ -24,7 +25,8 @@ final class EventBlock
         ?string $title,
         string $classification,
         ?string $reason,
-        bool $candidate
+        bool $candidate,
+        ?string $sectionKeywordOverride = null
     ) {
         $this->blockIndex = $blockIndex;
         $this->sourceText = $sourceText;
@@ -34,6 +36,7 @@ final class EventBlock
         $this->classification = $classification;
         $this->reason = $reason;
         $this->candidate = $candidate;
+        $this->sectionKeywordOverride = $sectionKeywordOverride;
     }
 
     public function getBlockIndex(): int
@@ -75,6 +78,11 @@ final class EventBlock
     public function isCandidate(): bool
     {
         return $this->candidate;
+    }
+
+    public function getSectionKeywordOverride(): ?string
+    {
+        return $this->sectionKeywordOverride;
     }
 
     public function toMetadata(): array

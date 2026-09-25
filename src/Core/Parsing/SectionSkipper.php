@@ -91,6 +91,13 @@ final class SectionSkipper
 
     private const WEEKDAY_PATTERN = '(?:Monday|Mon|Tuesday|Tues|Tue|Wednesday|Wed|Thursday|Thurs|Thur|Thu|Friday|Fri|Saturday|Sat|Sunday|Sun)';
     private const MONTH_PATTERN = '(?:January|Jan|February|Feb|March|Mar|April|Apr|May|June|Jun|July|Jul|August|Aug|September|Sept|Sep|October|Oct|November|Nov|December|Dec)';
+    private const EVENT_NOUN_PATTERN = '(?:'
+        . 'activities|activity|bazaars?|celebrations?|class(?:es)?|concerts?|conferences?|'
+        . 'courses?|drives?|events?|evenings?|fairs?|feasts?|festivals?|fundraisers?|'
+        . 'gatherings?|healing\s+mass(?:es)?|holy\s+hours?|launch(?:es)?|markets?|'
+        . 'mass(?:es)?|meetings?|novenas?|outings?|performances?|picnics?|'
+        . 'pilgrimages?|prayer\s+services?|retreats?|services?|talks?|'
+        . 'tournaments?|vigils?|walks?|workshops?)';
 
     private array $normalizedKeywordLists;
 
@@ -169,9 +176,7 @@ final class SectionSkipper
 
     public function matchCategory(string $line): ?string
     {
-        $line = preg_replace('/^\s*#{1,6}\s*/u', '', trim($line)) ?? $line;
-        $line = preg_replace('/^\s*(?:[-*•]\s+|\d+[.)]\s+)/u', '', $line) ?? $line;
-        $normalizedLine = self::normalizePhrase($line);
+        $normalizedLine = self::normalizeLine($line);
 
         if ($normalizedLine === '') {
             return null;
@@ -192,6 +197,44 @@ final class SectionSkipper
         }
 
         return null;
+    }
+
+    public function matchHeadingCategory(string $line, bool $headingLike = false): ?string
+    {
+        $category = $this->matchCategory($line);
+
+        if ($category === null) {
+            return null;
+        }
+
+        $normalizedLine = self::normalizeLine($line);
+
+        return $headingLike
+            || in_array($normalizedLine, $this->normalizedKeywordLists[$category], true)
+            ? $category
+            : null;
+    }
+
+    public function hasEventSignalForKeywordOverride(string $text): bool
+    {
+        $datePattern = '/\b(?:(?:' . self::WEEKDAY_PATTERN . ')\.?\s+)?(?:'
+            . '\d{4}-\d{1,2}-\d{1,2}|'
+            . '\d{1,2}[.\/-]\d{1,2}(?:[.\/-]\d{2,4})?|'
+            . '\d{1,2}(?:st|nd|rd|th)?\s+' . self::MONTH_PATTERN . '\.?(?:,?\s+\d{2,4})?|'
+            . self::MONTH_PATTERN . '\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{2,4})?'
+            . ')\b/iu';
+
+        if (! preg_match($datePattern, $text)) {
+            return false;
+        }
+
+        $hasTime = preg_match(
+            '/\b\d{1,2}(?:[:.]\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)\b|\b\d{1,2}[:.]\d{2}\b/iu',
+            $text
+        );
+        $hasEventNoun = preg_match('/\b' . self::EVENT_NOUN_PATTERN . '\b/iu', $text);
+
+        return (bool) ($hasTime || $hasEventNoun);
     }
 
     public function isWeeklyMassTimesTableHeader(string $line): bool
@@ -257,5 +300,13 @@ final class SectionSkipper
         $phrase = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $phrase) ?? $phrase;
 
         return trim(preg_replace('/\s+/u', ' ', $phrase) ?? $phrase);
+    }
+
+    private static function normalizeLine(string $line): string
+    {
+        $line = preg_replace('/^\s*#{1,6}\s*/u', '', trim($line)) ?? $line;
+        $line = preg_replace('/^\s*(?:[-*•]\s+|\d+[.)]\s+)/u', '', $line) ?? $line;
+
+        return self::normalizePhrase($line);
     }
 }
