@@ -343,6 +343,17 @@ final class ParserPage
 
             <?php if ($outcome) : ?>
                 <h2>Latest parse outcome</h2>
+                <?php if (array_filter(
+                    $outcome->getNotes(),
+                    static fn (string $note): bool => str_starts_with(
+                        $note,
+                        'possible_missed_event_after_skipped_section: '
+                    )
+                ) !== []) : ?>
+                    <div class="notice notice-warning">
+                        <p><?php echo esc_html__('A skipped private section may contain an event after a blank line. Review the original message manually; the skipped text was not parsed or sent to AI.', 'adct-parish-intake'); ?></p>
+                    </div>
+                <?php endif; ?>
                 <pre><?php echo esc_html(wp_json_encode($outcome->toArray(), JSON_PRETTY_PRINT)); ?></pre>
             <?php endif; ?>
 
