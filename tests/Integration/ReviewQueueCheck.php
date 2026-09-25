@@ -73,6 +73,8 @@ final class ReviewQueueCheck
             $contactUser = $person('parish_contact', 'contact');
             $contact = 'queue-contact-' . $suffix . '@example.test';
             $unknown = 'queue-unknown-' . $suffix . '@example.test';
+            $deanAssignmentEmail = 'queue-assignment-' . $dean->ID . '-' . $suffix . '@example.test';
+            $otherDeanAssignmentEmail = 'queue-assignment-' . $otherDean->ID . '-' . $suffix . '@example.test';
             $insert($prefix . 'parish_contacts', [
                 'parish_id' => $parishOne, 'email' => $contact, 'trust' => 'verified',
                 'created_at' => $stamp, 'updated_at' => $stamp,
@@ -81,10 +83,13 @@ final class ReviewQueueCheck
                 'parish_id' => $parishTwo, 'email' => $contact, 'trust' => 'verified',
                 'created_at' => $stamp, 'updated_at' => $stamp,
             ]);
-            foreach ([[$deaneryOne, $dean], [$deaneryTwo, $otherDean]] as [$deanery, $user]) {
+            foreach ([
+                [$deaneryOne, $dean, $deanAssignmentEmail],
+                [$deaneryTwo, $otherDean, $otherDeanAssignmentEmail],
+            ] as [$deanery, $user, $assignmentEmail]) {
                 $insert($prefix . 'deanery_approvers', [
                     'deanery_id' => $deanery, 'wp_user_id' => $user->ID,
-                    'email' => 'queue-assignment-' . $user->ID . '-' . $suffix . '@example.test',
+                    'email' => $assignmentEmail,
                     'active' => 1,
                     'created_at' => $stamp, 'updated_at' => $stamp,
                 ]);
@@ -338,6 +343,90 @@ final class ReviewQueueCheck
                 && (int) json_decode($assigned['fields'], true)['parish_id'] === $parishOne
                 && (int) $trust === 0 && (int) $assignmentAudit === 1,
                 'assignment must align JSON and parish ID, audit once and never verify an unknown sender.');
+
+            $emailLinkRetry = $candidate('email-link-retry', 'awaiting_approval', $parishOne, $contact, 0.9, [
+                'fields' => ['title' => ''],
+                'approved_by' => $deanAssignmentEmail,
+                'approved_at' => $stamp,
+                'approved_via' => 'dean',
+                'decided_by' => $deanAssignmentEmail,
+                'decided_at' => $stamp,
+            ]);
+            $insert($prefix . 'audit_log', [
+                'actor' => $deanAssignmentEmail,
+                'action' => 'approver_approved',
+                'subject_type' => 'event_candidate',
+                'subject_id' => $emailLinkRetry,
+                'details' => wp_json_encode(['role' => 'dean', 'reason' => null]),
+                'created_at' => $stamp,
+                'updated_at' => $stamp,
+            ]);
+            $publicationFailed = false;
+            try {
+                Plugin::candidatePublisher()->publish($emailLinkRetry);
+            } catch (DomainException) {
+                $publicationFailed = true;
+            }
+            $failedPublication = $wpdb->get_row($wpdb->prepare(
+                "SELECT status, approved_by, approved_via FROM {$prefix}event_candidates WHERE id = %d",
+                $emailLinkRetry
+            ), ARRAY_A);
+            $check(strcasecmp($deanAssignmentEmail, $dean->user_email) !== 0
+                && $publicationFailed && $failedPublication !== null
+                && $failedPublication['status'] === 'awaiting_approval'
+                && $failedPublication['approved_by'] === $deanAssignmentEmail
+                && $failedPublication['approved_via'] === 'dean',
+                'a failed email-link publication must retain the dean assignment decision for retry.');
+            $check($queue->decide($emailLinkRetry, 'approve', $dean->ID, $dean->user_email, false) === 'retry',
+                'the assigned dean must retry an email approval when the assignment and account emails differ.');
+            $failedRows = $queue->find('failed', $dean->ID, $dean->user_email, false, $suffix, 50, 0);
+            $retryRow = null;
+            foreach ($failedRows as $row) {
+                if ((int) $row['id'] === $emailLinkRetry) {
+                    $retryRow = $row;
+                    break;
+                }
+            }
+            $check($retryRow !== null && (int) ($retryRow['can_retry'] ?? 0) === 1,
+                'the assigned dean must see the failed email approval as retryable in the queue.');
+            $_GET = ['tab' => 'failed', 'search' => $suffix];
+            wp_set_current_user($dean->ID);
+            ob_start();
+            $page->renderPage();
+            $deanFailedHtml = (string) ob_get_clean();
+            $check(str_contains($deanFailedHtml, 'name="candidate_ids[]" value="' . $emailLinkRetry . '"'),
+                'the assigned dean must be able to select the failed email approval for retry.');
+            wp_set_current_user($reviewer->ID);
+            ob_start();
+            $page->renderPage();
+            $reviewerFailedHtml = (string) ob_get_clean();
+            $check(! str_contains($reviewerFailedHtml, 'name="candidate_ids[]" value="' . $emailLinkRetry . '"'),
+                'a different reviewer must not retry a dean email approval.');
+            $validRetryFields = [
+                'title' => 'Queue email-linked retry ' . $suffix,
+                'event_date' => $date,
+                'event_time' => '09:00',
+                'event_end_time' => '10:00',
+                'description' => 'Fictional description.',
+                'parish_id' => $parishOne,
+            ];
+            $check($wpdb->update($prefix . 'event_candidates', [
+                'fields' => wp_json_encode($validRetryFields),
+            ], ['id' => $emailLinkRetry]) === 1,
+                'the failed event must be repairable before its publication retry.');
+            $check($queue->decide($emailLinkRetry, 'approve', $dean->ID, $dean->user_email, false) === 'retry',
+                'an approved candidate retry must not record a second decision.');
+            Plugin::candidatePublisher()->publish($emailLinkRetry);
+            $check($wpdb->get_var($wpdb->prepare(
+                "SELECT status FROM {$prefix}event_candidates WHERE id = %d", $emailLinkRetry
+            )) === 'published', 'the assigned dean must be able to publish after repairing the failed event.');
+            $retryAudit = $wpdb->get_results($wpdb->prepare(
+                "SELECT actor FROM {$prefix}audit_log WHERE subject_type = %s AND subject_id = %d "
+                . 'AND action = %s',
+                'event_candidate', $emailLinkRetry, 'approver_approved'
+            ), ARRAY_A);
+            $check(count($retryAudit) === 1 && $retryAudit[0]['actor'] === $deanAssignmentEmail,
+                'retrying the email approval must preserve its single assignment-email audit record.');
         } finally {
             wp_set_current_user($originalUser);
             $_GET = $originalGet;

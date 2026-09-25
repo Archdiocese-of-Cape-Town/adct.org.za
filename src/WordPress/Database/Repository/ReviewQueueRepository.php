@@ -103,8 +103,9 @@ final class ReviewQueueRepository
         }
         [$where, $args] = $this->where($userId, $email, $reviewer, $search);
         $category = $this->category();
+        [$retryEligibility, $retryArgs] = $this->retryEligibility($userId, $email);
         $select = "SELECT c.*, m.sender_email, p.name AS parish_name, "
-            . "{$category} AS category FROM {$this->candidates} c "
+            . "{$category} AS category, {$retryEligibility} FROM {$this->candidates} c "
             . "LEFT JOIN {$this->messages} m ON m.id = c.message_id "
             . "LEFT JOIN {$this->parishes} p ON p.id = c.parish_id {$where}";
         $select .= $tab === 'awaiting_approval'
@@ -117,7 +118,7 @@ final class ReviewQueueRepository
         $args[] = max(0, $offset);
         return $this->rows($this->prepared(
             $select . ' ORDER BY c.updated_at DESC, c.id DESC LIMIT %d OFFSET %d',
-            $args
+            [...$retryArgs, ...$args]
         ));
     }
 
@@ -154,10 +155,8 @@ final class ReviewQueueRepository
                     && $this->policy->requiresMatchResolution($candidate)) {
                     return 'manual_review';
                 }
-                return $action === 'approve'
-                    && $candidate['status'] === 'awaiting_approval'
-                    && strcasecmp((string) ($candidate['approved_by'] ?? ''), $email) === 0
-                    && ! empty($candidate['decided_at']) ? 'retry' : 'already_decided';
+                return $action === 'approve' && ! empty($candidate['can_retry'])
+                    ? 'retry' : 'already_decided';
             }
             if ($action === 'approve' && ! $this->policy->canBulkApprove($candidate)) {
                 $this->execute('COMMIT');
@@ -266,10 +265,32 @@ final class ReviewQueueRepository
     private function lockedCandidate(int $id, int $userId, string $email, bool $reviewer): ?array
     {
         [$scope, $args] = $this->scope($userId, $email, $reviewer);
+        [$retryEligibility, $retryArgs] = $this->retryEligibility($userId, $email);
         return $this->row($this->prepared(
-            "SELECT c.* FROM {$this->candidates} c WHERE c.id = %d AND {$scope} FOR UPDATE",
-            [$id, ...$args]
+            "SELECT c.*, {$retryEligibility} FROM {$this->candidates} c "
+            . "WHERE c.id = %d AND {$scope} FOR UPDATE",
+            [...$retryArgs, $id, ...$args]
         ));
+    }
+
+    /** @return array{string, list<int|string>} */
+    private function retryEligibility(int $userId, string $email): array
+    {
+        return [
+            "CASE WHEN c.status = 'awaiting_approval' AND c.approved_by IS NOT NULL "
+            . "AND TRIM(c.approved_by) <> '' AND c.decided_at IS NOT NULL "
+            . "AND (LOWER(c.approved_by) = LOWER(%s) "
+            . "OR (c.approved_via IN ('dean', 'self') AND EXISTS ("
+            . "SELECT 1 FROM {$this->parishes} retry_parish "
+            . "INNER JOIN {$this->deaneries} retry_deanery "
+            . "ON retry_deanery.id = retry_parish.deanery_id AND retry_deanery.status = 'active' "
+            . "INNER JOIN {$this->approvers} retry_approver "
+            . "ON retry_approver.deanery_id = retry_deanery.id AND retry_approver.active = 1 "
+            . "AND retry_approver.wp_user_id = %d "
+            . "WHERE retry_parish.id = c.parish_id "
+            . "AND LOWER(retry_approver.email) = LOWER(c.approved_by)))) THEN 1 ELSE 0 END AS can_retry",
+            [$email, $userId],
+        ];
     }
 
     /** @return array{string, list<int|string>} */

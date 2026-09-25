@@ -141,7 +141,7 @@ final class ReviewQueuePage
                                 <tr><td colspan="7">No candidates match this view.</td></tr>
                             <?php else : ?>
                                 <?php foreach ($rows as $row) : ?>
-                                    <?php $this->renderRow($row, $tab, $email); ?>
+                                    <?php $this->renderRow($row, $tab); ?>
                                 <?php endforeach; ?>
                             <?php endif; ?>
                         </tbody>
@@ -230,7 +230,7 @@ final class ReviewQueuePage
     }
 
     /** @param array<string, mixed> $row */
-    private function renderRow(array $row, string $tab, string $email): void
+    private function renderRow(array $row, string $tab): void
     {
         $id = (int) $row['id'];
         $fields = $this->safeFields($row);
@@ -238,8 +238,7 @@ final class ReviewQueuePage
         $decided = ($row['decided_by'] ?? null) ?: ($row['approved_by'] ?? null);
         $canSelect = $this->canActOnTab($tab) && (
             $this->policy->canDecide($row)
-            || ($row['status'] === 'awaiting_approval' && $decided !== null
-                && strcasecmp((string) ($row['approved_by'] ?? ''), $email) === 0)
+            || ! empty($row['can_retry'])
         );
         $canApprove = false;
         if ($this->policy->canDecide($row)) {
