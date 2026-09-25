@@ -40,6 +40,8 @@ for required_file in \
     adct-parish-intake.php \
     uninstall.php \
     src/WordPress/Autoloader.php \
+    assets/events-block.js \
+    assets/events.css \
     vendor-prefixed/autoload.php
 do
     if [ ! -f "$package_dir/$required_file" ]; then

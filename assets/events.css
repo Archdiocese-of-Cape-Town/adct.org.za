@@ -1,0 +1,33 @@
+.adct-events__filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .75rem;
+    margin-bottom: 1.5rem;
+}
+.adct-events__filters input,
+.adct-events__filters select,
+.adct-events__filters button {
+    max-width: 100%;
+}
+.adct-events__cards {
+    list-style: none;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+    gap: 1rem;
+}
+.adct-events__card {
+    border: 1px solid currentColor;
+    border-radius: .4rem;
+    padding: 1rem;
+}
+.adct-events__card h3 { margin-top: 0; }
+.adct-events__badge {
+    display: inline-block;
+    border: 1px solid currentColor;
+    border-radius: .25rem;
+    padding: .15rem .4rem;
+    margin: .15rem 0;
+}
+.adct-events nav a { display: inline-block; padding: .5rem; }

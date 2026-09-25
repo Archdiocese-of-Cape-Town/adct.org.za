@@ -18,6 +18,11 @@ final class EventOccurrenceHooks
         self::$publishingCandidate = $publishing;
     }
 
+    public static function isPublishingCandidate(): bool
+    {
+        return self::$publishingCandidate;
+    }
+
     /**
      * @var array<int, Throwable>
      */

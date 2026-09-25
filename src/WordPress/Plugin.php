@@ -110,6 +110,7 @@ use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
+use ADCT\ParishIntake\WordPress\Events\PublicEventListing;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
 use ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance;
 use ADCT\ParishIntake\WordPress\Publishing\WordPressPublicationStore;
@@ -140,6 +141,7 @@ final class Plugin
     private EventEditor $eventEditor;
     private EventOccurrenceHooks $eventOccurrenceHooks;
     private CandidatePublisher $candidatePublisher;
+    private PublicEventListing $publicEventListing;
     private MailboxesPage $mailboxesPage;
 
     private function __construct(string $pluginFile)
@@ -228,6 +230,13 @@ final class Plugin
         );
         $this->sendersPage = new SendersPage($contacts, $contactService, $parishes);
         $this->eventPostType = new EventPostType();
+        $listingGeneration = new EventListingGeneration();
+        $this->publicEventListing = new PublicEventListing(
+            $clock,
+            new DateTimeZone('Africa/Johannesburg'),
+            $pluginFile,
+            $listingGeneration
+        );
         $this->eventEditor = new EventEditor(
             $parishes,
             $venues,
@@ -238,14 +247,17 @@ final class Plugin
         $occurrenceMaintenance = new WordPressEventOccurrenceMaintenance(
             new OccurrenceRepository($database),
             new OccurrenceExpander($timezone, $rruleValidator),
-            $clock
+            $clock,
+            function (): void {
+                $this->publicEventListing->invalidate();
+            }
         );
         $this->candidatePublisher = new CandidatePublisher(
             new WordPressPublicationStore(
                 $database,
                 new EventCandidateRepository($database),
                 $occurrenceMaintenance,
-                new EventListingGeneration(),
+                $listingGeneration,
                 $clock,
                 $timezone
             ),
@@ -530,6 +542,16 @@ final class Plugin
         add_filter('query_vars', [$this->actionTokenEndpoint, 'registerQueryVars']);
         add_action('template_redirect', [$this->actionTokenEndpoint, 'handleRequest'], 0);
         add_action('init', [$this->eventPostType, 'register'], 5);
+        add_action('init', [$this->publicEventListing, 'register'], 10);
+        add_action('wp_enqueue_scripts', [$this->publicEventListing, 'styles']);
+        add_action('save_post_adct_event', [$this->publicEventListing, 'invalidate'], 30);
+        add_action('rest_after_insert_adct_event', [$this->publicEventListing, 'invalidateTerms'], 30);
+        add_action('transition_post_status', [$this->publicEventListing, 'invalidateOnStatus'], 30, 3);
+        add_action('before_delete_post', [$this->publicEventListing, 'invalidate'], 30);
+        add_action('added_post_meta', [$this->publicEventListing, 'invalidateMeta'], 10, 2);
+        add_action('updated_post_meta', [$this->publicEventListing, 'invalidateMeta'], 10, 2);
+        add_action('deleted_post_meta', [$this->publicEventListing, 'invalidateMeta'], 10, 2);
+        add_action('set_object_terms', [$this->publicEventListing, 'invalidateTerms'], 10, 1);
         add_action('add_meta_boxes_adct_event', [$this->eventEditor, 'registerMetaBox']);
         add_action('save_post_adct_event', [$this->eventEditor, 'handleSavePost'], 10, 3);
         add_action('save_post_adct_event', [$this->eventOccurrenceHooks, 'handleSavePost'], 20, 3);
