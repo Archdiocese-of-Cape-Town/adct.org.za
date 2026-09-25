@@ -235,6 +235,9 @@ if ($actualEventTermSlugs !== $expectedEventTermSlugs) {
     $fail('Repeated event setup created duplicate or missing default event types.');
 }
 
+require_once __DIR__ . '/EventTypeCheck.php';
+EventTypeCheck::run($fail);
+
 foreach (['administrator', 'editor', 'adct_pi_intake_manager', 'adct_pi_intake_reviewer'] as $roleName) {
     $role = get_role($roleName);
 
@@ -3301,7 +3304,7 @@ $parsedMessageRow = $wpdb->get_row($wpdb->prepare(
     $reprocessMessageId
 ), ARRAY_A);
 $candidateRowsAfterParse = (array) $wpdb->get_results($wpdb->prepare(
-    "SELECT id, block_index, status FROM {$candidateTable} WHERE message_id = %d ORDER BY block_index ASC",
+    "SELECT id, block_index, status, fields FROM {$candidateTable} WHERE message_id = %d ORDER BY block_index ASC",
     $reprocessMessageId
 ), ARRAY_A);
 $candidateCountAfterParse = count($candidateRowsAfterParse);
@@ -3319,6 +3322,7 @@ if (
     || ! AuthenticationResults::fromJson($parsedMessageRow['auth_results'])->hasReportedDmarcFailure()
     || $candidateCountAfterParse !== 1
     || ($candidateRowsAfterParse[0]['status'] ?? null) !== 'draft'
+    || ! isset(json_decode($candidateRowsAfterParse[0]['fields'] ?? '{}', true)['event_type'])
 ) {
     $fail('Reprocessing did not parse the same stored message into one reviewable draft candidate.');
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Events;
 
 use ADCT\ParishIntake\Core\Auth\Capabilities;
+use ADCT\ParishIntake\Core\Parsing\EventTypeClassifier;
 use RuntimeException;
 
 final class EventPostType
@@ -13,7 +14,7 @@ final class EventPostType
     public const TAXONOMY = 'adct_event_type';
     public const CONTENT_VERSION_OPTION = 'adct_pi_event_content_version';
     public const SETUP_ERROR_OPTION = 'adct_pi_event_content_error';
-    public const CURRENT_CONTENT_VERSION = 1;
+    public const CURRENT_CONTENT_VERSION = 2;
 
     /**
      * @var list<array{name: string, slug: string}>
@@ -27,6 +28,7 @@ final class EventPostType
         ['name' => 'Outreach', 'slug' => 'outreach'],
         ['name' => 'Fundraising', 'slug' => 'fundraising'],
         ['name' => 'Meeting', 'slug' => 'meeting'],
+        ['name' => 'Pilgrimage', 'slug' => 'pilgrimage'],
         ['name' => 'Other', 'slug' => 'other'],
     ];
 
@@ -47,6 +49,7 @@ final class EventPostType
         $this->registerTaxonomy();
         $this->registerMeta();
         $this->seedDefaultTerms();
+        $this->seedDefaultKeywords();
         $this->saveVersion();
         flush_rewrite_rules(false);
         delete_option(self::SETUP_ERROR_OPTION);
@@ -386,6 +389,7 @@ final class EventPostType
     {
         try {
             $this->seedDefaultTerms();
+            $this->seedDefaultKeywords();
             $this->saveVersion();
             flush_rewrite_rules(false);
             delete_option(self::SETUP_ERROR_OPTION);
@@ -414,6 +418,30 @@ final class EventPostType
                 throw new RuntimeException(
                     'Could not seed the "' . $term['name'] . '" event type: ' . $result->get_error_message()
                 );
+            }
+        }
+    }
+
+    private function seedDefaultKeywords(): void
+    {
+        foreach (self::DEFAULT_TERMS as $definition) {
+            $term = get_term_by('slug', $definition['slug'], self::TAXONOMY);
+            if (! $term instanceof \WP_Term) {
+                $term = get_term_by('name', $definition['name'], self::TAXONOMY);
+            }
+            if (! $term instanceof \WP_Term) {
+                throw new RuntimeException('Could not find the "' . $definition['name'] . '" event type.');
+            }
+            if (metadata_exists('term', $term->term_id, EventTypeKeywords::META_KEY)) {
+                continue;
+            }
+            if (! add_term_meta(
+                $term->term_id,
+                EventTypeKeywords::META_KEY,
+                EventTypeClassifier::DEFAULT_KEYWORDS[$definition['slug']],
+                true
+            )) {
+                throw new RuntimeException('Could not seed keywords for the "' . $definition['name'] . '" event type.');
             }
         }
     }

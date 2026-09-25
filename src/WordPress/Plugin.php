@@ -119,6 +119,7 @@ use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
+use ADCT\ParishIntake\WordPress\Events\EventTypeKeywords;
 use ADCT\ParishIntake\WordPress\Events\PublicEventListing;
 use ADCT\ParishIntake\WordPress\Events\PublicIcsFeed;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
@@ -190,7 +191,7 @@ final class Plugin
             new WordPressDirectorySnapshotCache(),
             new WordPressDirectorySnapshotLoader($parishes, $venues, $contacts)
         );
-        $this->pipelineFactory = new PipelineFactory($clock, $directorySnapshots);
+        $this->pipelineFactory = new PipelineFactory($clock, $directorySnapshots, new EventTypeKeywords());
         $this->parserPage = new ParserPage(
             $this->schema,
             $this->pipelineFactory,
@@ -602,6 +603,11 @@ final class Plugin
         add_action('template_redirect', [$this->actionTokenEndpoint, 'handleRequest'], 0);
         add_action('template_redirect', [$this->publicIcsFeed, 'handleRequest'], 1);
         add_action('init', [$this->eventPostType, 'register'], 5);
+        $typeKeywords = new EventTypeKeywords();
+        add_action(EventPostType::TAXONOMY . '_add_form_fields', [$typeKeywords, 'renderAddField']);
+        add_action(EventPostType::TAXONOMY . '_edit_form_fields', [$typeKeywords, 'renderEditField']);
+        add_action('created_' . EventPostType::TAXONOMY, [$typeKeywords, 'save']);
+        add_action('edited_' . EventPostType::TAXONOMY, [$typeKeywords, 'save']);
         add_action('init', [$this->publicEventListing, 'register'], 10);
         add_action('rest_api_init', [$this->publicEventListing, 'registerRestRoute']);
         add_action('wp_enqueue_scripts', [$this->publicEventListing, 'styles']);

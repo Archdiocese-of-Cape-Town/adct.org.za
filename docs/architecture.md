@@ -56,7 +56,7 @@ flowchart LR
 
 ### 1. Domain core (`src/Core/…`, no WordPress dependency)
 Pure PHP 8.2, covered by unit tests and loaded through Composer PSR-4:
-- `Parsing` – the stage pipeline (normalise → split into blocks → rule extraction → directory lookup → date/time → recurrence → classification → confidence → optional AI).
+- `Parsing` – the stage pipeline (normalise → split into blocks → rule extraction → directory lookup → date/time → recurrence → event-type keyword classification → confidence → optional AI). The WordPress adapter loads editable term-meta keyword lists each time a pipeline is created; Core receives only term slugs and phrases. Classification stores `event_type`, separate `event_type_confidence` and `event_type_source` in candidate fields. A unique highest score selects a type; ties and no match select Other with low type confidence. The publishing adapter assigns the type on new events and leaves an existing type intact on automatically classified updates.
 - `Recurrence` – RRULE model and expansion of upcoming occurrences (Africa/Johannesburg).
 - `Matching` – duplicate/update detection between candidates and existing events.
 - `Trust` – decides the next step for a candidate: send for confirmation, route to the approval queues, publish (self-approval or a verified contact's change to a published event), or ignore.

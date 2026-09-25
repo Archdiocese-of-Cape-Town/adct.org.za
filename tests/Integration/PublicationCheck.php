@@ -27,7 +27,8 @@ final class PublicationCheck
             ?int $match,
             ?string $via = 'reviewer',
             string $title = 'Sample parish event',
-            ?string $eventType = 'social'
+            ?string $eventType = 'social',
+            bool $automaticType = false
         ) use (
             $candidates, $date, $now, &$candidateIds
         ): int {
@@ -40,6 +41,10 @@ final class PublicationCheck
             ];
             if ($eventType !== null) {
                 $fields['event_type'] = $eventType;
+                if ($automaticType) {
+                    $fields['event_type_source'] = 'keyword';
+                    $fields['event_type_confidence'] = 0.85;
+                }
             }
             $id = $candidates->insert([
                 'block_index' => 0,
@@ -78,16 +83,23 @@ final class PublicationCheck
             } catch (DomainException $expected) {
             }
 
-            $create = $make('new', null);
+            $create = $make('new', null, 'reviewer', 'Sample parish event', 'social', true);
             $stale = $make('update', null);
             $eventId = $publisher->publish($create);
             $candidates->update($stale, ['match_event_id' => $eventId]);
             $newer = $make('update', $eventId);
+            $social = get_term_by('slug', 'social', 'adct_event_type');
+            $initialOccurrenceType = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT event_type_term_id FROM {$occurrences} WHERE event_id = %d LIMIT 1",
+                $eventId
+            ));
             if (
                 get_post($eventId)?->post_status !== 'publish'
                 || get_post_meta($eventId, 'source_candidate_id', true) != $create
                 || $count($occurrences, $eventId) !== 1
                 || ! has_term('social', 'adct_event_type', $eventId)
+                || ! $social instanceof \WP_Term
+                || $initialOccurrenceType !== $social->term_id
                 || $generation->current() === $initialGeneration
                 || $publisher->publish($create) !== $eventId
                 || $count($changes, $eventId) !== 0
@@ -241,6 +253,18 @@ final class PublicationCheck
                 || $count($changes, $eventId) !== $beforeChanges + 1
             ) {
                 $fail('Retry did not repair the listing cache generation without a duplicate revision.');
+            }
+
+            $youth = get_term_by('slug', 'youth', 'adct_event_type');
+            wp_set_object_terms($eventId, [$youth->term_id], 'adct_event_type');
+            $automaticUpdate = $make('update', $eventId, 'reviewer', 'Automatically typed update', 'social', true);
+            $publisher->publish($automaticUpdate);
+            $occurrenceType = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT event_type_term_id FROM {$occurrences} WHERE event_id = %d LIMIT 1", $eventId
+            ));
+            if (! has_term('youth', 'adct_event_type', $eventId)
+                || $occurrenceType !== $youth->term_id) {
+                $fail('An automatic type overwrote an intentionally selected published event type.');
             }
         } finally {
             if ($eventId !== null) {
