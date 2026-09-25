@@ -33,6 +33,11 @@ final class RuleBasedExtractionStage implements StageInterface
         $body = (string) $context->getRuntimeValue('cleaned_body', $message->getBody());
         $signature = (string) $context->getRuntimeValue('signature_text', '');
         $lower = function_exists('mb_strtolower') ? mb_strtolower($text) : strtolower($text);
+        $blockContext = $context->getRuntimeValue('block_context', []);
+
+        if (! is_array($blockContext)) {
+            $blockContext = [];
+        }
 
         $bulletinRange = $this->findBulletinDateRange($text);
         $dateText = $text;
@@ -44,16 +49,35 @@ final class RuleBasedExtractionStage implements StageInterface
                 $bulletinRange['offset'],
                 strlen($bulletinRange['match'])
             );
+        } elseif (isset($blockContext['bulletin_date_range']) && is_string($blockContext['bulletin_date_range'])) {
+            $bulletinRange = $this->findBulletinDateRange($blockContext['bulletin_date_range']);
         }
 
         $referenceDate = $bulletinRange['date'] ?? $this->referenceDate($message);
-        $date = $this->extractDate($dateText, $referenceDate);
+        $monthContext = isset($blockContext['month']) && is_string($blockContext['month'])
+            ? $blockContext['month']
+            : null;
+        $yearContext = isset($blockContext['year']) && is_numeric($blockContext['year'])
+            ? (int) $blockContext['year']
+            : null;
+        $date = $this->extractDate($dateText, $referenceDate, $monthContext, $yearContext);
         $times = $this->extractTimes($text);
 
         $classification = $this->classify($lower, $date !== null, $times !== null);
         $result->setClassification($classification);
-        $result->setField('title', $this->extractTitle($message, $text));
-        $result->setField('parish_name', $this->extractParishName($text, $message->getSenderName()));
+        $blockTitle = $context->getRuntimeValue('block_title');
+        $result->setField(
+            'title',
+            is_string($blockTitle) && trim($blockTitle) !== ''
+                ? trim($blockTitle)
+                : $this->extractTitle($message, $text)
+        );
+        $result->setField(
+            'parish_name',
+            (isset($blockContext['parish_name']) ? (string) $blockContext['parish_name'] : null)
+                ?? $this->extractParishName($text, '')
+                ?? $this->extractParishName('', $message->getSenderName())
+        );
         $rangeEndBeforeStart = false;
 
         if ($date !== null) {
@@ -87,7 +111,9 @@ final class RuleBasedExtractionStage implements StageInterface
             $result->addNote('The stated event end is before its start; verify the range.');
         }
 
-        $venue = $this->extractVenue($body) ?? $this->extractVenue($message->getSubject());
+        $venue = $this->extractVenue($body)
+            ?? $this->extractVenue($message->getSubject())
+            ?? (isset($blockContext['venue']) ? (string) $blockContext['venue'] : null);
         $result->setField('venue', $venue);
         $result->setField('contact', $this->extractContact($text . "\n" . $signature, $message->getSenderEmail()));
         $result->setField('description', $this->eventDescription($body));
@@ -162,7 +188,12 @@ final class RuleBasedExtractionStage implements StageInterface
     /**
      * @return array{date: string, end_date: ?string, weekday_mismatch: bool, end_before_start: bool, next_weekday_ambiguous: ?string}|null
      */
-    private function extractDate(string $text, DateTimeImmutable $referenceDate): ?array
+    private function extractDate(
+        string $text,
+        DateTimeImmutable $referenceDate,
+        ?string $monthContext = null,
+        ?int $yearContext = null
+    ): ?array
     {
         $weekdayPrefix = '(?:(?<weekday>' . self::WEEKDAY_PATTERN . ')\.?\s+)?';
         $patterns = [
@@ -290,6 +321,63 @@ final class RuleBasedExtractionStage implements StageInterface
                 'weekday_mismatch' => $weekdayMismatch,
                 'end_before_start' => $endBeforeStart,
                 'next_weekday_ambiguous' => $ambiguousWeekday,
+            ];
+        }
+
+        if ($monthContext !== null) {
+            return $this->extractContextualDate($text, $referenceDate, $monthContext, $yearContext);
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array{date: string, end_date: null, weekday_mismatch: bool, end_before_start: false, next_weekday_ambiguous: null}|null
+     */
+    private function extractContextualDate(
+        string $text,
+        DateTimeImmutable $referenceDate,
+        string $monthText,
+        ?int $yearContext
+    ): ?array {
+        $month = $this->monthNumber($monthText);
+
+        if ($month === null) {
+            return null;
+        }
+
+        $referenceDate = $referenceDate
+            ->setTimezone(new DateTimeZone(self::LOCAL_TIMEZONE))
+            ->setTime(0, 0);
+        $pattern = '~^\s*(?:(?<weekday>' . self::WEEKDAY_PATTERN . ')\.?\s+)?'
+            . '(?<day>\d{1,2})(?:st|nd|rd|th)?\s*(?:[-–—|]|:(?!\d)|$)~iu';
+
+        foreach (preg_split('/\R/u', $text) ?: [] as $line) {
+            $line = preg_replace('/^\s*(?:[-*•]\s+|\d+[.)]\s+)/u', '', trim($line)) ?? trim($line);
+            $line = preg_replace('/^\s*(?:date|when)\s*:\s*/iu', '', $line) ?? $line;
+
+            if (! preg_match($pattern, $line, $matches)) {
+                continue;
+            }
+
+            $day = (int) $matches['day'];
+            $date = $yearContext === null
+                ? $this->nextMonthDay($day, $month, $referenceDate)
+                : $this->makeDate($yearContext, $month, $day);
+
+            if ($date === null) {
+                continue;
+            }
+
+            $weekdayText = $matches['weekday'] ?? '';
+
+            return [
+                'date' => $date->format('Y-m-d'),
+                'end_date' => null,
+                'weekday_mismatch' => $weekdayText !== ''
+                    && $this->weekdayNumber($weekdayText) !== (int) $date->format('N'),
+                'end_before_start' => false,
+                'next_weekday_ambiguous' => null,
             ];
         }
 

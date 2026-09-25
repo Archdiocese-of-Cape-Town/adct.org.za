@@ -41,7 +41,11 @@ foreach ($paths as $path) {
         throw new RuntimeException('Expected JSON must be an object: ' . basename($expectedPath));
     }
 
-    $actual = $pipeline->parse($loader->load($path))->toArray();
+    $outcome = $pipeline->parseAll($loader->load($path));
+    $actual = array_merge(
+        $outcome->getPrimaryResult()->toArray(),
+        $outcome->toArray()
+    );
     $checks = FixtureComparator::compare($expected, $actual);
     $correct = count(array_filter($checks, static fn (array $check): bool => $check['matches']));
     $count = count($checks);

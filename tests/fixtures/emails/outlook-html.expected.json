@@ -1,5 +1,16 @@
 {
   "classification": "event",
+  "candidate_count": 1,
+  "candidates": [
+    {
+      "block_index": 0,
+      "fields": {
+        "title": "Community Day at Example Parish",
+        "event_date": "2026-10-17",
+        "event_time": "11:00"
+      }
+    }
+  ],
   "fields": {
     "title": "Community Day at Example Parish",
     "parish_name": "Example Parish",
