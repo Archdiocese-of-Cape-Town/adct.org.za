@@ -120,7 +120,7 @@ Each job's state records `last_run_at` (run start), `last_success_at` (updated o
 | Job | Default interval | Work |
 |---|---|---|
 | `framework_heartbeat` | due every 10 min | Currently registered framework check only; no parish data or email work. |
-| `poll_mailboxes` | due every 10 min | Poll active mailboxes in bounded UID batches, store raw mail and eligible attachments, de-duplicate and file completed messages. Parsing is a later job. |
+| `poll_mailboxes` | due every 10 min | Check active mailboxes whose source interval has elapsed, resume incomplete UID scans, and retry failures with backoff; store raw mail and eligible attachments, de-duplicate and file completed messages. Parsing is a later job. |
 | `process_queue` | due every 10 min | Planned: extract text, parse, create candidates, queue confirmation and approver emails. |
 | `send_mail` | every trigger | Planned: send queued email up to the hourly cap, highest priority first. |
 | `poll_sources` | hourly | Planned: poll a few active ICS/PDF/secondary sources per run (oldest `last_checked_at` first) and record checks, successes, failures and item times through `SourceHealthRecorder`. No source polling adapter is registered yet. |

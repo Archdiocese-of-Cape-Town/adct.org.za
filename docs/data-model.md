@@ -116,9 +116,11 @@ Learning rule: when an unknown address submits, a `pending` row is created with 
 | role | `official` or `monitored` |
 | status | `active`, `paused`, `unreliable`, `disabled` |
 | poll_interval_minutes | at least 10 for pollable types; defaults to 1,440 (24 hours). `manual` sources are not polled and store NULL. These limits are provisional. |
-| checkpoint | JSON (e.g. `{"uidvalidity":12345,"last_uid":67}` for mailbox polling; also available for ICS ETag or last post id) |
+| checkpoint | JSON (e.g. `{"uidvalidity":12345,"last_uid":67,"scan_complete":false}` for mailbox polling; also available for ICS ETag or last post id) |
 | last_checked_at, last_success_at, last_item_at | health tracking |
 | consecutive_failures, last_error | |
+
+The mailbox poller checks `last_checked_at` against the source's `poll_interval_minutes`. `scan_complete` remains false until a full UID scan finds no further unattempted messages. With no consecutive failures, an incomplete checkpoint resumes immediately even if the configured interval has not elapsed; old mailbox checkpoints without this field are treated as incomplete once so an interrupted scan is not delayed. Failed checks use a provisional retry delay of 10 minutes, doubled for each consecutive failure and capped at 6 hours, measured from `last_checked_at` instead of the regular source interval.
 
 The source registry already exists in schema v1, so source management does not need a schema migration. Parish-scoped `(parish_id, type, identifier)` values are unique. Saving an official parish source locks the parish row, demotes its previous official source to `monitored`, then updates `parishes.official_source_id` in the same transaction. A parish can have no official source until one is selected; at most one is official at a time. Archdiocese-wide sources (`parish_id IS NULL`) may have multiple official sources, including multiple sources of the same type (provisional; there is no cross-source uniqueness rule).
 

@@ -15,10 +15,18 @@ final class MailboxCheckpointTest extends TestCase
         $checkpoint = new MailboxCheckpoint(12345, 67);
 
         self::assertSame(
-            '{"uidvalidity":12345,"last_uid":67}',
+            '{"uidvalidity":12345,"last_uid":67,"scan_complete":false}',
             $checkpoint->toJson()
         );
         self::assertEquals($checkpoint, MailboxCheckpoint::fromJson($checkpoint->toJson()));
+    }
+
+    public function testLegacyCheckpointIsTreatedAsAnIncompleteScan(): void
+    {
+        $checkpoint = MailboxCheckpoint::fromJson('{"uidvalidity":12345,"last_uid":67}');
+
+        self::assertNotNull($checkpoint);
+        self::assertFalse($checkpoint->scanComplete);
     }
 
     public function testUidValidityChangeResetsTheLastUid(): void
@@ -35,6 +43,15 @@ final class MailboxCheckpointTest extends TestCase
 
         self::assertEquals(new MailboxCheckpoint(12345, 70), $checkpoint->advanceTo(70));
         self::assertSame($checkpoint, $checkpoint->advanceTo(67));
+    }
+
+    public function testScanCanBeMarkedInProgressAndComplete(): void
+    {
+        $checkpoint = new MailboxCheckpoint(12345, 67, true);
+
+        self::assertEquals(new MailboxCheckpoint(12345, 67), $checkpoint->beginScan());
+        self::assertEquals(new MailboxCheckpoint(12345, 67, true), $checkpoint->completeScan());
+        self::assertFalse($checkpoint->advanceTo(70)->scanComplete);
     }
 
     public function testEmptyStoredCheckpointMeansNoPreviousPoll(): void

@@ -35,6 +35,8 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
 {
     public const DEFAULT_INTERVAL_SECONDS = 600;
     public const TOO_LARGE_FOLDER = 'Too large';
+    public const FAILURE_RETRY_BASE_MINUTES = 10;
+    public const FAILURE_RETRY_MAX_MINUTES = 360;
 
     /** @var Closure(MailboxSettings): string */
     private Closure $passwordResolver;
@@ -53,6 +55,18 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
 
     /** @var array<int, true> */
     private array $sourcesWithFailures = [];
+
+    /** @var array<int, true> */
+    private array $dueSources = [];
+
+    /** @var array<int, true> */
+    private array $notDueSources = [];
+
+    /** @var array<int, true> */
+    private array $stoppedSources = [];
+
+    /** @var array<int, MailboxCheckpoint|null> */
+    private array $runCheckpoints = [];
 
     /**
      * @param callable(MailboxSettings): string $passwordResolver
@@ -128,10 +142,40 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
         $this->attemptedUids = [];
         $this->failedUids = [];
         $this->sourcesWithFailures = [];
+        $this->dueSources = [];
+        $this->notDueSources = [];
+        $this->stoppedSources = [];
+        $this->runCheckpoints = [];
     }
 
     private function pollMailbox(MailboxSettings $settings): bool
     {
+        if (
+            isset($this->stoppedSources[$settings->sourceId])
+            || isset($this->notDueSources[$settings->sourceId])
+        ) {
+            return false;
+        }
+
+        if (! isset($this->dueSources[$settings->sourceId])) {
+            try {
+                $mailboxIsDue = $this->isMailboxDue($settings);
+            } catch (Throwable $failure) {
+                $this->stoppedSources[$settings->sourceId] = true;
+                $this->recordFailure($settings->sourceId, null, $failure);
+
+                return false;
+            }
+
+            if (! $mailboxIsDue) {
+                $this->notDueSources[$settings->sourceId] = true;
+
+                return false;
+            }
+
+            $this->dueSources[$settings->sourceId] = true;
+        }
+
         $mailbox = null;
         $failure = null;
         $messageFailure = null;
@@ -155,7 +199,7 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
             }
 
             $uidValidity = $mailbox->uidValidity();
-            $savedCheckpoint = $this->checkpoints->findCheckpoint($settings->sourceId);
+            $savedCheckpoint = $this->findCheckpointForRun($settings->sourceId);
             $mailboxCheckpoint = $savedCheckpoint === null
                 ? new MailboxCheckpoint($uidValidity, 0)
                 : $savedCheckpoint->forUidValidity($uidValidity);
@@ -167,10 +211,21 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
                 $this->saveCheckpoint($settings->sourceId, $mailboxCheckpoint);
             }
 
+            if ($mailboxCheckpoint->scanComplete) {
+                $mailboxCheckpoint = $mailboxCheckpoint->beginScan();
+                $this->saveCheckpoint($settings->sourceId, $mailboxCheckpoint);
+            }
+
             $uid = $this->nextUnattemptedUid($settings, $mailbox, $mailboxCheckpoint);
 
             if ($uid === null) {
                 $checkedWithoutWork = true;
+
+                if (($this->failedUids[$this->mailboxKey($settings->sourceId, $mailboxCheckpoint->uidValidity)] ?? []) === []) {
+                    $this->saveCheckpoint($settings->sourceId, $mailboxCheckpoint->completeScan());
+                }
+
+                $this->stoppedSources[$settings->sourceId] = true;
             } else {
                 $messageUid = $uid;
                 $didWork = true;
@@ -203,6 +258,8 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
         if ($failure !== null) {
             if ($messageFailure !== null && $messageUid !== null && $uidValidity !== null) {
                 $this->rememberFailedUid($settings->sourceId, $uidValidity, $messageUid);
+            } elseif ($messageUid === null) {
+                $this->stoppedSources[$settings->sourceId] = true;
             }
 
             $this->recordFailure($settings->sourceId, $messageUid, $failure);
@@ -215,6 +272,62 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
         }
 
         return $didWork;
+    }
+
+    private function isMailboxDue(MailboxSettings $settings): bool
+    {
+        if ($settings->lastCheckedAt === null) {
+            return true;
+        }
+
+        $lastCheckedAt = DateTimeImmutable::createFromFormat(
+            '!Y-m-d H:i:s',
+            $settings->lastCheckedAt,
+            new DateTimeZone('UTC')
+        );
+        $dateErrors = DateTimeImmutable::getLastErrors();
+
+        if (
+            $lastCheckedAt === false
+            || (
+                $dateErrors !== false
+                && ($dateErrors['warning_count'] > 0 || $dateErrors['error_count'] > 0)
+            )
+            || $lastCheckedAt->format('Y-m-d H:i:s') !== $settings->lastCheckedAt
+        ) {
+            throw new RuntimeException('The source last-checked timestamp is invalid.');
+        }
+
+        if ($settings->consecutiveFailures === 0) {
+            $checkpoint = $this->findCheckpointForRun($settings->sourceId);
+
+            if ($checkpoint !== null && ! $checkpoint->scanComplete) {
+                return true;
+            }
+
+            $delayMinutes = $settings->pollIntervalMinutes;
+        } else {
+            $delayMinutes = $this->retryDelayMinutes($settings->consecutiveFailures);
+        }
+
+        $elapsedSeconds = $this->clock->now()->getTimestamp() - $lastCheckedAt->getTimestamp();
+
+        return $elapsedSeconds >= $delayMinutes * 60;
+    }
+
+    private function retryDelayMinutes(int $consecutiveFailures): int
+    {
+        $delayMinutes = self::FAILURE_RETRY_BASE_MINUTES;
+
+        for (
+            $failure = 1;
+            $failure < $consecutiveFailures && $delayMinutes < self::FAILURE_RETRY_MAX_MINUTES;
+            ++$failure
+        ) {
+            $delayMinutes = min(self::FAILURE_RETRY_MAX_MINUTES, $delayMinutes * 2);
+        }
+
+        return $delayMinutes;
     }
 
     private function nextUnattemptedUid(
@@ -279,7 +392,7 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
                 $mailbox->ensureFolder(self::TOO_LARGE_FOLDER);
                 $mailbox->move($uid, self::TOO_LARGE_FOLDER);
             } else {
-                $this->moveOversizedOnFreshConnection($settings, $uid);
+                $this->moveOversizedOnFreshConnection($settings, $uidValidity, $uid);
             }
 
             $this->advanceCheckpoint($settings->sourceId, $checkpoint, $uid);
@@ -407,7 +520,11 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
         }
     }
 
-    private function moveOversizedOnFreshConnection(MailboxSettings $settings, int $uid): void
+    private function moveOversizedOnFreshConnection(
+        MailboxSettings $settings,
+        int $uidValidity,
+        int $uid
+    ): void
     {
         $password = ($this->passwordResolver)($settings);
 
@@ -422,6 +539,13 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
         }
 
         try {
+            if ($mailbox->uidValidity() !== $uidValidity) {
+                $this->stoppedSources[$settings->sourceId] = true;
+                throw new RuntimeException(
+                    'The mailbox UIDVALIDITY changed before the oversized message could be moved.'
+                );
+            }
+
             $mailbox->ensureFolder(self::TOO_LARGE_FOLDER);
             $mailbox->move($uid, self::TOO_LARGE_FOLDER);
         } finally {
@@ -441,6 +565,16 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
     private function saveCheckpoint(int $sourceId, MailboxCheckpoint $checkpoint): void
     {
         $this->checkpoints->saveCheckpoint($sourceId, $checkpoint, $this->timestamp());
+        $this->runCheckpoints[$sourceId] = $checkpoint;
+    }
+
+    private function findCheckpointForRun(int $sourceId): ?MailboxCheckpoint
+    {
+        if (! array_key_exists($sourceId, $this->runCheckpoints)) {
+            $this->runCheckpoints[$sourceId] = $this->checkpoints->findCheckpoint($sourceId);
+        }
+
+        return $this->runCheckpoints[$sourceId];
     }
 
     private function hasEarlierFailedUid(int $sourceId, int $uidValidity, int $uid): bool

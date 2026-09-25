@@ -574,7 +574,7 @@ final class RepositoryTest extends TestCase
             $database->preparedQueries[1]['query']
         );
         self::assertSame(
-            ['{"uidvalidity":54321,"last_uid":3}', '2026-09-25 04:00:00', 42],
+            ['{"uidvalidity":54321,"last_uid":3,"scan_complete":false}', '2026-09-25 04:00:00', 42],
             $database->preparedQueries[1]['arguments']
         );
     }
@@ -589,6 +589,36 @@ final class RepositoryTest extends TestCase
         self::assertStringContainsString("s.type = 'email'", $database->selectedQueries[0]);
         self::assertStringContainsString('s.parish_id IS NULL', $database->selectedQueries[0]);
         self::assertStringContainsString("s.status = 'active'", $database->selectedQueries[0]);
+        self::assertStringContainsString('s.poll_interval_minutes AS source_poll_interval_minutes', $database->selectedQueries[0]);
+        self::assertStringContainsString('s.last_checked_at AS source_last_checked_at', $database->selectedQueries[0]);
+        self::assertStringContainsString('s.consecutive_failures AS source_consecutive_failures', $database->selectedQueries[0]);
+    }
+
+    public function testMailboxRepositoryMapsTheSourcePollingSchedule(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $database->resultRows = [[
+            'id' => '8',
+            'source_id' => '42',
+            'label' => 'Example mailbox',
+            'host' => 'imap.example.test',
+            'port' => '993',
+            'encryption' => 'ssl',
+            'username' => 'intake@example.test',
+            'inbox_folder' => 'INBOX',
+            'processed_folder' => 'Processed',
+            'max_message_size_bytes' => '15728640',
+            'active' => '1',
+            'source_poll_interval_minutes' => '30',
+            'source_last_checked_at' => '2026-09-25 02:45:00',
+            'source_consecutive_failures' => '2',
+        ]];
+
+        $settings = (new MailboxRepository($database))->findActiveMailboxes()[0];
+
+        self::assertSame(30, $settings->pollIntervalMinutes);
+        self::assertSame('2026-09-25 02:45:00', $settings->lastCheckedAt);
+        self::assertSame(2, $settings->consecutiveFailures);
     }
 
     public function testInboundDuplicateLookupChecksMessageIdAndContentHashWithinSource(): void
