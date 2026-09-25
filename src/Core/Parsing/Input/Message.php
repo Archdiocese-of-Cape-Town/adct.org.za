@@ -16,6 +16,16 @@ final class Message
 
     /** @var Attachment[] */
     private array $attachments;
+    /** @var array<string, string[]> */
+    private array $headers;
+    private string $quotedText;
+    private string $signatureText;
+    private bool $forwarded;
+    private ?string $originalSenderEmail;
+    private ?string $originalSenderName;
+    private ?string $originalDate;
+    private ?string $originalSubject;
+    private bool $bodyHtmlDerived;
 
     public function __construct(
         string $sourceType,
@@ -25,7 +35,16 @@ final class Message
         string $subject,
         string $body,
         array $attachments = [],
-        ?DateTimeImmutable $receivedAt = null
+        ?DateTimeImmutable $receivedAt = null,
+        array $headers = [],
+        string $quotedText = '',
+        string $signatureText = '',
+        bool $forwarded = false,
+        ?string $originalSenderEmail = null,
+        ?string $originalSenderName = null,
+        ?string $originalDate = null,
+        ?string $originalSubject = null,
+        bool $bodyHtmlDerived = false
     ) {
         $this->sourceType = $sourceType;
         $this->sourceIdentifier = $sourceIdentifier;
@@ -35,6 +54,15 @@ final class Message
         $this->body = $body;
         $this->attachments = $attachments;
         $this->receivedAt = $receivedAt;
+        $this->headers = $headers;
+        $this->quotedText = $quotedText;
+        $this->signatureText = $signatureText;
+        $this->forwarded = $forwarded;
+        $this->originalSenderEmail = $originalSenderEmail;
+        $this->originalSenderName = $originalSenderName;
+        $this->originalDate = $originalDate;
+        $this->originalSubject = $originalSubject;
+        $this->bodyHtmlDerived = $bodyHtmlDerived;
     }
 
     public function getSourceType(): string
@@ -76,6 +104,95 @@ final class Message
     public function getAttachments(): array
     {
         return $this->attachments;
+    }
+
+    /**
+     * @return array<string, string[]>
+     */
+    public function getHeaders(): array
+    {
+        return $this->headers;
+    }
+
+    public function getRawHeader(string $name): ?string
+    {
+        foreach ($this->headers as $headerName => $values) {
+            if (strcasecmp($headerName, $name) === 0) {
+                return $values[0] ?? null;
+            }
+        }
+
+        return null;
+    }
+
+    public function getMessageId(): ?string
+    {
+        return $this->getRawHeader('Message-ID');
+    }
+
+    public function getInReplyTo(): ?string
+    {
+        return $this->getRawHeader('In-Reply-To');
+    }
+
+    public function getReferences(): ?string
+    {
+        return $this->getRawHeader('References');
+    }
+
+    public function getAutoSubmitted(): ?string
+    {
+        return $this->getRawHeader('Auto-Submitted');
+    }
+
+    public function getListId(): ?string
+    {
+        return $this->getRawHeader('List-Id');
+    }
+
+    public function getAuthenticationResults(): ?string
+    {
+        return $this->getRawHeader('Authentication-Results');
+    }
+
+    public function getQuotedText(): string
+    {
+        return $this->quotedText;
+    }
+
+    public function getSignatureText(): string
+    {
+        return $this->signatureText;
+    }
+
+    public function isForwarded(): bool
+    {
+        return $this->forwarded;
+    }
+
+    public function getOriginalSenderEmail(): ?string
+    {
+        return $this->originalSenderEmail;
+    }
+
+    public function getOriginalSenderName(): ?string
+    {
+        return $this->originalSenderName;
+    }
+
+    public function getOriginalDate(): ?string
+    {
+        return $this->originalDate;
+    }
+
+    public function getOriginalSubject(): ?string
+    {
+        return $this->originalSubject;
+    }
+
+    public function isBodyHtmlDerived(): bool
+    {
+        return $this->bodyHtmlDerived;
     }
 
     public function fullText(): string

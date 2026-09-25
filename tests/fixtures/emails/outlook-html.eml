@@ -1,0 +1,27 @@
+From: Example Parish Office <events@example.test>
+To: events@example.test
+Subject: Community Day at Example Parish
+Date: Wed, 07 Oct 2026 09:30:00 +0200
+Message-ID: <outlook-html@example.test>
+MIME-Version: 1.0
+X-Mailer: Microsoft Outlook 16.0
+Content-Type: multipart/related; boundary="outlook-related"; type="text/html"
+
+--outlook-related
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE html>
+<html><head><style>.outlook { display: none; }</style></head><body>
+<div><p>Parish: Example Parish</p><p>Join us for Community Day on Saturday 17 October 2026 at 11:00 at Example Parish Hall.</p></div>
+<table><tr><th>Time</th><th>Activity</th></tr><tr><td>11:00</td><td>Community Day opening</td></tr></table>
+<img src="cid:logo@example.test" alt="Example Parish">
+</body></html>
+--outlook-related
+Content-Type: image/png; name="parish-logo.png"
+Content-Disposition: inline; filename="parish-logo.png"
+Content-ID: <logo@example.test>
+Content-Transfer-Encoding: base64
+
+aW1hZ2U=
+--outlook-related--

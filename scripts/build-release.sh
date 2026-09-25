@@ -63,6 +63,11 @@ if ! printf '%s  %s\n' "$STRAUSS_SHA256" "$strauss_phar" | sha256sum -c -; then
     exit 1
 fi
 rm -rf vendor-prefixed
+cp -R "$temp_dir/vendor" vendor-prefixed
+# The normal copy filter is bypassed when Strauss prefixes the target in place.
+find vendor-prefixed -type d \( -name .github -o -name docs \) -prune -exec rm -rf {} +
+# Use the shipped path as Composer's vendor-dir so generated maps contain no temp paths.
+export COMPOSER_VENDOR_DIR=vendor-prefixed
 php "$strauss_phar"
 
 if [ ! -f vendor-prefixed/autoload.php ]; then

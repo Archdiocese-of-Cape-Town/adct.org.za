@@ -7,6 +7,7 @@ final class ParseContext
     private array $options;
     private array $notes = [];
     private array $errors = [];
+    private array $runtimeValues = [];
 
     public function __construct(array $options = [])
     {
@@ -17,11 +18,22 @@ final class ParseContext
     {
         $this->notes = [];
         $this->errors = [];
+        $this->runtimeValues = [];
     }
 
     public function getOption(string $key, $default = null)
     {
         return $this->options[$key] ?? $default;
+    }
+
+    public function setRuntimeValue(string $key, $value): void
+    {
+        $this->runtimeValues[$key] = $value;
+    }
+
+    public function getRuntimeValue(string $key, $default = null)
+    {
+        return $this->runtimeValues[$key] ?? $default;
     }
 
     public function addNote(string $note): void

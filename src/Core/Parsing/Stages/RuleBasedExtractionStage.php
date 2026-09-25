@@ -30,6 +30,8 @@ final class RuleBasedExtractionStage implements StageInterface
     public function process(Message $message, ParseResult $result, ParseContext $context): ParseResult
     {
         $text = $result->getNormalizedText();
+        $body = (string) $context->getRuntimeValue('cleaned_body', $message->getBody());
+        $signature = (string) $context->getRuntimeValue('signature_text', '');
         $lower = function_exists('mb_strtolower') ? mb_strtolower($text) : strtolower($text);
 
         $bulletinRange = $this->findBulletinDateRange($text);
@@ -85,9 +87,10 @@ final class RuleBasedExtractionStage implements StageInterface
             $result->addNote('The stated event end is before its start; verify the range.');
         }
 
-        $result->setField('venue', $this->extractVenue($text));
-        $result->setField('contact', $this->extractContact($text, $message->getSenderEmail()));
-        $result->setField('description', $message->getBody());
+        $venue = $this->extractVenue($body) ?? $this->extractVenue($message->getSubject());
+        $result->setField('venue', $venue);
+        $result->setField('contact', $this->extractContact($text . "\n" . $signature, $message->getSenderEmail()));
+        $result->setField('description', $this->eventDescription($body));
         $result->setField('attachment_names', array_map(static fn ($attachment) => $attachment->getName(), $message->getAttachments()));
         $result->addStrategy('rule_based_extraction');
 
@@ -126,7 +129,7 @@ final class RuleBasedExtractionStage implements StageInterface
 
     private function extractTitle(Message $message, string $text): ?string
     {
-        $subject = trim(preg_replace('/^(?:re|fwd):\s*/i', '', $message->getSubject()) ?? $message->getSubject());
+        $subject = trim(preg_replace('/^(?:re|fw|fwd):\s*/i', '', $message->getSubject()) ?? $message->getSubject());
 
         if ($subject !== '') {
             return $subject;
@@ -582,5 +585,16 @@ final class RuleBasedExtractionStage implements StageInterface
         }
 
         return empty($parts) ? null : implode(' | ', $parts);
+    }
+
+    private function eventDescription(string $body): string
+    {
+        $lines = preg_split('/\R/u', $body) ?: [];
+        $descriptionLines = array_filter(
+            $lines,
+            static fn (string $line): bool => ! preg_match('/^\s*parish\s*[:\-]/i', $line)
+        );
+
+        return trim(implode("\n", $descriptionLines));
     }
 }

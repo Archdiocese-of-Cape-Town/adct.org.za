@@ -3,7 +3,8 @@
     "description": "Parish event intake for adct.org.za: offline-first parsing of parish emails, confirmation, approval and publishing.",
     "type": "wordpress-plugin",
     "require": {
-        "php": ">=8.2"
+        "php": ">=8.2",
+        "zbateson/mail-mime-parser": "^3"
     },
     "require-dev": {
         "phpunit/phpunit": "^11.5"
@@ -32,7 +33,12 @@
             "classmap_prefix": "ADCT_ParishIntake_Dependencies_",
             "constant_prefix": "ADCT_PI_DEP_",
             "classmap_output": true,
-            "exclude_git_files": true
+            "exclude_git_files": true,
+            "exclude_from_copy": {
+                "file_patterns": [
+                    "~(^|/)(?:\\.github|docs)(/|$)~"
+                ]
+            }
         }
     },
     "scripts": {

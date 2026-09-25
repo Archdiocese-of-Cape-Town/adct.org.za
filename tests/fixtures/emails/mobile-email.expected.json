@@ -1,0 +1,11 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Parish fun run",
+    "parish_name": "Example Parish",
+    "event_date": "2026-10-31",
+    "event_time": "09:00",
+    "venue": "Example Parish Hall",
+    "description": "Join us for a parish fun run on Saturday 31 October 2026 at 09:00 at Example Parish Hall."
+  }
+}
