@@ -7,6 +7,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Ingestion;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 
 final class ProtectedInboundMailStorageTest extends TestCase
 {
@@ -80,6 +81,27 @@ final class ProtectedInboundMailStorageTest extends TestCase
 
         $this->expectException(InvalidArgumentException::class);
         $storage->delete('../private/example.eml');
+    }
+
+    public function testReadsOnlyExistingProtectedRawEmailFiles(): void
+    {
+        $storage = new ProtectedInboundMailStorage($this->directory);
+        $rawMessage = "From: notices@example.test\r\n\r\nExample message.";
+        $relativePath = $storage->storeRawMessage($rawMessage);
+
+        self::assertSame($rawMessage, $storage->readRawMessage($relativePath));
+
+        try {
+            $storage->readRawMessage('../private/example.eml');
+            self::fail('An arbitrary file path was accepted for reading.');
+        } catch (InvalidArgumentException $failure) {
+            self::assertSame('The private inbound email path is invalid.', $failure->getMessage());
+        }
+
+        $storage->delete($relativePath);
+
+        $this->expectException(RuntimeException::class);
+        $storage->readRawMessage($relativePath);
     }
 
     public function testCommentedDenyRuleDoesNotCountAsDirectoryProtection(): void

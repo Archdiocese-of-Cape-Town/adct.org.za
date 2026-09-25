@@ -118,6 +118,29 @@ final class Message
         );
     }
 
+    public function withReceivedAt(?DateTimeImmutable $receivedAt): self
+    {
+        return new self(
+            $this->sourceType,
+            $this->sourceIdentifier,
+            $this->senderEmail,
+            $this->senderName,
+            $this->subject,
+            $this->body,
+            $this->attachments,
+            $receivedAt,
+            $this->headers,
+            $this->quotedText,
+            $this->signatureText,
+            $this->forwarded,
+            $this->originalSenderEmail,
+            $this->originalSenderName,
+            $this->originalDate,
+            $this->originalSubject,
+            $this->bodyHtmlDerived
+        );
+    }
+
     public function getReceivedAt(): ?DateTimeImmutable
     {
         return $this->receivedAt;
