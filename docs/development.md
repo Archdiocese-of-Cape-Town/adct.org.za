@@ -19,7 +19,7 @@ docker run --rm -v "${PWD}:/app" -w /app composer:2 validate --no-check-publish
 docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c "vendor/bin/phpunit && php tests/parser_smoke_test.php"
 
 # Lint every PHP file
-docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c 'find src tests adct-parish-intake.php -name "*.php" -print0 | xargs -0 -n1 php -l > /dev/null && echo lint-ok'
+docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c 'find src tests -name "*.php" -print0 | xargs -0 -n1 php -l > /dev/null && php -l adct-parish-intake.php && php -l uninstall.php && echo lint-ok'
 
 # WordPress integration tests (requires Node.js/npm and Docker Desktop)
 npm ci
@@ -39,7 +39,7 @@ Build the installable package from the repository root in PowerShell:
 docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
 ```
 
-This creates `dist/adct-parish-intake.zip`. The script installs production dependencies with `composer install --no-dev` in a temporary directory, copies them into `vendor-prefixed/`, removes dependency documentation and `.github/` metadata, then runs the pinned Strauss release in that directory so generated Composer paths remain package-relative. It packages only the plugin bootstrap, `src/`, and the prefixed runtime dependencies. Strauss is used instead of PHP-Scoper because it directly prefixes Composer dependencies into one directory and generates the autoloader the plugin uses. The current plugin does not read `data/seed/` at runtime, so seed data is not shipped.
+This creates `dist/adct-parish-intake.zip`. The script installs production dependencies with `composer install --no-dev` in a temporary directory, copies them into `vendor-prefixed/`, removes dependency documentation and `.github/` metadata, then runs the pinned Strauss release in that directory so generated Composer paths remain package-relative. It packages the plugin bootstrap, `uninstall.php`, `src/`, and the prefixed runtime dependencies. Strauss is used instead of PHP-Scoper because it directly prefixes Composer dependencies into one directory and generates the autoloader the plugin uses. The current plugin does not read `data/seed/` at runtime, so seed data is not shipped.
 
 Inbound RFC 822 parsing uses the pre-approved pure-PHP `zbateson/mail-mime-parser` 3.x package (PHP 8.1+, BSD-2-Clause; see [ADR 0012](decisions/0012-pure-php-mime-parser.md)). It and its runtime dependencies are included in the Strauss-prefixed release; no `ext-imap` or `ext-dom` is needed.
 

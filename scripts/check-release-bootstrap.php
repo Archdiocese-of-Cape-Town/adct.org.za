@@ -45,6 +45,22 @@ if (! class_exists(ADCT\ParishIntake\WordPress\Autoloader::class, false)
     exit(1);
 }
 
+foreach ([
+    'DI\\Container' => 'ADCT\\ParishIntake\\Dependencies\\DI\\Container',
+    'Laravel\\SerializableClosure\\SerializableClosure' => 'ADCT\\ParishIntake\\Dependencies\\Laravel\\SerializableClosure\\SerializableClosure',
+    'GuzzleHttp\\Psr7\\Request' => 'ADCT\\ParishIntake\\Dependencies\\GuzzleHttp\\Psr7\\Request',
+] as $unprefixedClass => $prefixedClass) {
+    if (class_exists($unprefixedClass)) {
+        fwrite(STDERR, "Unprefixed dependency class loaded from the release: {$unprefixedClass}\n");
+        exit(1);
+    }
+
+    if (! class_exists($prefixedClass)) {
+        fwrite(STDERR, "Prefixed dependency class did not load from the release: {$prefixedClass}\n");
+        exit(1);
+    }
+}
+
 $mimeMessage = (new ADCT\ParishIntake\Core\Ingestion\MimeMessageParser())->parse(
     "From: Example Parish Office <events@example.test>\r\n"
         . "Subject: Release parser check\r\n"

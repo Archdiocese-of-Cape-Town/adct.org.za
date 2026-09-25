@@ -2,8 +2,13 @@
 
 namespace ADCT\ParishIntake\WordPress;
 
+use ADCT\ParishIntake\Core\Auth\Capabilities;
+use ADCT\ParishIntake\Core\Auth\RoleInstaller;
+use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
 use ADCT\ParishIntake\Core\Database\CreateSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MigrationRunner;
+use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
+use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
 use ADCT\ParishIntake\Core\Jobs\FrameworkHeartbeatJob;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
@@ -13,14 +18,21 @@ use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
 use ADCT\ParishIntake\WordPress\Admin\ParserPage;
+use ADCT\ParishIntake\WordPress\Admin\ParishesPage;
 use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
+use ADCT\ParishIntake\WordPress\Auth\WordPressRoleCapabilityStore;
+use ADCT\ParishIntake\WordPress\Auth\WordPressRoleVersionStore;
 use ADCT\ParishIntake\WordPress\Database\DbDeltaSchemaInstaller;
+use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Schema;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationLogger;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationVersionStore;
 use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
 use ADCT\ParishIntake\WordPress\Http\WordPressHttpClient;
+use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
@@ -36,6 +48,7 @@ final class Plugin
     private HttpClientInterface $httpClient;
     private WordPressJobScheduler $jobScheduler;
     private ScheduledJobsPage $scheduledJobsPage;
+    private ParishesPage $parishesPage;
 
     private function __construct(string $pluginFile)
     {
@@ -51,6 +64,22 @@ final class Plugin
         );
 
         $clock = new SystemClock();
+        $database = new WordPressDatabaseConnection();
+        $parishes = new ParishRepository($database);
+        $deaneries = new DeaneryRepository($database);
+        $this->parishesPage = new ParishesPage(
+            $parishes,
+            $deaneries,
+            new DirectoryImportService(
+                new ParishCsvImporter(),
+                new DeaneryCsvImporter(),
+                $parishes,
+                $deaneries,
+                new ParishContactRepository($database),
+                $clock
+            ),
+            $clock
+        );
         $stateStore = new WordPressJobStateStore();
         $jobRunner = new JobRunner(
             new WordPressJobLock(),
@@ -94,6 +123,7 @@ final class Plugin
         add_option('adct_parish_intake_openrouter_model', 'openrouter/auto');
         add_option('adct_parish_intake_ai_threshold', '0.55');
 
+        self::createRoleInstaller()->install();
         (new Schema())->install();
         self::createMigrationRunner()->run();
     }
@@ -119,9 +149,54 @@ final class Plugin
         self::createMigrationRunner()->run();
     }
 
+    public function maybeUpgradeRoles(): void
+    {
+        self::createRoleInstaller()->upgradeIfNeeded();
+    }
+
+    public function restrictWpAdminForPortalRoles(): void
+    {
+        if (
+            ! is_admin()
+            || (defined('DOING_AJAX') && DOING_AJAX)
+            || $this->isAdminPostRequest()
+        ) {
+            return;
+        }
+
+        $user = wp_get_current_user();
+
+        if (
+            ! ($user instanceof \WP_User)
+            || (int) $user->ID === 0
+            || ! $this->hasPortalOnlyRole($user)
+            || current_user_can('edit_posts')
+        ) {
+            return;
+        }
+
+        wp_safe_redirect(home_url('/'));
+        exit;
+    }
+
+    public function hideAdminBarForPortalRoles(bool $show): bool
+    {
+        $user = wp_get_current_user();
+
+        if (
+            ! ($user instanceof \WP_User)
+            || ! $this->hasPortalOnlyRole($user)
+            || current_user_can('edit_posts')
+        ) {
+            return $show;
+        }
+
+        return false;
+    }
+
     public function renderMigrationNotice(): void
     {
-        if (! function_exists('current_user_can') || ! current_user_can('manage_options')) {
+        if (! function_exists('current_user_can') || ! current_user_can(Capabilities::MANAGE_SETTINGS)) {
             return;
         }
 
@@ -141,14 +216,43 @@ final class Plugin
             return;
         }
 
+        add_filter('show_admin_bar', [$this, 'hideAdminBarForPortalRoles']);
         add_action('admin_menu', [$this->parserPage, 'registerMenu']);
+        add_action('admin_menu', [$this->parishesPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
+        add_action('admin_init', [$this, 'maybeUpgradeRoles'], 1);
+        add_action('admin_init', [$this, 'restrictWpAdminForPortalRoles'], 2);
         add_action('admin_init', [$this, 'maybeRunDatabaseMigrations'], 5);
         add_action('admin_init', [$this->parserPage, 'maybeHandleSettings']);
+        add_action('admin_post_adct_pi_save_parish', [$this->parishesPage, 'handleSaveParish']);
+        add_action('admin_post_adct_pi_directory_import_preview', [$this->parishesPage, 'handleImportPreview']);
+        add_action('admin_post_adct_pi_directory_import_confirm', [$this->parishesPage, 'handleImportConfirm']);
+        add_action('admin_post_adct_pi_directory_export', [$this->parishesPage, 'handleExport']);
         add_action('admin_post_adct_pi_run_job', [$this->scheduledJobsPage, 'handleRunNow']);
         add_action('admin_notices', [$this, 'renderMigrationNotice']);
         add_action('admin_notices', [$this->scheduledJobsPage, 'renderResultNotice']);
         $this->jobScheduler->registerHooks();
+    }
+
+    private static function createRoleInstaller(): VersionedRoleInstaller
+    {
+        return new VersionedRoleInstaller(
+            new RoleInstaller(new WordPressRoleCapabilityStore()),
+            new WordPressRoleVersionStore()
+        );
+    }
+
+    private function isAdminPostRequest(): bool
+    {
+        return isset($_SERVER['PHP_SELF'])
+            && is_string($_SERVER['PHP_SELF'])
+            && basename($_SERVER['PHP_SELF']) === 'admin-post.php';
+    }
+
+    private function hasPortalOnlyRole(\WP_User $user): bool
+    {
+        return in_array('parish_contact', $user->roles, true)
+            || in_array('deanery_approver', $user->roles, true);
     }
 
     private static function createMigrationRunner(): MigrationRunner

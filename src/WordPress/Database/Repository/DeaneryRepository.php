@@ -18,4 +18,28 @@ final class DeaneryRepository extends AbstractRepository
         'created_at' => '%s',
         'updated_at' => '%s',
     ];
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function findAll(): array
+    {
+        $table = $this->tableName();
+
+        return $this->fetchRows("SELECT * FROM {$table} ORDER BY name ASC, slug ASC");
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function findBySlug(string $slug): ?array
+    {
+        $table = $this->tableName();
+        $query = $this->database->prepare(
+            "SELECT * FROM {$table} WHERE slug = %s LIMIT 1",
+            $slug
+        );
+
+        return $this->fetchRow($query);
+    }
 }

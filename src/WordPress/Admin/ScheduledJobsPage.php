@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Admin;
 
+use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Jobs\JobInterface;
 use ADCT\ParishIntake\Core\Jobs\JobRunStatus;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
@@ -13,7 +14,8 @@ use DateTimeImmutable;
 
 final class ScheduledJobsPage
 {
-    private const CAPABILITY = 'manage_options';
+    private const CAPABILITY = Capabilities::VIEW_REPORTS;
+    private const RUN_CAPABILITY = Capabilities::MANAGE_SETTINGS;
     private const PAGE_SLUG = 'adct-parish-intake-jobs';
     private const ACTION = 'adct_pi_run_job';
 
@@ -45,7 +47,7 @@ final class ScheduledJobsPage
 
     public function handleRunNow(): void
     {
-        if (! current_user_can(self::CAPABILITY)) {
+        if (! current_user_can(self::RUN_CAPABILITY)) {
             wp_die(esc_html__('You do not have permission to run scheduled jobs.', 'adct-parish-intake'), '', [
                 'response' => 403,
             ]);
@@ -88,10 +90,11 @@ final class ScheduledJobsPage
         }
 
         $jobs = $this->scheduler->registeredJobs();
+        $canRunJobs = current_user_can(self::RUN_CAPABILITY);
         ?>
         <div class="wrap">
             <h1>Parish Intake Scheduled Jobs</h1>
-            <p>Jobs run in batches with a time limit, an item limit, and a saved checkpoint. Use <strong>Run now</strong> to start a job immediately.</p>
+            <p>Jobs run in batches with a time limit, an item limit, and a saved checkpoint.<?php if ($canRunJobs) : ?> Use <strong>Run now</strong> to start a job immediately.<?php endif; ?></p>
             <p>The framework heartbeat is only a scheduling check; it does not read mail, process events, or send email.</p>
 
             <?php if ($jobs === []) : ?>
@@ -105,7 +108,9 @@ final class ScheduledJobsPage
                             <th scope="col">Last success</th>
                             <th scope="col">Last error</th>
                             <th scope="col">Items processed</th>
-                            <th scope="col">Action</th>
+                            <?php if ($canRunJobs) : ?>
+                                <th scope="col">Action</th>
+                            <?php endif; ?>
                         </tr>
                     </thead>
                     <tbody>
@@ -127,14 +132,16 @@ final class ScheduledJobsPage
                                     <?php endif; ?>
                                 </td>
                                 <td><?php echo esc_html((string) $state->itemsProcessed); ?></td>
-                                <td>
-                                    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                                        <input type="hidden" name="action" value="<?php echo esc_attr(self::ACTION); ?>" />
-                                        <input type="hidden" name="job_id" value="<?php echo esc_attr($job->id()); ?>" />
-                                        <?php wp_nonce_field($this->nonceAction($job->id())); ?>
-                                        <button class="button button-secondary" type="submit">Run now</button>
-                                    </form>
-                                </td>
+                                <?php if ($canRunJobs) : ?>
+                                    <td>
+                                        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                                            <input type="hidden" name="action" value="<?php echo esc_attr(self::ACTION); ?>" />
+                                            <input type="hidden" name="job_id" value="<?php echo esc_attr($job->id()); ?>" />
+                                            <?php wp_nonce_field($this->nonceAction($job->id())); ?>
+                                            <button class="button button-secondary" type="submit">Run now</button>
+                                        </form>
+                                    </td>
+                                <?php endif; ?>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -146,6 +153,10 @@ final class ScheduledJobsPage
 
     public function renderResultNotice(): void
     {
+        if (! current_user_can(self::CAPABILITY)) {
+            return;
+        }
+
         $notice = $this->resultNotice();
 
         if ($notice === null) {
