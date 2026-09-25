@@ -12,3 +12,21 @@ export function resolveWpEnvHome(repositoryRoot, environment = process.env) {
 
   return home;
 }
+
+export function stopWpEnvAfterTests(environment = process.env) {
+  const setting = environment.ADCT_PI_KEEP_WP_ENV_RUNNING;
+
+  if (setting === undefined) {
+    return environment.CI === 'true';
+  }
+
+  if (setting === '0') {
+    return true;
+  }
+
+  if (setting === '1') {
+    return false;
+  }
+
+  throw new Error('ADCT_PI_KEEP_WP_ENV_RUNNING must be 0 or 1.');
+}

@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveWpEnvHome } from './wp-env-home.mjs';
+import { resolveWpEnvHome, stopWpEnvAfterTests } from './wp-env-home.mjs';
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 const releaseZip = join(repositoryRoot, 'dist', 'adct-parish-intake.zip');
@@ -17,6 +17,7 @@ if (!npmCli) {
 }
 
 const wpEnvHome = resolveWpEnvHome(repositoryRoot);
+const stopAfterTests = stopWpEnvAfterTests();
 const environment = {
   ...process.env,
   WP_ENV_HOME: wpEnvHome,
@@ -75,7 +76,7 @@ try {
   failure = error;
 } finally {
   try {
-    if (started) {
+    if (started && stopAfterTests) {
       runWpEnv(['stop']);
     }
   } catch (cleanupError) {
