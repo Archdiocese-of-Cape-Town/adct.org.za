@@ -9,8 +9,9 @@ use ADCT\ParishIntake\Core\Parsing\Pipeline;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
+use ADCT\ParishIntake\Core\Ports\AiCallGateInterface;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
-use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
+use ADCT\ParishIntake\WordPress\Ai\OpenAiCompatibleProvider;
 use ADCT\ParishIntake\WordPress\Database\Schema;
 use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
@@ -27,27 +28,30 @@ final class ParserPage
     private PipelineFactory $pipelineFactory;
     private StaticReportGenerator $reportGenerator;
     private HttpClientInterface $httpClient;
+    private AiCallGateInterface $aiGate;
 
     public function __construct(
         Schema $schema,
         PipelineFactory $pipelineFactory,
         StaticReportGenerator $reportGenerator,
-        HttpClientInterface $httpClient
+        HttpClientInterface $httpClient,
+        AiCallGateInterface $aiGate
     ) {
         $this->schema = $schema;
         $this->pipelineFactory = $pipelineFactory;
         $this->reportGenerator = $reportGenerator;
         $this->httpClient = $httpClient;
+        $this->aiGate = $aiGate;
     }
 
-    public function createConfiguredPipeline(): Pipeline
+    public function createConfiguredPipeline(bool $allowAi = false): Pipeline
     {
         $settings = $this->settings();
 
         return $this->pipelineFactory->create([
-            'ai_enabled' => $settings['ai_enabled'],
+            'ai_enabled' => $allowAi && $settings['ai_enabled'],
             'ai_threshold' => $settings['ai_threshold'],
-            'ai_provider' => $this->buildAiProvider(),
+            'ai_provider' => $allowAi ? $this->buildAiProvider() : new NullAiProvider(),
             'section_keywords' => $settings['section_keywords'],
         ]);
     }
@@ -105,7 +109,8 @@ final class ParserPage
 
         update_option('adct_parish_intake_ai_enabled', isset($_POST['ai_enabled']) ? '1' : '0');
         update_option('adct_parish_intake_ai_provider', sanitize_text_field(wp_unslash($_POST['ai_provider'] ?? 'none')));
-        update_option('adct_parish_intake_openrouter_model', sanitize_text_field(wp_unslash($_POST['openrouter_model'] ?? 'openrouter/auto')));
+        update_option('adct_parish_intake_openrouter_model', sanitize_text_field(wp_unslash($_POST['openrouter_model'] ?? OpenAiCompatibleProvider::FREE_MODEL)));
+        update_option('adct_parish_intake_ai_base_url', esc_url_raw(wp_unslash($_POST['ai_base_url'] ?? OpenAiCompatibleProvider::DEFAULT_URL)));
 
         $secretResolver = new WordPressSecretResolver();
         $apiKeyOption = SecretRegistry::optionName(SecretRegistry::AI_API_KEY);
@@ -165,7 +170,10 @@ final class ParserPage
             <?php endif; ?>
 
             <h2>AI fallback</h2>
-            <p>The parser runs locally first. AI is only used when you enable it and a message scores below the confidence threshold.</p>
+            <p>The parser runs locally first. AI is only used by the background inbox processing job when you enable it and a message scores below the confidence threshold. Manual parser requests never call AI.</p>
+            <?php if ($settings['ai_enabled'] && ! str_ends_with($settings['openrouter_model'], ':free')) : ?>
+                <div class="notice notice-warning"><p><strong>AI cost warning:</strong> This model is not marked <code>:free</code>. It may incur charges; other providers and even free-tier endpoints may have quotas or fees. Check your provider's pricing before processing mail.</p></div>
+            <?php endif; ?>
             <form method="post">
                 <?php wp_nonce_field('adct_parish_intake_save_settings', 'adct_parish_intake_settings_nonce'); ?>
                 <input type="hidden" name="adct_parish_intake_save_settings" value="1" />
@@ -183,19 +191,32 @@ final class ParserPage
                             <select name="ai_provider">
                                 <option value="none" <?php selected($settings['ai_provider'], 'none'); ?>>None</option>
                                 <option value="openrouter" <?php selected($settings['ai_provider'], 'openrouter'); ?>>OpenRouter</option>
+                                <option value="groq" <?php selected($settings['ai_provider'], 'groq'); ?>>Groq</option>
+                                <option value="ollama" <?php selected($settings['ai_provider'], 'ollama'); ?>>Local Ollama</option>
+                                <option value="custom" <?php selected($settings['ai_provider'], 'custom'); ?>>Other OpenAI-compatible endpoint</option>
                             </select>
                             <p class="description">Choose which AI provider to call when fallback is enabled.</p>
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row">OpenRouter model</th>
+                        <th scope="row">Model</th>
                         <td>
                             <input class="regular-text" type="text" name="openrouter_model" value="<?php echo esc_attr($settings['openrouter_model']); ?>" />
-                            <p class="description">Example: <code>openrouter/auto</code>. This is ignored unless OpenRouter is selected above.</p>
+                            <p class="description">Default OpenRouter model: <code><?php echo esc_html(OpenAiCompatibleProvider::FREE_MODEL); ?></code>. Free models have rate limits and availability may change. Choose a model your provider supports.</p>
+                            <?php if (! str_ends_with($settings['openrouter_model'], ':free')) : ?>
+                                <p class="description"><strong>Not marked free: this model may incur charges.</strong> Check the provider's pricing.</p>
+                            <?php endif; ?>
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row">OpenRouter API key</th>
+                        <th scope="row">API base URL</th>
+                        <td>
+                            <input class="regular-text" type="url" name="ai_base_url" value="<?php echo esc_attr($settings['ai_base_url']); ?>" />
+                            <p class="description">Include <code>/v1</code> where required; the plugin appends <code>/chat/completions</code>. HTTPS required except loopback local Ollama. No external URLs from email are fetched.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Provider API key</th>
                         <td>
                             <?php if ($settings['openrouter_api_key_is_constant']) : ?>
                                 <p class="description">Set in wp-config.php</p>
@@ -391,18 +412,24 @@ final class ParserPage
         <?php
     }
 
-    private function buildAiProvider()
+    public function buildAiProvider()
     {
         $enabled = get_option('adct_parish_intake_ai_enabled', '0') === '1';
         $provider = get_option('adct_parish_intake_ai_provider', 'none');
         $apiKey = (new WordPressSecretResolver())->resolve(SecretRegistry::AI_API_KEY);
-        $model = trim((string) get_option('adct_parish_intake_openrouter_model', 'openrouter/auto'));
-
-        if (! $enabled || $provider !== 'openrouter' || $apiKey === '') {
+        $settings = $this->settings();
+        if (! $enabled || ! in_array($provider, ['openrouter', 'groq', 'ollama', 'custom'], true)) {
             return new NullAiProvider();
         }
 
-        return new OpenRouterProvider($apiKey, $model, $this->httpClient);
+        return new OpenAiCompatibleProvider(
+            $settings['ai_base_url'],
+            $settings['openrouter_model'],
+            $apiKey,
+            $provider,
+            $this->httpClient,
+            $this->aiGate
+        );
     }
 
     private function settings(): array
@@ -412,12 +439,29 @@ final class ParserPage
         return [
             'ai_enabled' => get_option('adct_parish_intake_ai_enabled', '0') === '1',
             'ai_provider' => (string) get_option('adct_parish_intake_ai_provider', 'none'),
-            'openrouter_model' => (string) get_option('adct_parish_intake_openrouter_model', 'openrouter/auto'),
+            'openrouter_model' => $this->configuredModel(),
+            'ai_base_url' => $this->configuredBaseUrl(),
             'openrouter_api_key_is_constant' => $secretResolver->isConstantConfigured(SecretRegistry::AI_API_KEY),
             'openrouter_api_key_is_saved' => $secretResolver->hasStoredOption(SecretRegistry::AI_API_KEY),
             'ai_threshold' => (float) get_option('adct_parish_intake_ai_threshold', '0.55'),
             'section_keywords' => $this->sectionKeywords(),
         ];
+    }
+
+    private function configuredModel(): string
+    {
+        $value = defined('ADCT_PI_AI_MODEL')
+            ? constant('ADCT_PI_AI_MODEL')
+            : get_option('adct_parish_intake_openrouter_model', OpenAiCompatibleProvider::FREE_MODEL);
+        return $value === 'openrouter/auto' ? OpenAiCompatibleProvider::FREE_MODEL : trim((string) $value);
+    }
+
+    private function configuredBaseUrl(): string
+    {
+        $value = defined('ADCT_PI_AI_BASE_URL')
+            ? constant('ADCT_PI_AI_BASE_URL')
+            : get_option('adct_parish_intake_ai_base_url', OpenAiCompatibleProvider::DEFAULT_URL);
+        return trim((string) $value);
     }
 
     private function sectionKeywords(): array

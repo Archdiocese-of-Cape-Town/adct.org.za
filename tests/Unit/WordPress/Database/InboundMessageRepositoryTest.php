@@ -12,6 +12,27 @@ use PHPUnit\Framework\TestCase;
 
 final class InboundMessageRepositoryTest extends TestCase
 {
+    public function testHealthStatsCountOnlyOutstandingMessagesAndTheirOldestRows(): void
+    {
+        $database = new InboundMessageRepositoryDatabase();
+        $database->rowResult = [
+            'waiting' => '4',
+            'processing' => '2',
+            'oldest_waiting' => '2026-09-24 09:00:00',
+            'oldest_processing' => '2026-09-25 08:00:00',
+        ];
+
+        self::assertSame([
+            'waiting' => 4,
+            'processing' => 2,
+            'oldest_waiting' => '2026-09-24 09:00:00',
+            'oldest_processing' => '2026-09-25 08:00:00',
+        ], (new InboundMessageRepository($database))->healthStats());
+        self::assertSame(['received', 'extracting', 'received', 'extracting'],
+            $database->prepared[0]['arguments']);
+        self::assertStringNotContainsString('sender_email', $database->prepared[0]['query']);
+    }
+
     public function testInboxFiltersMessagesWithoutSelectingPrivateBodyOrRawFile(): void
     {
         $database = new InboundMessageRepositoryDatabase();

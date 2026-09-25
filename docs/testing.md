@@ -17,7 +17,11 @@ Tests protect the project from breaking as more people and sessions work on it.
 
 The unit-test CI matrix runs PHP **8.2** (production), **8.3** and **8.4**. The WordPress integration job and GreenMail IMAP integration job run separately on PHP 8.2.
 
+Optional AI tests use fake HTTP and a fake call gate for accepted fields, hostile/invalid JSON, timeout, 429 cooldown and cap denial; no live model is contacted. The WordPress zip integration checks the non-free warning, that Manual parser never sends AI HTTP when enabled, and that the existing MariaDB atomic rate-limit bucket enforces the daily AI cap.
+
 Issue #54 adds Core date-window validation and release-ZIP WordPress integration coverage for the public shortcode and server-rendered block, pagination through the 1,800-row fixture (including pages 90–91), invalid dates, cache invalidation and private-post suppression. Custom date ranges must not create transients; preset cache keys are fixed by period and page. Its deterministic load fixture seeds 150 fictional parishes, 150 published posts and 1,800 occurrence rows spread over the next year. A cold 20-card **upcoming** listing must finish in **5 seconds or less with at most 100 SQL queries**; a cached repeat must finish in **2 seconds or less** in the isolated CI WordPress environment. These thresholds reserve at least 85 seconds of xneelo's 90-second PHP request budget and prevent a per-occurrence query pattern. Timings include rendering, not fixture creation; they are regression guards rather than a production SLA.
+
+Issue #57 adds deterministic RFC 5545 output tests (CRLF, UTF-8 octet folding, SAST VTIMEZONE, stable UID, RRULE/EXDATE/RDATE and UTC UNTIL, all-day exclusive end and cancellations). The installed-ZIP test checks parish/type filtering, a cold filtered-feed budget of at most 15 SQL queries, private-event exclusion, privacy and ETag invalidation. Google, Apple and Outlook subscription checks remain **pending** until an authorized test site is available; no live site is contacted for this feature.
 
 For an isolated local WordPress integration run, set `WP_ENV_HOME` to a new unique directory and choose free `WP_ENV_PORT` / `WP_ENV_TESTS_PORT` values. The harness stores a generated `.wp-env.json` with absolute repository mappings in a deterministic, ignored cache directory keyed by the resolved home and repository config. Reusing the same `WP_ENV_HOME` with unchanged repository config reuses the same `wp-env` project and its Docker volumes; choose a different home for a fresh database. The generated config is retained so the project path remains stable. The harness stops only that project and never deletes Docker volumes, the caller's home, or a config it cannot verify. Run `npm run test:integration-config` to check this path behavior without starting Docker. Without a `WP_ENV_HOME` override, the existing shared temporary default and repository config path are preserved.
 
@@ -128,6 +132,8 @@ npm ci
 docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
 npm run test:integration
 ```
+
+The event-listing check also seeds 150 fictional parishes and 1,800 occurrences. It measures cold/warm listing cost, exercises multi-type (including secondary assigned types), parish/deanery combinations and bookmarked paging, and checks that REST and no-JavaScript output reject oversized inputs and hide unpublished events and private contact data.
 
 The test runner creates and stops its own isolated `wp-env` environment. Its test-only Docker data is retained under the system temporary directory for faster local reruns; CI runners discard it with the job. `composer test` remains the unit/smoke suite and does not start WordPress. CI (`.github/workflows/ci.yml`) runs `composer validate`, a `php -l` lint and `composer test` on PHP 8.2, 8.3 and 8.4 for every PR and push to `main`, plus separate WordPress and GreenMail integration jobs on PHP 8.2.
 

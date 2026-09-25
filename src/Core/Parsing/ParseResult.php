@@ -18,6 +18,8 @@ final class ParseResult
     private string $parserVersion = '0.1.0';
     private bool $aiUsed = false;
     private ?string $aiProvider = null;
+    private ?string $aiModel = null;
+    private array $aiFieldsFilled = [];
     private bool $reprocessNeeded = false;
     private ?int $blockIndex = null;
     private string $sourceSnippet = '';
@@ -164,10 +166,12 @@ final class ParseResult
         return $this->parserVersion;
     }
 
-    public function markAiUsed(?string $provider): void
+    public function markAiUsed(?string $provider, ?string $model = null, array $fieldsFilled = []): void
     {
         $this->aiUsed = true;
         $this->aiProvider = $provider;
+        $this->aiModel = $model;
+        $this->aiFieldsFilled = $fieldsFilled;
     }
 
     public function usedAi(): bool
@@ -178,6 +182,16 @@ final class ParseResult
     public function getAiProvider(): ?string
     {
         return $this->aiProvider;
+    }
+
+    public function getAiModel(): ?string
+    {
+        return $this->aiModel;
+    }
+
+    public function getAiFieldsFilled(): array
+    {
+        return $this->aiFieldsFilled;
     }
 
     public function setNeedsReprocess(bool $needsReprocess): void
@@ -225,6 +239,8 @@ final class ParseResult
             'parser_version' => $this->parserVersion,
             'ai_used' => $this->aiUsed,
             'ai_provider' => $this->aiProvider,
+            'ai_model' => $this->aiModel,
+            'ai_fields_filled' => $this->aiFieldsFilled,
             'reprocess_needed' => $this->reprocessNeeded,
         ];
     }

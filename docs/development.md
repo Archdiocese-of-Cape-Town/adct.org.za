@@ -75,7 +75,7 @@ docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scr
 | `adct-parish-intake.php` | Plugin bootstrap (WordPress entry point) |
 | `src/Core/` | Domain parsing pipeline, stages, value objects, pure-PHP helpers and ports; no WordPress functions, classes or globals |
 | `src/Core/Jobs/` | Pure-PHP scheduled job contract, runner, budgets, checkpoint and run-state value objects |
-| `src/WordPress/` | Plugin bootstrap, admin UI, schema/report adapters, OpenRouter provider and WordPress HTTP client |
+| `src/WordPress/` | Plugin bootstrap, admin UI, schema/report adapters, OpenAI-compatible provider and WordPress HTTP client |
 | `src/WordPress/Jobs/` | WP-Cron registration plus option-backed job state and lock adapters |
 | `composer.json` | PSR-4 autoloading for `ADCT\ParishIntake\Core\…` and `ADCT\ParishIntake\WordPress\…`; development/tests load through Composer |
 | `src/WordPress/Autoloader.php` | Small PSR-4 source loader included in the release zip, where Composer's development autoloader is not shipped |

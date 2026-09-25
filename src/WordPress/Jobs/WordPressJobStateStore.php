@@ -33,6 +33,8 @@ final class WordPressJobStateStore implements JobStateStoreInterface
         $lastErrorMessage = $value['last_error_message'] ?? null;
         $lastErrorAt = $this->readDate($value['last_error_at'] ?? null, $jobId, 'last_error_at');
         $itemsProcessed = $value['items_processed'] ?? 0;
+        $lastTrigger = $value['last_trigger'] ?? null;
+        $consecutiveFailures = $value['consecutive_failures'] ?? 0;
 
         if ($checkpoint !== null && ! is_string($checkpoint)) {
             throw new UnexpectedValueException('The checkpoint for job "' . $jobId . '" is invalid.');
@@ -45,6 +47,10 @@ final class WordPressJobStateStore implements JobStateStoreInterface
         if (! is_int($itemsProcessed) || $itemsProcessed < 0) {
             throw new UnexpectedValueException('The item count for job "' . $jobId . '" is invalid.');
         }
+        if (($lastTrigger !== null && ! in_array($lastTrigger, ['cron', 'manual', 'internal'], true))
+            || ! is_int($consecutiveFailures) || $consecutiveFailures < 0) {
+            throw new UnexpectedValueException('The health state for job "' . $jobId . '" is invalid.');
+        }
 
         try {
             return new JobState(
@@ -53,7 +59,9 @@ final class WordPressJobStateStore implements JobStateStoreInterface
                 $lastSuccessAt,
                 $lastErrorMessage,
                 $lastErrorAt,
-                $itemsProcessed
+                $itemsProcessed,
+                $lastTrigger,
+                $consecutiveFailures
             );
         } catch (\InvalidArgumentException $failure) {
             throw new UnexpectedValueException(
@@ -74,6 +82,8 @@ final class WordPressJobStateStore implements JobStateStoreInterface
             'last_error_message' => $state->lastErrorMessage,
             'last_error_at' => $this->formatDate($state->lastErrorAt),
             'items_processed' => $state->itemsProcessed,
+            'last_trigger' => $state->lastTrigger,
+            'consecutive_failures' => $state->consecutiveFailures,
         ];
 
         if (! update_option($optionName, $value, false) && get_option($optionName, null) !== $value) {
