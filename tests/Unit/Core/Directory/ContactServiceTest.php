@@ -169,6 +169,19 @@ final class ContactServiceTest extends TestCase
         self::assertSame(2, $store->findByEmailCalls);
     }
 
+    public function testPendingLinksRefuseToOverwriteTrustIfAnotherWriterWinsAfterTheFinalRead(): void
+    {
+        $store = new RacingParishContactStore();
+        $service = new ContactService($store, new FixedContactClock());
+
+        $result = $service->linkPending(11, 'sender@example.test', 'Office', 'Secretary');
+
+        self::assertSame(SenderTrust::VERIFIED, $result->trust);
+        self::assertCount(1, $store->rows);
+        self::assertSame(SenderTrust::VERIFIED, $store->rows[1]['trust']);
+        self::assertSame('sender@example.test', $store->rows[1]['email']);
+    }
+
     public function testChangingALinkEmailUsesExistingAddressTrustAndDeduplicatesParishLinks(): void
     {
         $store = new FakeParishContactStore();
@@ -222,7 +235,7 @@ final class ContactServiceTest extends TestCase
     }
 }
 
-final class FakeParishContactStore implements ParishContactStoreInterface
+class FakeParishContactStore implements ParishContactStoreInterface
 {
     /**
      * @var array<int, array<string, mixed>>
@@ -292,6 +305,50 @@ final class FakeParishContactStore implements ParishContactStoreInterface
             'created_at' => $timestamp,
             'updated_at' => $timestamp,
         ];
+    }
+
+    public function savePendingLink(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $timestamp
+    ): int {
+        foreach ($this->rows as $id => $row) {
+            if ((int) $row['parish_id'] === $parishId && $row['email'] === $email) {
+                if ($row['trust'] !== SenderTrust::UNKNOWN) {
+                    return 0;
+                }
+
+                $this->rows[$id] = array_merge($row, [
+                    'display_name' => $displayName,
+                    'role_label' => $roleLabel,
+                    'receives_reminders' => $receivesReminders ? 1 : 0,
+                    'trust' => SenderTrust::PENDING,
+                    'verified_at' => null,
+                    'updated_at' => $timestamp,
+                ]);
+
+                return 1;
+            }
+        }
+
+        $id = $this->nextId++;
+        $this->rows[$id] = [
+            'id' => $id,
+            'parish_id' => $parishId,
+            'email' => $email,
+            'display_name' => $displayName,
+            'role_label' => $roleLabel,
+            'receives_reminders' => $receivesReminders ? 1 : 0,
+            'trust' => SenderTrust::PENDING,
+            'verified_at' => null,
+            'created_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ];
+
+        return 1;
     }
 
     public function updateLink(
@@ -425,6 +482,17 @@ final class ChangingParishContactStore implements ParishContactStoreInterface
         );
     }
 
+    public function savePendingLink(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $timestamp
+    ): int {
+        return 0;
+    }
+
     public function updateLink(
         int $contactId,
         int $parishId,
@@ -450,6 +518,33 @@ final class ChangingParishContactStore implements ParishContactStoreInterface
         ?string $verifiedAt,
         string $timestamp
     ): int {
+        return 0;
+    }
+}
+
+final class RacingParishContactStore extends FakeParishContactStore
+{
+    public function savePendingLink(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $timestamp
+    ): int {
+        $this->rows[1] = [
+            'id' => 1,
+            'parish_id' => $parishId,
+            'email' => $email,
+            'display_name' => 'Trusted office',
+            'role_label' => 'Secretary',
+            'receives_reminders' => 1,
+            'trust' => SenderTrust::VERIFIED,
+            'verified_at' => $timestamp,
+            'created_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ];
+
         return 0;
     }
 }

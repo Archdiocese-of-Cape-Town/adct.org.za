@@ -75,15 +75,13 @@ final class ContactService
             return $secondLookup;
         }
 
-        return $this->linkWithInitialTrustFromRows(
+        return $this->linkPendingIfStillUnknown(
             $parishId,
             $email,
             $displayName,
             $roleLabel,
             $receivesReminders,
-            SenderTrust::PENDING,
-            true,
-            $rows
+            $secondLookup
         );
     }
 
@@ -263,6 +261,34 @@ final class ContactService
             $updateExistingLink,
             $rows
         );
+    }
+
+    private function linkPendingIfStillUnknown(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        SenderLookupResult $secondLookup
+    ): SenderLookupResult {
+        if ($parishId < 1) {
+            throw new InvalidArgumentException('A parish must be selected for this contact.');
+        }
+
+        $displayName = $this->normalizeLabel($displayName);
+        $roleLabel = $this->normalizeLabel($roleLabel);
+        $timestamp = $this->timestamp();
+
+        $createdRows = $this->contacts->savePendingLink(
+            $parishId,
+            $email,
+            $displayName,
+            $roleLabel,
+            $receivesReminders,
+            $timestamp
+        );
+
+        return $this->lookup($email);
     }
 
     /**

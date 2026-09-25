@@ -130,6 +130,31 @@ final class LearningParishContactStore implements ParishContactStoreInterface
         ];
     }
 
+    public function savePendingLink(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $timestamp
+    ): int {
+        $id = $this->nextId++;
+        $this->rows[$id] = [
+            'id' => $id,
+            'parish_id' => $parishId,
+            'email' => strtolower(trim($email)),
+            'display_name' => $displayName,
+            'role_label' => $roleLabel,
+            'receives_reminders' => $receivesReminders ? 1 : 0,
+            'trust' => SenderTrust::PENDING,
+            'verified_at' => null,
+            'created_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ];
+
+        return 1;
+    }
+
     public function updateLink(
         int $contactId,
         int $parishId,
