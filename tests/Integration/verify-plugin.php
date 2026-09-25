@@ -3939,6 +3939,8 @@ foreach (['administrator', 'editor'] as $roleName) {
     $role->add_cap('publish_events');
 }
 
+require WP_CONTENT_DIR . '/test-harness/EventsListingCheck.php';
+
 if (! defined('WP_UNINSTALL_PLUGIN')) {
     define('WP_UNINSTALL_PLUGIN', $pluginBasename);
 }
