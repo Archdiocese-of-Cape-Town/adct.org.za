@@ -15,6 +15,7 @@ use ADCT\ParishIntake\Core\Database\MailboxSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MigrationRunner;
 use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
 use ADCT\ParishIntake\Core\Events\EventValidator;
+use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
 use ADCT\ParishIntake\Core\Events\OccurrenceExpander;
 use ADCT\ParishIntake\Core\Events\RRulePresetMapper;
 use ADCT\ParishIntake\Core\Events\RRuleValidator;
@@ -112,10 +113,12 @@ use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeRecipientPolicy;
 use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeSettings;
 use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
+use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
 use ADCT\ParishIntake\WordPress\Events\PublicEventListing;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
 use ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance;
+use ADCT\ParishIntake\WordPress\Publishing\WordPressPublicationStore;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
 use DateTimeZone;
 
@@ -142,6 +145,7 @@ final class Plugin
     private EventPostType $eventPostType;
     private EventEditor $eventEditor;
     private EventOccurrenceHooks $eventOccurrenceHooks;
+    private CandidatePublisher $candidatePublisher;
     private PublicEventListing $publicEventListing;
     private MailboxesPage $mailboxesPage;
     private InboundMessagesPage $inboundMessagesPage;
@@ -232,10 +236,12 @@ final class Plugin
         );
         $this->sendersPage = new SendersPage($contacts, $contactService, $parishes);
         $this->eventPostType = new EventPostType();
+        $listingGeneration = new EventListingGeneration();
         $this->publicEventListing = new PublicEventListing(
             $clock,
             new DateTimeZone('Africa/Johannesburg'),
-            $pluginFile
+            $pluginFile,
+            $listingGeneration
         );
         $this->eventEditor = new EventEditor(
             $parishes,
@@ -251,6 +257,17 @@ final class Plugin
             function (): void {
                 $this->publicEventListing->invalidate();
             }
+        );
+        $this->candidatePublisher = new CandidatePublisher(
+            new WordPressPublicationStore(
+                $database,
+                new EventCandidateRepository($database),
+                $occurrenceMaintenance,
+                $listingGeneration,
+                $clock,
+                $timezone
+            ),
+            new EventValidator($timezone, $rruleValidator)
         );
         $this->eventOccurrenceHooks = new EventOccurrenceHooks(
             $occurrenceMaintenance,
@@ -405,6 +422,15 @@ final class Plugin
         }
 
         return self::$instance->actionTokenService;
+    }
+
+    public static function candidatePublisher(): CandidatePublisher
+    {
+        if (! self::$instance instanceof self) {
+            throw new \RuntimeException('The Parish Intake plugin has not been booted.');
+        }
+
+        return self::$instance->candidatePublisher;
     }
 
     public static function actionTokenHandlers(): ActionTokenHandlerRegistry

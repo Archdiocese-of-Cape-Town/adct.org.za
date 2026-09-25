@@ -15,12 +15,11 @@ final class PublicEventListing
 {
     private const PAGE_SIZE = 20;
     private const MAX_PAGE = 100;
-    private const CACHE_VERSION = 'adct_pi_event_listing_generation';
-
     public function __construct(
         private ClockInterface $clock,
         private DateTimeZone $timezone,
-        private string $pluginFile
+        private string $pluginFile,
+        private ?EventListingGeneration $generation = null
     ) {
     }
 
@@ -56,13 +55,20 @@ final class PublicEventListing
 
     public function invalidate(int $postId = 0): void
     {
+        if (EventOccurrenceHooks::isPublishingCandidate()) {
+            return;
+        }
+
         if ($postId > 0 && get_post_type($postId) !== EventPostType::POST_TYPE) {
             return;
         }
 
-        if (! update_option(self::CACHE_VERSION, bin2hex(random_bytes(16)), false)) {
-            throw new RuntimeException('Could not invalidate the public event listing cache.');
-        }
+        $this->generation()->bump();
+    }
+
+    private function generation(): EventListingGeneration
+    {
+        return $this->generation ?? new EventListingGeneration();
     }
 
     public function invalidateMeta(int|array $metaId, int $postId): void
@@ -291,7 +297,7 @@ final class PublicEventListing
         $generation = '';
         $key = 'adct_pi_list_' . $period . '_' . $page;
         if ($cacheable) {
-            $generation = (string) get_option(self::CACHE_VERSION, '0');
+            $generation = $this->generation()->current();
             $cached = get_transient($key);
             if (
                 is_array($cached)
@@ -329,7 +335,7 @@ final class PublicEventListing
         $more = count($rows) > self::PAGE_SIZE;
         $rows = array_slice($rows, 0, self::PAGE_SIZE);
         $result = ['rows' => $rows, 'more' => $more];
-        if ($cacheable && (string) get_option(self::CACHE_VERSION, '0') === $generation) {
+        if ($cacheable && $this->generation()->current() === $generation) {
             if (! set_transient($key, $result + [
                 'generation' => $generation,
                 'from' => $from,
