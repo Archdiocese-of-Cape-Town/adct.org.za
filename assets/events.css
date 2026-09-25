@@ -13,6 +13,24 @@
 .adct-events__filters select[multiple] {
     min-width: min(100%, 12rem);
 }
+.adct-events__near-me {
+    display: grid;
+    gap: .5rem;
+    min-width: min(100%, 18rem);
+    padding: .75rem;
+    border: 1px solid currentColor;
+    border-radius: .4rem;
+}
+.adct-events__near-me legend {
+    padding: 0 .25rem;
+}
+.adct-events__near-me-button {
+    justify-self: start;
+}
+.adct-events__location-status {
+    margin: 0;
+    min-height: 1.2em;
+}
 .adct-events__cards {
     list-style: none;
     padding: 0;
@@ -41,5 +59,8 @@
     border-radius: .25rem;
     padding: .15rem .4rem;
     margin: .15rem 0;
+}
+.adct-events__distance {
+    font-weight: 600;
 }
 .adct-events nav a { display: inline-block; padding: .5rem; }

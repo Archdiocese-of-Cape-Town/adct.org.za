@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "test:integration": "node scripts/test-integration.mjs",
+    "test:js": "node --test scripts/events-filters.test.mjs",
     "test:integration-config": "node --test scripts/test-integration-config.test.mjs"
   },
   "devDependencies": {

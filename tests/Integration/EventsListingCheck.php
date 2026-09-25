@@ -286,6 +286,237 @@ try {
             $fail('The progressive listing lost the plain permalink or selection when paging.');
         }
     }
+
+    $nearMeParish = $wpdb->get_row(
+        "SELECT id FROM {$wpdb->prefix}adct_pi_parishes WHERE status = 'active' ORDER BY id ASC LIMIT 1",
+        ARRAY_A
+    );
+    if (! is_array($nearMeParish) || ! isset($nearMeParish['id'])) {
+        $fail('Could not find an active parish for the near-me tests.');
+    }
+    $nearMeSuburb = 'Fictional Near Me Town';
+    $nearMeLatitude = -33.9258;
+    $nearMeLongitude = 18.4232;
+    $updatedParish = $wpdb->update(
+        $wpdb->prefix . 'adct_pi_parishes',
+        [
+            'suburb' => $nearMeSuburb,
+            'latitude' => $nearMeLatitude,
+            'longitude' => $nearMeLongitude,
+        ],
+        [
+            'id' => (int) $nearMeParish['id'],
+        ]
+    );
+    if ($updatedParish === false) {
+        $fail('Could not seed a deterministic suburb for the near-me tests.');
+    }
+    wp_cache_flush();
+    if ($wpdb->query(
+        "DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_adct_pi_list_v3_%' "
+        . "OR option_name LIKE '_transient_timeout_adct_pi_list_v3_%'"
+    ) === false) {
+        $fail('Could not clear cached event listings before the near-me tests.');
+    }
+    $_GET = $listingPeriod;
+    $suburbPreview = do_shortcode('[adct_events]');
+    if (
+        ! str_contains($suburbPreview, 'Fictional Near Me Town')
+        || ! str_contains($suburbPreview, '<datalist id="adct-near-me-places">')
+        || str_contains($suburbPreview, 'name="near_latitude"')
+        || str_contains($suburbPreview, 'name="near_longitude"')
+        || str_contains($suburbPreview, 'name="near_suburb"')
+    ) {
+        $fail('The accessible local suburb/parish lookup or its no-GET privacy guard was not rendered.');
+    }
+    if ($wpdb->query("UPDATE {$occurrencesTable} SET latitude = NULL, longitude = NULL") === false) {
+        $fail('Could not clear existing occurrence coordinates before the near-me tests.');
+    }
+    $nearMeStartUtc = $listingStart->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+    for ($index = 0; $index < 25; $index++) {
+        $firstOccurrence = $wpdb->get_row($wpdb->prepare(
+            "SELECT id FROM {$occurrencesTable} WHERE event_id = %d ORDER BY id ASC LIMIT 1",
+            $seedIds[$index]
+        ), ARRAY_A);
+        if (! is_array($firstOccurrence) || ! isset($firstOccurrence['id'])) {
+            $fail('Could not find a seeded event occurrence for distance tests.');
+        }
+        $updated = $wpdb->update(
+            $occurrencesTable,
+            [
+                'start_utc' => $nearMeStartUtc,
+                'start_local_date' => $listingStart->format('Y-m-d'),
+                'latitude' => $nearMeLatitude + ($index * 0.01),
+                'longitude' => $nearMeLongitude,
+            ],
+            [
+                'id' => (int) $firstOccurrence['id'],
+            ]
+        );
+        if ($updated !== 1) {
+            $fail('Could not seed unique dated occurrences with deterministic coordinates.');
+        }
+    }
+    $featuredTieCoordinate = $wpdb->update($occurrencesTable, [
+        'latitude' => $nearMeLatitude + 0.01,
+        'longitude' => $nearMeLongitude,
+    ], [
+        'event_id' => $seedIds[9],
+        'start_utc' => $nearMeStartUtc,
+    ]);
+    if ($featuredTieCoordinate !== 1) {
+        $fail('Could not seed an equal-distance featured event for near-me sorting.');
+    }
+    update_post_meta($seedIds[9], 'featured', '1');
+    $nearMeDeanery = $wpdb->update($wpdb->prefix . 'adct_pi_parishes', [
+        'deanery_id' => $listingDeanery,
+    ], [
+        'id' => $parishIds[0],
+    ]);
+    if ($nearMeDeanery === false) {
+        $fail('Could not seed a deanery for near-me filter interoperability.');
+    }
+
+    $restNearby = static function (array $body, array $query = []): WP_REST_Response|WP_Error {
+        $request = new WP_REST_Request('POST', '/adct-parish-intake/v1/events');
+        $request->set_query_params($query);
+        $request->set_header('Content-Type', 'application/json');
+        $request->set_body(wp_json_encode($body));
+
+        return rest_do_request($request);
+    };
+    $nearbyBase = $listingPeriod + [
+        'page_url' => home_url('/events/'),
+        'adct_pin' => '1',
+        'near_mode' => 'suburb',
+        'near_suburb' => $nearMeSuburb,
+        'near_radius_km' => '50',
+    ];
+    $beforeNearMeCache = $transientCount();
+    $suburbNearby = $restNearby($nearbyBase);
+    $suburbNearbyHtml = (string) ($suburbNearby->get_data()['html'] ?? '');
+    $suburbNearbyHeaders = $suburbNearby->get_headers();
+    if (
+        $suburbNearby->get_status() !== 200
+        || strpos($suburbNearbyHtml, 'Fictional listing event 0</a>') === false
+        || strpos($suburbNearbyHtml, 'Fictional listing event 0</a>')
+            >= strpos($suburbNearbyHtml, 'Fictional listing event 1</a>')
+        || strpos($suburbNearbyHtml, 'Fictional listing event 9</a>')
+            >= strpos($suburbNearbyHtml, 'Fictional listing event 1</a>')
+        || ! str_contains($suburbNearbyHtml, '0 m away')
+        || ! str_contains($suburbNearbyHtml, '1.1 km away')
+        || str_contains($suburbNearbyHtml, (string) $nearMeLatitude)
+        || str_contains($suburbNearbyHtml, (string) $nearMeLongitude)
+        || ($suburbNearbyHeaders['Cache-Control'] ?? '') !== 'no-store'
+        || $transientCount() !== $beforeNearMeCache
+    ) {
+        $fail('Suburb distance search failed to sort, interoperate with pinning or avoid coordinate caching.');
+    }
+    if (! preg_match('/href="([^"]+)">More events<\/a>/', $suburbNearbyHtml, $nearMeMatches)) {
+        $fail('The near-me search did not provide a next-page link.');
+    }
+    $nearMeNextUrl = html_entity_decode($nearMeMatches[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    parse_str((string) wp_parse_url($nearMeNextUrl, PHP_URL_QUERY), $nearMeQuery);
+    if (
+        ($nearMeQuery['adct_page'] ?? null) !== '2'
+        || isset($nearMeQuery['near_mode'])
+        || isset($nearMeQuery['near_latitude'])
+        || isset($nearMeQuery['near_longitude'])
+        || isset($nearMeQuery['near_suburb'])
+        || isset($nearMeQuery['near_radius_km'])
+    ) {
+        $fail('The near-me paging link exposed or persisted location state.');
+    }
+    $nearMePageTwo = $restNearby($nearbyBase + ['adct_page' => '2']);
+    $nearMePageTwoHtml = (string) ($nearMePageTwo->get_data()['html'] ?? '');
+    if (
+        $nearMePageTwo->get_status() !== 200
+        || ! str_contains($nearMePageTwoHtml, 'Previous page')
+        || ! str_contains($nearMePageTwoHtml, 'Fictional listing event 20</a>')
+        || str_contains($nearMePageTwoHtml, 'Fictional listing event 19</a>')
+    ) {
+        $fail('The near-me distance ordering did not produce stable second-page results.');
+    }
+
+    $nearMeRadiusFive = $nearbyBase;
+    $nearMeRadiusFive['near_radius_km'] = '5';
+    $radiusNearby = $restNearby($nearMeRadiusFive);
+    $radiusHtml = (string) ($radiusNearby->get_data()['html'] ?? '');
+    if (
+        $radiusNearby->get_status() !== 200
+        || ! str_contains($radiusHtml, 'Fictional listing event 4</a>')
+        || str_contains($radiusHtml, 'Fictional listing event 5</a>')
+    ) {
+        $fail('The nearby radius did not include in-range events and exclude out-of-range events.');
+    }
+
+    $interoperableNearby = $listingPeriod + [
+        'page_url' => home_url('/events/'),
+        'adct_types' => [(string) $spiritual->term_id],
+        'adct_parish' => (string) $parishIds[0],
+        'adct_deanery' => (string) $listingDeanery,
+        'adct_collapse' => '1',
+        'adct_pin' => '1',
+        'near_mode' => 'browser',
+        'near_latitude' => $nearMeLatitude,
+        'near_longitude' => $nearMeLongitude,
+        'near_radius_km' => '5',
+    ];
+    $browserNearby = $restNearby($interoperableNearby);
+    $browserHtml = (string) ($browserNearby->get_data()['html'] ?? '');
+    $browserHeaders = $browserNearby->get_headers();
+    if (
+        $browserNearby->get_status() !== 200
+        || ! str_contains($browserHtml, 'Fictional listing event 0</a>')
+        || str_contains($browserHtml, 'Fictional listing event 1</a>')
+        || str_contains($browserHtml, (string) $nearMeLatitude)
+        || str_contains($browserHtml, (string) $nearMeLongitude)
+        || ($browserHeaders['Cache-Control'] ?? '') !== 'no-store'
+        || $transientCount() !== $beforeNearMeCache
+    ) {
+        $fail('Browser coordinates, type/parish/deanery/date filters or no-store privacy did not interoperate.');
+    }
+
+    $browserGetRequest = new WP_REST_Request('GET', '/adct-parish-intake/v1/events');
+    $browserGetRequest->set_query_params([
+        'page_url' => home_url('/events/'),
+        'near_mode' => 'browser',
+        'near_latitude' => $nearMeLatitude,
+        'near_longitude' => $nearMeLongitude,
+    ]);
+    $browserGetResponse = rest_do_request($browserGetRequest);
+    if (
+        $browserGetResponse->get_status() !== 400
+        || ($browserGetResponse->get_headers()['Cache-Control'] ?? '') !== 'no-store'
+    ) {
+        $fail('The public REST API accepted or cached precise location in a GET request.');
+    }
+    $queryCoordinatesPost = $restNearby(
+        ['page_url' => home_url('/events/'), 'adct_period' => 'upcoming'],
+        ['near_latitude' => $nearMeLatitude, 'near_longitude' => $nearMeLongitude]
+    );
+    if (
+        $queryCoordinatesPost->get_status() !== 400
+        || ($queryCoordinatesPost->get_headers()['Cache-Control'] ?? '') !== 'no-store'
+    ) {
+        $fail('The public REST API accepted or cached location parameters in the POST URL.');
+    }
+    $missingBrowserCoordinates = $restNearby([
+        'page_url' => home_url('/events/'),
+        'adct_period' => 'upcoming',
+        'near_mode' => 'browser',
+    ]);
+    if (
+        $missingBrowserCoordinates->get_status() !== 400
+        || ($missingBrowserCoordinates->get_headers()['Cache-Control'] ?? '') !== 'no-store'
+    ) {
+        $fail('The public REST API accepted a browser search without a complete coordinate pair.');
+    }
+    $mixedLocationModes = $restNearby($interoperableNearby + ['near_suburb' => $nearMeSuburb]);
+    if ($mixedLocationModes->get_status() !== 400) {
+        $fail('The public REST API accepted browser coordinates and a suburb in the same search.');
+    }
+
     foreach ([
         ['adct_types' => [['1']]],
         ['adct_types' => range(1, 21)],
@@ -462,6 +693,8 @@ try {
             'event_id' => (int) $hiddenId,
             'start_utc' => $utc,
             'start_local_date' => $hiddenStart->format('Y-m-d'),
+            'latitude' => $nearMeLatitude,
+            'longitude' => $nearMeLongitude,
             'created_at' => $utc,
             'updated_at' => $utc,
         ]) !== 1) {
@@ -474,6 +707,23 @@ try {
         }
         if (str_contains((string) ($restListing($listingPeriod)->get_data()['html'] ?? ''), 'Hidden fictional ' . $status . ' event')) {
             $fail('The public REST listing exposed a stale ' . $status . ' occurrence.');
+        }
+        $nearbyHidden = $restNearby([
+            'page_url' => home_url('/events/'),
+            'adct_period' => 'range',
+            'adct_from' => $hiddenStart->format('Y-m-d'),
+            'adct_to' => $hiddenStart->format('Y-m-d'),
+            'near_mode' => 'browser',
+            'near_latitude' => $nearMeLatitude,
+            'near_longitude' => $nearMeLongitude,
+            'near_radius_km' => '5',
+        ]);
+        if (
+            $nearbyHidden->get_status() !== 200
+            || str_contains((string) ($nearbyHidden->get_data()['html'] ?? ''), 'Hidden fictional ' . $status . ' event')
+            || ($nearbyHidden->get_headers()['Cache-Control'] ?? '') !== 'no-store'
+        ) {
+            $fail('The nearby REST listing exposed a hidden event or cached a location response.');
         }
     }
 

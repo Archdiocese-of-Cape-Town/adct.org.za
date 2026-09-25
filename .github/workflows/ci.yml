@@ -68,6 +68,9 @@ jobs:
       - name: Install wp-env
         run: npm ci
 
+      - name: Run browser filter tests
+        run: npm run test:js
+
       - name: Verify isolated wp-env config identity
         run: npm run test:integration-config
 

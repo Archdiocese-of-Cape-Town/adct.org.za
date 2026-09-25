@@ -138,7 +138,7 @@ Phase 0, 1 and 1.5 items have GitHub issues. Phase 2 and 3 items are listed as c
 |---|---|---|---|---|
 | [E6.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/54) | Events listing block/shortcode with date filter and paging | P0 | E5.2 | Upcoming occurrences grouped by date; works with the site theme; mobile friendly. |
 | [E6.2](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/56) | Type and parish filters | P1 | E6.1 | Filter by event type and parish; the URL reflects filters (shareable). |
-| [E6.3](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/55) | Near me: browser location or suburb, sorted by distance | P1 | E6.1, E1.1 | Asks permission; falls back to typing a suburb; shows distance. |
+| [E6.3](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/55) | Near me: browser location or suburb, sorted by distance | P1 | E6.1, E1.1 | Requests browser location only on explicit click; falls back to a local suburb list; shows a human-readable km distance. |
 | [E6.4](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/60) | Single event page | P1 | E5.1 | Details, recurrence in words, map link, contact, add-to-calendar. |
 | [E6.5](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/57) | ICS feed (all, per parish, per type) | P1 | E5.2 | Validates in Google/Apple/Outlook; recurring events use RRULE. |
 

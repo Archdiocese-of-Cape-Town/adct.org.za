@@ -23,6 +23,7 @@ docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c 'find src tests -name
 
 # WordPress integration tests (requires Node.js/npm and Docker Desktop)
 npm ci
+npm run test:js
 docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
 npm run test:integration
 ```

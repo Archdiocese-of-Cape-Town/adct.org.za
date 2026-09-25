@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Events;
 
+use ADCT\ParishIntake\Core\Events\GeoDistance;
 use ADCT\ParishIntake\Core\Events\ListingRange;
 use ADCT\ParishIntake\Core\Events\ListingSelection;
+use ADCT\ParishIntake\Core\Events\NearbySearch;
 use ADCT\ParishIntake\Core\Events\RecurrenceSummary;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use DateTimeZone;
@@ -17,6 +19,7 @@ final class PublicEventListing
 {
     private const PAGE_SIZE = 20;
     private const MAX_PAGE = 100;
+
     public function __construct(
         private ClockInterface $clock,
         private DateTimeZone $timezone,
@@ -47,7 +50,7 @@ final class PublicEventListing
             'adct-events-filters',
             plugins_url('assets/events-filters.js', $this->pluginFile),
             [],
-            '1.0.0',
+            '1.0.2',
             true
         );
     }
@@ -58,7 +61,7 @@ final class PublicEventListing
             'adct-events',
             plugins_url('assets/events.css', $this->pluginFile),
             [],
-            '1.0.1'
+            '1.0.2'
         );
         wp_enqueue_script('adct-events-filters');
     }
@@ -66,7 +69,7 @@ final class PublicEventListing
     public function registerRestRoute(): void
     {
         register_rest_route('adct-parish-intake/v1', '/events', [
-            'methods' => \WP_REST_Server::READABLE,
+            'methods' => [\WP_REST_Server::READABLE, \WP_REST_Server::CREATABLE],
             'permission_callback' => '__return_true',
             'callback' => [$this, 'rest'],
         ]);
@@ -74,20 +77,72 @@ final class PublicEventListing
 
     public function rest(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
+        $method = $request->get_method();
+        $queryParams = $request->get_query_params();
+        $bodyParams = $method === 'POST' ? $request->get_json_params() : null;
+        $locationRequest = NearbySearch::hasLocationFields($queryParams)
+            || (is_array($bodyParams) && NearbySearch::hasLocationFields($bodyParams));
+        $noStore = $method === 'POST' || $locationRequest;
+
         try {
-            $base = $request->get_param('page_url');
+            if (NearbySearch::hasLocationFields($queryParams)) {
+                throw new InvalidArgumentException('Location searches must use the request body.');
+            }
+            if ($method === 'POST') {
+                if (! is_array($bodyParams)) {
+                    throw new InvalidArgumentException('Send event filters as a JSON object.');
+                }
+                $params = $bodyParams;
+            } elseif ($method === 'GET') {
+                $params = $queryParams;
+            } else {
+                throw new InvalidArgumentException('Use GET or POST for event filters.');
+            }
+
+            $base = $params['page_url'] ?? null;
             if (! is_string($base) || strlen($base) > 1024 || ! $this->isPublicPageUrl($base)) {
                 throw new InvalidArgumentException('Enter a valid page URL.');
             }
-            $selection = new ListingSelection($request->get_query_params());
+            $nearby = NearbySearch::fromRequest($params);
+            if ($nearby !== null && $method !== 'POST') {
+                throw new InvalidArgumentException('Location searches must use the request body.');
+            }
+            $selection = new ListingSelection($params);
+            $response = new \WP_REST_Response([
+                'html' => $this->listing($selection, $base, $nearby),
+            ]);
+            if ($noStore) {
+                $response->header('Cache-Control', 'no-store');
+            }
 
-            return new \WP_REST_Response(['html' => $this->listing($selection, $base)]);
+            return $response;
         } catch (InvalidArgumentException $error) {
-            return new \WP_Error('adct_invalid_filter', $error->getMessage(), ['status' => 400]);
-        } catch (Throwable $error) {
-            error_log('[ADCT Parish Intake] Public event REST listing failed: ' . $error->getMessage());
+            $response = new \WP_REST_Response([
+                'code' => 'adct_invalid_filter',
+                'message' => $error->getMessage(),
+                'data' => ['status' => 400],
+            ], 400);
+            if ($noStore) {
+                $response->header('Cache-Control', 'no-store');
+            }
 
-            return new \WP_Error('adct_listing_unavailable', 'Events are temporarily unavailable.', ['status' => 503]);
+            return $response;
+        } catch (Throwable $error) {
+            error_log(
+                '[ADCT Parish Intake] Public event REST listing failed'
+                . ($locationRequest ? '.' : ': ' . $error->getMessage())
+            );
+
+            $response = new \WP_REST_Response([
+                'code' => 'adct_listing_unavailable',
+                'message' => 'Events are temporarily unavailable.',
+                'data' => ['status' => 503],
+            ], 503);
+            if ($noStore) {
+                $response->header('Cache-Control', 'no-store');
+            }
+
+            return $response;
         }
     }
 
@@ -164,11 +219,17 @@ final class PublicEventListing
     private function render(array $attributes): string
     {
         try {
-            $selection = new ListingSelection(wp_unslash($_GET), $attributes['period'] ?? 'upcoming');
+            $params = wp_unslash($_GET);
+            if (NearbySearch::hasLocationFields($params)) {
+                throw new InvalidArgumentException('Location searches are temporary and cannot be shared in a URL.');
+            }
+            $selection = new ListingSelection($params, $attributes['period'] ?? 'upcoming');
             return $this->listing($selection, remove_query_arg([
                 'adct_page', 'adct_period', 'adct_from', 'adct_to',
                 'adct_types', 'adct_parish', 'adct_deanery',
                 'adct_pin', 'adct_collapse',
+                'adct_near_me', 'adct_near_me_radius', 'adct_near_me_suburb',
+                'adct_near_me_lat', 'adct_near_me_lng',
             ]));
         } catch (InvalidArgumentException $error) {
             return '<p role="alert">' . esc_html($error->getMessage()) . '</p>';
@@ -179,8 +240,11 @@ final class PublicEventListing
         }
     }
 
-    private function listing(ListingSelection $selection, string $base): string
-    {
+    private function listing(
+        ListingSelection $selection,
+        string $base,
+        ?NearbySearch $nearby = null
+    ): string {
         $range = new ListingRange(
             $selection->period, $selection->from, $selection->through, $this->clock->now(), $this->timezone
         );
@@ -190,6 +254,7 @@ final class PublicEventListing
         }
         $parishes = $this->options('adct_pi_parishes');
         $deaneries = $this->options('adct_pi_deaneries');
+        $places = $this->placeOptions();
         if ($selection->types !== [] && array_diff($selection->types, array_map(
             static fn (\WP_Term $term): int => (int) $term->term_id, $types
         )) !== []) {
@@ -201,13 +266,24 @@ final class PublicEventListing
         if ($selection->deanery !== null && ! isset($deaneries[$selection->deanery])) {
             throw new InvalidArgumentException('Choose an available deanery.');
         }
-        $result = $this->rows($range, $selection);
+        $location = $nearby === null ? null : $this->nearbyLocation($nearby, $places);
+        $result = $this->rows($range, $selection, $location);
 
-        return $this->renderResults($selection, $result, $types, $parishes, $deaneries, $base);
+        return $this->renderResults(
+            $selection,
+            $result,
+            $types,
+            $parishes,
+            $deaneries,
+            $places,
+            $base,
+            $nearby
+        );
     }
 
     /**
      * @param array{rows: array<int, array<string, mixed>>, more: bool} $result
+     * @param array<string, array{label: string, latitude: float, longitude: float}> $places
      */
     private function renderResults(
         ListingSelection $selection,
@@ -215,9 +291,10 @@ final class PublicEventListing
         array $types,
         array $parishes,
         array $deaneries,
-        string $base
-    ): string
-    {
+        array $places,
+        string $base,
+        ?NearbySearch $nearby
+    ): string {
         $html = '<section class="adct-events" aria-label="Upcoming events" data-endpoint="'
             . esc_url(rest_url('adct-parish-intake/v1/events')) . '">'
             . '<form method="get" class="adct-events__filters">';
@@ -268,7 +345,28 @@ final class PublicEventListing
             . checked($selection->collapse, true, false) . '> Show only the next date of each recurring event</label>'
             . '<label><input type="checkbox" name="adct_pin" value="1"'
             . checked($selection->pin, true, false) . '> Show featured events first</label>'
-            . '<button type="submit">Apply filters</button></form>';
+            . '<fieldset class="adct-events__near-me">'
+            . '<legend>Find events by distance</legend>'
+            . '<button type="button" class="adct-events__near-me-button">Near me</button>'
+            . '<label for="adct-near-me-suburb">Or enter a suburb or parish</label>'
+            . '<input id="adct-near-me-suburb" type="text" maxlength="64" autocomplete="off"'
+            . ' list="adct-near-me-places" value="'
+            . esc_attr($nearby !== null && $nearby->mode === 'suburb' ? (string) $nearby->suburb : '') . '">'
+            . '<datalist id="adct-near-me-places">';
+        foreach ($places as $place) {
+            $html .= '<option value="' . esc_attr($place['label']) . '">';
+        }
+        $html .= '</datalist><button type="button" class="adct-events__suburb-button">Search by suburb</button>'
+            . '<label for="adct-near-me-radius">Radius</label>'
+            . '<select id="adct-near-me-radius" data-near-radius>';
+        foreach (NearbySearch::RADII_KM as $radius) {
+            $html .= '<option value="' . esc_attr((string) $radius) . '"'
+                . selected($nearby?->radiusKm ?? 25, $radius, false) . '>'
+                . esc_html((string) $radius) . ' km</option>';
+        }
+        $html .= '</select><p class="adct-events__location-status" role="status"'
+            . ' aria-live="polite" aria-atomic="true"></p>'
+            . '</fieldset><button type="submit">Apply filters</button></form>';
 
         $visible = [];
         foreach ($result['rows'] as $row) {
@@ -336,6 +434,11 @@ final class PublicEventListing
                 . esc_html(get_the_title($post)) . '</a></h3>'
                 . '<p><time datetime="' . esc_attr($start->format('Y-m-d\TH:iP')) . '">'
                 . esc_html($timeLabel) . '</time></p>';
+            if (isset($row['distance_km']) && is_numeric($row['distance_km'])) {
+                $html .= '<p class="adct-events__distance">'
+                    . esc_html($this->distanceLabel((float) $row['distance_km']))
+                    . '</p>';
+            }
             if (is_string($rrule) && $rrule !== '') {
                 $html .= '<p class="adct-events__recurrence">'
                     . esc_html(RecurrenceSummary::describe($rrule)
@@ -412,8 +515,11 @@ final class PublicEventListing
     /**
      * @return array{rows: array<int, array<string, mixed>>, more: bool}
      */
-    private function rows(ListingRange $range, ListingSelection $selection): array
-    {
+    private function rows(
+        ListingRange $range,
+        ListingSelection $selection,
+        ?array $location
+    ): array {
         global $wpdb;
 
         $now = $this->clock->now()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:00');
@@ -421,7 +527,8 @@ final class PublicEventListing
         $end = $range->through->modify('+1 day')->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $from = max($from, $now);
         $cacheable = $selection->period !== 'range'
-            && $selection->types === [] && $selection->parish === null && $selection->deanery === null;
+            && $selection->types === [] && $selection->parish === null && $selection->deanery === null
+            && $location === null;
         $generation = '';
         $key = 'adct_pi_list_v3_' . $selection->period . '_' . $selection->page
             . '_' . (int) $selection->collapse . (int) $selection->pin;
@@ -447,6 +554,13 @@ final class PublicEventListing
         $joins = '';
         $order = 'o.start_utc ASC, o.id ASC';
         $args = [EventPostType::POST_TYPE, 'publish', $from, $end];
+        $distanceSelect = '';
+        $distanceArgs = [];
+        $having = '';
+        $havingArgs = [];
+        $limit = self::PAGE_SIZE + 1;
+        $offset = ($selection->page - 1) * self::PAGE_SIZE;
+
         if ($selection->collapse) {
             $joins .= " LEFT JOIN {$postmeta} rm ON rm.post_id = o.event_id AND rm.meta_key = 'rrule'";
             $where .= " AND (rm.meta_value IS NULL OR rm.meta_value = '' OR NOT EXISTS "
@@ -477,17 +591,45 @@ final class PublicEventListing
             $args[] = EventPostType::TAXONOMY;
             array_push($args, ...$selection->types);
         }
-        $args[] = self::PAGE_SIZE + 1;
-        $args[] = ($selection->page - 1) * self::PAGE_SIZE;
-        $sql = $wpdb->prepare(
-            "SELECT o.event_id, o.start_utc, o.end_utc, o.start_local_date, o.is_cancelled, "
-            . "p.name AS parish_name "
+        if ($location !== null) {
+            $distanceSelect = ', ' . $this->distanceSql() . ' AS distance_km';
+            $distanceArgs = [
+                $location['latitude'],
+                $location['latitude'],
+                $location['longitude'],
+            ];
+            $bounds = GeoDistance::boundingBox(
+                $location['latitude'],
+                $location['longitude'],
+                (float) $location['radius']
+            );
+            $where .= ' AND o.latitude BETWEEN %f AND %f'
+                . ' AND o.longitude BETWEEN -180 AND 180';
+            $args[] = $bounds['min_latitude'];
+            $args[] = $bounds['max_latitude'];
+            if (! $bounds['all_longitudes']) {
+                if ($bounds['wraps_longitude']) {
+                    $where .= ' AND (o.longitude >= %f OR o.longitude <= %f)';
+                } else {
+                    $where .= ' AND o.longitude BETWEEN %f AND %f';
+                }
+                $args[] = $bounds['min_longitude'];
+                $args[] = $bounds['max_longitude'];
+            }
+            $having = ' HAVING distance_km <= %f';
+            $havingArgs[] = $location['radius'];
+            $order = 'distance_km ASC, '
+                . ($selection->pin ? "CASE WHEN fm.meta_value = '1' THEN 0 ELSE 1 END, " : '')
+                . 'o.start_utc ASC, o.id ASC';
+        }
+        $sql = "SELECT o.id AS occurrence_id, o.event_id, o.start_utc, o.end_utc, o.start_local_date, "
+            . "o.is_cancelled, p.name AS parish_name{$distanceSelect} "
             . "FROM {$table} o INNER JOIN {$posts} e ON e.ID = o.event_id AND e.post_type = %s AND e.post_status = %s "
             . "LEFT JOIN {$parishes} p ON p.id = o.parish_id {$joins} "
-            . "WHERE o.start_utc >= %s AND o.start_utc < %s {$where} "
-            . "ORDER BY {$order} LIMIT %d OFFSET %d",
-            ...$args
-        );
+            . "WHERE o.start_utc >= %s AND o.start_utc < %s {$where}{$having} "
+            . "ORDER BY {$order} LIMIT %d OFFSET %d";
+        $args = array_merge($distanceArgs, $args, $havingArgs, [$limit, $offset]);
+        $sql = $wpdb->prepare($sql, ...$args);
         $wpdb->last_error = '';
         $rows = $wpdb->get_results($sql, ARRAY_A);
         if (! is_array($rows) || $wpdb->last_error !== '') {
@@ -507,6 +649,103 @@ final class PublicEventListing
         }
 
         return $result;
+    }
+
+    /**
+     * @return array<string, array{label: string, latitude: float, longitude: float}>
+     */
+    private function placeOptions(    ): array {
+        global $wpdb;
+
+        $parishes = $wpdb->prefix . 'adct_pi_parishes';
+        $venues = $wpdb->prefix . 'adct_pi_venues';
+        $query = "SELECT place, latitude, longitude FROM ("
+            . "SELECT suburb AS place, latitude, longitude FROM {$parishes} "
+            . "WHERE status = 'active' AND TRIM(suburb) <> '' "
+            . 'AND latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180 '
+            . 'UNION ALL '
+            . "SELECT name AS place, latitude, longitude FROM {$parishes} "
+            . "WHERE status = 'active' AND TRIM(name) <> '' "
+            . 'AND latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180 '
+            . 'UNION ALL '
+            . "SELECT v.suburb AS place, v.latitude, v.longitude FROM {$venues} v "
+            . "INNER JOIN {$parishes} p ON p.id = v.parish_id "
+            . "WHERE v.status = 'active' AND p.status = 'active' AND TRIM(v.suburb) <> '' "
+            . 'AND v.latitude BETWEEN -90 AND 90 AND v.longitude BETWEEN -180 AND 180 '
+            . 'UNION ALL '
+            . "SELECT v.name AS place, v.latitude, v.longitude FROM {$venues} v "
+            . "INNER JOIN {$parishes} p ON p.id = v.parish_id "
+            . "WHERE v.status = 'active' AND p.status = 'active' AND TRIM(v.name) <> '' "
+            . 'AND v.latitude BETWEEN -90 AND 90 AND v.longitude BETWEEN -180 AND 180'
+            . ') local_places ORDER BY place ASC, latitude ASC, longitude ASC LIMIT 500';
+        $wpdb->last_error = '';
+        $rows = $wpdb->get_results($query, ARRAY_A);
+        if (! is_array($rows) || $wpdb->last_error !== '') {
+            throw new RuntimeException('The local suburb directory could not be loaded: ' . $wpdb->last_error);
+        }
+
+        $places = [];
+        foreach ($rows as $row) {
+            $label = trim((string) ($row['place'] ?? ''));
+            if ($label === '') {
+                continue;
+            }
+
+            $key = strtolower($label);
+            if (! isset($places[$key])) {
+                $places[$key] = [
+                    'label' => $label,
+                    'latitude' => (float) $row['latitude'],
+                    'longitude' => (float) $row['longitude'],
+                ];
+            }
+        }
+
+        return $places;
+    }
+
+    /**
+     * @param array<string, array{label: string, latitude: float, longitude: float}> $places
+     * @return array{latitude: float, longitude: float, radius: int}
+     */
+    private function nearbyLocation(NearbySearch $search, array $places): array
+    {
+        if ($search->mode === 'browser') {
+            return [
+                'latitude' => (float) $search->latitude,
+                'longitude' => (float) $search->longitude,
+                'radius' => $search->radiusKm,
+            ];
+        }
+
+        $place = $places[strtolower((string) $search->suburb)] ?? null;
+        if (! is_array($place)) {
+            throw new InvalidArgumentException('Choose a suburb or parish from the local list.');
+        }
+
+        return [
+            'latitude' => $place['latitude'],
+            'longitude' => $place['longitude'],
+            'radius' => $search->radiusKm,
+        ];
+    }
+
+    private function distanceSql(): string
+    {
+        return '6371.0088 * 2 * ASIN(SQRT(LEAST(1, '
+            . 'POWER(SIN(RADIANS(o.latitude - %f) / 2), 2) + '
+            . 'COS(RADIANS(o.latitude)) * COS(RADIANS(%f)) * '
+            . 'POWER(SIN(RADIANS(o.longitude - %f) / 2), 2)'
+            . ')))';
+    }
+
+    private function distanceLabel(float $kilometres): string
+    {
+        if ($kilometres < 1) {
+            return number_format((int) round($kilometres * 1000)) . ' m away';
+        }
+
+        return number_format($kilometres, 1) . ' km away';
     }
 
     /**
