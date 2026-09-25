@@ -43,6 +43,7 @@ use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
 use ADCT\ParishIntake\WordPress\Directory\DeaneryApproverAssignmentService;
 use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
+use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
 
 require_once ABSPATH . 'wp-admin/includes/plugin.php';
@@ -96,8 +97,8 @@ if (! is_plugin_active($pluginBasename)) {
     $fail('The release plugin was not active after activation.');
 }
 
-if ((int) get_option('adct_pi_db_version', 0) !== 3) {
-    $fail('Activation did not set the parish intake schema version to 3.');
+if ((int) get_option('adct_pi_db_version', 0) !== 4) {
+    $fail('Activation did not set the parish intake schema version to 4.');
 }
 
 if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CURRENT_VERSION) {
@@ -243,10 +244,46 @@ if ($actualTables !== $expectedTables) {
     $missingTables = array_diff($expectedTables, $actualTables);
     $unexpectedTables = array_diff($actualTables, $expectedTables);
     $fail(sprintf(
-        'Schema v3 tables differ. Missing: [%s]; unexpected: [%s].',
+        'Schema v4 tables differ. Missing: [%s]; unexpected: [%s].',
         implode(', ', $missingTables),
         implode(', ', $unexpectedTables)
     ));
+}
+
+$occurrencesTable = $wpdb->prefix . 'adct_pi_occurrences';
+$occurrenceParishColumn = $wpdb->get_row(
+    $wpdb->prepare("SHOW COLUMNS FROM {$occurrencesTable} LIKE %s", 'parish_id'),
+    ARRAY_A
+);
+
+if (
+    ! is_array($occurrenceParishColumn)
+    || strtoupper((string) ($occurrenceParishColumn['Null'] ?? '')) !== 'YES'
+) {
+    $fail('A fresh install did not create a nullable occurrence parish_id column.');
+}
+
+$forcedNotNull = $wpdb->query(
+    "ALTER TABLE {$occurrencesTable} MODIFY COLUMN parish_id bigint(20) unsigned NOT NULL"
+);
+
+if ($forcedNotNull === false) {
+    $fail('The v3-to-v4 migration test could not restore the v3 occurrences column definition.');
+}
+
+update_option('adct_pi_db_version', 3, false);
+do_action('admin_init');
+$occurrenceParishColumn = $wpdb->get_row(
+    $wpdb->prepare("SHOW COLUMNS FROM {$occurrencesTable} LIKE %s", 'parish_id'),
+    ARRAY_A
+);
+
+if (
+    (int) get_option('adct_pi_db_version', 0) !== 4
+    || ! is_array($occurrenceParishColumn)
+    || strtoupper((string) ($occurrenceParishColumn['Null'] ?? '')) !== 'YES'
+) {
+    $fail('The v3-to-v4 migration did not make occurrences.parish_id nullable.');
 }
 
 $venueTable = $wpdb->prefix . 'adct_pi_venues';
@@ -659,6 +696,26 @@ $contactTable = $wpdb->prefix . 'adct_pi_parish_contacts';
 $parishTable = $wpdb->prefix . 'adct_pi_parishes';
 $deaneryTable = $wpdb->prefix . 'adct_pi_deaneries';
 $approverTable = $wpdb->prefix . 'adct_pi_deanery_approvers';
+
+// Remove only test events from an earlier run before replacing their directory rows.
+$previousTestEventIds = get_posts([
+    'post_type' => EventPostType::POST_TYPE,
+    'post_status' => 'any',
+    'numberposts' => -1,
+    'fields' => 'ids',
+]);
+
+foreach ($previousTestEventIds as $previousTestEventId) {
+    $previousTestEvent = get_post((int) $previousTestEventId);
+
+    if (
+        $previousTestEvent instanceof WP_Post
+        && str_starts_with($previousTestEvent->post_title, 'Fictional ')
+        && wp_delete_post((int) $previousTestEventId, true) === false
+    ) {
+        $fail('An earlier fictional event integration fixture could not be removed.');
+    }
+}
 
 foreach ([$approverTable, $contactTable, $venueTable, $sourceTable, $parishTable, $deaneryTable] as $table) {
     if ($wpdb->query("DELETE FROM {$table}") === false) {
@@ -1284,6 +1341,572 @@ if (
     || get_post_meta($eventPostId, 'end_local', true) !== '2026-10-10T00:00'
 ) {
     $fail('The REST save handler accepted invalid event metadata or replaced the last valid values.');
+}
+
+$occurrenceTimezone = wp_timezone();
+$occurrenceStart = (new DateTimeImmutable('today', $occurrenceTimezone))
+    ->modify('+7 days')
+    ->setTime(16, 0);
+$weekdayCodes = [
+    1 => 'MO',
+    2 => 'TU',
+    3 => 'WE',
+    4 => 'TH',
+    5 => 'FR',
+    6 => 'SA',
+    7 => 'SU',
+];
+$occurrenceRule = 'FREQ=WEEKLY;INTERVAL=2;COUNT=3;BYDAY='
+    . $weekdayCodes[(int) $occurrenceStart->format('N')];
+$occurrenceVenue = $venueAdministration->save($firstParishId, 0, [
+    'name' => 'Occurrence integration hall',
+    'address' => 'Fictional test address',
+    'suburb' => 'Test suburb',
+    'latitude' => '-33.9249',
+    'longitude' => '18.4241',
+    'is_default' => false,
+]);
+$occurrenceType = get_term_by('slug', 'social', EventPostType::TAXONOMY);
+
+if (! $occurrenceType instanceof WP_Term) {
+    $fail('The occurrence integration event type could not be found.');
+}
+
+$occurrenceEventId = wp_insert_post([
+    'post_type' => EventPostType::POST_TYPE,
+    'post_status' => 'draft',
+    'post_title' => 'Fictional recurring occurrence event',
+], true);
+
+if (is_wp_error($occurrenceEventId) || (int) $occurrenceEventId < 1) {
+    $fail('The occurrence integration event could not be created.');
+}
+
+$occurrenceEventId = (int) $occurrenceEventId;
+$assignedOccurrenceType = wp_set_object_terms(
+    $occurrenceEventId,
+    (int) $occurrenceType->term_id,
+    EventPostType::TAXONOMY,
+    false
+);
+
+if (is_wp_error($assignedOccurrenceType)) {
+    $fail('The occurrence integration event type could not be assigned.');
+}
+
+$occurrenceForm = [
+    'parish_id' => (string) $firstParishId,
+    'venue_id' => (string) $occurrenceVenue->id,
+    'start_local' => $occurrenceStart->format('Y-m-d\TH:i'),
+    'end_local' => $occurrenceStart->modify('+1 hour')->format('Y-m-d\TH:i'),
+    'all_day' => '0',
+    'recurrence_preset' => 'custom',
+    'weekday' => $weekdayCodes[(int) $occurrenceStart->format('N')],
+    'ordinal' => '1',
+    'month_day' => '1',
+    'rrule_custom' => $occurrenceRule,
+    'exdates' => '',
+    'rdates' => '',
+    'featured' => '0',
+    'status_flag' => 'scheduled',
+    'contact' => [
+        'name' => 'Fictional Occurrence Contact',
+        'email' => 'occurrence-contact@example.test',
+        'phone' => '',
+    ],
+];
+$saveOccurrenceFromEditor = static function (
+    int $postId,
+    array $form,
+    array $postChanges = []
+): mixed {
+    $savedPost = $_POST;
+    $savedRequest = $_REQUEST;
+    $_POST = [
+        EventEditor::NONCE_FIELD => wp_create_nonce(EventEditor::NONCE_ACTION_PREFIX . $postId),
+        EventEditor::FORM_KEY => $form,
+    ];
+    $_REQUEST = $_POST;
+
+    try {
+        return wp_update_post(array_merge(['ID' => $postId], $postChanges), true);
+    } finally {
+        $_POST = $savedPost;
+        $_REQUEST = $savedRequest;
+    }
+};
+$fetchOccurrenceRows = static function (int $postId) use ($wpdb, $occurrencesTable): array {
+    return (array) $wpdb->get_results(
+        $wpdb->prepare(
+            "SELECT event_id, start_utc, start_local_date, parish_id, event_type_term_id, "
+            . "latitude, longitude, is_cancelled FROM {$occurrencesTable} "
+            . 'WHERE event_id = %d ORDER BY start_utc ASC',
+            $postId
+        ),
+        ARRAY_A
+    );
+};
+$manualOccurrenceSave = $saveOccurrenceFromEditor(
+    $occurrenceEventId,
+    $occurrenceForm,
+    ['post_status' => 'publish']
+);
+
+if (is_wp_error($manualOccurrenceSave) || (int) $manualOccurrenceSave !== $occurrenceEventId) {
+    $fail('Publishing through the manual event editor did not complete.');
+}
+
+$expectedOccurrenceDates = static function (DateTimeImmutable $start): array {
+    return [
+        $start->format('Y-m-d'),
+        $start->modify('+2 weeks')->format('Y-m-d'),
+        $start->modify('+4 weeks')->format('Y-m-d'),
+    ];
+};
+$manualOccurrenceRows = $fetchOccurrenceRows($occurrenceEventId);
+
+if (
+    count($manualOccurrenceRows) !== 3
+    || array_column($manualOccurrenceRows, 'start_local_date') !== $expectedOccurrenceDates($occurrenceStart)
+    || (int) $manualOccurrenceRows[0]['parish_id'] !== $firstParishId
+    || (int) $manualOccurrenceRows[0]['event_type_term_id'] !== (int) $occurrenceType->term_id
+    || abs((float) $manualOccurrenceRows[0]['latitude'] + 33.9249) > 0.000001
+    || abs((float) $manualOccurrenceRows[0]['longitude'] - 18.4241) > 0.000001
+) {
+    $fail('Publishing a recurring event did not create the expected filtered occurrence rows.');
+}
+
+$repeatedManualOccurrenceSave = $saveOccurrenceFromEditor(
+    $occurrenceEventId,
+    $occurrenceForm,
+    ['post_excerpt' => 'Repeated manual occurrence save.']
+);
+$repeatedManualOccurrenceRows = $fetchOccurrenceRows($occurrenceEventId);
+
+if (
+    is_wp_error($repeatedManualOccurrenceSave)
+    || (int) $repeatedManualOccurrenceSave !== $occurrenceEventId
+    || count($repeatedManualOccurrenceRows) !== 3
+    || array_column($repeatedManualOccurrenceRows, 'start_local_date') !== $expectedOccurrenceDates($occurrenceStart)
+) {
+    $fail('Repeating an unchanged event save did not preserve exactly one row per occurrence.');
+}
+
+$editedOccurrenceStart = $occurrenceStart->modify('+1 week');
+$editedOccurrenceForm = $occurrenceForm;
+$editedOccurrenceForm['start_local'] = $editedOccurrenceStart->format('Y-m-d\TH:i');
+$editedOccurrenceForm['end_local'] = $editedOccurrenceStart->modify('+1 hour')->format('Y-m-d\TH:i');
+$manualOccurrenceEdit = $saveOccurrenceFromEditor(
+    $occurrenceEventId,
+    $editedOccurrenceForm,
+    ['post_excerpt' => 'Manual occurrence dates refreshed.']
+);
+$editedOccurrenceRows = $fetchOccurrenceRows($occurrenceEventId);
+
+if (
+    is_wp_error($manualOccurrenceEdit)
+    || (int) $manualOccurrenceEdit !== $occurrenceEventId
+    || count($editedOccurrenceRows) !== 3
+    || array_column($editedOccurrenceRows, 'start_local_date') !== $expectedOccurrenceDates($editedOccurrenceStart)
+) {
+    $fail('Editing a published event did not replace its occurrence rows.');
+}
+
+$restOccurrenceStart = $occurrenceStart->modify('+2 weeks');
+$occurrenceRestRequest = new WP_REST_Request(
+    'POST',
+    '/wp/v2/adct_event/' . $occurrenceEventId
+);
+$occurrenceRestRequest->set_param('meta', [
+    'start_local' => $restOccurrenceStart->format('Y-m-d\TH:i'),
+    'end_local' => $restOccurrenceStart->modify('+1 hour')->format('Y-m-d\TH:i'),
+    'all_day' => false,
+    'rrule' => $occurrenceRule,
+]);
+$occurrenceRestResponse = rest_do_request($occurrenceRestRequest);
+$restOccurrenceRows = $fetchOccurrenceRows($occurrenceEventId);
+
+if (
+    ! ($occurrenceRestResponse instanceof WP_REST_Response)
+    || $occurrenceRestResponse->get_status() !== 200
+    || count($restOccurrenceRows) !== 3
+    || array_column($restOccurrenceRows, 'start_local_date') !== $expectedOccurrenceDates($restOccurrenceStart)
+) {
+    $fail('A REST event write did not refresh its occurrence rows.');
+}
+
+$failedCreateEventId = 0;
+$forceMissingOccurrenceVenue = static function (
+    mixed $value,
+    int $objectId,
+    string $metaKey,
+    bool $single
+) use (&$failedCreateEventId): mixed {
+    if ($objectId === $failedCreateEventId && $metaKey === 'venue_id') {
+        return $single ? (string) PHP_INT_MAX : [(string) PHP_INT_MAX];
+    }
+
+    return $value;
+};
+$installMissingOccurrenceVenue = static function (
+    WP_Post $post,
+    WP_REST_Request $_request,
+    bool $_creating
+) use (&$failedCreateEventId, $forceMissingOccurrenceVenue): void {
+    if ($post->post_status !== 'publish') {
+        return;
+    }
+
+    $failedCreateEventId = (int) $post->ID;
+    add_filter('get_post_metadata', $forceMissingOccurrenceVenue, 10, 4);
+};
+$removeMissingOccurrenceVenue = static function (
+    WP_Post $post,
+    WP_REST_Request $_request,
+    bool $_creating
+) use (&$failedCreateEventId, $forceMissingOccurrenceVenue): void {
+    if ((int) $post->ID === $failedCreateEventId) {
+        remove_filter('get_post_metadata', $forceMissingOccurrenceVenue, 10);
+    }
+};
+$failedCreateStart = $occurrenceStart->modify('+6 weeks');
+$failedCreateRequest = new WP_REST_Request('POST', '/wp/v2/adct_event');
+$failedCreateRequest->set_param('title', ['raw' => 'Fictional occurrence rebuild failure event']);
+$failedCreateRequest->set_param('status', 'publish');
+$failedCreateRequest->set_param('meta', [
+    'parish_id' => $firstParishId,
+    'venue_id' => $occurrenceVenue->id,
+    'start_local' => $failedCreateStart->format('Y-m-d\TH:i'),
+    'end_local' => $failedCreateStart->modify('+1 hour')->format('Y-m-d\TH:i'),
+    'all_day' => false,
+    'rrule' => $occurrenceRule,
+    'exdates' => [],
+    'rdates' => [],
+    'featured' => false,
+    'status_flag' => 'scheduled',
+]);
+add_action('rest_after_insert_adct_event', $installMissingOccurrenceVenue, 5, 3);
+add_action('rest_after_insert_adct_event', $removeMissingOccurrenceVenue, 15, 3);
+
+try {
+    $failedCreateResponse = rest_do_request($failedCreateRequest);
+    // rest_do_request() bypasses the REST server's response-pipeline filter.
+    $failedCreateResponse = apply_filters(
+        'rest_post_dispatch',
+        rest_ensure_response($failedCreateResponse),
+        rest_get_server(),
+        $failedCreateRequest
+    );
+} finally {
+    remove_action('rest_after_insert_adct_event', $installMissingOccurrenceVenue, 5);
+    remove_action('rest_after_insert_adct_event', $removeMissingOccurrenceVenue, 15);
+    remove_filter('get_post_metadata', $forceMissingOccurrenceVenue, 10);
+}
+
+$failedCreateCode = '';
+$failedCreateMessage = '';
+$failedCreateDetails = [];
+$failedCreateStatus = 0;
+$failedCreateResponsePayload = null;
+
+if ($failedCreateResponse instanceof WP_REST_Response) {
+    $failedCreateResponsePayload = $failedCreateResponse->get_data();
+    $failedCreateStatus = $failedCreateResponse->get_status();
+
+    if (is_array($failedCreateResponsePayload)) {
+        $failedCreateCode = is_string($failedCreateResponsePayload['code'] ?? null)
+            ? $failedCreateResponsePayload['code']
+            : '';
+        $failedCreateMessage = is_string($failedCreateResponsePayload['message'] ?? null)
+            ? $failedCreateResponsePayload['message']
+            : '';
+        $failedCreateDetails = is_array($failedCreateResponsePayload['data'] ?? null)
+            ? $failedCreateResponsePayload['data']
+            : [];
+    }
+} elseif (is_wp_error($failedCreateResponse)) {
+    $failedCreateCode = $failedCreateResponse->get_error_code();
+    $failedCreateMessage = $failedCreateResponse->get_error_message();
+    $failedCreateDetails = $failedCreateResponse->get_error_data($failedCreateCode);
+    $failedCreateDetails = is_array($failedCreateDetails) ? $failedCreateDetails : [];
+    $failedCreateStatus = (int) ($failedCreateDetails['status'] ?? 0);
+}
+
+$savedFailureEventId = absint($failedCreateDetails['event_id'] ?? 0);
+$savedFailureEvent = get_post($savedFailureEventId);
+
+if (
+    $failedCreateStatus !== 500
+    || $failedCreateCode !== 'adct_event_occurrence_rebuild_failed'
+    || $savedFailureEventId < 1
+    || $failedCreateEventId !== $savedFailureEventId
+    || ! str_contains(
+        $failedCreateMessage,
+        'Update the saved event at ID ' . $savedFailureEventId . ' instead of retrying the create request'
+    )
+    || ! $savedFailureEvent instanceof WP_Post
+    || $savedFailureEvent->post_status !== 'publish'
+    || $fetchOccurrenceRows($savedFailureEventId) !== []
+) {
+    $fail(sprintf(
+        'A failed REST create did not report its saved event ID and instruct clients to update it '
+        . '(status: %d, code: %s, request event ID: %d, error event ID: %d, post status: %s, '
+        . 'message: %s, details: %s, route: %s, method: %s, response: %s).',
+        $failedCreateStatus,
+        $failedCreateCode,
+        $failedCreateEventId,
+        $savedFailureEventId,
+        $savedFailureEvent instanceof WP_Post ? $savedFailureEvent->post_status : 'missing',
+        $failedCreateMessage,
+        wp_json_encode($failedCreateDetails),
+        $failedCreateRequest->get_route(),
+        $failedCreateRequest->get_method(),
+        wp_json_encode($failedCreateResponsePayload)
+    ));
+}
+
+if (wp_delete_post($savedFailureEventId, true) === false) {
+    $fail('The failed REST-create occurrence fixture could not be removed.');
+}
+
+foreach ([
+    'cancelled' => 1,
+    'postponed' => 0,
+] as $eventStatus => $expectedCancelled) {
+    $statusRequest = new WP_REST_Request(
+        'POST',
+        '/wp/v2/adct_event/' . $occurrenceEventId
+    );
+    $statusRequest->set_param('meta', ['status_flag' => $eventStatus]);
+    $statusResponse = rest_do_request($statusRequest);
+    $statusRows = $fetchOccurrenceRows($occurrenceEventId);
+
+    if (
+        ! ($statusResponse instanceof WP_REST_Response)
+        || $statusResponse->get_status() !== 200
+        || count($statusRows) !== 3
+        || array_filter(
+            $statusRows,
+            static fn (array $row): bool => (int) $row['is_cancelled'] !== $expectedCancelled
+        ) !== []
+    ) {
+        $fail('Occurrence cancellation flags did not follow the event’s ' . $eventStatus . ' status.');
+    }
+}
+
+$demotedOccurrenceEvent = wp_update_post([
+    'ID' => $occurrenceEventId,
+    'post_status' => 'draft',
+], true);
+
+if (
+    is_wp_error($demotedOccurrenceEvent)
+    || (int) $demotedOccurrenceEvent !== $occurrenceEventId
+    || $fetchOccurrenceRows($occurrenceEventId) !== []
+) {
+    $fail('Changing a published event to draft did not remove its occurrence rows.');
+}
+
+$republishedOccurrenceEvent = $saveOccurrenceFromEditor(
+    $occurrenceEventId,
+    $occurrenceForm,
+    ['post_status' => 'publish']
+);
+
+if (
+    is_wp_error($republishedOccurrenceEvent)
+    || (int) $republishedOccurrenceEvent !== $occurrenceEventId
+    || count($fetchOccurrenceRows($occurrenceEventId)) !== 3
+) {
+    $fail('Republishing a draft event did not rebuild its occurrence rows.');
+}
+
+$nonPublicEventIds = [];
+
+foreach (['draft', 'pending', 'private'] as $postStatus) {
+    $nonPublicEventId = wp_insert_post([
+        'post_type' => EventPostType::POST_TYPE,
+        'post_status' => $postStatus,
+        'post_title' => 'Fictional ' . $postStatus . ' occurrence event',
+    ], true);
+
+    if (is_wp_error($nonPublicEventId) || (int) $nonPublicEventId < 1) {
+        $fail('The ' . $postStatus . ' occurrence event could not be created.');
+    }
+
+    $nonPublicEventId = (int) $nonPublicEventId;
+    $nonPublicEventIds[] = $nonPublicEventId;
+
+    foreach ([
+        'parish_id' => $firstParishId,
+        'venue_id' => $occurrenceVenue->id,
+        'start_local' => $occurrenceStart->format('Y-m-d\TH:i'),
+        'end_local' => $occurrenceStart->modify('+1 hour')->format('Y-m-d\TH:i'),
+        'all_day' => false,
+        'rrule' => $occurrenceRule,
+        'exdates' => [],
+        'rdates' => [],
+        'status_flag' => 'scheduled',
+    ] as $metaKey => $metaValue) {
+        update_post_meta($nonPublicEventId, $metaKey, $metaValue);
+    }
+
+    wp_update_post([
+        'ID' => $nonPublicEventId,
+        'post_excerpt' => 'The unpublished event remains hidden from occurrence queries.',
+    ], true);
+
+    if ($fetchOccurrenceRows($nonPublicEventId) !== []) {
+        $fail('The ' . $postStatus . ' event created public occurrence rows.');
+    }
+}
+
+$archdioceseEventId = wp_insert_post([
+    'post_type' => EventPostType::POST_TYPE,
+    'post_status' => 'draft',
+    'post_title' => 'Fictional archdiocese-wide event',
+], true);
+
+if (is_wp_error($archdioceseEventId) || (int) $archdioceseEventId < 1) {
+    $fail('The archdiocese-wide occurrence event could not be created.');
+}
+
+$archdioceseEventId = (int) $archdioceseEventId;
+wp_set_object_terms(
+    $archdioceseEventId,
+    (int) $occurrenceType->term_id,
+    EventPostType::TAXONOMY,
+    false
+);
+$archdioceseStart = (new DateTimeImmutable('today', $occurrenceTimezone))
+    ->modify('+3 days')
+    ->setTime(10, 0);
+$archdioceseForm = [
+    'parish_id' => '',
+    'venue_id' => '',
+    'start_local' => $archdioceseStart->format('Y-m-d\TH:i'),
+    'end_local' => $archdioceseStart->modify('+1 hour')->format('Y-m-d\TH:i'),
+    'all_day' => '0',
+    'recurrence_preset' => 'none',
+    'weekday' => 'MO',
+    'ordinal' => '1',
+    'month_day' => '1',
+    'rrule_custom' => '',
+    'exdates' => '',
+    'rdates' => '',
+    'featured' => '0',
+    'status_flag' => 'scheduled',
+    'contact' => [
+        'name' => '',
+        'email' => '',
+        'phone' => '',
+    ],
+];
+$archdioceseSave = $saveOccurrenceFromEditor(
+    $archdioceseEventId,
+    $archdioceseForm,
+    ['post_status' => 'publish']
+);
+$archdioceseRows = $fetchOccurrenceRows($archdioceseEventId);
+
+if (
+    is_wp_error($archdioceseSave)
+    || (int) $archdioceseSave !== $archdioceseEventId
+    || count($archdioceseRows) !== 1
+    || $archdioceseRows[0]['parish_id'] !== null
+    || $archdioceseRows[0]['latitude'] !== null
+    || $archdioceseRows[0]['longitude'] !== null
+) {
+    $fail('An archdiocese-wide event did not retain one occurrence without parish coordinates.');
+}
+
+do_action('init');
+
+if (wp_next_scheduled('adct_pi_job_expand_occurrences') === false) {
+    $fail('The daily occurrence maintenance job was not scheduled.');
+}
+
+delete_option('adct_pi_job_state_expand_occurrences');
+
+$staleOccurrenceDate = '2000-01-01';
+$staleInserted = $wpdb->insert(
+    $occurrencesTable,
+    [
+        'event_id' => $occurrenceEventId,
+        'start_utc' => '2000-01-01 00:00:00',
+        'end_utc' => '2000-01-01 01:00:00',
+        'start_local_date' => $staleOccurrenceDate,
+        'parish_id' => $firstParishId,
+        'event_type_term_id' => (int) $occurrenceType->term_id,
+        'latitude' => -33.9249,
+        'longitude' => 18.4241,
+        'is_cancelled' => 0,
+        'created_at' => gmdate('Y-m-d H:i:s'),
+        'updated_at' => gmdate('Y-m-d H:i:s'),
+    ],
+    ['%d', '%s', '%s', '%s', '%d', '%d', '%f', '%f', '%d', '%s', '%s']
+);
+
+if ($staleInserted !== 1) {
+    $fail('The occurrence integration test could not seed a stale row for the daily job.');
+}
+
+do_action('adct_pi_job_expand_occurrences');
+$dailyJobRows = $fetchOccurrenceRows($occurrenceEventId);
+$staleRowCount = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT COUNT(*) FROM {$occurrencesTable} WHERE event_id = %d AND start_local_date = %s",
+    $occurrenceEventId,
+    $staleOccurrenceDate
+));
+$windowStartDate = (new DateTimeImmutable('today', $occurrenceTimezone))->format('Y-m-d');
+$windowEndDate = (new DateTimeImmutable('today', $occurrenceTimezone))->modify('+1 year')->format('Y-m-d');
+$occurrenceJobState = get_option('adct_pi_job_state_expand_occurrences', []);
+$occurrenceJobError = is_array($occurrenceJobState)
+    && is_string($occurrenceJobState['last_error_message'] ?? null)
+    ? $occurrenceJobState['last_error_message']
+    : 'none';
+
+if (
+    $staleRowCount !== 0
+    || count($dailyJobRows) !== 3
+    || array_filter(
+        $dailyJobRows,
+        static fn (array $row): bool => $row['start_local_date'] < $windowStartDate
+            || $row['start_local_date'] > $windowEndDate
+    ) !== []
+) {
+    $fail(sprintf(
+        'The daily occurrence job did not replace stale rows with the current rolling window '
+        . '(stale rows: %d, event rows: %d, dates: %s, job error: %s).',
+        $staleRowCount,
+        count($dailyJobRows),
+        wp_json_encode(array_column($dailyJobRows, 'start_local_date')),
+        $occurrenceJobError
+    ));
+}
+
+foreach ($nonPublicEventIds as $nonPublicEventId) {
+    if ($fetchOccurrenceRows($nonPublicEventId) !== []) {
+        $fail('The daily occurrence job indexed a non-public event.');
+    }
+}
+
+if (count($fetchOccurrenceRows($archdioceseEventId)) !== 1) {
+    $fail('The daily occurrence job did not preserve the archdiocese-wide event occurrence.');
+}
+
+$deleteOccurrenceRequest = new WP_REST_Request(
+    'DELETE',
+    '/wp/v2/adct_event/' . $archdioceseEventId
+);
+$deleteOccurrenceResponse = rest_do_request($deleteOccurrenceRequest);
+
+if (
+    ! ($deleteOccurrenceResponse instanceof WP_REST_Response)
+    || $deleteOccurrenceResponse->get_status() !== 200
+    || $fetchOccurrenceRows($archdioceseEventId) !== []
+) {
+    $fail('Deleting an event through REST did not remove its occurrence rows.');
 }
 
 $manualParserVerifiedEmail = 'manual-parser@example.test';
@@ -2363,4 +2986,4 @@ foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
     }
 }
 
-WP_CLI::success('Release ZIP activation, schema v3 mailbox settings and safe password rendering, polling-job registration and inbound-message de-duplication/skip notices, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
+WP_CLI::success('Release ZIP activation, schema v4 and v3-to-v4 migration, occurrence expansion/save/REST/job behavior, mailbox settings and safe password rendering, polling-job registration and inbound-message de-duplication/skip notices, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');

@@ -224,7 +224,7 @@ CREATE TABLE {table_prefix}adct_pi_occurrences (
     start_utc datetime NOT NULL,
     end_utc datetime NULL,
     start_local_date date NOT NULL,
-    parish_id bigint(20) unsigned NOT NULL,
+    parish_id bigint(20) unsigned NULL,
     event_type_term_id bigint(20) unsigned NULL,
     latitude decimal(9,6) NULL,
     longitude decimal(9,6) NULL,

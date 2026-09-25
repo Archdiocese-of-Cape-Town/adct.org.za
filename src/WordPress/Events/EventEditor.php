@@ -17,9 +17,9 @@ use InvalidArgumentException;
 
 final class EventEditor
 {
-    private const FORM_KEY = 'adct_event';
-    private const NONCE_FIELD = 'adct_event_meta_nonce';
-    private const NONCE_ACTION_PREFIX = 'adct_pi_save_event_meta_';
+    public const FORM_KEY = 'adct_event';
+    public const NONCE_FIELD = 'adct_event_meta_nonce';
+    public const NONCE_ACTION_PREFIX = 'adct_pi_save_event_meta_';
     private const VALIDATION_TRANSIENT_PREFIX = 'adct_pi_event_validation_';
     private const VALIDATION_TTL_SECONDS = 900;
     private const MAX_INPUT_LENGTH = 32768;
@@ -723,7 +723,8 @@ final class EventEditor
             'source candidate',
             $errors
         );
-        $contact = $this->metaContact($meta['contact'] ?? get_post_meta($postId, 'contact', true), $errors);
+        $contactValue = $meta['contact'] ?? ($postId > 0 ? get_post_meta($postId, 'contact', true) : []);
+        $contact = $this->metaContact($contactValue, $errors);
 
         return new EventDetails(
             $parishId,
