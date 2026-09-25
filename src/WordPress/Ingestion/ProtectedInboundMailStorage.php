@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Ingestion;
 
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageInterface;
+use ADCT\ParishIntake\Core\Ports\InboundHeaderStorageInterface;
+use ADCT\ParishIntake\Core\Ingestion\InboundHeaderBlockParser;
 use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
 
-final class ProtectedInboundMailStorage implements InboundMailStorageInterface
+final class ProtectedInboundMailStorage implements InboundMailStorageInterface, InboundHeaderStorageInterface
 {
     private const DIRECTORY_NAME = 'adct-parish-intake';
     private const PRIVATE_SUBDIRECTORY = 'private';
@@ -51,6 +53,49 @@ final class ProtectedInboundMailStorage implements InboundMailStorageInterface
         if (! unlink($path)) {
             throw new RuntimeException('A private inbound file could not be removed.');
         }
+    }
+
+    public function readHeaderBlock(string $relativePath): string
+    {
+        if (preg_match('/\A[a-f0-9]{64}\.eml\z/', $relativePath) !== 1) {
+            throw new InvalidArgumentException('The private inbound header path is invalid.');
+        }
+
+        $path = $this->directoryPath() . DIRECTORY_SEPARATOR . $relativePath;
+        $handle = fopen($path, 'rb');
+
+        if ($handle === false) {
+            throw new RuntimeException('A private inbound email header could not be opened.');
+        }
+
+        $headerBlock = '';
+        $bytesRead = 0;
+
+        try {
+            while (! feof($handle)) {
+                $line = fgets($handle, 8193);
+
+                if ($line === false) {
+                    break;
+                }
+
+                $bytesRead += strlen($line);
+
+                if ($bytesRead > InboundHeaderBlockParser::MAX_HEADER_BYTES) {
+                    throw new RuntimeException('The private inbound email header exceeds its size limit.');
+                }
+
+                if ($line === "\r\n" || $line === "\n" || $line === "\r") {
+                    break;
+                }
+
+                $headerBlock .= $line;
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        return $headerBlock;
     }
 
     private function store(string $content, string $extension): string

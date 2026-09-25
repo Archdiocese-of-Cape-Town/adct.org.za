@@ -67,6 +67,7 @@ namespace ADCT\ParishIntake\WordPress\Mail {
 
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Mail {
     use ADCT\ParishIntake\Core\Mail\MailPriority;
+    use ADCT\ParishIntake\Core\Mail\EmailThreadHeaders;
     use ADCT\ParishIntake\Core\Mail\OutboundEmail;
     use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
     use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryFixture;
@@ -123,6 +124,28 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Mail {
                 WordPressMailDeliveryFixture::$arguments['headers']
             );
             self::assertSame('', WordPressMailDeliveryFixture::$alternativeBody);
+        }
+
+        public function testDeliveryAddsValidatedThreadHeaders(): void
+        {
+            $email = new OutboundEmail(
+                'parish@example.test',
+                'A fictional notice',
+                '<p>HTML notice</p>',
+                'Plain-text notice',
+                MailPriority::APPROVER_OR_CHANGE,
+                null,
+                EmailThreadHeaders::fromOriginalMessageId('<inbound@example.test>')
+            );
+
+            $result = (new WordPressMailDeliveryAdapter())->deliver($email);
+
+            self::assertTrue($result->sent);
+            self::assertSame([
+                'Content-Type: text/html; charset=UTF-8',
+                'In-Reply-To: <inbound@example.test>',
+                'References: <inbound@example.test>',
+            ], WordPressMailDeliveryFixture::$arguments['headers']);
         }
 
         public function testFalseWpMailResultProducesSanitizedFailure(): void

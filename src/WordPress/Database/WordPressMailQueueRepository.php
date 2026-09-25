@@ -12,6 +12,7 @@ use ADCT\ParishIntake\Core\Mail\MailQueueEnqueueResult;
 use ADCT\ParishIntake\Core\Mail\MailQueueRecord;
 use ADCT\ParishIntake\Core\Mail\MailQueueStats;
 use ADCT\ParishIntake\Core\Mail\MailQueueStatus;
+use ADCT\ParishIntake\Core\Mail\EmailThreadHeaders;
 use ADCT\ParishIntake\Core\Mail\OutboundEmail;
 use ADCT\ParishIntake\Core\Ports\MailQueueRepositoryInterface;
 use DateTimeImmutable;
@@ -33,6 +34,25 @@ final class WordPressMailQueueRepository implements MailQueueRepositoryInterface
     {
     }
 
+    public function findByRecipientAndGroupKey(string $recipient, string $groupKey): ?MailQueueRecord
+    {
+        $recipient = strtolower(trim($recipient));
+
+        if (
+            strlen($recipient) > 191
+            || preg_match('/[\x00-\x20\x7F]/', $recipient) === 1
+            || filter_var($recipient, FILTER_VALIDATE_EMAIL) === false
+        ) {
+            throw new InvalidArgumentException('The mail queue lookup recipient is invalid.');
+        }
+
+        if (preg_match('/\A[a-z0-9][a-z0-9._:-]{0,190}\z/D', $groupKey) !== 1) {
+            throw new InvalidArgumentException('The mail queue lookup group key is invalid.');
+        }
+
+        return $this->findByRecipientAndGroup($recipient, $groupKey);
+    }
+
     public function enqueue(
         OutboundEmail $email,
         MailQueueStatus $initialStatus,
@@ -50,7 +70,7 @@ final class WordPressMailQueueRepository implements MailQueueRepositoryInterface
             }
 
             try {
-                $existing = $this->findByRecipientAndGroup($email);
+                $existing = $this->findByRecipientAndGroup($email->recipient, $email->groupKey);
 
                 if ($existing !== null) {
                     return $this->existingResult($existing, $email);
@@ -389,11 +409,15 @@ final class WordPressMailQueueRepository implements MailQueueRepositoryInterface
         DateTimeImmutable $now
     ): MailQueueEnqueueResult {
         $groupKeySql = $email->groupKey === null ? 'NULL' : '%s';
+        $threadHeadersSql = $email->threadHeaders === null ? 'NULL' : '%s';
+        $payloadFingerprintSql = $email->payloadFingerprint === null ? 'NULL' : '%s';
         $errorSql = $status === MailQueueStatus::SUPPRESSED ? '%s' : 'NULL';
         $query = 'INSERT INTO ' . $this->tableName()
-            . ' (recipient, subject, body_html, body_text, priority, group_key, status, attempts,'
+            . ' (recipient, subject, body_html, body_text, priority, group_key, thread_headers,'
+            . ' payload_fingerprint, status, attempts,'
             . ' next_attempt_at, sent_at, error, created_at, updated_at)'
-            . ' VALUES (%s, %s, %s, %s, %d, ' . $groupKeySql . ', %s, 0, NULL, NULL, '
+            . ' VALUES (%s, %s, %s, %s, %d, ' . $groupKeySql . ', '
+            . $threadHeadersSql . ', ' . $payloadFingerprintSql . ', %s, 0, NULL, NULL, '
             . $errorSql . ', %s, %s)'
             . ' ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)';
         $arguments = [
@@ -406,6 +430,14 @@ final class WordPressMailQueueRepository implements MailQueueRepositoryInterface
 
         if ($email->groupKey !== null) {
             $arguments[] = $email->groupKey;
+        }
+
+        if ($email->threadHeaders !== null) {
+            $arguments[] = $email->threadHeaders->toJson();
+        }
+
+        if ($email->payloadFingerprint !== null) {
+            $arguments[] = $email->payloadFingerprint;
         }
 
         $arguments[] = $status->value;
@@ -445,13 +477,13 @@ final class WordPressMailQueueRepository implements MailQueueRepositoryInterface
         );
     }
 
-    private function findByRecipientAndGroup(OutboundEmail $email): ?MailQueueRecord
+    private function findByRecipientAndGroup(string $recipient, string $groupKey): ?MailQueueRecord
     {
         $row = $this->fetchRow($this->database->prepare(
             'SELECT * FROM ' . $this->tableName()
             . ' WHERE recipient = %s AND group_key = %s ORDER BY id ASC LIMIT 1',
-            $email->recipient,
-            $email->groupKey
+            $recipient,
+            $groupKey
         ));
 
         return $row === null ? null : $this->mapRecord($row);
@@ -477,24 +509,33 @@ final class WordPressMailQueueRepository implements MailQueueRepositoryInterface
         $priority = MailPriority::tryFrom($priorityValue);
         $status = MailQueueStatus::tryFrom((string) ($row['status'] ?? ''));
         $groupKey = $row['group_key'] ?? null;
+        $threadHeadersJson = $row['thread_headers'] ?? null;
+        $payloadFingerprint = $row['payload_fingerprint'] ?? null;
+        $errorCode = $row['error'] ?? null;
 
         if (
             $id < 1
             || $priority === null
             || $status === null
             || ($groupKey !== null && ! is_string($groupKey))
+            || ($threadHeadersJson !== null && ! is_string($threadHeadersJson))
+            || ($payloadFingerprint !== null && ! is_string($payloadFingerprint))
+            || ($errorCode !== null && ! is_string($errorCode))
         ) {
             throw new RuntimeException('A stored mail queue row has invalid fields.');
         }
 
         try {
+            $threadHeaders = EmailThreadHeaders::fromJson($threadHeadersJson);
             $email = new OutboundEmail(
                 (string) ($row['recipient'] ?? ''),
                 (string) ($row['subject'] ?? ''),
                 (string) ($row['body_html'] ?? ''),
                 (string) ($row['body_text'] ?? ''),
                 $priority,
-                $groupKey
+                $groupKey,
+                $threadHeaders,
+                $payloadFingerprint
             );
         } catch (InvalidArgumentException) {
             throw new RuntimeException('A stored mail queue row has invalid message data.');
@@ -509,7 +550,7 @@ final class WordPressMailQueueRepository implements MailQueueRepositoryInterface
             $this->parseTimestamp($row['updated_at'] ?? null),
             $this->nullableTimestamp($row['next_attempt_at'] ?? null),
             $this->nullableTimestamp($row['sent_at'] ?? null),
-            null
+            $errorCode
         );
     }
 

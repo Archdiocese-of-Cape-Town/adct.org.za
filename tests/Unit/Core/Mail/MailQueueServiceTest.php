@@ -6,6 +6,7 @@ namespace ADCT\ParishIntake\Tests\Unit\Core\Mail;
 
 use ADCT\ParishIntake\Core\Mail\AllowAllRecipientPolicy;
 use ADCT\ParishIntake\Core\Mail\AllowlistRecipientPolicy;
+use ADCT\ParishIntake\Core\Mail\EmailThreadHeaders;
 use ADCT\ParishIntake\Core\Mail\MailDeliveryResult;
 use ADCT\ParishIntake\Core\Mail\MailPriority;
 use ADCT\ParishIntake\Core\Mail\MailQueueClaimResult;
@@ -106,6 +107,46 @@ final class MailQueueServiceTest extends TestCase
 
         $this->expectException(DomainException::class);
         $service->enqueue($differentContent);
+    }
+
+    public function testThreadHeadersAndPayloadFingerprintArePartOfQueuePayloadEquality(): void
+    {
+        $threadHeaders = EmailThreadHeaders::fromOriginalMessageId('<notice@example.test>');
+        self::assertNotNull($threadHeaders);
+        $email = new OutboundEmail(
+            'sender@example.test',
+            'Confirmation preview',
+            '<p>Preview</p>',
+            'Preview',
+            MailPriority::LOGIN_OR_CONFIRMATION,
+            'confirmation:901',
+            $threadHeaders,
+            str_repeat('a', 64)
+        );
+        $differentHeaders = new OutboundEmail(
+            'sender@example.test',
+            'Confirmation preview',
+            '<p>Preview</p>',
+            'Preview',
+            MailPriority::LOGIN_OR_CONFIRMATION,
+            'confirmation:901',
+            EmailThreadHeaders::fromOriginalMessageId('<other@example.test>'),
+            str_repeat('a', 64)
+        );
+        $differentFingerprint = new OutboundEmail(
+            'sender@example.test',
+            'Confirmation preview',
+            '<p>Preview</p>',
+            'Preview',
+            MailPriority::LOGIN_OR_CONFIRMATION,
+            'confirmation:901',
+            $threadHeaders,
+            str_repeat('b', 64)
+        );
+
+        self::assertTrue($email->hasSamePayload($email));
+        self::assertFalse($email->hasSamePayload($differentHeaders));
+        self::assertFalse($email->hasSamePayload($differentFingerprint));
     }
 
     public function testPriorityOneEnqueueRequestsBoundedImmediateDispatch(): void
@@ -542,6 +583,20 @@ final class InMemoryMailQueueRepository implements MailQueueRepositoryInterface
         );
 
         return new MailQueueEnqueueResult($id, $initialStatus, false);
+    }
+
+    public function findByRecipientAndGroupKey(string $recipient, string $groupKey): ?MailQueueRecord
+    {
+        foreach ($this->records as $record) {
+            if (
+                $record->email->recipient === strtolower(trim($recipient))
+                && $record->email->groupKey === $groupKey
+            ) {
+                return $record;
+            }
+        }
+
+        return null;
     }
 
     public function findNextDue(DateTimeImmutable $now): ?MailQueueRecord

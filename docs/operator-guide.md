@@ -127,6 +127,19 @@ Use **Parish Intake → Outbound email** to enable Test mode before sending mail
 
 The admin banner remains visible while Test mode is on. A message to a non-allow-listed recipient is recorded as **suppressed** and never reaches `wp_mail()`. Messages already queued are checked against the current settings again before delivery, so enabling Test mode or changing the allow-list also protects rows waiting in the queue. A message already recorded as suppressed is not automatically requeued if the allow-list changes; enqueue it again only if it should be sent. An empty allow-list while Test mode is on, or any invalid setting, blocks all Parish Intake queue delivery and displays a clear admin error. The Outbound email screen shows the latest suppressed messages with escaped, bounded subject/body previews; only users with settings access can open it.
 
+### Confirmation preview emails
+
+The **Queue event confirmation previews** job runs every 10 minutes. For each parsed inbound message with draft event candidates, it composes one HTML and plain-text email containing every draft candidate, then enqueues that message through the outbound queue. It addresses a safe sender or a verified, safe Reply-To. The preview uses table-based email markup, highlights uncertain details, and replies with sanitized `In-Reply-To` and `References` headers when the original Message-ID is valid.
+
+The Mailboxes screen's **Recent message screening and confirmation** summary shows the latest confirmation outcome without displaying the sender, subject, raw headers or message body:
+
+- **Queued for delivery** means the outbound queue accepted the message; delivery may still be pending.
+- **Accepted by the mail transport** means WordPress accepted the send request, not that the email reached the recipient's inbox.
+- **Suppressed** includes a safe reason, such as a blocked sender, automated/list message, unsafe address or Test mode. This outcome is terminal for that inbound message and is not retried if the allow-list later changes.
+- A terminal queue failure is recorded on the inbound message. A transient error before the outcome is recorded leaves it eligible for the next bounded job run; the queue reuses a matching message if the job retries after enqueue.
+
+Do not expect the Approve, Deny, Edit or Approve all links in these preview emails to work yet. They are explicitly marked **not active**; their token preview reports that the action is unavailable and does not consume the token or change an event. Replies are not processed automatically. Until an operator requeue action is available, do not edit the database or assume a suppressed message will be resent; contact the site owner if a confirmation needs recovery.
+
 ## Configure parser safeguards
 
 An Administrator or Intake manager with settings access can open **Parish Intake → Settings** and edit the non-event section phrases. Enter one heading or leading phrase per line in each category. Matching ignores case and punctuation. A standalone category phrase or a match formatted as a Markdown/underlined, all-caps or colon-terminated heading skips through the next heading, even when that section contains dates or times. A phrase at the start of running text skips only its block when there is no explicit date plus time or event noun. If that event signal is present, the candidate is kept with a text-free `section_keyword_overridden: <category>` note and its confidence is reduced by 0.1 for closer review. Weekly Mass-times tables with weekday/time rows that identify Mass or Service are also skipped automatically.
@@ -230,7 +243,7 @@ Replace `<site>` with the site's hostname. This uses one of the account's ten cr
 
 For more timely triggers, optionally create a free cron-job.org job that sends a GET request to the same URL every **5–10 minutes**. No secret or WordPress login is needed for this public `wp-cron.php` backstop. Check the service's execution history for successful HTTP responses.
 
-To start a registered job manually, an Administrator or Intake manager can open **Parish Intake → Scheduled jobs** and select **Run now** beside it. The action requires the settings-management capability, is protected by a nonce, and uses the same time limit, item limit, lock, and checkpoint as cron. A run that reaches a budget saves its checkpoint so the next run can continue. **Occurrence expansion** is due daily and refreshes only Published events. **Framework heartbeat** only checks the framework; it does not read parish email or send messages.
+To start a registered job manually, an Administrator or Intake manager can open **Parish Intake → Scheduled jobs** and select **Run now** beside it. The action requires the settings-management capability, is protected by a nonce, and uses the same time limit, item limit, lock, and checkpoint as cron. A run that reaches a budget saves its checkpoint so the next run can continue. **Queue event confirmation previews** processes parsed messages with draft candidates; **Occurrence expansion** is due daily and refreshes only Published events. **Framework heartbeat** only checks the framework; it does not read parish email or send messages.
 
 ## Uninstall and data retention
 

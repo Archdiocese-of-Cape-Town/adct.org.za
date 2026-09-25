@@ -20,6 +20,8 @@ interface MailQueueRepositoryInterface
         DateTimeImmutable $now
     ): MailQueueEnqueueResult;
 
+    public function findByRecipientAndGroupKey(string $recipient, string $groupKey): ?MailQueueRecord;
+
     public function findNextDue(DateTimeImmutable $now): ?MailQueueRecord;
 
     public function findExpiredClaim(DateTimeImmutable $cutoff): ?MailQueueRecord;

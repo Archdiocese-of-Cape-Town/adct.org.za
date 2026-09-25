@@ -5,6 +5,7 @@ use ADCT\ParishIntake\Core\Approval\ApprovalRoute;
 use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;
 use ADCT\ParishIntake\Core\Approval\ApproverSettings;
 use ADCT\ParishIntake\Core\Directory\ContactService;
+use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
 use ADCT\ParishIntake\Core\Directory\ImportRow;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
@@ -25,6 +26,8 @@ use ADCT\ParishIntake\Core\Mail\MailQueueConfiguration;
 use ADCT\ParishIntake\Core\Mail\MailQueueDispatchStatus;
 use ADCT\ParishIntake\Core\Mail\MailQueueDispatcher;
 use ADCT\ParishIntake\Core\Mail\MailQueueStatus;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailPreviewService;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailRenderer;
 use ADCT\ParishIntake\Core\Mail\OutboundEmail;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\Source;
@@ -58,6 +61,9 @@ use ADCT\ParishIntake\WordPress\Events\EventPostType;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeRecipientPolicy;
 use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeSettings;
+use ADCT\ParishIntake\WordPress\Auth\WordPressConfirmationActionLinkProvider;
+use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
+use ADCT\ParishIntake\WordPress\Ingestion\WordPressConfirmationEmailJobSource;
 
 require_once ABSPATH . 'wp-admin/includes/plugin.php';
 require_once ABSPATH . 'wp-admin/includes/user.php';
@@ -120,8 +126,8 @@ if (
     $fail('Fresh plugin activation did not default outbound test mode to off with an empty allow-list.');
 }
 
-if ((int) get_option('adct_pi_db_version', 0) !== 6) {
-    $fail('Activation did not set the parish intake schema version to 6.');
+if ((int) get_option('adct_pi_db_version', 0) !== 7) {
+    $fail('Activation did not set the parish intake schema version to 7.');
 }
 
 if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CURRENT_VERSION) {
@@ -268,7 +274,7 @@ if ($actualTables !== $expectedTables) {
     $missingTables = array_diff($expectedTables, $actualTables);
     $unexpectedTables = array_diff($actualTables, $expectedTables);
     $fail(sprintf(
-        'Schema v6 tables differ. Missing: [%s]; unexpected: [%s].',
+        'Schema v7 tables differ. Missing: [%s]; unexpected: [%s].',
         implode(', ', $missingTables),
         implode(', ', $unexpectedTables)
     ));
@@ -288,6 +294,29 @@ if (
 }
 
 $mailQueueTable = $wpdb->prefix . 'adct_pi_mail_queue';
+$inboundMessageTable = $wpdb->prefix . 'adct_pi_inbound_messages';
+$confirmationSchemaColumns = [
+    [$mailQueueTable, 'thread_headers', 'longtext'],
+    [$mailQueueTable, 'payload_fingerprint', 'char(64)'],
+    [$inboundMessageTable, 'confirmation_status', 'varchar(16)'],
+    [$inboundMessageTable, 'confirmation_reason', 'varchar(64)'],
+];
+
+foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
+    $column = $wpdb->get_row(
+        $wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", $columnName),
+        ARRAY_A
+    );
+
+    if (
+        ! is_array($column)
+        || strtolower((string) ($column['Type'] ?? '')) !== $expectedType
+        || strtoupper((string) ($column['Null'] ?? '')) !== 'YES'
+    ) {
+        $fail('A fresh install did not create the nullable ' . $columnName . ' confirmation-preview column.');
+    }
+}
+
 $freshMailQueueIndexRows = (array) $wpdb->get_results(
     $wpdb->prepare("SHOW INDEX FROM {$mailQueueTable} WHERE Key_name = %s", 'recipient_group'),
     ARRAY_A
@@ -322,7 +351,7 @@ $rateLimitTable = $wpdb->prefix . 'adct_pi_action_token_rate_limits';
 $dropRateLimitTableForV3Upgrade = $wpdb->query("DROP TABLE {$rateLimitTable}");
 
 if ($dropRateLimitTableForV3Upgrade === false) {
-    $fail('The v3-to-v6 migration test could not restore the pre-v6 schema.');
+    $fail('The v3-to-v7 migration test could not restore the pre-v6 schema.');
 }
 
 update_option('adct_pi_db_version', 3, false);
@@ -333,7 +362,7 @@ $occurrenceParishColumn = $wpdb->get_row(
 );
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 6
+    (int) get_option('adct_pi_db_version', 0) !== 7
     || ! is_array($occurrenceParishColumn)
     || strtoupper((string) ($occurrenceParishColumn['Null'] ?? '')) !== 'YES'
 ) {
@@ -457,7 +486,7 @@ $preservedQueueRowCount = (int) $wpdb->get_var($wpdb->prepare(
 ));
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 6
+    (int) get_option('adct_pi_db_version', 0) !== 7
     || ! $upgradedMailQueueIndexIsUnique
     || array_values($upgradedMailQueueIndexColumns) !== ['recipient', 'group_key']
     || $preservedQueueRowCount !== 1
@@ -513,7 +542,7 @@ foreach ($rateLimitIndexes as $index) {
 }
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 6
+    (int) get_option('adct_pi_db_version', 0) !== 7
     || $recreatedRateLimitTable !== $rateLimitTable
     || ! in_array('scope_hash', $rateLimitColumns, true)
     || ! in_array('window_started_at', $rateLimitColumns, true)
@@ -524,6 +553,34 @@ if (
     || ! $windowStartedAtIsIndexed
 ) {
     $fail('The v5-to-v6 migration did not create the primary-keyed hashed rate-limit table.');
+}
+
+foreach ($confirmationSchemaColumns as [$table, $columnName]) {
+    if ($wpdb->query("ALTER TABLE {$table} DROP COLUMN `{$columnName}`") === false) {
+        $fail('The v6-to-v7 migration test could not prepare the legacy confirmation-preview schema.');
+    }
+}
+
+update_option('adct_pi_db_version', 6, false);
+do_action('admin_init');
+
+if ((int) get_option('adct_pi_db_version', 0) !== 7) {
+    $fail('The v6-to-v7 migration did not advance the schema version.');
+}
+
+foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
+    $column = $wpdb->get_row(
+        $wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", $columnName),
+        ARRAY_A
+    );
+
+    if (
+        ! is_array($column)
+        || strtolower((string) ($column['Type'] ?? '')) !== $expectedType
+        || strtoupper((string) ($column['Null'] ?? '')) !== 'YES'
+    ) {
+        $fail('The v6-to-v7 migration did not restore the nullable ' . $columnName . ' column.');
+    }
 }
 
 require_once __DIR__ . '/ActionTokenEndpointCheck.php';
@@ -2947,6 +3004,448 @@ if (
     $fail('The inbound store did not persist automation and structured authentication flags.');
 }
 
+$confirmationSuffix = bin2hex(random_bytes(6));
+$confirmationRecipient = 'confirmation-reply-' . $confirmationSuffix . '@example.test';
+$confirmationSender = 'confirmation-sender-' . $confirmationSuffix . '@example.test';
+$blockedConfirmationSender = 'blocked-confirmation-' . $confirmationSuffix . '@example.test';
+$automatedConfirmationSender = 'list-confirmation-' . $confirmationSuffix . '@example.test';
+$unsafeConfirmationSender = 'noreply-confirmation-' . $confirmationSuffix . '@example.test';
+$confirmationTimestamp = $clock->now()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+$contactRepository->saveLink(
+    $firstParishId,
+    $confirmationRecipient,
+    'Synthetic preview contact',
+    'Integration fixture',
+    false,
+    SenderTrust::VERIFIED,
+    $confirmationTimestamp,
+    $confirmationTimestamp
+);
+$contactRepository->saveLink(
+    $firstParishId,
+    $blockedConfirmationSender,
+    'Synthetic blocked sender',
+    'Integration fixture',
+    false,
+    SenderTrust::BLOCKED,
+    null,
+    $confirmationTimestamp
+);
+$confirmationStorage = new ProtectedInboundMailStorage();
+$confirmationRawPaths = [];
+$storeParsedConfirmationMessage = static function (
+    string $externalId,
+    string $senderEmail,
+    bool $automated,
+    ?string $rawMessage
+) use (
+    $confirmationStorage,
+    &$confirmationRawPaths,
+    $mailboxSource,
+    $clock,
+    $inboundMessageStore,
+    $integrationTimestamp,
+    $inboundMessageTable,
+    $wpdb,
+    $fail
+): int {
+    $rawPath = null;
+
+    if ($rawMessage !== null) {
+        $rawPath = $confirmationStorage->storeRawMessage($rawMessage);
+        $confirmationRawPaths[] = $rawPath;
+    }
+
+    $stored = $inboundMessageStore->store(
+        new InboundMessageRecord(
+            $mailboxSource->id,
+            $externalId,
+            null,
+            $senderEmail,
+            'Synthetic confirmation sender',
+            'Fictional event notice',
+            $clock->now(),
+            $rawPath,
+            [],
+            InboundMessageRecord::STATUS_RECEIVED,
+            null,
+            $automated
+        ),
+        $integrationTimestamp
+    );
+
+    if ($stored->duplicate) {
+        $fail('A synthetic confirmation message unexpectedly duplicated an existing inbound message.');
+    }
+
+    $updated = $wpdb->update(
+        $inboundMessageTable,
+        ['status' => 'parsed'],
+        ['id' => $stored->messageId],
+        ['%s'],
+        ['%d']
+    );
+
+    if ($updated !== 1) {
+        $fail('A synthetic inbound message could not be marked as parsed for the confirmation job.');
+    }
+
+    return $stored->messageId;
+};
+$confirmationMessageId = '<confirmation-' . $confirmationSuffix . '@example.test>';
+$confirmationRawMessage = implode("\r\n", [
+    'From: ' . $confirmationSender,
+    'Reply-To: ' . $confirmationRecipient,
+    'Message-ID: ' . $confirmationMessageId,
+    'Subject: Fictional event notice',
+]) . "\r\n\r\nFictional event notice body.\r\n";
+$confirmationMessageRowId = $storeParsedConfirmationMessage(
+    $confirmationMessageId,
+    $confirmationSender,
+    false,
+    $confirmationRawMessage
+);
+$blockedConfirmationMessageId = $storeParsedConfirmationMessage(
+    '<blocked-confirmation-' . $confirmationSuffix . '@example.test>',
+    $blockedConfirmationSender,
+    false,
+    null
+);
+$automatedConfirmationMessageId = $storeParsedConfirmationMessage(
+    '<list-confirmation-' . $confirmationSuffix . '@example.test>',
+    $automatedConfirmationSender,
+    true,
+    null
+);
+$unsafeConfirmationMessageId = $storeParsedConfirmationMessage(
+    '<noreply-confirmation-' . $confirmationSuffix . '@example.test>',
+    $unsafeConfirmationSender,
+    false,
+    null
+);
+$confirmationCandidateTable = $wpdb->prefix . 'adct_pi_event_candidates';
+$insertConfirmationCandidate = static function (
+    int $messageId,
+    int $blockIndex,
+    string $title,
+    float $confidence
+) use ($wpdb, $confirmationCandidateTable, $clock, $fail): int {
+    $timestamp = $clock->now()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+    $fields = [
+        'title' => $title,
+        'event_date' => '2026-10-12',
+        'event_time' => '18:30',
+        'venue' => 'St Example Hall',
+        'venue_address' => '1 Example Street',
+        'venue_suburb' => 'Cape Town',
+        'parish_name' => 'Synthetic Example Parish',
+        'description' => 'Fictional integration preview.',
+        'event_type' => 'Community',
+        'contact' => 'Office: office@example.test; Phone: 000 000 0000',
+        'all_day' => false,
+    ];
+    $inserted = $wpdb->insert(
+        $confirmationCandidateTable,
+        [
+            'message_id' => $messageId,
+            'block_index' => $blockIndex,
+            'fields' => json_encode($fields, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            'recurrence' => '[]',
+            'confidence' => $confidence,
+            'notes' => '[]',
+            'status' => 'draft',
+            'created_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ],
+        ['%d', '%d', '%s', '%s', '%f', '%s', '%s', '%s', '%s']
+    );
+
+    if ($inserted !== 1 || (int) $wpdb->insert_id < 1) {
+        $fail('A synthetic event candidate could not be saved for the confirmation job.');
+    }
+
+    return (int) $wpdb->insert_id;
+};
+$confirmationCandidateIds = [
+    $insertConfirmationCandidate(
+        $confirmationMessageRowId,
+        0,
+        'Integration <one>',
+        0.91
+    ),
+    $insertConfirmationCandidate(
+        $confirmationMessageRowId,
+        1,
+        'Integration event two',
+        0.48
+    ),
+];
+$blockedConfirmationCandidateId = $insertConfirmationCandidate(
+    $blockedConfirmationMessageId,
+    0,
+    'Blocked sender event',
+    0.9
+);
+$automatedConfirmationCandidateId = $insertConfirmationCandidate(
+    $automatedConfirmationMessageId,
+    0,
+    'Automated sender event',
+    0.9
+);
+$unsafeConfirmationCandidateId = $insertConfirmationCandidate(
+    $unsafeConfirmationMessageId,
+    0,
+    'No-reply sender event',
+    0.9
+);
+update_option(WordPressTestModeSettings::TEST_MODE_OPTION, WordPressTestModeSettings::MODE_ENABLED, false);
+update_option(WordPressTestModeSettings::ALLOWLIST_OPTION, [$confirmationRecipient], false);
+$confirmationSource = new WordPressConfirmationEmailJobSource(
+    $database,
+    $contactRepository,
+    $confirmationStorage
+);
+$eligibleConfirmationBatch = $confirmationSource->nextPending();
+
+if (
+    $eligibleConfirmationBatch === null
+    || $eligibleConfirmationBatch->messageId !== $confirmationMessageRowId
+    || $eligibleConfirmationBatch->replyToEmail !== $confirmationRecipient
+    || $eligibleConfirmationBatch->replyToTrust !== SenderTrust::VERIFIED
+    || count($eligibleConfirmationBatch->candidates) !== 2
+    || has_action('adct_pi_job_queue_confirmation_previews') === false
+) {
+    $fail('The confirmation job source or scheduled hook was not ready for the synthetic parsed message.');
+}
+
+$confirmationMailAttempts = [];
+$unexpectedConfirmationRecipients = [];
+$confirmationMailGuard = static function ($pre, $arguments) use (
+    &$confirmationMailAttempts,
+    &$unexpectedConfirmationRecipients,
+    $confirmationRecipient
+) {
+    $mailData = is_array($arguments) ? $arguments : [];
+    $rawRecipient = $mailData['to'] ?? null;
+    $recipient = is_string($rawRecipient)
+        ? $rawRecipient
+        : (is_array($rawRecipient) ? implode(',', array_map('strval', $rawRecipient)) : '');
+
+    if ($recipient !== $confirmationRecipient) {
+        $unexpectedConfirmationRecipients[] = $recipient;
+
+        return false;
+    }
+
+    $confirmationMailAttempts[] = $mailData;
+
+    return true;
+};
+add_filter('pre_wp_mail', $confirmationMailGuard, 10, 2);
+
+try {
+    do_action('adct_pi_job_queue_confirmation_previews');
+} finally {
+    remove_filter('pre_wp_mail', $confirmationMailGuard, 10);
+    update_option(WordPressTestModeSettings::TEST_MODE_OPTION, WordPressTestModeSettings::MODE_DISABLED, false);
+    update_option(WordPressTestModeSettings::ALLOWLIST_OPTION, [], false);
+}
+
+$confirmationStatusFor = static function (int $messageId) use ($wpdb, $inboundMessageTable): ?array {
+    $row = $wpdb->get_row($wpdb->prepare(
+        "SELECT confirmation_status, confirmation_reason FROM {$inboundMessageTable} WHERE id = %d LIMIT 1",
+        $messageId
+    ), ARRAY_A);
+
+    return is_array($row) ? $row : null;
+};
+$confirmationStatus = $confirmationStatusFor($confirmationMessageRowId);
+$blockedConfirmationStatus = $confirmationStatusFor($blockedConfirmationMessageId);
+$automatedConfirmationStatus = $confirmationStatusFor($automatedConfirmationMessageId);
+$unsafeConfirmationStatus = $confirmationStatusFor($unsafeConfirmationMessageId);
+$confirmationJobState = get_option('adct_pi_job_state_queue_confirmation_previews', []);
+$confirmationGroupKey = 'confirmation:' . $confirmationMessageRowId;
+$confirmationQueueRow = $wpdb->get_row($wpdb->prepare(
+    "SELECT id, recipient, status, body_html, body_text, thread_headers, payload_fingerprint "
+    . "FROM {$mailQueueTable} WHERE recipient = %s AND group_key = %s LIMIT 1",
+    $confirmationRecipient,
+    $confirmationGroupKey
+), ARRAY_A);
+$confirmationQueueCount = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT COUNT(*) FROM {$mailQueueTable} WHERE group_key = %s",
+    $confirmationGroupKey
+));
+$confirmationActionTokenTable = $wpdb->prefix . 'adct_pi_action_tokens';
+$confirmationTokens = (array) $wpdb->get_results($wpdb->prepare(
+    "SELECT token_hash, purpose, subject_type, subject_id, email FROM {$confirmationActionTokenTable} "
+    . 'WHERE email = %s ORDER BY id ASC',
+    $confirmationRecipient
+), ARRAY_A);
+$confirmationBodyText = is_array($confirmationQueueRow)
+    ? (string) ($confirmationQueueRow['body_text'] ?? '')
+    : '';
+preg_match_all('/\badct_token=([A-Za-z0-9_-]{43})/', $confirmationBodyText, $confirmationTokenMatches);
+$linkedConfirmationHashes = array_map(
+    static fn (string $secret): string => hash('sha256', $secret),
+    $confirmationTokenMatches[1]
+);
+$storedConfirmationHashes = array_map(
+    static fn (array $row): string => (string) ($row['token_hash'] ?? ''),
+    $confirmationTokens
+);
+sort($linkedConfirmationHashes, SORT_STRING);
+sort($storedConfirmationHashes, SORT_STRING);
+$expectedConfirmationBindings = [];
+
+foreach ($confirmationCandidateIds as $candidateId) {
+    foreach (['confirm', 'deny', 'edit'] as $purpose) {
+        $expectedConfirmationBindings[] = $purpose . '|event_candidate|' . $candidateId
+            . '|' . $confirmationRecipient;
+    }
+}
+
+$expectedConfirmationBindings[] = 'confirm|inbound_message|' . $confirmationMessageRowId
+    . '|' . $confirmationRecipient;
+$actualConfirmationBindings = array_map(
+    static fn (array $row): string => (string) ($row['purpose'] ?? '')
+        . '|' . (string) ($row['subject_type'] ?? '')
+        . '|' . (int) ($row['subject_id'] ?? 0)
+        . '|' . (string) ($row['email'] ?? ''),
+    $confirmationTokens
+);
+sort($expectedConfirmationBindings, SORT_STRING);
+sort($actualConfirmationBindings, SORT_STRING);
+$confirmationHeaderLines = is_array($confirmationMailAttempts[0]['headers'] ?? null)
+    ? array_map('strval', $confirmationMailAttempts[0]['headers'])
+    : [(string) ($confirmationMailAttempts[0]['headers'] ?? '')];
+$confirmationHeaderText = implode("\n", $confirmationHeaderLines);
+$storedThreadHeaders = is_array($confirmationQueueRow)
+    ? json_decode((string) ($confirmationQueueRow['thread_headers'] ?? ''), true)
+    : null;
+
+if (
+    $confirmationStatus === null
+    || ($confirmationStatus['confirmation_status'] ?? '') !== 'sent'
+    || ($confirmationStatus['confirmation_reason'] ?? null) !== null
+    || $blockedConfirmationStatus === null
+    || ($blockedConfirmationStatus['confirmation_status'] ?? '') !== 'suppressed'
+    || ($blockedConfirmationStatus['confirmation_reason'] ?? '') !== 'blocked_sender'
+    || $automatedConfirmationStatus === null
+    || ($automatedConfirmationStatus['confirmation_status'] ?? '') !== 'suppressed'
+    || ($automatedConfirmationStatus['confirmation_reason'] ?? '') !== 'automated_or_list'
+    || $unsafeConfirmationStatus === null
+    || ($unsafeConfirmationStatus['confirmation_status'] ?? '') !== 'suppressed'
+    || ($unsafeConfirmationStatus['confirmation_reason'] ?? '') !== 'no_safe_recipient'
+) {
+    $fail('The confirmation job did not record the expected outcomes: '
+        . wp_json_encode([
+            'normal' => $confirmationStatus,
+            'blocked' => $blockedConfirmationStatus,
+            'automated' => $automatedConfirmationStatus,
+            'unsafe' => $unsafeConfirmationStatus,
+            'job_state' => $confirmationJobState,
+        ]));
+}
+
+if (
+    $confirmationQueueRow === null
+    || ($confirmationQueueRow['recipient'] ?? '') !== $confirmationRecipient
+    || ($confirmationQueueRow['status'] ?? '') !== MailQueueStatus::SENT->value
+    || $confirmationQueueCount !== 1
+    || count($confirmationMailAttempts) !== 1
+    || $unexpectedConfirmationRecipients !== []
+) {
+    $fail('The confirmation preview was not delivered exactly once to its verified Reply-To through the intercepted mail adapter.');
+}
+
+if (
+    strpos((string) ($confirmationQueueRow['body_html'] ?? ''), 'Event 1: Integration &lt;one&gt;') === false
+    || strpos((string) ($confirmationQueueRow['body_html'] ?? ''), 'Event 2: Integration event two') === false
+    || strpos($confirmationBodyText, 'Event 1: Integration <one>') === false
+    || strpos($confirmationBodyText, 'Event 2: Integration event two (please check)') === false
+    || strpos((string) ($confirmationQueueRow['body_html'] ?? ''), 'Approve all (not active)') === false
+) {
+    $fail('The confirmation email did not render both candidates or explicitly mark its inactive action links.');
+}
+
+if (
+    count($confirmationTokenMatches[1]) !== 7
+    || count(array_unique($confirmationTokenMatches[1])) !== 7
+    || $linkedConfirmationHashes !== $storedConfirmationHashes
+    || $actualConfirmationBindings !== $expectedConfirmationBindings
+) {
+    $fail('The preview links did not map to seven distinct purpose, subject and email-bound action tokens.');
+}
+
+if (
+    ! is_array($storedThreadHeaders)
+    || ($storedThreadHeaders['in_reply_to'] ?? null) !== $confirmationMessageId
+    || ($storedThreadHeaders['references'] ?? null) !== $confirmationMessageId
+    || strpos($confirmationHeaderText, 'In-Reply-To: ' . $confirmationMessageId) === false
+    || strpos($confirmationHeaderText, 'References: ' . $confirmationMessageId) === false
+    || preg_match('/\A[a-f0-9]{64}\z/D', (string) ($confirmationQueueRow['payload_fingerprint'] ?? '')) !== 1
+) {
+    $fail('The queued confirmation email did not persist safe thread headers and its idempotency fingerprint.');
+}
+
+foreach ([
+    $blockedConfirmationMessageId => $blockedConfirmationCandidateId,
+    $automatedConfirmationMessageId => $automatedConfirmationCandidateId,
+    $unsafeConfirmationMessageId => $unsafeConfirmationCandidateId,
+] as $messageId => $candidateId) {
+    $suppressedQueueCount = (int) $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM {$mailQueueTable} WHERE group_key = %s",
+        'confirmation:' . $messageId
+    ));
+    $suppressedTokenCount = (int) $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM {$confirmationActionTokenTable} "
+        . 'WHERE subject_type = %s AND subject_id = %d',
+        'event_candidate',
+        $candidateId
+    ));
+
+    if ($suppressedQueueCount !== 0 || $suppressedTokenCount !== 0) {
+        $fail('A blocked, automated, or unsafe sender was queued or given candidate action tokens.');
+    }
+}
+
+$wpdb->query($wpdb->prepare(
+    "UPDATE {$inboundMessageTable} SET confirmation_status = NULL, confirmation_reason = NULL WHERE id = %d",
+    $confirmationMessageRowId
+));
+$retryBatch = $confirmationSource->nextPending();
+
+if ($retryBatch === null || $retryBatch->messageId !== $confirmationMessageRowId) {
+    $fail('The confirmation preview could not be loaded for the idempotent retry integration check.');
+}
+
+$retryPreviewService = new ConfirmationEmailPreviewService(
+    Plugin::actionTokenService(),
+    new WordPressConfirmationActionLinkProvider(),
+    Plugin::mailer(),
+    new WordPressMailQueueRepository($database),
+    new ConfirmationEmailRenderer()
+);
+$retryResult = $retryPreviewService->enqueuePreview($retryBatch);
+$confirmationSource->recordResult($retryBatch->messageId, $retryResult, $clock->now());
+$confirmationQueueCountAfterRetry = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT COUNT(*) FROM {$mailQueueTable} WHERE group_key = %s",
+    $confirmationGroupKey
+));
+$confirmationTokensAfterRetry = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT COUNT(*) FROM {$confirmationActionTokenTable} WHERE email = %s",
+    $confirmationRecipient
+));
+
+if (
+    $retryResult->outcome->value !== 'sent'
+    || $confirmationQueueCountAfterRetry !== 1
+    || $confirmationTokensAfterRetry !== 7
+    || count($confirmationMailAttempts) !== 1
+) {
+    $fail('An idempotent confirmation retry created a duplicate message, action tokens, or delivery.');
+}
+
 $secondaryMailboxEmail = 'intake-mailbox-secondary@example.test';
 $secondaryMailboxSource = $sourceRepository->findGlobalEmailSource($secondaryMailboxEmail);
 $secondaryMailboxSource = $sourceRegistry->save(new Source(
@@ -3037,8 +3536,12 @@ if (
     || strpos($mailboxesListHtml, 'Message size 16000001 bytes') === false
     || strpos($mailboxesListHtml, 'Skipped attachments') === false
     || strpos($mailboxesListHtml, 'unsupported MIME type') === false
-    || strpos($mailboxesListHtml, 'Recent message screening') === false
+    || strpos($mailboxesListHtml, 'Recent message screening and confirmation') === false
     || strpos($mailboxesListHtml, 'No confirmation: automated or list mail detected.') === false
+    || strpos($mailboxesListHtml, 'Confirmation: accepted by the mail transport.') === false
+    || strpos($mailboxesListHtml, 'Confirmation: suppressed: sender is blocked.') === false
+    || strpos($mailboxesListHtml, 'Confirmation: suppressed: automated or list mail.') === false
+    || strpos($mailboxesListHtml, 'Confirmation: suppressed: no safe confirmation address.') === false
     || strpos($mailboxesListHtml, 'SPF: PASS (unverified claim)') === false
     || strpos($mailboxesListHtml, 'DMARC: FAIL (unverified claim)') === false
     || strpos($mailboxesListHtml, 'Review flag: reported DMARC fail') === false
@@ -3058,6 +3561,57 @@ if (
 }
 
 delete_option($mailboxPasswordOption);
+
+$confirmationQueueCleanup = $confirmationQueueRow === null
+    ? false
+    : $wpdb->delete(
+        $mailQueueTable,
+        ['id' => (int) $confirmationQueueRow['id']],
+        ['%d']
+    );
+$confirmationTokenCleanup = $wpdb->delete(
+    $confirmationActionTokenTable,
+    ['email' => $confirmationRecipient],
+    ['%s']
+);
+
+if ($confirmationQueueCleanup !== 1 || $confirmationTokenCleanup !== 7) {
+    $fail('The confirmation integration fixtures could not be removed from the queue and token tables.');
+}
+
+foreach ([
+    $confirmationMessageRowId,
+    $blockedConfirmationMessageId,
+    $automatedConfirmationMessageId,
+    $unsafeConfirmationMessageId,
+] as $messageId) {
+    $deletedCandidates = $wpdb->delete(
+        $confirmationCandidateTable,
+        ['message_id' => $messageId],
+        ['%d']
+    );
+    $deletedMessage = $wpdb->delete(
+        $inboundMessageTable,
+        ['id' => $messageId],
+        ['%d']
+    );
+
+    if ($deletedCandidates < 1 || $deletedMessage !== 1) {
+        $fail('The confirmation integration inbound fixtures could not be removed.');
+    }
+}
+
+foreach ($confirmationRawPaths as $rawPath) {
+    $confirmationStorage->delete($rawPath);
+}
+
+foreach ([$confirmationRecipient, $blockedConfirmationSender] as $email) {
+    foreach ($contactRepository->findByEmail($email) as $contact) {
+        if ($contactRepository->deleteLink((int) $contact['id'], (int) $contact['parish_id']) !== 1) {
+            $fail('A synthetic confirmation integration contact could not be removed.');
+        }
+    }
+}
 
 if ($wpdb->query($wpdb->prepare(
     "UPDATE {$contactTable} SET trust = %s, verified_at = NULL WHERE id = %d",
@@ -3970,4 +4524,4 @@ foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
     }
 }
 
-WP_CLI::success('Release ZIP activation, schema v6/v3-to-v6/v4-to-v5/v5-to-v6 migrations, hashed action-token storage and renewal limits, GET preview and nonce-protected single-use POST behavior, fresh and upgraded mail queue unique indexes with duplicate preservation, occurrence expansion/save/REST/job behavior, mailbox settings and safe password rendering, polling and outbound-mail job registration, inbound-message de-duplication/skip notices, login-priority delivery ahead of 200 queued digests through intercepted wp_mail, mail group idempotency and atomic hourly-cap claims, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
+WP_CLI::success('Release ZIP activation, schema v7/v3-to-v7/v4-to-v5/v5-to-v6/v6-to-v7 migrations, hashed action-token storage and renewal limits, GET preview and nonce-protected single-use POST behavior, fresh and upgraded mail queue unique indexes with duplicate preservation, occurrence expansion/save/REST/job behavior, mailbox settings and safe password rendering, polling, confirmation-preview and outbound-mail job registration, multi-candidate confirmation delivery with idempotent queue reuse, safe-sender suppression, bound action tokens, status visibility and threaded headers through intercepted wp_mail, inbound-message de-duplication/skip notices, login-priority delivery ahead of 200 queued digests through intercepted wp_mail, mail group idempotency and atomic hourly-cap claims, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
