@@ -108,6 +108,7 @@ use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeRecipientPolicy;
 use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeSettings;
 use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
+use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
 use ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance;
@@ -244,6 +245,7 @@ final class Plugin
                 $database,
                 new EventCandidateRepository($database),
                 $occurrenceMaintenance,
+                new EventListingGeneration(),
                 $clock,
                 $timezone
             ),

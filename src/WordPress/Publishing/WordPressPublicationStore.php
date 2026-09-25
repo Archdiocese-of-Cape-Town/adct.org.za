@@ -11,6 +11,7 @@ use ADCT\ParishIntake\Core\Publishing\Publication;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
 use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
+use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
 use ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance;
 use DateTimeZone;
@@ -24,6 +25,7 @@ final class WordPressPublicationStore implements PublicationStoreInterface
         private DatabaseConnectionInterface $database,
         private EventCandidateRepository $candidates,
         private WordPressEventOccurrenceMaintenance $occurrences,
+        private EventListingGeneration $listingGeneration,
         private ClockInterface $clock,
         private DateTimeZone $timezone
     ) {
@@ -33,6 +35,7 @@ final class WordPressPublicationStore implements PublicationStoreInterface
     {
         $this->execute('START TRANSACTION');
         $eventId = null;
+        $committed = false;
 
         try {
             $table = $this->database->prefix() . 'adct_pi_event_candidates';
@@ -64,7 +67,8 @@ final class WordPressPublicationStore implements PublicationStoreInterface
             if ($row['status'] === 'published') {
                 if ($eventId !== null && (int) get_post_meta($eventId, 'source_candidate_id', true) === $candidateId) {
                     $this->execute('COMMIT');
-                    return $eventId;
+                    $committed = true;
+                    return $this->afterCommit($eventId);
                 }
                 throw new DomainException('The candidate was already published to another event.');
             }
@@ -192,9 +196,17 @@ final class WordPressPublicationStore implements PublicationStoreInterface
                 ));
             }
             $this->execute('COMMIT');
-            clean_post_cache($eventId);
-            return $eventId;
+            $committed = true;
+            return $this->afterCommit($eventId);
         } catch (Throwable $failure) {
+            if ($committed) {
+                throw new RuntimeException(
+                    'Event ' . $eventId . ' was committed, but its listing cache could not be refreshed. '
+                    . 'Retry publishing candidate ' . $candidateId . ' to repair the cache generation.',
+                    0,
+                    $failure
+                );
+            }
             try {
                 $this->execute('ROLLBACK');
             } catch (Throwable $rollbackFailure) {
@@ -211,6 +223,13 @@ final class WordPressPublicationStore implements PublicationStoreInterface
             }
             throw $failure;
         }
+    }
+
+    private function afterCommit(int $eventId): int
+    {
+        clean_post_cache($eventId);
+        $this->listingGeneration->bump();
+        return $eventId;
     }
 
     /**

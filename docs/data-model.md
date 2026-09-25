@@ -261,6 +261,8 @@ The candidate publisher accepts only a recorded `dean`, `reviewer` or `self` app
 
 When a candidate explicitly supplies an `event_type`, publication resolves it to an existing event-type term or fails; an update without `event_type` retains the existing term assignment (new events use the taxonomy default). A failed publication must leave both SQL data and WordPress post/term caches showing the previous event, including when the same PHP request retries.
 
+The listing cache generation is a random, option-backed `adct_pi_event_listing_generation` token. The publisher changes it **after** the event transaction commits, including on an idempotent retry, so an old-key transient populated by a concurrent pre-commit reader is unreachable. If the option write fails after commit, the publisher reports that the event was already committed and asks the caller to retry the same candidate; the retry repairs the generation without a second revision. The events listing reads this generation as part of its transient key, and manual/REST occurrence refreshes also bump it after the underlying writes.
+
 ### Published event
 `scheduled` → `cancelled` / `postponed` (still visible, clearly marked) → the event is trashed only by an admin. Past events stay visible in an archive view.
 

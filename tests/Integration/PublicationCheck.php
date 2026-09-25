@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
+use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use ADCT\ParishIntake\WordPress\Plugin;
 
 final class PublicationCheck
@@ -14,6 +15,8 @@ final class PublicationCheck
 
         $candidates = new EventCandidateRepository(new WordPressDatabaseConnection());
         $publisher = Plugin::candidatePublisher();
+        $generation = new EventListingGeneration();
+        $initialGeneration = $generation->current();
         $date = (new DateTimeImmutable('tomorrow', new DateTimeZone('Africa/Johannesburg')))
             ->format('Y-m-d');
         $now = gmdate('Y-m-d H:i:s');
@@ -85,6 +88,7 @@ final class PublicationCheck
                 || get_post_meta($eventId, 'source_candidate_id', true) != $create
                 || $count($occurrences, $eventId) !== 1
                 || ! has_term('social', 'adct_event_type', $eventId)
+                || $generation->current() === $initialGeneration
                 || $publisher->publish($create) !== $eventId
                 || $count($changes, $eventId) !== 0
             ) {
@@ -206,6 +210,37 @@ final class PublicationCheck
                 || $count($occurrences, $eventId) !== 1
             ) {
                 $fail('A failed revision insert left a partial cancellation.');
+            }
+
+            $beforeGeneration = $generation->current();
+            $beforeChanges = $count($changes, $eventId);
+            $cacheFailure = $make('update', $eventId, 'reviewer', 'Committed before cache failure');
+            $freezeGeneration = static fn (mixed $newValue, mixed $oldValue): mixed => $oldValue;
+            add_filter('pre_update_option_' . EventListingGeneration::OPTION, $freezeGeneration, 10, 2);
+            try {
+                $publisher->publish($cacheFailure);
+                $fail('A post-commit cache write failure was reported as success.');
+            } catch (RuntimeException $expected) {
+                if (! str_contains($expected->getMessage(), 'was committed')) {
+                    $fail('The cache error did not explain that the event was already committed.');
+                }
+            } finally {
+                remove_filter('pre_update_option_' . EventListingGeneration::OPTION, $freezeGeneration, 10);
+            }
+            if (
+                $candidates->findById($cacheFailure)['status'] !== 'published'
+                || get_post($eventId)?->post_title !== 'Committed before cache failure'
+                || $count($changes, $eventId) !== $beforeChanges + 1
+                || $generation->current() !== $beforeGeneration
+            ) {
+                $fail('The cache failure did not retain the committed publication for repair.');
+            }
+            if (
+                $publisher->publish($cacheFailure) !== $eventId
+                || $generation->current() === $beforeGeneration
+                || $count($changes, $eventId) !== $beforeChanges + 1
+            ) {
+                $fail('Retry did not repair the listing cache generation without a duplicate revision.');
             }
         } finally {
             if ($eventId !== null) {
