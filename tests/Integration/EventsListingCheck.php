@@ -199,12 +199,37 @@ try {
     ) {
         $fail('The public REST selection did not match the listing or leaked a private contact.');
     }
+    foreach (['page_id', 'p'] as $pageKey) {
+        $plainResult = $restListing([
+            'page_url' => home_url('/?' . $pageKey . '=123'),
+            'adct_period' => 'upcoming',
+            'adct_types' => [(string) $spiritual->term_id, (string) $occurrenceType->term_id],
+        ]);
+        $plainHtml = (string) ($plainResult->get_data()['html'] ?? '');
+        if (
+            $plainResult->get_status() !== 200
+            || ! str_contains($plainHtml, 'name="' . $pageKey . '" value="123"')
+            || ! preg_match('/href="([^"]+)">More events<\/a>/', $plainHtml, $plainMatch)
+        ) {
+            $fail('The progressive listing dropped the plain-permalink page selector.');
+        }
+        parse_str((string) wp_parse_url(html_entity_decode($plainMatch[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'), PHP_URL_QUERY), $plainQuery);
+        if (
+            ($plainQuery[$pageKey] ?? null) !== '123'
+            || ($plainQuery['adct_page'] ?? null) !== '2'
+            || count($plainQuery['adct_types'] ?? []) !== 2
+        ) {
+            $fail('The progressive listing lost the plain permalink or selection when paging.');
+        }
+    }
     foreach ([
         ['adct_types' => [['1']]],
         ['adct_types' => range(1, 21)],
         ['adct_parish' => ['1']],
         ['adct_page' => '101'],
         ['page_url' => 'https://outside.example.test/events/'],
+        ['page_url' => home_url('/?page_id=0')],
+        ['page_url' => home_url('/?page_id=123&private=1')],
     ] as $invalid) {
         if ($restListing($invalid)->get_status() !== 400) {
             $fail('The public REST listing accepted malformed or oversized input.');
@@ -250,6 +275,26 @@ try {
     $block = do_blocks('<!-- wp:adct/events /-->');
     if (! str_contains($block, 'Fictional listing event 0')) {
         $fail('The server-rendered event block did not show the same public occurrences.');
+    }
+
+    $oldRequestUri = $_SERVER['REQUEST_URI'] ?? null;
+    try {
+        $_SERVER['REQUEST_URI'] = '/?page_id=123&adct_period=upcoming';
+        $_GET = ['page_id' => '123', 'adct_period' => 'upcoming'];
+        $noJsPlain = do_shortcode('[adct_events]');
+        if (
+            ! str_contains($noJsPlain, 'name="page_id" value="123"')
+            || ! preg_match('/href="([^"]+)">More events<\/a>/', $noJsPlain, $noJsMatch)
+            || ! str_contains(html_entity_decode($noJsMatch[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'), 'page_id=123')
+        ) {
+            $fail('The no-JavaScript listing lost a plain-permalink page selector.');
+        }
+    } finally {
+        if ($oldRequestUri === null) {
+            unset($_SERVER['REQUEST_URI']);
+        } else {
+            $_SERVER['REQUEST_URI'] = $oldRequestUri;
+        }
     }
 
     foreach (['week', 'month'] as $preset) {

@@ -94,14 +94,19 @@ final class PublicEventListing
     {
         $page = wp_parse_url($url);
         $home = wp_parse_url(home_url('/'));
+        $query = $page['query'] ?? '';
 
         return is_array($page) && is_array($home)
             && ($page['scheme'] ?? null) === ($home['scheme'] ?? null)
             && ($page['host'] ?? null) === ($home['host'] ?? null)
             && ($page['port'] ?? null) === ($home['port'] ?? null)
             && ! isset($page['user']) && ! isset($page['pass'])
-            && ! isset($page['query']) && ! isset($page['fragment'])
-            && isset($page['path']) && str_starts_with($page['path'], '/');
+            && ! isset($page['fragment'])
+            && isset($page['path']) && str_starts_with($page['path'], '/')
+            && ($query === '' || (
+                preg_match('/\A(?:page_id|p)=([1-9][0-9]{0,9})\z/D', $query, $matches) === 1
+                && (float) $matches[1] <= 2147483647
+            ));
     }
 
     public function invalidate(int $postId = 0): void
@@ -214,10 +219,15 @@ final class PublicEventListing
         $html = '<section class="adct-events" aria-label="Upcoming events" data-endpoint="'
             . esc_url(rest_url('adct-parish-intake/v1/events')) . '">'
             . '<form method="get" class="adct-events__filters">';
-        foreach (['page_id', 'p'] as $queryKey) {
-            if (isset($_GET[$queryKey]) && is_scalar($_GET[$queryKey]) && (int) $_GET[$queryKey] > 0) {
-                $html .= '<input type="hidden" name="' . esc_attr($queryKey)
-                    . '" value="' . esc_attr((string) absint($_GET[$queryKey])) . '">';
+        $baseQuery = wp_parse_url($base, PHP_URL_QUERY);
+        if (is_string($baseQuery)) {
+            parse_str($baseQuery, $pageQuery);
+            foreach (['page_id', 'p'] as $queryKey) {
+                if (isset($pageQuery[$queryKey]) && is_scalar($pageQuery[$queryKey])
+                    && (int) $pageQuery[$queryKey] > 0) {
+                    $html .= '<input type="hidden" name="' . esc_attr($queryKey)
+                        . '" value="' . esc_attr((string) absint($pageQuery[$queryKey])) . '">';
+                }
             }
         }
         $html .= '<label for="adct-period">Show events</label>'

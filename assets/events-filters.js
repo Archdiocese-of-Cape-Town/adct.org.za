@@ -10,7 +10,13 @@
                 requestUrl.searchParams.append(key, value);
             }
         });
-        requestUrl.searchParams.set('page_url', url.origin + url.pathname);
+        var pageUrl = new URL(url.origin + url.pathname);
+        ['page_id', 'p'].forEach(function (key) {
+            if (url.searchParams.has(key)) {
+                pageUrl.searchParams.set(key, url.searchParams.get(key));
+            }
+        });
+        requestUrl.searchParams.set('page_url', pageUrl.toString());
         if (activeRequest) {
             activeRequest.abort();
         }
@@ -58,7 +64,11 @@
             }
         });
         new FormData(form).forEach(function (value, key) {
-            url.searchParams.append(key, value);
+            if (key === 'page_id' || key === 'p') {
+                url.searchParams.set(key, value);
+            } else {
+                url.searchParams.append(key, value);
+            }
         });
         load(form.closest('.adct-events'), url.toString(), true);
     });
