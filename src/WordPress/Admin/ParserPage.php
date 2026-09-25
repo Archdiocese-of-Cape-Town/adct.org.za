@@ -15,6 +15,7 @@ use ADCT\ParishIntake\WordPress\Ai\OpenAiCompatibleProvider;
 use ADCT\ParishIntake\WordPress\Database\Schema;
 use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
+use ADCT\ParishIntake\WordPress\Jobs\RetentionSettings;
 
 final class ParserPage
 {
@@ -29,6 +30,8 @@ final class ParserPage
     private StaticReportGenerator $reportGenerator;
     private HttpClientInterface $httpClient;
     private AiCallGateInterface $aiGate;
+    private bool $settingsSaveSucceeded = false;
+    private ?string $settingsSaveError = null;
 
     public function __construct(
         Schema $schema,
@@ -107,6 +110,24 @@ final class ParserPage
             return;
         }
 
+        $this->settingsSaveSucceeded = false;
+        $this->settingsSaveError = null;
+
+        $retentionSettings = RetentionSettings::fromValues(
+            isset($_POST['retention_raw_enabled']) ? '1' : '0',
+            wp_unslash($_POST['retention_raw_days'] ?? null),
+            isset($_POST['retention_processed_enabled']) ? '1' : '0',
+            wp_unslash($_POST['retention_processed_days'] ?? null),
+            isset($_POST['retention_action_tokens_enabled']) ? '1' : '0',
+            isset($_POST['retention_audit_enabled']) ? '1' : '0'
+        );
+
+        if ($retentionSettings->configurationError() !== null) {
+            $this->settingsSaveError = $retentionSettings->configurationError();
+
+            return;
+        }
+
         update_option('adct_parish_intake_ai_enabled', isset($_POST['ai_enabled']) ? '1' : '0');
         update_option('adct_parish_intake_ai_provider', sanitize_text_field(wp_unslash($_POST['ai_provider'] ?? 'none')));
         update_option('adct_parish_intake_openrouter_model', sanitize_text_field(wp_unslash($_POST['openrouter_model'] ?? OpenAiCompatibleProvider::FREE_MODEL)));
@@ -151,6 +172,33 @@ final class ParserPage
             self::SECTION_KEYWORDS_OPTION,
             SectionSkipper::sanitizeKeywordLists($keywordLists)
         );
+
+        update_option(
+            RetentionSettings::RAW_ENABLED_OPTION,
+            $retentionSettings->rawCleanupEnabled() ? '1' : '0'
+        );
+        update_option(
+            RetentionSettings::RAW_DAYS_OPTION,
+            (string) $retentionSettings->rawRetentionDays()
+        );
+        update_option(
+            RetentionSettings::PROCESSED_ENABLED_OPTION,
+            $retentionSettings->processedCleanupEnabled() ? '1' : '0'
+        );
+        update_option(
+            RetentionSettings::PROCESSED_DAYS_OPTION,
+            (string) $retentionSettings->processedRetentionDays()
+        );
+        update_option(
+            RetentionSettings::ACTION_TOKENS_ENABLED_OPTION,
+            $retentionSettings->actionTokenCleanupEnabled() ? '1' : '0'
+        );
+        update_option(
+            RetentionSettings::AUDIT_ENABLED_OPTION,
+            $retentionSettings->auditCleanupEnabled() ? '1' : '0'
+        );
+
+        $this->settingsSaveSucceeded = true;
     }
 
     public function renderSettingsPage(): void
@@ -160,12 +208,15 @@ final class ParserPage
         }
 
         $settings = $this->settings();
+        $retentionSettings = RetentionSettings::current();
         ?>
         <div class="wrap">
             <h1>Parish Intake Settings</h1>
             <p>Use this screen to configure the parser. Manual test parsing is available under <strong>Parish Intake → Manual parser</strong>.</p>
 
-            <?php if (isset($_POST['adct_parish_intake_save_settings'])) : ?>
+            <?php if ($this->settingsSaveError !== null) : ?>
+                <div class="notice notice-error"><p><?php echo esc_html($this->settingsSaveError); ?></p></div>
+            <?php elseif ($this->settingsSaveSucceeded) : ?>
                 <div class="notice notice-success is-dismissible"><p>Settings saved.</p></div>
             <?php endif; ?>
 
@@ -173,6 +224,11 @@ final class ParserPage
             <p>The parser runs locally first. AI is only used by the background inbox processing job when you enable it and a message scores below the confidence threshold. Manual parser requests never call AI.</p>
             <?php if ($settings['ai_enabled'] && ! str_ends_with($settings['openrouter_model'], ':free')) : ?>
                 <div class="notice notice-warning"><p><strong>AI cost warning:</strong> This model is not marked <code>:free</code>. It may incur charges; other providers and even free-tier endpoints may have quotas or fees. Check your provider's pricing before processing mail.</p></div>
+            <?php endif; ?>
+            <?php if ($retentionSettings->configurationError() !== null) : ?>
+                <div class="notice notice-error"><p><strong>Retention cleanup is not configured safely.</strong> <?php echo esc_html($retentionSettings->configurationError()); ?></p></div>
+            <?php elseif ($retentionSettings->hasAnyCleanupEnabled()) : ?>
+                <div class="notice notice-warning"><p><strong>Retention cleanup is on.</strong> Raw files, attachments, expired tokens and old audit rows will be removed automatically if you enable their separate switches. Deletions are permanent.</p></div>
             <?php endif; ?>
             <form method="post">
                 <?php wp_nonce_field('adct_parish_intake_save_settings', 'adct_parish_intake_settings_nonce'); ?>
@@ -240,6 +296,56 @@ final class ParserPage
                         <td>
                             <input type="number" step="0.05" min="0" max="1" name="ai_threshold" value="<?php echo esc_attr((string) $settings['ai_threshold']); ?>" />
                             <p class="description">Messages scoring below this confidence value will be sent to the AI fallback when enabled.</p>
+                        </td>
+                    </tr>
+                </table>
+                <h2>Retention and cleanup</h2>
+                <p>Retention cleanup is off by default. Enable only what you need and set clear retention periods first, because the plugin deletes data permanently once it is eligible. Raw-data pruning removes stored `.eml` files and related attachment files after the retention period; Processed-folder pruning removes old messages from the IMAP mailbox. Expired action tokens are removed after 30 days past expiry and audit log rows older than 24 months are pruned only when their separate switches are enabled.</p>
+                <table class="form-table" role="presentation">
+                    <tr>
+                        <th scope="row">Raw message retention</th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="retention_raw_enabled" value="1" <?php checked($settings['retention_raw_enabled']); ?> />
+                                Delete stored `.eml` files and attachments after the retention period
+                            </label>
+                            <p class="description">Keep the message row and metadata, but remove the raw mail and attachment files after the selected number of days. Leave this off if you still need raw mail for review or reprocessing.</p>
+                            <label for="adct-pi-retention-raw-days">Delete after</label>
+                            <input id="adct-pi-retention-raw-days" type="number" min="1" step="1" name="retention_raw_days" value="<?php echo esc_attr((string) $settings['retention_raw_days']); ?>" />
+                            <span class="description">days</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Processed folder pruning</th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="retention_processed_enabled" value="1" <?php checked($settings['retention_processed_enabled']); ?> />
+                                Delete old messages from the mailbox's Processed folder
+                            </label>
+                            <p class="description">This removes messages from the IMAP Processed folder after the selected number of days. The deletion is irreversible and happens on the live mailbox, so enable it only when the mailbox contents are no longer needed.</p>
+                            <label for="adct-pi-retention-processed-days">Prune after</label>
+                            <input id="adct-pi-retention-processed-days" type="number" min="1" step="1" name="retention_processed_days" value="<?php echo esc_attr((string) $settings['retention_processed_days']); ?>" />
+                            <span class="description">days</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Action token cleanup</th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="retention_action_tokens_enabled" value="1" <?php checked($settings['retention_action_tokens_enabled']); ?> />
+                                Delete expired confirmation, login and approval tokens after 30 days
+                            </label>
+                            <p class="description">This removes only tokens whose own expiry date has already passed.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Audit log cleanup</th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="retention_audit_enabled" value="1" <?php checked($settings['retention_audit_enabled']); ?> />
+                                Delete audit log rows older than 24 months
+                            </label>
+                            <p class="description">Keep this off if you need a longer review or compliance trail.</p>
                         </td>
                     </tr>
                 </table>
@@ -444,6 +550,18 @@ final class ParserPage
             'openrouter_api_key_is_constant' => $secretResolver->isConstantConfigured(SecretRegistry::AI_API_KEY),
             'openrouter_api_key_is_saved' => $secretResolver->hasStoredOption(SecretRegistry::AI_API_KEY),
             'ai_threshold' => (float) get_option('adct_parish_intake_ai_threshold', '0.55'),
+            'retention_raw_enabled' => get_option(RetentionSettings::RAW_ENABLED_OPTION, '0') === '1',
+            'retention_raw_days' => $this->retentionDays(
+                get_option(RetentionSettings::RAW_DAYS_OPTION, RetentionSettings::DEFAULT_RAW_DAYS),
+                RetentionSettings::DEFAULT_RAW_DAYS
+            ),
+            'retention_processed_enabled' => get_option(RetentionSettings::PROCESSED_ENABLED_OPTION, '0') === '1',
+            'retention_processed_days' => $this->retentionDays(
+                get_option(RetentionSettings::PROCESSED_DAYS_OPTION, RetentionSettings::DEFAULT_PROCESSED_DAYS),
+                RetentionSettings::DEFAULT_PROCESSED_DAYS
+            ),
+            'retention_action_tokens_enabled' => get_option(RetentionSettings::ACTION_TOKENS_ENABLED_OPTION, '0') === '1',
+            'retention_audit_enabled' => get_option(RetentionSettings::AUDIT_ENABLED_OPTION, '0') === '1',
             'section_keywords' => $this->sectionKeywords(),
         ];
     }
@@ -471,5 +589,12 @@ final class ParserPage
         return is_array($keywordLists)
             ? SectionSkipper::sanitizeKeywordLists($keywordLists)
             : SectionSkipper::defaultKeywordLists();
+    }
+
+    private function retentionDays(mixed $value, int $default): int
+    {
+        $days = filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+
+        return is_int($days) ? $days : $default;
     }
 }

@@ -574,6 +574,13 @@ final class PollingMailbox implements MailboxInterface
         return $this->server->uidValidity;
     }
 
+    public function uidNext(string $folder): int
+    {
+        $uids = array_map('intval', array_keys($this->server->inbox));
+
+        return $uids === [] ? 1 : max($uids) + 1;
+    }
+
     public function search(MailboxSearchCriteria $criteria): array
     {
         ++$this->server->searchCount;
@@ -595,6 +602,11 @@ final class PollingMailbox implements MailboxInterface
         sort($uids, SORT_NUMERIC);
 
         return $uids;
+    }
+
+    public function searchFolder(MailboxSearchCriteria $criteria, string $folder): array
+    {
+        return $this->search($criteria);
     }
 
     public function fetch(int $uid): RawMailMessage
@@ -636,6 +648,22 @@ final class PollingMailbox implements MailboxInterface
 
         if (! array_key_exists($uid, $this->server->inbox)) {
             throw new RuntimeException('The scripted message was already moved.');
+        }
+
+        unset($this->server->inbox[$uid]);
+        $this->server->movedTo[$folder] ??= [];
+        $this->server->movedTo[$folder][] = $uid;
+    }
+
+    public function delete(int $uid, string $folder): void
+    {
+        if ($this->server->failNextMove) {
+            $this->server->failNextMove = false;
+            throw new RuntimeException('The scripted delete failed.');
+        }
+
+        if (! array_key_exists($uid, $this->server->inbox)) {
+            throw new RuntimeException('The scripted message was already deleted.');
         }
 
         unset($this->server->inbox[$uid]);
