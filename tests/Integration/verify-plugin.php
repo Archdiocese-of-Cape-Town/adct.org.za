@@ -1,6 +1,9 @@
 <?php
 
 use ADCT\ParishIntake\Core\Auth\Capabilities;
+use ADCT\ParishIntake\Core\Approval\ApprovalRoute;
+use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;
+use ADCT\ParishIntake\Core\Approval\ApproverSettings;
 use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
 use ADCT\ParishIntake\Core\Directory\ImportRow;
@@ -8,10 +11,13 @@ use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
+use ADCT\ParishIntake\WordPress\Directory\DeaneryApproverAssignmentService;
 
 require_once ABSPATH . 'wp-admin/includes/plugin.php';
 
@@ -229,8 +235,9 @@ $importService = new DirectoryImportService(
 $contactTable = $wpdb->prefix . 'adct_pi_parish_contacts';
 $parishTable = $wpdb->prefix . 'adct_pi_parishes';
 $deaneryTable = $wpdb->prefix . 'adct_pi_deaneries';
+$approverTable = $wpdb->prefix . 'adct_pi_deanery_approvers';
 
-foreach ([$contactTable, $parishTable, $deaneryTable] as $table) {
+foreach ([$approverTable, $contactTable, $parishTable, $deaneryTable] as $table) {
     if ($wpdb->query("DELETE FROM {$table}") === false) {
         $fail('The integration directory tables could not be reset.');
     }
@@ -358,6 +365,216 @@ if (
     $fail('A repeated import changed an existing parish contact trust value.');
 }
 
+$centralDeanery = $deaneryRepository->findBySlug('central');
+
+if ($centralDeanery === null) {
+    $fail('The central deanery could not be found after importing the seed directory.');
+}
+
+$centralDeaneryId = (int) $centralDeanery['id'];
+$centralParishes = $parishRepository->findForDirectory([
+    'deanery_id' => $centralDeaneryId,
+    'status' => 'active',
+], 2, 0);
+
+if (count($centralParishes) !== 2) {
+    $fail('Two active central deanery parishes are required for the approval route test.');
+}
+
+$centralParishIds = array_map(
+    static fn (array $parish): int => (int) $parish['id'],
+    $centralParishes
+);
+$routeTimestamp = $clock->now()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+
+if ($parishRepository->updateDeaneryForParishes(
+    $centralParishIds,
+    $centralDeaneryId,
+    $routeTimestamp
+) < 1) {
+    $fail('The sample parishes could not be assigned to the central deanery.');
+}
+
+$approverRepository = new DeaneryApproverRepository($database);
+$assignmentService = new DeaneryApproverAssignmentService($approverRepository);
+$approverAssignmentIds = [];
+$approverUserIds = [];
+$mailAttemptCount = 0;
+$mailAttemptFilter = static function ($pre, $arguments) use (&$mailAttemptCount) {
+    ++$mailAttemptCount;
+
+    return true;
+};
+add_filter('pre_wp_mail', $mailAttemptFilter, 10, 2);
+
+try {
+    foreach ([
+        [
+            'login' => 'route-approver-one',
+            'account_email' => 'route-approver-one@example.test',
+            'approval_email' => 'approval-one@example.test',
+            'label' => 'Sample dean',
+            'mode' => ApproverSettings::NOTIFY_EACH,
+        ],
+        [
+            'login' => 'route-approver-two',
+            'account_email' => 'route-approver-two@example.test',
+            'approval_email' => 'approval-two@example.test',
+            'label' => 'Sample assistant',
+            'mode' => ApproverSettings::NOTIFY_DIGEST,
+        ],
+    ] as $index => $approver) {
+        $settings = new ApproverSettings(
+            $approver['approval_email'],
+            $approver['label'],
+            $approver['mode'],
+            true,
+            true
+        );
+        $existingUser = get_user_by('email', $approver['account_email']);
+
+        if ($existingUser instanceof WP_User) {
+            $userId = (int) $existingUser->ID;
+            $assignmentId = $assignmentService->assignExistingUser(
+                $centralDeaneryId,
+                $userId,
+                $settings,
+                $routeTimestamp
+            );
+        } else {
+            $assignmentId = $assignmentService->createUserAndAssign(
+                $centralDeaneryId,
+                $approver['login'],
+                $approver['account_email'],
+                $settings,
+                $routeTimestamp
+            );
+            $createdUser = get_user_by('email', $approver['account_email']);
+
+            if (! $createdUser instanceof WP_User) {
+                $fail('The sample deanery approver WordPress user could not be found after creation.');
+            }
+
+            $userId = (int) $createdUser->ID;
+        }
+
+        $approverAssignmentIds[$index] = $assignmentId;
+        $approverUserIds[$index] = $userId;
+    }
+} finally {
+    remove_filter('pre_wp_mail', $mailAttemptFilter, 10);
+}
+
+if ($mailAttemptCount !== 0) {
+    $fail('Creating deanery approver users attempted to send an email.');
+}
+
+$routeResolver = new ApprovalRouteResolver(new ApprovalRouteRepository($database));
+
+foreach ($centralParishIds as $centralParishId) {
+    $route = $routeResolver->forParish($centralParishId);
+
+    if (
+        $route->reviewersOnly
+        || $route->reason !== ApprovalRoute::REASON_OK
+        || count($route->approvers) !== 2
+    ) {
+        $fail('A central deanery parish did not resolve to both active approvers and reviewers.');
+    }
+}
+
+$noDeaneryParishId = $parishRepository->insert([
+    'name' => 'Sample Group Without Deanery',
+    'slug' => 'sample-group-without-deanery',
+    'kind' => 'group',
+    'deanery_id' => null,
+    'status' => 'active',
+    'created_at' => $routeTimestamp,
+    'updated_at' => $routeTimestamp,
+]);
+$noDeaneryRoute = $routeResolver->forParish($noDeaneryParishId);
+
+if (
+    ! $noDeaneryRoute->reviewersOnly
+    || $noDeaneryRoute->reason !== ApprovalRoute::REASON_NO_DEANERY
+) {
+    $fail('A parish without a deanery did not resolve to reviewers only.');
+}
+
+$cityDeanery = $deaneryRepository->findBySlug('city-bowl');
+
+if ($cityDeanery === null) {
+    $fail('The city-bowl deanery could not be found.');
+}
+
+$cityDeaneryId = (int) $cityDeanery['id'];
+$extraAssignmentId = $assignmentService->assignExistingUser(
+    $cityDeaneryId,
+    $approverUserIds[0],
+    new ApproverSettings(
+        'approval-one-city@example.test',
+        'Sample assistant',
+        ApproverSettings::NOTIFY_EACH,
+        false,
+        true
+    ),
+    $routeTimestamp
+);
+$assignmentService->deactivateAssignment(
+    $approverAssignmentIds[0],
+    $centralDeaneryId,
+    $routeTimestamp
+);
+$firstApproverUser = get_user_by('id', $approverUserIds[0]);
+
+if (! ($firstApproverUser instanceof WP_User) || ! in_array('deanery_approver', $firstApproverUser->roles, true)) {
+    $fail('Deactivating one assignment removed a role still needed by another active assignment.');
+}
+
+$assignmentService->deactivateAssignment($extraAssignmentId, $cityDeaneryId, $routeTimestamp);
+$firstApproverUser = get_user_by('id', $approverUserIds[0]);
+
+if ($firstApproverUser instanceof WP_User && in_array('deanery_approver', $firstApproverUser->roles, true)) {
+    $fail('The deanery approver role remained after the user lost their final active assignment.');
+}
+
+$administratorAssignmentId = $assignmentService->assignExistingUser(
+    $cityDeaneryId,
+    (int) $administrators[0]->ID,
+    new ApproverSettings(
+        'administrator-approval@example.test',
+        'Sample reviewer account',
+        ApproverSettings::NOTIFY_EACH,
+        true,
+        true
+    ),
+    $routeTimestamp
+);
+$administratorAfterAssignment = get_user_by('id', (int) $administrators[0]->ID);
+
+if (
+    ! ($administratorAfterAssignment instanceof WP_User)
+    || ! in_array('administrator', $administratorAfterAssignment->roles, true)
+    || ! in_array('deanery_approver', $administratorAfterAssignment->roles, true)
+) {
+    $fail('Assigning an existing user removed one of their other WordPress roles.');
+}
+
+$assignmentService->deactivateAssignment(
+    $administratorAssignmentId,
+    $cityDeaneryId,
+    $routeTimestamp
+);
+$administratorAfterDeactivation = get_user_by('id', (int) $administrators[0]->ID);
+
+if (
+    ! ($administratorAfterDeactivation instanceof WP_User)
+    || ! in_array('administrator', $administratorAfterDeactivation->roles, true)
+    || in_array('deanery_approver', $administratorAfterDeactivation->roles, true)
+) {
+    $fail('Removing the final approver assignment changed the administrator role.');
+}
+
 $secondParishId = (int) $wpdb->get_var($wpdb->prepare(
     "SELECT id FROM {$parishTable} WHERE id <> %d ORDER BY id ASC LIMIT 1",
     $firstParishId
@@ -406,6 +623,89 @@ if (count($senderLinkRows) !== 2) {
     $fail('The Senders repository query did not return both parish links.');
 }
 
+$deaneriesSlug = 'adct-parish-intake-deaneries';
+$deaneryItems = array_values(array_filter(
+    $GLOBALS['submenu'][$parentSlug] ?? [],
+    static fn ($item): bool => is_array($item) && ($item[2] ?? null) === $deaneriesSlug
+));
+
+if (count($deaneryItems) !== 1 || $deaneryItems[0][0] !== 'Deaneries') {
+    $fail('The Deaneries admin submenu was not registered for a directory manager.');
+}
+
+$deaneriesPageHook = get_plugin_page_hookname($deaneriesSlug, $parentSlug);
+if (has_action($deaneriesPageHook) === false) {
+    $fail('The Deaneries page callback was not registered.');
+}
+
+$previousGet = $_GET;
+$_GET = ['page' => $deaneriesSlug];
+ob_start();
+try {
+    do_action($deaneriesPageHook);
+} finally {
+    $deaneriesHtml = (string) ob_get_clean();
+    $_GET = $previousGet;
+}
+
+if (
+    strpos($deaneriesHtml, '<h1 class="wp-heading-inline">Deaneries</h1>') === false
+    || strpos($deaneriesHtml, 'No active approver — reviewers only') === false
+) {
+    $fail('The Deaneries page did not render its list and reviewers-only warning.');
+}
+
+$previousGet = $_GET;
+$_GET = ['action' => 'edit', 'id' => (string) $centralDeaneryId];
+ob_start();
+try {
+    do_action($deaneriesPageHook);
+} finally {
+    $centralDeaneryHtml = (string) ob_get_clean();
+    $_GET = $previousGet;
+}
+
+foreach ([
+    '<h2>Deanery approvers</h2>',
+    'approval-one@example.test',
+    'approval-two@example.test',
+    'name="user_source"',
+    'name="new_user_login"',
+    'name="new_user_email"',
+    'name="approval_email"',
+    'name="notify_mode"',
+    'name="reminders_enabled"',
+    'name="active"',
+] as $approverField) {
+    if (strpos($centralDeaneryHtml, $approverField) === false) {
+        $fail('The Deanery edit page is missing an approver field or assignment.');
+    }
+}
+
+$previousGet = $_GET;
+$_GET = ['action' => 'add'];
+ob_start();
+try {
+    do_action($deaneriesPageHook);
+} finally {
+    $newDeaneryHtml = (string) ob_get_clean();
+    $_GET = $previousGet;
+}
+
+foreach ([
+    '<h1>Add deanery</h1>',
+    'name="name"',
+    'name="slug"',
+    'name="dean_name"',
+    'name="vice_dean_name"',
+    'name="secretary_name"',
+    'name="status"',
+] as $deaneryField) {
+    if (strpos($newDeaneryHtml, $deaneryField) === false) {
+        $fail('The Add deanery screen is missing a required field.');
+    }
+}
+
 $parentSlug = 'adct-parish-intake';
 $parishesSlug = 'adct-parish-intake-parishes';
 $parishItems = array_values(array_filter(
@@ -437,8 +737,12 @@ if (strpos($parishesHtml, '<h1 class="wp-heading-inline">Parishes</h1>') === fal
     $fail('The Parishes page did not render for a directory manager.');
 }
 
-if (strpos($parishesHtml, 'name="search"') === false || strpos($parishesHtml, 'name="csv_file"') === false) {
-    $fail('The Parishes screen is missing its search or CSV import controls.');
+if (
+    strpos($parishesHtml, 'name="search"') === false
+    || strpos($parishesHtml, 'name="csv_file"') === false
+    || strpos($parishesHtml, 'name="parish_ids[]"') === false
+) {
+    $fail('The Parishes screen is missing its search, CSV import or bulk assignment controls.');
 }
 
 $previousGet = $_GET;
@@ -486,6 +790,20 @@ if (
     $fail('The parish edit screen did not render its linked contacts section.');
 }
 
+$previousGet = $_GET;
+$_GET = ['action' => 'edit', 'id' => (string) $noDeaneryParishId];
+ob_start();
+try {
+    do_action($parishesPageHook);
+} finally {
+    $noDeaneryParishHtml = (string) ob_get_clean();
+    $_GET = $previousGet;
+}
+
+if (strpos($noDeaneryParishHtml, '<strong>Reviewers only.</strong>') === false) {
+    $fail('The parish edit screen did not clearly show its reviewers-only route.');
+}
+
 $sendersSlug = 'adct-parish-intake-senders';
 $sendersItems = array_values(array_filter(
     $GLOBALS['submenu'][$parentSlug] ?? [],
@@ -529,4 +847,15 @@ if ($missingSendersContent !== []) {
         . implode(', ', $missingSendersContent) . ').');
 }
 
-WP_CLI::success('Release ZIP activation, directory CSV imports, parish contacts, Senders admin screen and Manual parser integration checks passed.');
+$assignmentService->deactivateAssignment(
+    $approverAssignmentIds[1],
+    $centralDeaneryId,
+    $routeTimestamp
+);
+$secondApproverUser = get_user_by('id', $approverUserIds[1]);
+
+if ($secondApproverUser instanceof WP_User && in_array('deanery_approver', $secondApproverUser->roles, true)) {
+    $fail('The final sample approver role was not removed during integration cleanup.');
+}
+
+WP_CLI::success('Release ZIP activation, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');

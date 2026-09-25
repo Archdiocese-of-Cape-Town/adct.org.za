@@ -39,15 +39,25 @@ Parish Intake adds these WordPress roles and capabilities:
 
 Assign a role from **Users → All Users → Edit** (or while adding a user). Role changes are additive: upgrades add missing Parish Intake capabilities and do not replace other capabilities already assigned to a role.
 
-A deanery approver must also have an active assignment to one or more deaneries. The assignment is stored in `adct_pi_deanery_approvers`; the admin screen for managing those assignments will be added later. A role without an active assignment cannot approve deanery items, so do not attempt direct database edits. An archdiocese reviewer with the `adct_pi_review` capability can approve items from any deanery, including parishes with no deanery.
+A deanery approver must also have an active assignment to one or more deaneries. Manage these assignments from **Parish Intake → Deaneries**; a role without an active assignment cannot approve deanery items, so do not attempt direct database edits. An archdiocese reviewer with the `adct_pi_review` capability can approve items from any deanery, including parishes with no deanery.
 
-The parish portal, magic-link sign-in and its long-session policy are separate later work. This change establishes roles and access boundaries only; parish contacts and deanery approvers do not gain a `wp-admin` interface.
+The parish portal, magic-link sign-in and its long-session policy are separate later work. The directory screens manage deanery assignments, but parish contacts and deanery approvers still do not gain a `wp-admin` interface.
+
+## Manage deaneries and approvers
+
+An Administrator or Intake manager with the `adct_pi_manage_directory` capability can open **Parish Intake → Deaneries**. Add, edit or deactivate a deanery; its dean, vice-dean and secretary names are display-only and do not grant approval access. The seeded deanery CSV can still be imported from **Parish Intake → Parishes**; it imports no approver accounts or email addresses.
+
+Edit a deanery to assign several approvers. Select an existing WordPress user or create a new account, then set the approval email, label, per-item or daily-digest notifications, reminders and active status. The approval email is separate from the WordPress account email. A newly created account receives a random password and **no WordPress new-user notification or other email**. Existing users keep their other WordPress roles when `deanery_approver` is added. Deactivating an assignment preserves its row; the role is removed only when that user has no other active deanery assignments.
+
+A parish in an inactive deanery, a parish with no deanery, or a parish whose deanery has no active approver is clearly marked **Reviewers only**. Its events remain reviewable by archdiocese reviewers; they never wait for a dean to be set up.
 
 ## Manage the parish directory
 
 An Administrator or Intake manager with the `adct_pi_manage_directory` capability can open **Parish Intake → Parishes**. The list searches name, slug, area and suburb, and can be filtered by kind, deanery and status. Use **Add parish** or select a parish name to edit it. The form includes its deanery and parent parish, address, coordinates, website, phone, expected cadence, reminders, status and notes.
 
 The map helper opens OpenStreetMap at saved coordinates, or searches the saved address in Google Maps when coordinates are blank. Copy the latitude and longitude from the map into the form; geocoding is not automatic.
+
+To change several assignments at once, select parish rows on the current list page, choose a deanery (or **No deanery**) and select **Assign to selected parishes**. The list and each parish edit screen show **Reviewers only** whenever no active deanery approver can receive the item.
 
 ### Import parishes
 

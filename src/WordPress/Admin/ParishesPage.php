@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Admin;
 
+use ADCT\ParishIntake\Core\Approval\ApprovalRoute;
+use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\CsvFormulaGuard;
@@ -36,6 +38,7 @@ final class ParishesPage
         private ParishContactRepository $contacts,
         private ContactService $contactService,
         private DirectoryImportService $importService,
+        private ApprovalRouteResolver $approvalRouteResolver,
         private ClockInterface $clock
     ) {
     }
@@ -141,45 +144,79 @@ final class ParishesPage
                 </div>
             </form>
 
-            <table class="widefat striped">
-                <thead>
-                    <tr>
-                        <th scope="col">Name</th>
-                        <th scope="col">Kind</th>
-                        <th scope="col">Deanery</th>
-                        <th scope="col">Area / suburb</th>
-                        <th scope="col">Status</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php if ($rows === []) : ?>
-                        <tr><td colspan="5">No parishes match these filters.</td></tr>
-                    <?php else : ?>
-                        <?php foreach ($rows as $row) : ?>
-                            <tr>
-                                <td>
-                                    <strong><a href="<?php echo esc_url($this->pageUrl([
-                                        'action' => 'edit',
-                                        'id' => (int) $row['id'],
-                                    ])); ?>"><?php echo esc_html((string) $row['name']); ?></a></strong>
-                                    <br /><code><?php echo esc_html((string) $row['slug']); ?></code>
-                                </td>
-                                <td><?php echo esc_html($this->label((string) $row['kind'])); ?></td>
-                                <td><?php echo esc_html((string) ($row['deanery_name'] ?? '')); ?></td>
-                                <td>
-                                    <?php
-                                    echo esc_html(implode(' / ', array_filter([
-                                        (string) ($row['area'] ?? ''),
-                                        (string) ($row['suburb'] ?? ''),
-                                    ], static fn (string $value): bool => $value !== '')));
-                                    ?>
-                                </td>
-                                <td><?php echo esc_html($this->label((string) $row['status'])); ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                </tbody>
-            </table>
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                <input type="hidden" name="action" value="adct_pi_bulk_assign_parishes" />
+                <?php wp_nonce_field('adct_pi_bulk_assign_parishes', 'bulk_assign_nonce'); ?>
+                <div class="tablenav top">
+                    <div class="alignleft actions">
+                        <label for="parish-bulk-deanery">Assign selected parishes to</label>
+                        <select id="parish-bulk-deanery" name="deanery_id">
+                            <option value="0">No deanery (reviewers only)</option>
+                            <?php foreach ($deaneries as $deanery) : ?>
+                                <option value="<?php echo esc_attr((string) $deanery['id']); ?>">
+                                    <?php echo esc_html((string) $deanery['name']); ?>
+                                    <?php echo (string) ($deanery['status'] ?? 'active') === 'inactive' ? ' (inactive)' : ''; ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                        <button class="button" type="submit">Assign to selected parishes</button>
+                    </div>
+                    <br class="clear" />
+                </div>
+
+                <table class="widefat striped">
+                    <thead>
+                        <tr>
+                            <th scope="col"><span class="screen-reader-text">Select parish</span></th>
+                            <th scope="col">Name</th>
+                            <th scope="col">Kind</th>
+                            <th scope="col">Deanery / approval route</th>
+                            <th scope="col">Area / suburb</th>
+                            <th scope="col">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if ($rows === []) : ?>
+                            <tr><td colspan="6">No parishes match these filters.</td></tr>
+                        <?php else : ?>
+                            <?php foreach ($rows as $row) : ?>
+                                <?php $route = $this->approvalRouteResolver->forParish((int) $row['id']); ?>
+                                <tr>
+                                    <th scope="row" class="check-column">
+                                        <input type="checkbox" name="parish_ids[]" value="<?php echo esc_attr((string) $row['id']); ?>" aria-label="<?php echo esc_attr('Select ' . (string) $row['name']); ?>" />
+                                    </th>
+                                    <td>
+                                        <strong><a href="<?php echo esc_url($this->pageUrl([
+                                            'action' => 'edit',
+                                            'id' => (int) $row['id'],
+                                        ])); ?>"><?php echo esc_html((string) $row['name']); ?></a></strong>
+                                        <br /><code><?php echo esc_html((string) $row['slug']); ?></code>
+                                    </td>
+                                    <td><?php echo esc_html($this->label((string) $row['kind'])); ?></td>
+                                    <td>
+                                        <?php if ($route->reviewersOnly) : ?>
+                                            <strong>Reviewers only</strong>
+                                            <br /><span class="description"><?php echo esc_html($this->routeReason($route)); ?></span>
+                                        <?php else : ?>
+                                            <?php echo esc_html((string) ($row['deanery_name'] ?? '')); ?>
+                                            <br /><span class="description"><?php echo esc_html(count($route->approvers) . ' active approver(s) plus reviewers'); ?></span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <?php
+                                        echo esc_html(implode(' / ', array_filter([
+                                            (string) ($row['area'] ?? ''),
+                                            (string) ($row['suburb'] ?? ''),
+                                        ], static fn (string $value): bool => $value !== '')));
+                                        ?>
+                                    </td>
+                                    <td><?php echo esc_html($this->label((string) $row['status'])); ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </form>
 
             <?php $this->renderPagination($filters, $page, $total); ?>
 
@@ -298,6 +335,58 @@ final class ParishesPage
         }
 
         wp_safe_redirect($this->pageUrl(['saved' => 1]));
+        exit;
+    }
+
+    public function handleBulkAssign(): void
+    {
+        $this->requireDirectoryCapability();
+        check_admin_referer('adct_pi_bulk_assign_parishes', 'bulk_assign_nonce');
+
+        $rawIds = $_POST['parish_ids'] ?? null;
+
+        if (! is_array($rawIds) || $rawIds === [] || count($rawIds) > 100) {
+            wp_die(esc_html__('Select between 1 and 100 parishes to assign.', 'adct-parish-intake'), '', [
+                'response' => 400,
+            ]);
+        }
+
+        $parishIds = [];
+
+        foreach ($rawIds as $rawId) {
+            if (! is_scalar($rawId) || preg_match('/^[1-9][0-9]*$/D', (string) $rawId) !== 1) {
+                wp_die(esc_html__('The selected parish list is invalid. Select the parishes again.', 'adct-parish-intake'), '', [
+                    'response' => 400,
+                ]);
+            }
+
+            $parishIds[] = (int) $rawId;
+        }
+
+        $parishIds = array_values(array_unique($parishIds));
+        $deaneryId = absint($this->postText('deanery_id'));
+
+        if ($deaneryId > 0 && $this->deaneries->findById($deaneryId) === null) {
+            wp_die(esc_html__('Choose a deanery from the list.', 'adct-parish-intake'), '', [
+                'response' => 400,
+            ]);
+        }
+
+        foreach ($parishIds as $parishId) {
+            if ($this->parishes->findById($parishId) === null) {
+                wp_die(esc_html__('One of the selected parishes could not be found. Select them again.', 'adct-parish-intake'), '', [
+                    'response' => 400,
+                ]);
+            }
+        }
+
+        $this->parishes->updateDeaneryForParishes(
+            $parishIds,
+            $deaneryId > 0 ? $deaneryId : null,
+            $this->timestamp()
+        );
+
+        wp_safe_redirect($this->pageUrl(['bulk_assigned' => count($parishIds)]));
         exit;
     }
 
@@ -566,6 +655,8 @@ final class ParishesPage
         <div class="wrap">
             <h1><?php echo $isNew ? 'Add parish' : 'Edit parish'; ?></h1>
             <p><a href="<?php echo esc_url($this->pageUrl()); ?>">&larr; Back to parishes</a></p>
+
+            <?php $this->renderApprovalRouteStatus($isNew ? null : $record); ?>
 
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <?php wp_nonce_field('adct_pi_save_parish', 'adct_pi_save_parish_nonce'); ?>
@@ -996,6 +1087,15 @@ final class ParishesPage
             <?php
         }
 
+        if (isset($_GET['bulk_assigned'])) {
+            $count = absint($this->getText('bulk_assigned'));
+            ?>
+            <div class="notice notice-success is-dismissible">
+                <p><?php echo esc_html((string) $count); ?> selected parish record(s) assigned.</p>
+            </div>
+            <?php
+        }
+
         if (isset($_GET['imported'])) {
             $type = sanitize_key($this->getText('import_type'));
             $counts = [
@@ -1150,6 +1250,49 @@ final class ParishesPage
     private function contactNonceAction(string $action, int $parishId, int $contactId): string
     {
         return 'adct_pi_parish_contact_' . $action . '_' . $parishId . '_' . $contactId;
+    }
+
+    /**
+     * @param array<string, mixed>|null $record
+     */
+    private function renderApprovalRouteStatus(?array $record): void
+    {
+        if ($record === null) {
+            ?>
+            <div class="notice notice-warning inline">
+                <p><strong>Reviewers only.</strong> A new parish has no deanery until one is selected. A parish with no deanery, or no active deanery approver, goes to archdiocese reviewers only.</p>
+            </div>
+            <?php
+
+            return;
+        }
+
+        $route = $this->approvalRouteResolver->forParish((int) ($record['id'] ?? 0));
+
+        if ($route->reviewersOnly) {
+            ?>
+            <div class="notice notice-warning inline">
+                <p><strong>Reviewers only.</strong> <?php echo esc_html($this->routeReason($route)); ?></p>
+            </div>
+            <?php
+
+            return;
+        }
+        ?>
+        <div class="notice notice-info inline">
+            <p>Approval route: <strong><?php echo esc_html((string) count($route->approvers)); ?> active deanery approver(s)</strong> and archdiocese reviewers.</p>
+        </div>
+        <?php
+    }
+
+    private function routeReason(ApprovalRoute $route): string
+    {
+        return match ($route->reason) {
+            ApprovalRoute::REASON_NO_DEANERY => 'No deanery is assigned to this parish.',
+            ApprovalRoute::REASON_NO_ACTIVE_APPROVER => 'The assigned deanery has no active approver.',
+            ApprovalRoute::REASON_DEANERY_INACTIVE => 'The assigned deanery is inactive.',
+            default => 'No active deanery approver is available.',
+        };
     }
 
     private function requireDirectoryCapability(): void

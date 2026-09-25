@@ -41,10 +41,12 @@ final class WordPressDeaneryApprovalCheckerTest extends TestCase
         self::assertTrue($checker->canApprove(42, 12, [Capabilities::APPROVE_DEANERY]));
         self::assertFalse($checker->canApprove(42, 13, [Capabilities::APPROVE_DEANERY]));
         self::assertSame(
-            'SELECT deanery_id FROM wp_adct_pi_deanery_approvers WHERE wp_user_id = %d AND active = %d',
+            'SELECT a.deanery_id FROM wp_adct_pi_deanery_approvers a '
+            . 'INNER JOIN wp_adct_pi_deaneries d ON d.id = a.deanery_id '
+            . 'WHERE a.wp_user_id = %d AND a.active = %d AND d.status = %s',
             $this->database->preparedSql
         );
-        self::assertSame([42, 1], $this->database->preparedArguments);
+        self::assertSame([42, 1, 'active'], $this->database->preparedArguments);
         self::assertSame('prepared-query', $this->database->selectedQuery);
     }
 

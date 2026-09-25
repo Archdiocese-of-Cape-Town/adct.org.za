@@ -21,7 +21,7 @@ See [ADR 0009](decisions/0009-preview-and-test-environments.md) for why previews
 
 ## Planned approval flow test cases
 
-The following cases will be added alongside the approval work ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md)). The current WordPress integration suite covers plugin activation and the Manual parser admin screen only:
+The route-resolution subset is covered by #68: unit tests exercise two active approvers, a parish without a deanery, no active approvers (including an inactive assignment), and an inactive deanery. The WordPress integration suite also assigns two approvers to a deanery, resolves routes for its parishes, checks reviewer-only behavior without a deanery, and verifies role retention and removal. End-to-end event lifecycle cases remain planned alongside the approval work ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md)):
 - A new event from a verified contact doesn't publish after confirmation alone. It goes to `awaiting_approval`.
 - An awaiting item is visible to the parish's deanery approvers **and** to archdiocese reviewers, and not to approvers of other deaneries.
 - First to act wins: two approvals (or an approve and a reject) for the same item leave exactly one decision. The second action gets "already decided".

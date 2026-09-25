@@ -38,11 +38,15 @@ final class WordPressDeaneryApprovalChecker
 
         global $wpdb;
 
-        $table = $wpdb->prefix . 'adct_pi_deanery_approvers';
+        $assignments = $wpdb->prefix . 'adct_pi_deanery_approvers';
+        $deaneries = $wpdb->prefix . 'adct_pi_deaneries';
         $query = $wpdb->prepare(
-            "SELECT deanery_id FROM {$table} WHERE wp_user_id = %d AND active = %d",
+            "SELECT a.deanery_id FROM {$assignments} a "
+            . "INNER JOIN {$deaneries} d ON d.id = a.deanery_id "
+            . 'WHERE a.wp_user_id = %d AND a.active = %d AND d.status = %s',
             $userId,
-            1
+            1,
+            'active'
         );
 
         if (! is_string($query) || $query === '') {
