@@ -268,7 +268,7 @@ final class RetentionCleanupJob extends AbstractJob
         $messagesTable = $this->tableName('adct_pi_inbound_messages');
         $candidatesTable = $this->tableName('adct_pi_event_candidates');
         $query = $this->database->prepare(
-            'SELECT m.id, m.raw_path, m.body_text FROM ' . $messagesTable . ' m'
+            'SELECT m.id, m.raw_path FROM ' . $messagesTable . ' m'
             . ' WHERE m.retention_until <= %s'
             . ' AND m.received_at <= %s'
             . ' AND m.raw_path IS NOT NULL'

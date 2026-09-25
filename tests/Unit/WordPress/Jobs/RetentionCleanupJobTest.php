@@ -84,6 +84,11 @@ final class RetentionCleanupJobTest extends TestCase
         self::assertSame($rawTwo, $deps->database->messages[2]['raw_path']);
         self::assertSame('body two', $deps->database->messages[2]['body_text']);
         self::assertSame([$rawOne, $attOne, $rawThree, $attThree], $deps->storage->deleted);
+        self::assertCount(1, array_filter(
+            $deps->database->selects,
+            static fn (string $query): bool => str_contains($query, 'FROM `wp_adct_pi_inbound_messages`')
+        ));
+        self::assertStringNotContainsString('body_text', $deps->database->selects[0]);
     }
 
     public function testRawCleanupBatchesAndResumesFromCheckpoint(): void
@@ -473,6 +478,9 @@ final class RetentionTestDatabase implements DatabaseConnectionInterface
     /** @var list<string> */
     public array $queries = [];
 
+    /** @var list<string> */
+    public array $selects = [];
+
     /** @var array<int, array<string, mixed>> */
     public array $messages = [];
 
@@ -590,6 +598,7 @@ final class RetentionTestDatabase implements DatabaseConnectionInterface
 
         $sql = $prepared['query'];
         $arguments = $prepared['arguments'];
+        $this->selects[] = $sql;
 
         if (str_contains($sql, 'FROM `wp_adct_pi_action_tokens`')) {
             [$cutoff, $lastId, $limit] = $arguments;
