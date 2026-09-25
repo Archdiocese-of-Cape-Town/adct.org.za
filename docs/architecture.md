@@ -157,7 +157,7 @@ Parish contacts are WordPress users with a custom `parish_contact` role, linked 
 
 ## Public output
 
-- `adct_event` custom post type with an `adct_event_type` taxonomy (Liturgy/Mass, Spiritual, Formation, Social, Youth, Outreach, Fundraiser, Pilgrimage, Other – admin-editable).
+- `adct_event` custom post type with a REST-enabled `adct_event_type` taxonomy. Its seeded Social, Spiritual, Formation, Liturgy/Mass, Youth, Outreach, Fundraising, Meeting and Other terms are **provisional and admin-editable**.
 - An **occurrence table** holds each dated instance (once-off and expanded recurring), so date-range queries and "near me" sorting are simple SQL.
 - **Near me**: each parish/venue has latitude/longitude (entered once, optional free geocoding lookup). The browser's location (with permission) or a typed suburb is used to sort by distance.
 - An **ICS feed** covers everything, with filtered variants (per parish, per type), so people can subscribe in Google/Apple/Outlook calendars.

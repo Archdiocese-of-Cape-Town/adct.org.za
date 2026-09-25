@@ -10,6 +10,9 @@ use ADCT\ParishIntake\Core\Database\CreateSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MailboxSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MigrationRunner;
 use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
+use ADCT\ParishIntake\Core\Events\EventValidator;
+use ADCT\ParishIntake\Core\Events\RRulePresetMapper;
+use ADCT\ParishIntake\Core\Events\RRuleValidator;
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
 use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
@@ -65,7 +68,10 @@ use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
+use ADCT\ParishIntake\WordPress\Events\EventEditor;
+use ADCT\ParishIntake\WordPress\Events\EventPostType;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
+use DateTimeZone;
 
 final class Plugin
 {
@@ -82,6 +88,8 @@ final class Plugin
     private ParishesPage $parishesPage;
     private SendersPage $sendersPage;
     private SourcesPage $sourcesPage;
+    private EventPostType $eventPostType;
+    private EventEditor $eventEditor;
     private MailboxesPage $mailboxesPage;
 
     private function __construct(string $pluginFile)
@@ -98,6 +106,10 @@ final class Plugin
         $contacts = new ParishContactRepository($database, $directoryVersions);
         $venues = new VenueRepository($database, $directoryVersions);
         $sources = new SourceRepository($database);
+        $timezone = function_exists('wp_timezone')
+            ? wp_timezone()
+            : new DateTimeZone('Africa/Johannesburg');
+        $rruleValidator = new RRuleValidator();
         $directorySnapshots = new CachedDirectorySnapshotProvider(
             $directoryVersions,
             new WordPressDirectorySnapshotCache(),
@@ -155,6 +167,14 @@ final class Plugin
             $this->sourcesPage
         );
         $this->sendersPage = new SendersPage($contacts, $contactService, $parishes);
+        $this->eventPostType = new EventPostType();
+        $this->eventEditor = new EventEditor(
+            $parishes,
+            $venues,
+            new EventValidator($timezone, $rruleValidator),
+            new RRulePresetMapper($rruleValidator),
+            $timezone
+        );
         $stateStore = new WordPressJobStateStore();
         $jobRunner = new JobRunner(
             new WordPressJobLock(),
@@ -202,6 +222,7 @@ final class Plugin
         self::createRoleInstaller()->install();
         (new Schema())->install();
         self::createMigrationRunner()->run();
+        (new EventPostType())->activate();
     }
 
     public static function deactivate(): void
@@ -292,6 +313,14 @@ final class Plugin
             return;
         }
 
+        add_action('init', [$this->eventPostType, 'register'], 5);
+        add_action('add_meta_boxes_adct_event', [$this->eventEditor, 'registerMetaBox']);
+        add_action('save_post_adct_event', [$this->eventEditor, 'handleSavePost'], 10, 3);
+        add_action('admin_notices', [$this->eventPostType, 'renderSetupNotice']);
+        add_action('admin_notices', [$this->eventEditor, 'renderValidationNotice']);
+        add_filter('manage_adct_event_posts_columns', [$this->eventEditor, 'filterColumns']);
+        add_action('manage_adct_event_posts_custom_column', [$this->eventEditor, 'renderColumn'], 10, 2);
+        add_filter('rest_pre_insert_adct_event', [$this->eventEditor, 'validateRestRequest'], 10, 2);
         add_filter('show_admin_bar', [$this, 'hideAdminBarForPortalRoles']);
         add_action('admin_menu', [$this->parserPage, 'registerMenu']);
         add_action('admin_menu', [$this->deaneriesPage, 'registerMenu']);
