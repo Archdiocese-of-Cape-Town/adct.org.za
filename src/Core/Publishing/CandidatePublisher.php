@@ -62,6 +62,15 @@ final class CandidatePublisher
         }
 
         $fields = $this->jsonObject($row['fields'] ?? null, 'fields');
+        if (
+            (array_key_exists('match_review_required', $fields)
+                && ! is_bool($fields['match_review_required']))
+            || ($fields['match_review_required'] ?? false) === true
+            || array_key_exists('matched_candidate_id', $fields)
+        ) {
+            throw new DomainException('The candidate requires manual review of its match before publication.');
+        }
+
         $recurrence = $this->jsonObject($row['recurrence'] ?? null, 'recurrence');
         $title = $fields['title'] ?? null;
         if (! is_string($title) || trim($title) === '') {

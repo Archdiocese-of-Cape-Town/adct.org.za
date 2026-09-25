@@ -49,6 +49,9 @@ final class ConfirmationDecisionHandler implements AtomicActionTokenHandlerInter
         }
 
         $rows = $this->candidates($binding);
+        if ($binding->subjectType === 'inbound_message') {
+            $rows = $this->draftCandidates($rows);
+        }
         if ($rows === []) {
             return null;
         }
@@ -147,10 +150,7 @@ final class ConfirmationDecisionHandler implements AtomicActionTokenHandlerInter
             if ($rows === []) {
                 throw new DomainException('No undecided candidates remain.');
             }
-            $drafts = array_values(array_filter(
-                $rows,
-                static fn (array $row): bool => ($row['status'] ?? null) === 'draft'
-            ));
+            $drafts = $this->draftCandidates($rows);
             if ($drafts === [] || ($binding->subjectType === 'event_candidate' && count($drafts) !== 1)) {
                 throw new DomainException('An event was already decided.');
             }
@@ -276,6 +276,17 @@ final class ConfirmationDecisionHandler implements AtomicActionTokenHandlerInter
             throw new RuntimeException('The confirmation candidates could not be read.');
         }
         return $rows;
+    }
+
+    /** @param list<array<string, mixed>> $rows
+     *  @return list<array<string, mixed>>
+     */
+    private function draftCandidates(array $rows): array
+    {
+        return array_values(array_filter(
+            $rows,
+            static fn (array $row): bool => ($row['status'] ?? null) === 'draft'
+        ));
     }
 
     /** @param array<string, mixed> $row */

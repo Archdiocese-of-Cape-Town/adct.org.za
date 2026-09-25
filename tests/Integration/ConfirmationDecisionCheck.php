@@ -181,11 +181,24 @@ final class ConfirmationDecisionCheck
                 'unknown sender flag must be audited.');
 
             [$message, $candidate] = $case('deny', 'deny-' . $suffix . '@example.test', 'deny-' . $suffix . '@example.test', $parish);
+            $denyFields = json_decode((string) $wpdb->get_var($wpdb->prepare(
+                "SELECT fields FROM {$prefix}event_candidates WHERE id = %d",
+                $candidate[0]
+            )), true, 512, JSON_THROW_ON_ERROR);
+            $denyFields['match_review_required'] = true;
+            $check($wpdb->update(
+                $prefix . 'event_candidates',
+                ['fields' => wp_json_encode($denyFields)],
+                ['id' => $candidate[0]]
+            ) === 1, 'the denial regression candidate must require match review.');
             [, $get, $post] = $act(ActionTokenPurpose::DENY, 'event_candidate', $candidate[0], 'deny-' . $suffix . '@example.test');
+            $check($get->statusCode === 200 && str_contains($get->body, 'Synthetic deny 0'),
+                'single-candidate denial must retain its event preview, including for a match-review candidate.');
             $check(str_contains($get->body, 'adct_denial_reason') && $post('Incorrect time')->statusCode === 200,
                 'denial reason must be offered and accepted.');
             $row = $wpdb->get_row($wpdb->prepare("SELECT status, decision_note FROM {$prefix}event_candidates WHERE id = %d", $candidate[0]), ARRAY_A);
-            $check($row['status'] === 'rejected' && $row['decision_note'] === 'Incorrect time', 'denial must reject with reason.');
+            $check($row['status'] === 'rejected' && $row['decision_note'] === 'Incorrect time',
+                'a match-review candidate must remain safely deniable with a reason.');
             [, , $expiredPost] = $act(ActionTokenPurpose::CONFIRM, 'event_candidate', $candidate[0], 'deny-' . $suffix . '@example.test');
             $check($expiredPost()->statusCode === 409, 'a different confirmation cannot reverse a denial.');
 
@@ -204,12 +217,23 @@ final class ConfirmationDecisionCheck
                 'expired link must not change an event.');
 
             [$message, $candidate] = $case('all', 'all-' . $suffix . '@example.test', 'all-' . $suffix . '@example.test', $parish, 2);
+            $check($wpdb->update(
+                $prefix . 'event_candidates',
+                ['status' => 'duplicate', 'match_kind' => 'duplicate'],
+                ['id' => $candidate[0]]
+            ) === 1, 'the confirm-all mixed bulletin must contain a suppressed duplicate.');
             [, $get, $post] = $act(ActionTokenPurpose::CONFIRM, 'inbound_message', $message, 'all-' . $suffix . '@example.test');
-            $check(str_contains($get->body, 'Synthetic all 0') && str_contains($get->body, 'Synthetic all 1')
-                && $post()->statusCode === 200, 'confirm-all must show and act on both candidates.');
+            $check($get->statusCode === 200
+                && str_contains($get->body, 'Synthetic all 1')
+                && ! str_contains($get->body, 'Synthetic all 0'),
+                'confirm-all preview must show only actionable draft candidates.');
+            $check($post()->statusCode === 200, 'confirm-all must act on the actionable draft candidate.');
             foreach ($candidate as $id) {
-                $check($wpdb->get_var($wpdb->prepare("SELECT status FROM {$prefix}event_candidates WHERE id = %d", $id))
-                    === 'awaiting_approval', 'confirm-all candidate must await approval.');
+                $expectedStatus = $id === $candidate[0] ? 'duplicate' : 'awaiting_approval';
+                $check($wpdb->get_var($wpdb->prepare(
+                    "SELECT status FROM {$prefix}event_candidates WHERE id = %d",
+                    $id
+                )) === $expectedStatus, 'confirm-all must decide only actionable draft candidates.');
             }
 
             [$message, $candidate] = $case('self-dean', $deanEmail, $deanEmail, $parish);

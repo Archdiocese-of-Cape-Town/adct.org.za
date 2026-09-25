@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;
+use ADCT\ParishIntake\Core\Auth\ActionTokenBinding;
 use ADCT\ParishIntake\Core\Auth\ActionTokenHandlerRegistry;
 use ADCT\ParishIntake\Core\Auth\ActionTokenRateLimiter;
 use ADCT\ParishIntake\Core\Auth\ActionTokenRenewalService;
@@ -38,9 +39,10 @@ final class ApprovalDecisionCheck
         $recipients = new ApprovalRecipients(new ApprovalRouteResolver(new ApprovalRouteRepository($db)));
         $queue = new WordPressMailQueueRepository($db);
         $job = new ApprovalNoticeJob($db, $recipients, $tokens, Plugin::mailer(), $queue, $clock);
+        $approveHandler = new ApprovalDecisionHandler(ActionTokenPurpose::APPROVE_EVENT, $db, $recipients,
+            Plugin::candidatePublisher(), Plugin::mailer(), $clock);
         $registry = new ActionTokenHandlerRegistry([
-            new ApprovalDecisionHandler(ActionTokenPurpose::APPROVE_EVENT, $db, $recipients,
-                Plugin::candidatePublisher(), Plugin::mailer(), $clock),
+            $approveHandler,
             new ApprovalDecisionHandler(ActionTokenPurpose::REJECT_EVENT, $db, $recipients,
                 Plugin::candidatePublisher(), Plugin::mailer(), $clock),
             new ApprovalEditHandler($db, $recipients, $clock),
@@ -268,6 +270,56 @@ final class ApprovalDecisionCheck
             )) === 0 && $wpdb->get_var($wpdb->prepare(
                 "SELECT status FROM {$base}event_candidates WHERE id = %d", $ambiguous
             )) === 'awaiting_approval', 'an ambiguous match must stay in manual review without actionable email.');
+            $ambiguousGroup = 'manual-review-recovery:' . $ambiguous;
+            $noticeId = $insert('approval_notices', [
+                'candidate_id' => $ambiguous, 'recipient' => $reviewerEmail,
+                'group_key' => $ambiguousGroup, 'notify_mode' => 'each', 'queued_at' => $now,
+                'created_at' => $now, 'updated_at' => $now,
+            ]);
+            $mailId = $insert('mail_queue', [
+                'recipient' => $reviewerEmail, 'subject' => 'Synthetic approval notice',
+                'body_html' => '<p>Synthetic event.</p>', 'body_text' => 'Synthetic event.',
+                'priority' => 2, 'group_key' => $ambiguousGroup, 'status' => 'sent',
+                'created_at' => $now, 'updated_at' => $now,
+            ]);
+            $recordedApproval = $wpdb->update($base . 'event_candidates', [
+                'approved_by' => $reviewerEmail, 'approved_at' => $now, 'approved_via' => 'reviewer',
+                'decided_by' => $reviewerEmail, 'decided_at' => $now,
+            ], ['id' => $ambiguous]);
+            $recoveryRejected = false;
+            try {
+                $approveHandler->recover(new ActionTokenBinding(
+                    ActionTokenPurpose::APPROVE_EVENT,
+                    'event_candidate',
+                    $ambiguous,
+                    $reviewerEmail
+                ));
+            } catch (RuntimeException $failure) {
+                $previous = $failure->getPrevious();
+                $recoveryRejected = str_contains(
+                    $failure->getMessage(),
+                    'publication needs operator attention'
+                ) && $previous instanceof DomainException
+                    && str_contains($previous->getMessage(), 'manual review');
+            }
+            $recoveredCandidate = $wpdb->get_row($wpdb->prepare(
+                "SELECT status, approved_by, match_event_id FROM {$base}event_candidates WHERE id = %d",
+                $ambiguous
+            ), ARRAY_A);
+            $unexpectedEventId = (int) ($recoveredCandidate['match_event_id'] ?? 0);
+            if ($unexpectedEventId > 0) {
+                $posts[] = $unexpectedEventId;
+            }
+            $publishedSourceCount = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value = %s",
+                'source_candidate_id',
+                (string) $ambiguous
+            ));
+            $check($noticeId > 0 && $mailId > 0 && $recordedApproval === 1 && $recoveryRejected
+                && is_array($recoveredCandidate) && $recoveredCandidate['status'] === 'awaiting_approval'
+                && $recoveredCandidate['approved_by'] === $reviewerEmail
+                && $unexpectedEventId === 0 && $publishedSourceCount === 0,
+                'publisher recovery must fail closed for an ambiguous candidate after reviewer approval is recorded.');
 
             $wpdb->update($base . 'deanery_approvers', ['notify_mode' => 'each'], ['wp_user_id' => $deanId]);
             $batch = [];
