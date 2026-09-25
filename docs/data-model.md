@@ -116,13 +116,17 @@ Learning rule: when an unknown address submits, a `pending` row is created with 
 | role | `official` or `monitored` |
 | status | `active`, `paused`, `unreliable`, `disabled` |
 | poll_interval_minutes | at least 10 for pollable types; defaults to 1,440 (24 hours). `manual` sources are not polled and store NULL. These limits are provisional. |
-| checkpoint | JSON (e.g. IMAP UIDVALIDITY + last UID, ICS ETag, last post id) |
+| checkpoint | JSON (e.g. `{"uidvalidity":12345,"last_uid":67,"scan_complete":false}` for mailbox polling; also available for ICS ETag or last post id) |
 | last_checked_at, last_success_at, last_item_at | health tracking |
 | consecutive_failures, last_error | |
+
+The mailbox poller checks `last_checked_at` against the source's `poll_interval_minutes`. `scan_complete` remains false until a full UID scan finds no further unattempted messages. With no consecutive failures, an incomplete checkpoint resumes immediately even if the configured interval has not elapsed; old mailbox checkpoints without this field are treated as incomplete once so an interrupted scan is not delayed. Failed checks use a provisional retry delay of 10 minutes, doubled for each consecutive failure and capped at 6 hours, measured from `last_checked_at` instead of the regular source interval.
 
 The source registry already exists in schema v1, so source management does not need a schema migration. Parish-scoped `(parish_id, type, identifier)` values are unique. Saving an official parish source locks the parish row, demotes its previous official source to `monitored`, then updates `parishes.official_source_id` in the same transaction. A parish can have no official source until one is selected; at most one is official at a time. Archdiocese-wide sources (`parish_id IS NULL`) may have multiple official sources, including multiple sources of the same type (provisional; there is no cross-source uniqueness rule).
 
 Source health is changed only by the Core `SourceHealthRecorder`, not by the admin form. A success updates check/success times, resets failures and clears the last error; its item time changes only when a new item time is supplied. A failure increments the count and marks an active source `unreliable` after five consecutive failures (provisional), without overriding `paused` or `disabled`. A later success resets the failure count but does not reactivate an unreliable source; an operator must change its status. Last errors are technical diagnostics, limited to 500 characters, with email addresses redacted; adapters must not pass fetched content or personal data into the recorder.
+
+For an email source, the checkpoint records the mailbox UIDVALIDITY and highest durably handled UID. The poller saves a UID only after its message row/files are stored (or an existing duplicate is found) and the IMAP move succeeds. If UIDVALIDITY changes, it resets the UID to zero and safely rescans; the source-scoped Message-ID/content-hash de-duplication prevents normal messages from being stored again.
 
 During a parish directory import, a verified office email is also registered as that parish's official `email` source only when the parish has no official source. This is idempotent on repeat imports and provisional; an existing official source is not replaced.
 
@@ -143,12 +147,12 @@ Mailbox connection settings are kept separately from source identity and health.
 |---|---|
 | id | PK |
 | source_id | FK |
-| external_id | e.g. `Message-ID` header; unique with source_id → prevents duplicates |
-| content_hash | sha256 of normalised body; catches re-sends with a new Message-ID |
+| external_id | Normalised `Message-ID` header, or an IMAP UID/UIDVALIDITY fallback when no header exists; unique with source_id |
+| content_hash | SHA-256 of version-1 canonical JSON (`version`, `body`, `attachments`): decoded body text with CRLF/CR converted to LF, horizontal whitespace collapsed, line-edge spaces trimmed, runs of 3+ newlines reduced to 2 and outer whitespace trimmed; plus the sorted SHA-256 hashes of all attachment contents. This catches re-sends with a new Message-ID. |
 | sender_email, sender_name, subject | |
 | received_at | |
-| raw_path | path to stored raw `.eml` (not in DB, to save space) |
-| body_text | extracted plain text |
+| raw_path | Relative path to the protected, unguessably named raw `.eml` under the private uploads directory |
+| body_text | Extracted plain text; the polling stage leaves this `NULL` and does not parse events |
 | auth_results | JSON: SPF/DKIM/DMARC verdicts |
 | is_auto_reply | bool; auto-replies never get confirmations |
 | status | see state machine |
@@ -156,7 +160,9 @@ Mailbox connection settings are kept separately from source identity and health.
 | retention_until | raw data deleted after this date |
 
 ### `adct_pi_attachments`
-message_id, filename, mime_type, size_bytes, storage_path, content_hash, `extracted_text`, `extraction_method` (`pdf_text`, `ocr_external`, `ai_vision`, `manual`, `none`), status.
+`message_id`, filename, declared `mime_type`, `size_bytes`, private `storage_path`, SHA-256 `content_hash`, `extracted_text`, `extraction_method` (`pdf_text`, `ocr_external`, `ai_vision`, `manual`, `none`), status.
+
+The poller stores an attachment only when its declared MIME type is on the provisional allowlist (PDF, JPEG, PNG, WebP, HEIC and HEIF), its file signature matches, and it is no larger than 15 MiB. Unsupported, oversized and signature-mismatched attachments retain metadata and a skip status but no stored file. The allowlist is centralized in `AttachmentStoragePolicy`; skipped items are shown to administrators on the Mailboxes screen.
 
 ### `adct_pi_event_candidates`
 | Column | Notes |

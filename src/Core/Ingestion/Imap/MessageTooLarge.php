@@ -9,6 +9,7 @@ final class MessageTooLarge extends MailboxException
     public function __construct(
         public readonly int $sizeBytes,
         public readonly int $maxBytes,
+        public readonly bool $connectionUsable = true,
     ) {
         parent::__construct(
             sprintf('This message is too large to download; the configured limit is %s.', self::formatLimit($maxBytes))

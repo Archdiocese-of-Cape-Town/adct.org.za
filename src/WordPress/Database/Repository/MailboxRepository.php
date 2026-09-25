@@ -7,11 +7,12 @@ namespace ADCT\ParishIntake\WordPress\Database\Repository;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxEncryption;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettings;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
+use ADCT\ParishIntake\Core\Ports\MailboxSettingsStoreInterface;
 use DomainException;
 use InvalidArgumentException;
 use RuntimeException;
 
-final class MailboxRepository extends AbstractRepository
+final class MailboxRepository extends AbstractRepository implements MailboxSettingsStoreInterface
 {
     protected const TABLE_SUFFIX = 'adct_pi_mailboxes';
 
@@ -65,6 +66,21 @@ final class MailboxRepository extends AbstractRepository
     {
         $rows = $this->fetchRows(
             'SELECT * FROM ' . $this->tableName() . ' ORDER BY label ASC, id ASC'
+        );
+
+        return array_map(fn (array $row): MailboxSettings => $this->mapMailbox($row), $rows);
+    }
+
+    public function findActiveMailboxes(): array
+    {
+        $sources = $this->database->prefix() . 'adct_pi_sources';
+        $rows = $this->fetchRows(
+            'SELECT m.*, s.poll_interval_minutes AS source_poll_interval_minutes, '
+            . 's.last_checked_at AS source_last_checked_at, '
+            . 's.consecutive_failures AS source_consecutive_failures '
+            . 'FROM ' . $this->tableName() . " m INNER JOIN {$sources} s ON s.id = m.source_id "
+            . 'WHERE m.active = 1 AND s.type = \'email\' AND s.parish_id IS NULL AND s.status = \'active\' '
+            . 'ORDER BY m.id ASC'
         );
 
         return array_map(fn (array $row): MailboxSettings => $this->mapMailbox($row), $rows);
@@ -156,7 +172,7 @@ final class MailboxRepository extends AbstractRepository
         }
 
         try {
-            return (new MailboxSettingsValidator())->validate([
+            $settings = (new MailboxSettingsValidator())->validate([
                 'label' => (string) ($row['label'] ?? ''),
                 'host' => (string) ($row['host'] ?? ''),
                 'port' => (string) ($row['port'] ?? ''),
@@ -167,8 +183,44 @@ final class MailboxRepository extends AbstractRepository
                 'max_message_size_mb' => (string) intdiv($storedSizeBytes, $bytesPerMegabyte),
                 'active' => (int) ($row['active'] ?? 1),
             ], $mailboxId, $sourceId);
+
+            $lastCheckedAt = $row['source_last_checked_at'] ?? null;
+
+            if ($lastCheckedAt !== null && ! is_string($lastCheckedAt)) {
+                throw new RuntimeException('A stored source last-checked timestamp is invalid.');
+            }
+
+            $failures = array_key_exists('source_consecutive_failures', $row)
+                ? $row['source_consecutive_failures']
+                : 0;
+
+            return $settings->withSourcePollingState(
+                $this->nullableSourceInteger(
+                    $row['source_poll_interval_minutes'] ?? null,
+                    'poll interval'
+                ),
+                $lastCheckedAt,
+                $this->sourceInteger($failures, 'failure count')
+            );
         } catch (InvalidArgumentException $failure) {
             throw new RuntimeException('A stored mailbox has invalid settings.', 0, $failure);
         }
+    }
+
+    private function nullableSourceInteger(mixed $value, string $field): ?int
+    {
+        return $value === null ? null : $this->sourceInteger($value, $field);
+    }
+
+    private function sourceInteger(mixed $value, string $field): int
+    {
+        if (
+            (! is_int($value) && ! is_string($value))
+            || preg_match('/\A\d+\z/D', (string) $value) !== 1
+        ) {
+            throw new RuntimeException('A stored source ' . $field . ' is invalid.');
+        }
+
+        return (int) $value;
     }
 }

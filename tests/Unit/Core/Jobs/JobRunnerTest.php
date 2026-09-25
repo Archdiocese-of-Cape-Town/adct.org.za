@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Tests\Unit\Core\Jobs;
 
 use ADCT\ParishIntake\Core\Jobs\AbstractJob;
+use ADCT\ParishIntake\Core\Jobs\JobRunLifecycleInterface;
 use ADCT\ParishIntake\Core\Jobs\JobRunStatus;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
 use ADCT\ParishIntake\Core\Jobs\JobState;
@@ -178,6 +179,17 @@ final class JobRunnerTest extends TestCase
         self::assertSame(2, $job->processCalls);
         self::assertSame(['one'], $job->processedItems);
     }
+
+    public function testRunLifecycleBeginsForEachAcquiredJobRun(): void
+    {
+        $clock = new FakeJobClock(new DateTimeImmutable('2026-09-25T00:00:00+02:00'));
+        $runner = new JobRunner(new FakeJobLock(), new FakeJobStateStore(), $clock, 60, 10, 180);
+        $job = new LifecycleAwareTestJob();
+
+        self::assertSame(JobRunStatus::COMPLETED, $runner->run($job, true)->status);
+        self::assertSame(JobRunStatus::COMPLETED, $runner->run($job, true)->status);
+        self::assertSame(2, $job->beginRunCalls);
+    }
 }
 
 final class FakeJobClock implements ClockInterface
@@ -330,5 +342,25 @@ final class TestJob extends AbstractJob
         return $position + 1 >= count($this->items)
             ? JobStepResult::completeAt($nextPosition)
             : JobStepResult::continueAt($nextPosition);
+    }
+}
+
+final class LifecycleAwareTestJob extends AbstractJob implements JobRunLifecycleInterface
+{
+    public int $beginRunCalls = 0;
+
+    public function __construct()
+    {
+        parent::__construct('lifecycle_job', 'Lifecycle job', 60);
+    }
+
+    public function beginRun(): void
+    {
+        ++$this->beginRunCalls;
+    }
+
+    public function processNext(?string $checkpoint): ?JobStepResult
+    {
+        return JobStepResult::completeAt((string) ($this->beginRunCalls));
     }
 }

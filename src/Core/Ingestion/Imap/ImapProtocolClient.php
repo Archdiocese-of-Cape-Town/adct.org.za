@@ -164,7 +164,7 @@ final class ImapProtocolClient
             if ($literalLength > $maximum) {
                 $this->connected = false;
                 $this->transport->close();
-                throw new MessageTooLarge($literalLength, $maximum);
+                throw new MessageTooLarge($literalLength, $maximum, false);
             }
 
             $response .= $this->transport->readBytes($literalLength);

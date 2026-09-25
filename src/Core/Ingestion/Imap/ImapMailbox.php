@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Core\Ingestion\Imap;
 
+use ADCT\ParishIntake\Core\Ingestion\MailboxCheckpoint;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSearchCriteria;
 use ADCT\ParishIntake\Core\Ingestion\RawMailMessage;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
@@ -15,6 +16,8 @@ final class ImapMailbox implements MailboxInterface
     private ImapProtocolClient $client;
 
     private ?string $selectedFolder = null;
+
+    private ?int $selectedUidValidity = null;
 
     public function __construct(
         private readonly MailboxConnectionConfig $config,
@@ -61,6 +64,17 @@ final class ImapMailbox implements MailboxInterface
         $this->client->requireOkay($result, 'The requested mailbox folder could not be created.');
     }
 
+    public function uidValidity(): int
+    {
+        $this->selectFolder($this->inboxFolder());
+
+        if ($this->selectedUidValidity === null) {
+            throw new ProtocolError('The mail server did not return the inbox UIDVALIDITY value.');
+        }
+
+        return $this->selectedUidValidity;
+    }
+
     public function search(MailboxSearchCriteria $criteria): array
     {
         $this->selectFolder($this->inboxFolder());
@@ -72,6 +86,14 @@ final class ImapMailbox implements MailboxInterface
 
         if ($criteria->since !== null) {
             $searchKeys[] = 'SINCE ' . $criteria->since->format('d-M-Y');
+        }
+
+        if ($criteria->afterUid !== null) {
+            if ($criteria->afterUid === MailboxCheckpoint::MAX_UID) {
+                return [];
+            }
+
+            $searchKeys[] = 'UID ' . ($criteria->afterUid + 1) . ':*';
         }
 
         if ($searchKeys === []) {
@@ -106,7 +128,10 @@ final class ImapMailbox implements MailboxInterface
             }
         }
 
-        return array_values(array_unique($uids));
+        $uids = array_values(array_unique($uids));
+        sort($uids, SORT_NUMERIC);
+
+        return $uids;
     }
 
     public function fetch(int $uid): RawMailMessage
@@ -196,6 +221,7 @@ final class ImapMailbox implements MailboxInterface
     public function close(): void
     {
         $this->selectedFolder = null;
+        $this->selectedUidValidity = null;
         $this->client->logout();
     }
 
@@ -301,7 +327,34 @@ final class ImapMailbox implements MailboxInterface
 
         $result = $this->client->execute('SELECT ' . ImapProtocolClient::quoteString($folder));
         $this->client->requireOkay($result, 'The requested mailbox folder could not be opened.');
+        $this->selectedUidValidity = $this->uidValidityFromResponses($result->responses);
         $this->selectedFolder = $folder;
+    }
+
+    /**
+     * @param list<string> $responses
+     */
+    private function uidValidityFromResponses(array $responses): ?int
+    {
+        foreach ($responses as $response) {
+            if (preg_match('/\[UIDVALIDITY\s+(\d+)\]/i', $response, $matches) !== 1) {
+                continue;
+            }
+
+            $uidValidity = filter_var($matches[1], FILTER_VALIDATE_INT);
+
+            if (
+                $uidValidity === false
+                || $uidValidity < 1
+                || $uidValidity > MailboxCheckpoint::MAX_UID
+            ) {
+                return null;
+            }
+
+            return $uidValidity;
+        }
+
+        return null;
     }
 
     private function inboxFolder(): string

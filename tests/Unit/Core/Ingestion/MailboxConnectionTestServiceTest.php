@@ -239,6 +239,11 @@ final class FakeMailboxConnection implements MailboxInterface
         }
     }
 
+    public function uidValidity(): int
+    {
+        return 17;
+    }
+
     public function search(MailboxSearchCriteria $criteria): array
     {
         $this->searchCriteria[] = $criteria;

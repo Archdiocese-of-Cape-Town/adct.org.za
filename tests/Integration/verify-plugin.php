@@ -13,6 +13,9 @@ use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
 use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\Core\Directory\VenueLookup;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxEncryption;
+use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
+use ADCT\ParishIntake\Core\Ingestion\InboundAttachmentRecord;
+use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\Source;
@@ -26,12 +29,15 @@ use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\MailboxRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
+use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
 use ADCT\ParishIntake\WordPress\Directory\DeaneryApproverAssignmentService;
 use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
@@ -1458,7 +1464,8 @@ $mailboxSource = $sourceRegistry->save(new Source(
     $mailboxSource?->consecutiveFailures ?? 0,
     $mailboxSource?->lastError
 ));
-$mailboxRepository = new MailboxRepository(new WordPressDatabaseConnection());
+$mailboxDatabase = new WordPressDatabaseConnection();
+$mailboxRepository = new MailboxRepository($mailboxDatabase);
 $existingMailbox = $mailboxRepository->findMailboxBySourceId($mailboxSource->id);
 $mailboxSettings = (new MailboxSettingsValidator())->validate([
     'label' => 'Integration mailbox',
@@ -1490,6 +1497,86 @@ if (
     || $persistedMailboxSource->role !== SourceRole::OFFICIAL
 ) {
     $fail('Mailbox settings did not persist with their archdiocese-wide email source.');
+}
+
+$activeMailboxIds = array_map(
+    static fn ($settings): int => $settings->id,
+    $mailboxRepository->findActiveMailboxes()
+);
+
+if (! in_array($savedMailbox->id, $activeMailboxIds, true)) {
+    $fail('The active archdiocese-wide mailbox was not available to the polling job.');
+}
+
+if (has_action('adct_pi_job_poll_mailboxes') === false) {
+    $fail('The mailbox polling job was not registered with the scheduled-job framework.');
+}
+
+$inboundMessageRepository = new InboundMessageRepository($mailboxDatabase);
+$attachmentRepository = new AttachmentRepository($mailboxDatabase);
+$inboundMessageStore = new WordPressInboundMessageStore(
+    $mailboxDatabase,
+    $inboundMessageRepository,
+    $attachmentRepository
+);
+$integrationTimestamp = '2026-09-25 04:00:00';
+$oversizedMessage = new InboundMessageRecord(
+    $mailboxSource->id,
+    'imap:54321:1',
+    null,
+    'notices@example.test',
+    'Example Notices',
+    'Invented oversized integration message',
+    new DateTimeImmutable('2026-09-25T04:00:00+00:00'),
+    null,
+    [],
+    InboundMessageRecord::STATUS_SKIPPED,
+    'Message size 16000001 bytes exceeds the configured limit of 15728640 bytes.'
+);
+$inboundMessageStore->store($oversizedMessage, $integrationTimestamp);
+$oversizedDuplicate = $inboundMessageStore->store($oversizedMessage, $integrationTimestamp);
+
+if (! $oversizedDuplicate->duplicate) {
+    $fail('A retried skipped message was not de-duplicated by its external ID.');
+}
+
+$attachmentHash = hash('sha256', 'invented unsupported attachment bytes');
+$messageContentHash = hash('sha256', 'invented normalized email body and attachment hashes');
+$messageWithSkippedAttachment = new InboundMessageRecord(
+    $mailboxSource->id,
+    '<attachment-message@example.test>',
+    $messageContentHash,
+    'notices@example.test',
+    'Example Notices',
+    'Invented attachment integration message',
+    new DateTimeImmutable('2026-09-25T04:01:00+00:00'),
+    'integration-only-placeholder.eml',
+    [
+        new InboundAttachmentRecord(
+            'example-notes.txt',
+            'text/plain',
+            strlen('invented unsupported attachment bytes'),
+            '',
+            $attachmentHash,
+            AttachmentStoragePolicy::STATUS_SKIPPED_TYPE
+        ),
+    ]
+);
+$inboundMessageStore->store($messageWithSkippedAttachment, $integrationTimestamp);
+$contentHashDuplicate = new InboundMessageRecord(
+    $mailboxSource->id,
+    '<attachment-resend@example.test>',
+    $messageContentHash,
+    'notices@example.test',
+    'Example Notices',
+    'Invented attachment integration resend',
+    new DateTimeImmutable('2026-09-25T04:02:00+00:00'),
+    'integration-only-resend-placeholder.eml'
+);
+$storedContentHashDuplicate = $inboundMessageStore->store($contentHashDuplicate, $integrationTimestamp);
+
+if (! $storedContentHashDuplicate->duplicate) {
+    $fail('A resent message with a new Message-ID was not de-duplicated by content hash.');
 }
 
 $secondaryMailboxEmail = 'intake-mailbox-secondary@example.test';
@@ -1576,6 +1663,12 @@ if (preg_match('/<input\b(?=[^>]*\bname="password")[^>]*>/i', $mailboxesEditHtml
 if (
     strpos($mailboxesListHtml, 'Test connection') === false
     || strpos($mailboxesListHtml, 'Secondary integration mailbox') === false
+    || strpos($mailboxesListHtml, 'Source status') === false
+    || strpos($mailboxesListHtml, 'Last success') === false
+    || strpos($mailboxesListHtml, 'Skipped oversized messages') === false
+    || strpos($mailboxesListHtml, 'Message size 16000001 bytes') === false
+    || strpos($mailboxesListHtml, 'Skipped attachments') === false
+    || strpos($mailboxesListHtml, 'unsupported MIME type') === false
     || strpos($mailboxesListHtml, $mailboxPassword) !== false
     || strpos($mailboxesEditHtml, $mailboxPassword) !== false
     || $passwordInput === ''
@@ -2227,4 +2320,4 @@ foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
     }
 }
 
-WP_CLI::success('Release ZIP activation, schema v3 mailbox settings and safe password rendering, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
+WP_CLI::success('Release ZIP activation, schema v3 mailbox settings and safe password rendering, polling-job registration and inbound-message de-duplication/skip notices, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');

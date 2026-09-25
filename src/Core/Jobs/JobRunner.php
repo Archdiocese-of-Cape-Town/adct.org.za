@@ -75,6 +75,10 @@ final class JobRunner
         }
 
         try {
+            if ($job instanceof JobRunLifecycleInterface) {
+                $job->beginRun();
+            }
+
             $state = $this->stateStore->load($jobId);
 
             if (! $force) {

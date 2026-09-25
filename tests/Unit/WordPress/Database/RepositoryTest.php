@@ -6,12 +6,14 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Database;
 
 use ADCT\ParishIntake\Core\Approval\ApprovalRoute;
 use ADCT\ParishIntake\Core\Approval\ApproverSettings;
+use ADCT\ParishIntake\Core\Ingestion\MailboxCheckpoint;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\MailboxRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
@@ -551,6 +553,90 @@ final class RepositoryTest extends TestCase
             '2026-09-24 00:00:00',
             'temporary failure',
         ], $database->preparedQueries[0]['arguments']);
+    }
+
+    public function testSourceMailboxCheckpointUsesTheExistingPreparedJsonColumn(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $database->rowResult = ['checkpoint' => '{"uidvalidity":12345,"last_uid":67}'];
+        $repository = new SourceRepository($database);
+
+        self::assertEquals(new MailboxCheckpoint(12345, 67), $repository->findCheckpoint(42));
+        $repository->saveCheckpoint(42, new MailboxCheckpoint(54321, 3), '2026-09-25 04:00:00');
+
+        self::assertCount(2, $database->preparedQueries);
+        self::assertStringContainsString(
+            'SELECT checkpoint FROM wp_adct_pi_sources WHERE id = %d',
+            $database->preparedQueries[0]['query']
+        );
+        self::assertStringContainsString(
+            'UPDATE wp_adct_pi_sources SET checkpoint = %s, updated_at = %s WHERE id = %d',
+            $database->preparedQueries[1]['query']
+        );
+        self::assertSame(
+            ['{"uidvalidity":54321,"last_uid":3,"scan_complete":false}', '2026-09-25 04:00:00', 42],
+            $database->preparedQueries[1]['arguments']
+        );
+    }
+
+    public function testMailboxRepositorySelectsOnlyActiveArchdioceseEmailMailboxes(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $repository = new MailboxRepository($database);
+
+        self::assertSame([], $repository->findActiveMailboxes());
+        self::assertStringContainsString('m.active = 1', $database->selectedQueries[0]);
+        self::assertStringContainsString("s.type = 'email'", $database->selectedQueries[0]);
+        self::assertStringContainsString('s.parish_id IS NULL', $database->selectedQueries[0]);
+        self::assertStringContainsString("s.status = 'active'", $database->selectedQueries[0]);
+        self::assertStringContainsString('s.poll_interval_minutes AS source_poll_interval_minutes', $database->selectedQueries[0]);
+        self::assertStringContainsString('s.last_checked_at AS source_last_checked_at', $database->selectedQueries[0]);
+        self::assertStringContainsString('s.consecutive_failures AS source_consecutive_failures', $database->selectedQueries[0]);
+    }
+
+    public function testMailboxRepositoryMapsTheSourcePollingSchedule(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $database->resultRows = [[
+            'id' => '8',
+            'source_id' => '42',
+            'label' => 'Example mailbox',
+            'host' => 'imap.example.test',
+            'port' => '993',
+            'encryption' => 'ssl',
+            'username' => 'intake@example.test',
+            'inbox_folder' => 'INBOX',
+            'processed_folder' => 'Processed',
+            'max_message_size_bytes' => '15728640',
+            'active' => '1',
+            'source_poll_interval_minutes' => '30',
+            'source_last_checked_at' => '2026-09-25 02:45:00',
+            'source_consecutive_failures' => '2',
+        ]];
+
+        $settings = (new MailboxRepository($database))->findActiveMailboxes()[0];
+
+        self::assertSame(30, $settings->pollIntervalMinutes);
+        self::assertSame('2026-09-25 02:45:00', $settings->lastCheckedAt);
+        self::assertSame(2, $settings->consecutiveFailures);
+    }
+
+    public function testInboundDuplicateLookupChecksMessageIdAndContentHashWithinSource(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $database->rowResult = ['id' => '31'];
+        $repository = new InboundMessageRepository($database);
+
+        self::assertSame(31, $repository->findDuplicate(7, '<example@example.test>', str_repeat('a', 64)));
+        self::assertSame(
+            [7, '<example@example.test>', str_repeat('a', 64), '<example@example.test>'],
+            $database->preparedQueries[0]['arguments']
+        );
+        self::assertStringContainsString('source_id = %d', $database->preparedQueries[0]['query']);
+        self::assertStringContainsString(
+            'external_id = %s OR content_hash = %s',
+            $database->preparedQueries[0]['query']
+        );
     }
 
     public function testSourceAdminQueriesFilterWithPreparedValuesAndStablePagination(): void
