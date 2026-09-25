@@ -73,6 +73,8 @@ final class ReviewQueueCheck
             $contactUser = $person('parish_contact', 'contact');
             $contact = 'queue-contact-' . $suffix . '@example.test';
             $unknown = 'queue-unknown-' . $suffix . '@example.test';
+            $deanAssignmentEmail = 'queue-assignment-' . $dean->ID . '-' . $suffix . '@example.test';
+            $otherDeanAssignmentEmail = 'queue-assignment-' . $otherDean->ID . '-' . $suffix . '@example.test';
             $insert($prefix . 'parish_contacts', [
                 'parish_id' => $parishOne, 'email' => $contact, 'trust' => 'verified',
                 'created_at' => $stamp, 'updated_at' => $stamp,
@@ -81,10 +83,13 @@ final class ReviewQueueCheck
                 'parish_id' => $parishTwo, 'email' => $contact, 'trust' => 'verified',
                 'created_at' => $stamp, 'updated_at' => $stamp,
             ]);
-            foreach ([[$deaneryOne, $dean], [$deaneryTwo, $otherDean]] as [$deanery, $user]) {
+            foreach ([
+                [$deaneryOne, $dean, $deanAssignmentEmail],
+                [$deaneryTwo, $otherDean, $otherDeanAssignmentEmail],
+            ] as [$deanery, $user, $assignmentEmail]) {
                 $insert($prefix . 'deanery_approvers', [
                     'deanery_id' => $deanery, 'wp_user_id' => $user->ID,
-                    'email' => 'queue-assignment-' . $user->ID . '-' . $suffix . '@example.test',
+                    'email' => $assignmentEmail,
                     'active' => 1,
                     'created_at' => $stamp, 'updated_at' => $stamp,
                 ]);
@@ -236,6 +241,56 @@ final class ReviewQueueCheck
             $check(has_action('admin_post_adct_pi_review_bulk') !== false,
                 'bulk action must be registered on the installed plugin.');
 
+            $awaitingMatchReview = $candidate('match-review', 'awaiting_approval', $parishOne, $contact, 0.9, [
+                'fields' => ['matched_candidate_id' => 58, 'match_review_required' => true],
+            ]);
+            $approvedMatchReview = $candidate('approved-match-review', 'awaiting_approval', $parishOne,
+                $contact, 0.9, [
+                    'fields' => ['matched_candidate_id' => 58, 'match_review_required' => true],
+                    'approved_by' => $deanAssignmentEmail,
+                    'approved_at' => $stamp,
+                    'approved_via' => 'dean',
+                    'decided_by' => $deanAssignmentEmail,
+                    'decided_at' => $stamp,
+                ]);
+            $check($queue->decide($approvedMatchReview, 'approve', $dean->ID, $dean->user_email, false)
+                    === 'manual_review',
+                'a flagged candidate must not bypass manual resolution through publication retry.');
+            $approvedMatchState = $wpdb->get_row($wpdb->prepare(
+                "SELECT status, approved_by FROM {$prefix}event_candidates WHERE id = %d",
+                $approvedMatchReview
+            ), ARRAY_A);
+            $check($approvedMatchState !== null && $approvedMatchState['status'] === 'awaiting_approval'
+                && $approvedMatchState['approved_by'] === $deanAssignmentEmail,
+                'blocking the ambiguous retry must leave the original decision untouched.');
+            $approvedMatchSearch = 'Queue approved-match-review ' . $suffix;
+            $_GET = ['tab' => 'failed', 'search' => $approvedMatchSearch];
+            ob_start();
+            $page->renderPage();
+            $approvedMatchHtml = (string) ob_get_clean();
+            $check(! str_contains($approvedMatchHtml, 'Approve selected')
+                && ! str_contains($approvedMatchHtml, 'name="candidate_ids[]" value="'
+                    . $approvedMatchReview . '"')
+                && ! str_contains($approvedMatchHtml, 'name="manual_review_candidate_ids[]" value="'
+                    . $approvedMatchReview . '"'),
+                'a previously decided ambiguous candidate must not expose a publication retry.');
+            $matchReviewSearch = 'Queue match-review ' . $suffix;
+            $_GET = ['tab' => 'awaiting_approval', 'search' => $matchReviewSearch];
+            ob_start();
+            $page->renderPage();
+            $matchReviewHtml = (string) ob_get_clean();
+            $check(str_contains($matchReviewHtml, 'name="manual_review_candidate_ids[]" value="'
+                . $awaitingMatchReview . '"'),
+                'ambiguous awaiting items must have a manual-review selection.');
+            $check(! str_contains($matchReviewHtml, 'name="candidate_ids[]" value="'
+                . $awaitingMatchReview . '"'),
+                'ambiguous awaiting items must not enter the ordinary approval selection.');
+            $check(! str_contains($matchReviewHtml, 'Approve selected'),
+                'an ambiguous-only view must not expose ordinary bulk approval.');
+            $check(str_contains($matchReviewHtml, 'Reject selected')
+                && str_contains($matchReviewHtml, 'Manual resolution required before approval'),
+                'ambiguous awaiting items must retain rejection and manual-resolution guidance.');
+
             $dieHandler = static function (): callable {
                 return static function ($message): never {
                     throw new RuntimeException(wp_strip_all_tags((string) $message));
@@ -257,6 +312,24 @@ final class ReviewQueueCheck
                 $check($wpdb->get_var($wpdb->prepare(
                     "SELECT status FROM {$prefix}event_candidates WHERE id = %d", $normal
                 )) === 'awaiting_approval', 'invalid nonce must not approve.');
+                wp_set_current_user($reviewer->ID);
+                $_POST = [
+                    'bulk_action' => 'approve',
+                    'manual_review_candidate_ids' => [(string) $awaitingMatchReview],
+                    'tab' => 'awaiting_approval',
+                    'review_nonce' => wp_create_nonce('adct_pi_review_bulk'),
+                ];
+                $_REQUEST = $_POST;
+                try {
+                    $page->handleBulk();
+                    $fail('Review queue: ambiguous candidate was accepted for ordinary bulk approval.');
+                } catch (RuntimeException $error) {
+                    $check(str_contains(strtolower($error->getMessage()), 'manual resolution'),
+                        'the bulk handler must explicitly reject an ambiguous approval selection.');
+                }
+                $check($wpdb->get_var($wpdb->prepare(
+                    "SELECT status FROM {$prefix}event_candidates WHERE id = %d", $awaitingMatchReview
+                )) === 'awaiting_approval', 'blocked ambiguous approval must leave the candidate undecided.');
                 wp_set_current_user($contactUser->ID);
                 try {
                     $page->renderPage();
@@ -288,6 +361,23 @@ final class ReviewQueueCheck
                 remove_filter('wp_die_handler', $dieHandler);
             }
 
+            $check($queue->findScoped($awaitingMatchReview, $dean->ID, $dean->user_email, false) !== null
+                && $queue->findScoped($awaitingMatchReview, $otherDean->ID, $otherDean->user_email, false) === null
+                && $queue->decide($awaitingMatchReview, 'approve', $dean->ID, $dean->user_email, false)
+                    === 'manual_review',
+                'the assigned dean must see an ambiguous candidate but cannot approve it.');
+            $awaitingMatchState = $wpdb->get_row($wpdb->prepare(
+                "SELECT status, approved_by FROM {$prefix}event_candidates WHERE id = %d",
+                $awaitingMatchReview
+            ), ARRAY_A);
+            $check($awaitingMatchState !== null && $awaitingMatchState['status'] === 'awaiting_approval'
+                && $awaitingMatchState['approved_by'] === null,
+                'a scoped dean must leave an ambiguous candidate undecided.');
+            $check($queue->decide($awaitingMatchReview, 'approve', $reviewer->ID, $reviewer->user_email, true)
+                    === 'manual_review'
+                && $queue->decide($awaitingMatchReview, 'reject', $reviewer->ID, $reviewer->user_email, true,
+                    'Manual match review required') === 'decided',
+                'ambiguous candidates must fail closed for approval while preserving the rejection path.');
             $check($queue->decide($ambiguous, 'approve', $reviewer->ID, $reviewer->user_email, true)
                 === 'manual_review', 'pending matches must never bulk-publish.');
             $check($queue->decide($normal, 'approve', $dean->ID, $dean->user_email, false)
@@ -338,6 +428,90 @@ final class ReviewQueueCheck
                 && (int) json_decode($assigned['fields'], true)['parish_id'] === $parishOne
                 && (int) $trust === 0 && (int) $assignmentAudit === 1,
                 'assignment must align JSON and parish ID, audit once and never verify an unknown sender.');
+
+            $emailLinkRetry = $candidate('email-link-retry', 'awaiting_approval', $parishOne, $contact, 0.9, [
+                'fields' => ['title' => ''],
+                'approved_by' => $deanAssignmentEmail,
+                'approved_at' => $stamp,
+                'approved_via' => 'dean',
+                'decided_by' => $deanAssignmentEmail,
+                'decided_at' => $stamp,
+            ]);
+            $insert($prefix . 'audit_log', [
+                'actor' => $deanAssignmentEmail,
+                'action' => 'approver_approved',
+                'subject_type' => 'event_candidate',
+                'subject_id' => $emailLinkRetry,
+                'details' => wp_json_encode(['role' => 'dean', 'reason' => null]),
+                'created_at' => $stamp,
+                'updated_at' => $stamp,
+            ]);
+            $publicationFailed = false;
+            try {
+                Plugin::candidatePublisher()->publish($emailLinkRetry);
+            } catch (DomainException) {
+                $publicationFailed = true;
+            }
+            $failedPublication = $wpdb->get_row($wpdb->prepare(
+                "SELECT status, approved_by, approved_via FROM {$prefix}event_candidates WHERE id = %d",
+                $emailLinkRetry
+            ), ARRAY_A);
+            $check(strcasecmp($deanAssignmentEmail, $dean->user_email) !== 0
+                && $publicationFailed && $failedPublication !== null
+                && $failedPublication['status'] === 'awaiting_approval'
+                && $failedPublication['approved_by'] === $deanAssignmentEmail
+                && $failedPublication['approved_via'] === 'dean',
+                'a failed email-link publication must retain the dean assignment decision for retry.');
+            $check($queue->decide($emailLinkRetry, 'approve', $dean->ID, $dean->user_email, false) === 'retry',
+                'the assigned dean must retry an email approval when the assignment and account emails differ.');
+            $failedRows = $queue->find('failed', $dean->ID, $dean->user_email, false, $suffix, 50, 0);
+            $retryRow = null;
+            foreach ($failedRows as $row) {
+                if ((int) $row['id'] === $emailLinkRetry) {
+                    $retryRow = $row;
+                    break;
+                }
+            }
+            $check($retryRow !== null && (int) ($retryRow['can_retry'] ?? 0) === 1,
+                'the assigned dean must see the failed email approval as retryable in the queue.');
+            $_GET = ['tab' => 'failed', 'search' => $suffix];
+            wp_set_current_user($dean->ID);
+            ob_start();
+            $page->renderPage();
+            $deanFailedHtml = (string) ob_get_clean();
+            $check(str_contains($deanFailedHtml, 'name="candidate_ids[]" value="' . $emailLinkRetry . '"'),
+                'the assigned dean must be able to select the failed email approval for retry.');
+            wp_set_current_user($reviewer->ID);
+            ob_start();
+            $page->renderPage();
+            $reviewerFailedHtml = (string) ob_get_clean();
+            $check(! str_contains($reviewerFailedHtml, 'name="candidate_ids[]" value="' . $emailLinkRetry . '"'),
+                'a different reviewer must not retry a dean email approval.');
+            $validRetryFields = [
+                'title' => 'Queue email-linked retry ' . $suffix,
+                'event_date' => $date,
+                'event_time' => '09:00',
+                'event_end_time' => '10:00',
+                'description' => 'Fictional description.',
+                'parish_id' => $parishOne,
+            ];
+            $check($wpdb->update($prefix . 'event_candidates', [
+                'fields' => wp_json_encode($validRetryFields),
+            ], ['id' => $emailLinkRetry]) === 1,
+                'the failed event must be repairable before its publication retry.');
+            $check($queue->decide($emailLinkRetry, 'approve', $dean->ID, $dean->user_email, false) === 'retry',
+                'an approved candidate retry must not record a second decision.');
+            Plugin::candidatePublisher()->publish($emailLinkRetry);
+            $check($wpdb->get_var($wpdb->prepare(
+                "SELECT status FROM {$prefix}event_candidates WHERE id = %d", $emailLinkRetry
+            )) === 'published', 'the assigned dean must be able to publish after repairing the failed event.');
+            $retryAudit = $wpdb->get_results($wpdb->prepare(
+                "SELECT actor FROM {$prefix}audit_log WHERE subject_type = %s AND subject_id = %d "
+                . 'AND action = %s',
+                'event_candidate', $emailLinkRetry, 'approver_approved'
+            ), ARRAY_A);
+            $check(count($retryAudit) === 1 && $retryAudit[0]['actor'] === $deanAssignmentEmail,
+                'retrying the email approval must preserve its single assignment-email audit record.');
         } finally {
             wp_set_current_user($originalUser);
             $_GET = $originalGet;
