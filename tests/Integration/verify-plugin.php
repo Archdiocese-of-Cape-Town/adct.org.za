@@ -1937,7 +1937,7 @@ $fetchOccurrenceRows = static function (int $postId) use ($wpdb, $occurrencesTab
     return (array) $wpdb->get_results(
         $wpdb->prepare(
             "SELECT event_id, start_utc, start_local_date, parish_id, event_type_term_id, "
-            . "latitude, longitude, is_cancelled FROM {$occurrencesTable} "
+            . "latitude, longitude, is_cancelled, created_at, updated_at FROM {$occurrencesTable} "
             . 'WHERE event_id = %d ORDER BY start_utc ASC',
             $postId
         ),
@@ -2033,14 +2033,14 @@ if (
     $fail('A REST event write did not refresh its occurrence rows.');
 }
 
-$failedCreateEventId = 0;
+$forcedVenueFailureEventId = 0;
 $forceMissingOccurrenceVenue = static function (
     mixed $value,
     int $objectId,
     string $metaKey,
     bool $single
-) use (&$failedCreateEventId): mixed {
-    if ($objectId === $failedCreateEventId && $metaKey === 'venue_id') {
+) use (&$forcedVenueFailureEventId): mixed {
+    if ($objectId === $forcedVenueFailureEventId && $metaKey === 'venue_id') {
         return $single ? (string) PHP_INT_MAX : [(string) PHP_INT_MAX];
     }
 
@@ -2050,23 +2050,97 @@ $installMissingOccurrenceVenue = static function (
     WP_Post $post,
     WP_REST_Request $_request,
     bool $_creating
-) use (&$failedCreateEventId, $forceMissingOccurrenceVenue): void {
+) use (&$forcedVenueFailureEventId, $forceMissingOccurrenceVenue): void {
     if ($post->post_status !== 'publish') {
         return;
     }
 
-    $failedCreateEventId = (int) $post->ID;
+    $forcedVenueFailureEventId = (int) $post->ID;
     add_filter('get_post_metadata', $forceMissingOccurrenceVenue, 10, 4);
 };
 $removeMissingOccurrenceVenue = static function (
     WP_Post $post,
     WP_REST_Request $_request,
     bool $_creating
-) use (&$failedCreateEventId, $forceMissingOccurrenceVenue): void {
-    if ((int) $post->ID === $failedCreateEventId) {
+) use (&$forcedVenueFailureEventId, $forceMissingOccurrenceVenue): void {
+    if ((int) $post->ID === $forcedVenueFailureEventId) {
         remove_filter('get_post_metadata', $forceMissingOccurrenceVenue, 10);
     }
 };
+
+$preexistingOccurrenceRows = $fetchOccurrenceRows($occurrenceEventId);
+
+if (count($preexistingOccurrenceRows) !== 3) {
+    $fail('The REST rebuild-failure test did not start with existing occurrence rows.');
+}
+
+$forcedVenueFailureEventId = $occurrenceEventId;
+$failedUpdateStart = $restOccurrenceStart->modify('+3 weeks');
+$failedUpdateRequest = new WP_REST_Request(
+    'PATCH',
+    '/wp/v2/adct_event/' . $occurrenceEventId
+);
+$failedUpdateRequest->set_param('meta', [
+    'start_local' => $failedUpdateStart->format('Y-m-d\TH:i'),
+    'end_local' => $failedUpdateStart->modify('+1 hour')->format('Y-m-d\TH:i'),
+    'all_day' => false,
+    'rrule' => $occurrenceRule,
+]);
+add_action('rest_after_insert_adct_event', $installMissingOccurrenceVenue, 5, 3);
+add_action('rest_after_insert_adct_event', $removeMissingOccurrenceVenue, 15, 3);
+
+try {
+    $failedUpdateResponse = rest_do_request($failedUpdateRequest);
+    // rest_do_request() bypasses the REST server's response-pipeline filter.
+    $failedUpdateResponse = apply_filters(
+        'rest_post_dispatch',
+        rest_ensure_response($failedUpdateResponse),
+        rest_get_server(),
+        $failedUpdateRequest
+    );
+} finally {
+    remove_action('rest_after_insert_adct_event', $installMissingOccurrenceVenue, 5);
+    remove_action('rest_after_insert_adct_event', $removeMissingOccurrenceVenue, 15);
+    remove_filter('get_post_metadata', $forceMissingOccurrenceVenue, 10);
+}
+
+$failedUpdateResponsePayload = $failedUpdateResponse instanceof WP_REST_Response
+    ? $failedUpdateResponse->get_data()
+    : null;
+$failedUpdateResponseData = is_array($failedUpdateResponsePayload)
+    && is_array($failedUpdateResponsePayload['data'] ?? null)
+    ? $failedUpdateResponsePayload['data']
+    : [];
+$failedUpdateEventId = absint($failedUpdateResponseData['event_id'] ?? 0);
+$occurrenceRowsAfterFailedUpdate = $fetchOccurrenceRows($occurrenceEventId);
+
+if (
+    ! ($failedUpdateResponse instanceof WP_REST_Response)
+    || $failedUpdateResponse->get_status() !== 500
+    || ($failedUpdateResponsePayload['code'] ?? null) !== 'adct_event_occurrence_rebuild_failed'
+    || $failedUpdateEventId !== $occurrenceEventId
+    || $forcedVenueFailureEventId !== $occurrenceEventId
+    || $occurrenceRowsAfterFailedUpdate !== $preexistingOccurrenceRows
+) {
+    $fail(sprintf(
+        'A failed REST update did not report its event ID and preserve existing occurrence rows '
+        . '(status: %d, code: %s, request event ID: %d, error event ID: %d, rows before: %s, '
+        . 'rows after: %s, response: %s).',
+        $failedUpdateResponse instanceof WP_REST_Response ? $failedUpdateResponse->get_status() : 0,
+        is_array($failedUpdateResponsePayload)
+            && is_string($failedUpdateResponsePayload['code'] ?? null)
+            ? $failedUpdateResponsePayload['code']
+            : 'missing',
+        $forcedVenueFailureEventId,
+        $failedUpdateEventId,
+        wp_json_encode($preexistingOccurrenceRows),
+        wp_json_encode($occurrenceRowsAfterFailedUpdate),
+        wp_json_encode($failedUpdateResponsePayload)
+    ));
+}
+
+$forcedVenueFailureEventId = 0;
+
 $failedCreateStart = $occurrenceStart->modify('+6 weeks');
 $failedCreateRequest = new WP_REST_Request('POST', '/wp/v2/adct_event');
 $failedCreateRequest->set_param('title', ['raw' => 'Fictional occurrence rebuild failure event']);
@@ -2137,7 +2211,7 @@ if (
     $failedCreateStatus !== 500
     || $failedCreateCode !== 'adct_event_occurrence_rebuild_failed'
     || $savedFailureEventId < 1
-    || $failedCreateEventId !== $savedFailureEventId
+    || $forcedVenueFailureEventId !== $savedFailureEventId
     || ! str_contains(
         $failedCreateMessage,
         'Update the saved event at ID ' . $savedFailureEventId . ' instead of retrying the create request'
@@ -2152,7 +2226,7 @@ if (
         . 'message: %s, details: %s, route: %s, method: %s, response: %s).',
         $failedCreateStatus,
         $failedCreateCode,
-        $failedCreateEventId,
+        $forcedVenueFailureEventId,
         $savedFailureEventId,
         $savedFailureEvent instanceof WP_Post ? $savedFailureEvent->post_status : 'missing',
         $failedCreateMessage,
@@ -2219,6 +2293,33 @@ if (
     $fail('Republishing a draft event did not rebuild its occurrence rows.');
 }
 
+$privatizedOccurrenceEvent = wp_update_post([
+    'ID' => $occurrenceEventId,
+    'post_status' => 'private',
+], true);
+
+if (
+    is_wp_error($privatizedOccurrenceEvent)
+    || (int) $privatizedOccurrenceEvent !== $occurrenceEventId
+    || $fetchOccurrenceRows($occurrenceEventId) !== []
+) {
+    $fail('Changing a published event to private did not remove its occurrence rows.');
+}
+
+$republishedPrivateOccurrenceEvent = $saveOccurrenceFromEditor(
+    $occurrenceEventId,
+    $occurrenceForm,
+    ['post_status' => 'publish']
+);
+
+if (
+    is_wp_error($republishedPrivateOccurrenceEvent)
+    || (int) $republishedPrivateOccurrenceEvent !== $occurrenceEventId
+    || count($fetchOccurrenceRows($occurrenceEventId)) !== 3
+) {
+    $fail('Republishing a private event did not rebuild its occurrence rows.');
+}
+
 $nonPublicEventIds = [];
 
 foreach (['draft', 'pending', 'private'] as $postStatus) {
@@ -2257,6 +2358,54 @@ foreach (['draft', 'pending', 'private'] as $postStatus) {
     if ($fetchOccurrenceRows($nonPublicEventId) !== []) {
         $fail('The ' . $postStatus . ' event created public occurrence rows.');
     }
+}
+
+$previousOccurrenceUserId = get_current_user_id();
+wp_set_current_user(0);
+
+try {
+    foreach ($nonPublicEventIds as $nonPublicEventId) {
+        $nonPublicItemResponse = rest_do_request(new WP_REST_Request(
+            'GET',
+            '/wp/v2/adct_event/' . $nonPublicEventId
+        ));
+
+        if (
+            $nonPublicItemResponse instanceof WP_REST_Response
+            && $nonPublicItemResponse->get_status() === 200
+        ) {
+            $fail('The public REST API exposed a non-public event by ID.');
+        }
+    }
+
+    $nonPublicCollectionRequest = new WP_REST_Request('GET', '/wp/v2/adct_event');
+    $nonPublicCollectionRequest->set_param('include', $nonPublicEventIds);
+    $nonPublicCollectionRequest->set_param('per_page', count($nonPublicEventIds));
+    $nonPublicCollectionResponse = rest_do_request($nonPublicCollectionRequest);
+
+    if (
+        ! ($nonPublicCollectionResponse instanceof WP_REST_Response)
+        || $nonPublicCollectionResponse->get_status() !== 200
+    ) {
+        $fail('The public REST event collection could not be queried anonymously.');
+    }
+
+    $nonPublicCollectionData = $nonPublicCollectionResponse->get_data();
+
+    if (! is_array($nonPublicCollectionData)) {
+        $fail('The public REST event collection returned an invalid response.');
+    }
+
+    foreach ($nonPublicCollectionData as $eventData) {
+        if (
+            is_array($eventData)
+            && in_array(absint($eventData['id'] ?? 0), $nonPublicEventIds, true)
+        ) {
+            $fail('The public REST event collection exposed a non-public event.');
+        }
+    }
+} finally {
+    wp_set_current_user($previousOccurrenceUserId);
 }
 
 $archdioceseEventId = wp_insert_post([
