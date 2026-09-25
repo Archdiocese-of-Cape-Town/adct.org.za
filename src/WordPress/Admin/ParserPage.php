@@ -166,7 +166,7 @@ final class ParserPage
             wp_die(esc_html__('You do not have permission to access this page.', 'adct-parish-intake'));
         }
 
-        $result = null;
+        $outcome = null;
         $report = null;
         $canViewReports = current_user_can(self::REPORTS_CAPABILITY);
 
@@ -191,8 +191,8 @@ final class ParserPage
                 'ai_provider' => $this->buildAiProvider(),
             ]);
 
-            $result = $pipeline->parse($message);
-            $this->schema->insertMessageResult($message, $result);
+            $outcome = $pipeline->parseAll($message);
+            $this->schema->insertMessageResult($message, $outcome->getPrimaryResult());
             if ($canViewReports) {
                 $report = $this->reportGenerator->generate();
             }
@@ -213,7 +213,7 @@ final class ParserPage
         ?>
         <div class="wrap">
             <h1>Parish Intake Manual Parser</h1>
-            <p>Use this screen to test the parser with a pasted message and store the result. Configuration lives under <strong>Parish Intake → Settings</strong>.</p>
+            <p>Use this screen to test the parser with a pasted message and store the result. Every detected candidate is shown; the legacy prototype table stores the first candidate, or the notice result when none is detected. Configuration lives under <strong>Parish Intake → Settings</strong>.</p>
 
             <h2>Parse a message</h2>
             <form method="post">
@@ -261,9 +261,9 @@ final class ParserPage
                 </form>
             <?php endif; ?>
 
-            <?php if ($result) : ?>
-                <h2>Latest parse result</h2>
-                <pre><?php echo esc_html(wp_json_encode($result->toArray(), JSON_PRETTY_PRINT)); ?></pre>
+            <?php if ($outcome) : ?>
+                <h2>Latest parse outcome</h2>
+                <pre><?php echo esc_html(wp_json_encode($outcome->toArray(), JSON_PRETTY_PRINT)); ?></pre>
             <?php endif; ?>
 
             <?php if ($report && ! empty($report['url'])) : ?>

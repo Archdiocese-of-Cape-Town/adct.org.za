@@ -1,0 +1,26 @@
+{
+  "classification": "event",
+  "candidate_count": 2,
+  "candidates": [
+    {
+      "block_index": 0,
+      "fields": {
+        "title": "Community lunch",
+        "parish_name": "Fictional Parish",
+        "event_date": "2026-10-10",
+        "event_time": "12:30",
+        "venue": "Fictional Parish Hall"
+      }
+    },
+    {
+      "block_index": 1,
+      "fields": {
+        "title": "Youth gathering",
+        "parish_name": "Fictional Parish",
+        "event_date": "2026-10-17",
+        "event_time": "17:00",
+        "venue": "Fictional Parish Hall"
+      }
+    }
+  ]
+}

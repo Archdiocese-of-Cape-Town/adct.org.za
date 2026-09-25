@@ -1,0 +1,25 @@
+{
+  "candidate_count": 2,
+  "candidates": [
+    {
+      "block_index": 0,
+      "fields": {
+        "title": "Music evening",
+        "parish_name": "Example Parish",
+        "event_date": "2026-11-06",
+        "event_time": "18:00",
+        "venue": "Example Parish Hall"
+      }
+    },
+    {
+      "block_index": 1,
+      "fields": {
+        "title": "Family picnic",
+        "parish_name": "Example Parish",
+        "event_date": "2026-11-07",
+        "event_time": "13:00",
+        "venue": "Fictional Gardens"
+      }
+    }
+  ]
+}

@@ -211,6 +211,50 @@ if (strpos($manualParserHtml, 'name="body"') === false) {
     $fail('The Manual parser message form did not render.');
 }
 
+$previousPost = $_POST;
+$previousRequest = $_REQUEST;
+$_POST = [
+    'adct_parish_intake_parse_nonce' => wp_create_nonce('adct_parish_intake_parse'),
+    'adct_parish_intake_parse' => '1',
+    'source_type' => 'manual-test',
+    'source_identifier' => 'bulletin-integration-test',
+    'sender_email' => 'events@example.test',
+    'sender_name' => 'Fictional Parish Office',
+    'subject' => 'Fictional Parish bulletin',
+    'body' => "Parish: Fictional Parish\nOCTOBER 2026\nUPCOMING EVENTS\n- Youth gathering on Saturday 10 October 2026 at 16:00.\n- Family picnic on Sunday 11 October 2026 at 12:00.",
+];
+$_REQUEST = $_POST;
+ob_start();
+try {
+    do_action($pageHook);
+} finally {
+    $submittedParserHtml = (string) ob_get_clean();
+    $_POST = $previousPost;
+    $_REQUEST = $previousRequest;
+}
+
+if (
+    strpos($submittedParserHtml, 'Latest parse outcome') === false
+    || strpos($submittedParserHtml, 'candidate_count') === false
+    || strpos($submittedParserHtml, 'Youth gathering') === false
+    || strpos($submittedParserHtml, 'Family picnic') === false
+) {
+    $fail('The Manual parser did not render all candidates for a bulletin.');
+}
+
+$legacyParserRow = $wpdb->get_row(
+    "SELECT source_identifier, title FROM {$legacyTable} ORDER BY id DESC LIMIT 1",
+    ARRAY_A
+);
+
+if (
+    ! is_array($legacyParserRow)
+    || $legacyParserRow['source_identifier'] !== 'bulletin-integration-test'
+    || $legacyParserRow['title'] !== 'Youth gathering'
+) {
+    $fail('The legacy Manual parser table did not store the first bulletin candidate.');
+}
+
 $seedDeaneriesCsv = file_get_contents(__DIR__ . '/seed/deaneries.csv');
 $seedParishesCsv = file_get_contents(__DIR__ . '/seed/parishes.csv');
 
