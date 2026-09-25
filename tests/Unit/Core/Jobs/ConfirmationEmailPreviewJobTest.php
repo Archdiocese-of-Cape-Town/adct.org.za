@@ -67,6 +67,37 @@ final class ConfirmationEmailPreviewJobTest extends TestCase
         );
     }
 
+    public function testDuplicateOnlyBatchIsSuppressedAndDoesNotStarveLaterMessages(): void
+    {
+        $source = new SequenceConfirmationEmailJobSource([
+            $this->batch(
+                901,
+                SenderTrust::UNKNOWN,
+                noCandidates: true,
+                emptyReason: ConfirmationEmailReason::DUPLICATE
+            ),
+            $this->batch(902, SenderTrust::BLOCKED),
+        ]);
+        $job = new ConfirmationEmailPreviewJob(
+            $source,
+            $this->previewService(),
+            new SystemClock()
+        );
+
+        self::assertNotNull($job->processNext(null));
+        self::assertNotNull($job->processNext(null));
+        self::assertNull($job->processNext(null));
+        self::assertSame([901, 902], array_column($source->recordedResults, 'messageId'));
+        self::assertSame(
+            ConfirmationEmailReason::DUPLICATE,
+            $source->recordedResults[0]['result']->reason
+        );
+        self::assertSame(
+            ConfirmationEmailReason::BLOCKED_SENDER,
+            $source->recordedResults[1]['result']->reason
+        );
+    }
+
     public function testChangedReplyToTrustAfterMarkerFailureRecordsConflictWithoutSecondEnqueue(): void
     {
         $stored = null;
@@ -157,7 +188,9 @@ final class ConfirmationEmailPreviewJobTest extends TestCase
         int $messageId,
         string $senderTrust,
         string $replyToTrust = SenderTrust::UNKNOWN,
-        bool $automatedOrList = false
+        bool $automatedOrList = false,
+        bool $noCandidates = false,
+        ?ConfirmationEmailReason $emptyReason = null
     ): ConfirmationEmailBatch {
         return new ConfirmationEmailBatch(
             $messageId,
@@ -171,7 +204,7 @@ final class ConfirmationEmailPreviewJobTest extends TestCase
             $replyToTrust,
             $automatedOrList,
             '<inbound-' . $messageId . '@example.test>',
-            [
+            $noCandidates ? [] : [
                 new ConfirmationEmailCandidate(
                     101,
                     [
@@ -183,7 +216,8 @@ final class ConfirmationEmailPreviewJobTest extends TestCase
                     0.9,
                     []
                 ),
-            ]
+            ],
+            $emptyReason
         );
     }
 

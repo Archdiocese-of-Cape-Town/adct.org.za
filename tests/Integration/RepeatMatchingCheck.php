@@ -20,12 +20,13 @@ final class RepeatMatchingCheck
         $stored = new WordPressEventCandidateStore(
             new EventCandidateRepository(new WordPressDatabaseConnection())
         );
-        $fixture = json_decode(
-            file_get_contents(__DIR__ . '/../fixtures/matching/notices.json'),
-            true,
-            32,
-            JSON_THROW_ON_ERROR
+        $fixtureContents = file_get_contents(
+            WP_CONTENT_DIR . '/test-harness-fixtures/matching/notices.json'
         );
+        if ($fixtureContents === false) {
+            $fail('The anonymised repeat-matching fixtures could not be loaded.');
+        }
+        $fixture = json_decode($fixtureContents, true, 32, JSON_THROW_ON_ERROR);
         $messageIds = [];
         $eventId = null;
         $now = gmdate('Y-m-d H:i:s');
@@ -35,6 +36,8 @@ final class RepeatMatchingCheck
             if ($wpdb->insert($messages, [
                 'source_id' => $sourceId,
                 'sender_email' => 'fixture@example.test',
+                'body_text' => 'Synthetic event-notice audit body.',
+                'raw_path' => 'synthetic-repeat-matching.eml',
                 'received_at' => $now,
                 'status' => 'parsed',
                 'created_at' => $now,
@@ -79,19 +82,63 @@ final class RepeatMatchingCheck
                     !== (int) $original['id']) {
                 $fail('Consecutive first-Friday bulletins created another reviewable event.');
             }
+            if (
+                str_contains((string) $repeat['fields'], 'Synthetic event-notice audit body.')
+                || str_contains((string) $repeat['fields'], 'fixture@example.test')
+            ) {
+                $fail('Private inbound message data leaked into candidate fields.');
+            }
 
-            $beforeMail = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$queue}");
-            $beforeTokens = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$tokens}");
-            do_action('adct_pi_job_queue_confirmation_previews');
+            $repeatGroupKey = 'confirmation:' . (int) $repeat['message_id'];
+            delete_option('adct_pi_job_state_queue_confirmation_previews');
+            $unexpectedMailAttempts = 0;
+            $mailGuard = static function ($preempt, $attributes) use (&$unexpectedMailAttempts) {
+                $unexpectedMailAttempts++;
+                return true;
+            };
+            add_filter('pre_wp_mail', $mailGuard, 10, 2);
+            try {
+                do_action('adct_pi_job_queue_confirmation_previews');
+            } finally {
+                remove_filter('pre_wp_mail', $mailGuard, 10);
+            }
             $outcome = $wpdb->get_row($wpdb->prepare(
                 "SELECT confirmation_status, confirmation_reason FROM {$messages} WHERE id = %d",
                 (int) $repeat['message_id']
             ), ARRAY_A);
+            $queuedForRepeat = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM {$queue} WHERE group_key = %s",
+                $repeatGroupKey
+            ));
+            $repeatTokens = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM {$tokens} WHERE (subject_type = %s AND subject_id = %d)"
+                . ' OR (subject_type = %s AND subject_id = %d)',
+                'inbound_message',
+                (int) $repeat['message_id'],
+                'event_candidate',
+                (int) $repeat['id']
+            ));
+            $audit = $wpdb->get_row($wpdb->prepare(
+                "SELECT body_text, raw_path FROM {$messages} WHERE id = %d",
+                (int) $repeat['message_id']
+            ), ARRAY_A);
             if (($outcome['confirmation_status'] ?? '') !== 'suppressed'
                 || ($outcome['confirmation_reason'] ?? '') !== 'duplicate'
-                || (int) $wpdb->get_var("SELECT COUNT(*) FROM {$queue}") !== $beforeMail
-                || (int) $wpdb->get_var("SELECT COUNT(*) FROM {$tokens}") !== $beforeTokens) {
-                $fail('The second bulletin queued an email or failed to record duplicate suppression.');
+                || $queuedForRepeat !== 0
+                || $repeatTokens !== 0
+                || ($audit['body_text'] ?? null) !== 'Synthetic event-notice audit body.'
+                || ($audit['raw_path'] ?? null) !== 'synthetic-repeat-matching.eml'
+                || $unexpectedMailAttempts !== 0) {
+                $fail(sprintf(
+                    'Duplicate-only integration outcome mismatch (status=%s, reason=%s, queue=%d, tokens=%d, mail=%d, body_preserved=%s, raw_path_preserved=%s).',
+                    (string) ($outcome['confirmation_status'] ?? 'missing'),
+                    (string) ($outcome['confirmation_reason'] ?? 'missing'),
+                    $queuedForRepeat,
+                    $repeatTokens,
+                    $unexpectedMailAttempts,
+                    ($audit['body_text'] ?? null) === 'Synthetic event-notice audit body.' ? 'yes' : 'no',
+                    ($audit['raw_path'] ?? null) === 'synthetic-repeat-matching.eml' ? 'yes' : 'no'
+                ));
             }
 
             $eventId = wp_insert_post([
@@ -144,6 +191,22 @@ final class RepeatMatchingCheck
                 if ($pair !== $first) {
                     wp_delete_post($currentId, true);
                 }
+            }
+
+            $staleEventUpdate = wp_update_post([
+                'ID' => $eventId,
+                'post_title' => 'Operator-edited event title',
+            ], true);
+            if (is_wp_error($staleEventUpdate) || $staleEventUpdate < 1) {
+                $fail('The stale published-event protection fixture could not be prepared.');
+            }
+            $staleTitleRepeat = $save($first['repeat'], $rule);
+            if (
+                $staleTitleRepeat['status'] !== 'draft'
+                || $staleTitleRepeat['match_kind'] !== 'new'
+                || (int) $staleTitleRepeat['match_event_id'] !== 0
+            ) {
+                $fail('A stale published-event title was silently treated as a duplicate.');
             }
         } finally {
             foreach ($messageIds as $id) {

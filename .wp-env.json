@@ -11,6 +11,7 @@
   "mappings": {
     "wp-content/test-packages": "./dist",
     "wp-content/test-harness": "./tests/Integration",
+    "wp-content/test-harness-fixtures": "./tests/fixtures",
     "wp-content/test-harness/seed": "./data/seed"
   }
 }

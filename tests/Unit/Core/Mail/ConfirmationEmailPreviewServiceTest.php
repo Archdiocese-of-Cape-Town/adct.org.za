@@ -34,12 +34,30 @@ final class ConfirmationEmailPreviewServiceTest extends TestCase
     public function testRepeatOnlyBatchDoesNotIssueTokensOrEnqueueEmail(): void
     {
         $queue = $this->createMock(MailQueueRepositoryInterface::class);
-        $queue->expects(self::never())->method('findAllByGroupKey');
+        $queue->expects(self::once())->method('findAllByGroupKey')->with('confirmation:901')->willReturn([]);
         $mailer = new RecordingConfirmationMailer();
         $tokens = new InMemoryConfirmationActionTokenStore();
-        $result = $this->service($queue, $mailer, $tokens)->enqueuePreview($this->batch([]));
+        $result = $this->service($queue, $mailer, $tokens)->enqueuePreview($this->batch(
+            [],
+            emptyReason: ConfirmationEmailReason::DUPLICATE
+        ));
         self::assertSame(ConfirmationEmailOutcome::SUPPRESSED, $result->outcome);
         self::assertSame(ConfirmationEmailReason::DUPLICATE, $result->reason);
+        self::assertSame([], $mailer->emails);
+        self::assertSame([], $tokens->records);
+    }
+
+    public function testUnclassifiedEmptyBatchReportsNoCandidates(): void
+    {
+        $queue = $this->createMock(MailQueueRepositoryInterface::class);
+        $queue->expects(self::once())->method('findAllByGroupKey')->with('confirmation:901')->willReturn([]);
+        $mailer = new RecordingConfirmationMailer();
+        $tokens = new InMemoryConfirmationActionTokenStore();
+
+        $result = $this->service($queue, $mailer, $tokens)->enqueuePreview($this->batch([]));
+
+        self::assertSame(ConfirmationEmailOutcome::SUPPRESSED, $result->outcome);
+        self::assertSame(ConfirmationEmailReason::NO_CANDIDATES, $result->reason);
         self::assertSame([], $mailer->emails);
         self::assertSame([], $tokens->records);
     }
@@ -298,7 +316,8 @@ final class ConfirmationEmailPreviewServiceTest extends TestCase
         string $senderTrust = SenderTrust::UNKNOWN,
         ?string $replyToEmail = null,
         string $replyToTrust = SenderTrust::UNKNOWN,
-        bool $automatedOrList = false
+        bool $automatedOrList = false,
+        ?ConfirmationEmailReason $emptyReason = null
     ): ConfirmationEmailBatch {
         return new ConfirmationEmailBatch(
             901,
@@ -312,7 +331,8 @@ final class ConfirmationEmailPreviewServiceTest extends TestCase
             $replyToTrust,
             $automatedOrList,
             '<original-901@example.test>',
-            $candidates
+            $candidates,
+            $emptyReason
         );
     }
 

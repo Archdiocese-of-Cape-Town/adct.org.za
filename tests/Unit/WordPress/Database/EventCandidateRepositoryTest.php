@@ -144,9 +144,48 @@ final class EventCandidateRepositoryTest extends TestCase
         ))[0];
         self::assertContains('duplicate', $insert['arguments']);
         self::assertSame(12, json_decode($insert['arguments'][1], true)['matched_candidate_id']);
+        self::assertStringContainsString('SELECT source_id', $database->prepared[0]['query']);
         self::assertStringContainsString('FOR UPDATE', $database->prepared[0]['query']);
+        self::assertStringContainsString('SELECT id FROM wp_adct_pi_sources', $database->prepared[1]['query']);
+        self::assertStringContainsString('FOR UPDATE', $database->prepared[1]['query']);
         self::assertStringContainsString('LIMIT 201', $database->prepared[2]['query']);
         self::assertSame('COMMIT', end($database->queries));
+    }
+
+    public function testChangedPendingCandidateKeepsChangeKindAndManualReviewFlag(): void
+    {
+        $database = new EventCandidateRepositoryDatabase();
+        $database->matchRows = [[
+            'id' => '12',
+            'parish_id' => '7',
+            'fields' => '{"title":"Parish market","event_date":"2026-10-17","event_time":"10:00"}',
+            'recurrence' => null,
+            'match_event_id' => null,
+            'status' => 'awaiting_submitter',
+        ]];
+        $candidate = $this->candidate(0, 'Parish market');
+        $candidate['parish_id'] = 7;
+        $candidate['fields'] = json_encode([
+            'title' => 'Parish market',
+            'event_date' => '2026-10-17',
+            'event_time' => '11:00',
+        ], JSON_THROW_ON_ERROR);
+        (new EventCandidateRepository($database))->replaceDraftCandidatesForMessage(
+            42,
+            [$candidate],
+            '2026-10-17 10:00:00'
+        );
+
+        $insert = array_values(array_filter(
+            $database->prepared,
+            static fn (array $call): bool => str_contains($call['query'], 'INSERT INTO wp_adct_pi_event_candidates')
+        ))[0];
+        $fields = json_decode($insert['arguments'][1], true, 32, JSON_THROW_ON_ERROR);
+        self::assertContains('update', $insert['arguments']);
+        self::assertContains('draft', $insert['arguments']);
+        self::assertSame(12, $fields['matched_candidate_id']);
+        self::assertTrue($fields['match_review_required']);
+        self::assertNull($fields['match_event_id'] ?? null);
     }
 
     /**

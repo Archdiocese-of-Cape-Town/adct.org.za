@@ -38,6 +38,7 @@ final class WordPressConfirmationEmailJobSourceTest extends TestCase
         $batch = (new WordPressConfirmationEmailJobSource($database, $contacts, $storage))->nextPending();
         self::assertNotNull($batch);
         self::assertSame([], $batch->candidates);
+        self::assertSame(ConfirmationEmailReason::DUPLICATE, $batch->emptyReason);
     }
 
     public function testLoadsEveryDraftCandidateAndResolvesTrustedReplyToFromBoundedHeaders(): void

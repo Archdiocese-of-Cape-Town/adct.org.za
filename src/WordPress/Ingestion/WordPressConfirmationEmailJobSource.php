@@ -12,6 +12,7 @@ use ADCT\ParishIntake\Core\Mail\ConfirmationEmailBatch;
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailCandidate;
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailHeaderUnavailableException;
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResult;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailReason;
 use ADCT\ParishIntake\Core\Ingestion\PermanentInboundHeaderReadException;
 use ADCT\ParishIntake\Core\Ports\ConfirmationEmailJobSourceInterface;
 use ADCT\ParishIntake\Core\Ports\InboundHeaderStorageInterface;
@@ -95,8 +96,19 @@ final class WordPressConfirmationEmailJobSource implements ConfirmationEmailJobS
                 throw new RuntimeException('A pending confirmation message no longer has reviewable candidates.');
             }
             return new ConfirmationEmailBatch(
-                $messageId, $sourceId, $senderEmail, $senderName, $subject, $receivedAt,
-                null, SenderTrust::UNKNOWN, SenderTrust::UNKNOWN, $isAutoReply, null, []
+                $messageId,
+                $sourceId,
+                $senderEmail,
+                $senderName,
+                $subject,
+                $receivedAt,
+                null,
+                SenderTrust::UNKNOWN,
+                SenderTrust::UNKNOWN,
+                $isAutoReply,
+                null,
+                [],
+                ConfirmationEmailReason::DUPLICATE
             );
         }
 

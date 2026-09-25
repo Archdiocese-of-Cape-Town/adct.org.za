@@ -22,7 +22,7 @@
   {
     "name": "cancellation",
     "original": {"title": "Evening gathering", "event_date": "2026-10-12", "event_time": "18:00"},
-    "repeat": {"title": "Cancellation: evening gathering", "event_date": "2026-10-12", "event_time": "18:00"},
+    "repeat": {"title": "Canceled: evening gathering", "event_date": "2026-10-12", "event_time": "18:00"},
     "expected": "cancellation"
   },
   {
@@ -30,5 +30,12 @@
     "original": {"title": "Parish market", "event_date": "2026-10-17", "event_time": "10:00"},
     "repeat": {"title": "Postponement: parish market", "event_date": "2026-10-24", "event_time": "10:00"},
     "expected": "postponement"
+  },
+  {
+    "name": "same recurrence rule without overlapping occurrences",
+    "original": {"title": "First Friday healing Mass", "event_date": "2026-10-02", "event_time": "18:00"},
+    "repeat": {"title": "First Friday healing Mass", "event_date": "2026-11-06", "event_time": "18:00"},
+    "rrule": "FREQ=MONTHLY;BYDAY=1FR;COUNT=1",
+    "expected": "new"
   }
 ]

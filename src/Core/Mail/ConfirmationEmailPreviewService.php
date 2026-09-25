@@ -50,7 +50,7 @@ final class ConfirmationEmailPreviewService
         if ($batch->candidates === []) {
             return new ConfirmationEmailResult(
                 ConfirmationEmailOutcome::SUPPRESSED,
-                ConfirmationEmailReason::DUPLICATE
+                $batch->emptyReason ?? ConfirmationEmailReason::NO_CANDIDATES
             );
         }
 
