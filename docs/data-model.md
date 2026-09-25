@@ -259,6 +259,8 @@ stateDiagram-v2
 
 The candidate publisher accepts only a recorded `dean`, `reviewer` or `self` approval with an approver and approval time; submitter confirmation alone never authorizes publication. The `contact_change` label by itself is not proof of a verified contact and remains unavailable until the verified-contact workflow in E5.5 supplies that proof. Publishing locks the candidate and, for changes, its matched event; post/meta, before/after revision, occurrences and candidate state commit together. Retries of an already-published candidate return the linked event without writing a second revision. New events have no change row; updates, cancellations and postponements each keep a complete before/after payload. Approval and publication must be coordinated by the calling approval flow so a failed publication does not acknowledge a completed approval.
 
+When a candidate explicitly supplies an `event_type`, publication resolves it to an existing event-type term or fails; an update without `event_type` retains the existing term assignment (new events use the taxonomy default). A failed publication must leave both SQL data and WordPress post/term caches showing the previous event, including when the same PHP request retries.
+
 ### Published event
 `scheduled` → `cancelled` / `postponed` (still visible, clearly marked) → the event is trashed only by an admin. Past events stay visible in an archive view.
 

@@ -26,6 +26,7 @@ final class CandidatePublisherTest extends TestCase
         self::assertSame(7, $store->publication->details->sourceCandidateId);
         self::assertSame('FREQ=WEEKLY;BYDAY=MO', $store->publication->details->rrule);
         self::assertSame('scheduled', $store->publication->details->statusFlag);
+        self::assertNull($store->publication->eventType);
     }
 
     #[DataProvider('changedKinds')]

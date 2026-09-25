@@ -19,19 +19,28 @@ final class PublicationCheck
         $now = gmdate('Y-m-d H:i:s');
         $candidateIds = [];
         $eventId = null;
-        $make = static function (string $kind, ?int $match, ?string $via = 'reviewer') use (
+        $make = static function (
+            string $kind,
+            ?int $match,
+            ?string $via = 'reviewer',
+            string $title = 'Sample parish event',
+            ?string $eventType = 'social'
+        ) use (
             $candidates, $date, $now, &$candidateIds
         ): int {
+            $fields = [
+                'title' => $title,
+                'description' => 'Synthetic details only.',
+                'event_date' => $date,
+                'event_time' => '09:00',
+                'event_end_time' => '10:00',
+            ];
+            if ($eventType !== null) {
+                $fields['event_type'] = $eventType;
+            }
             $id = $candidates->insert([
                 'block_index' => 0,
-                'fields' => wp_json_encode([
-                    'title' => 'Sample parish event',
-                    'description' => 'Synthetic details only.',
-                    'event_date' => $date,
-                    'event_time' => '09:00',
-                    'event_end_time' => '10:00',
-                    'event_type' => 'social',
-                ]),
+                'fields' => wp_json_encode($fields),
                 'recurrence' => '{}',
                 'match_kind' => $kind,
                 'match_event_id' => $match,
@@ -90,6 +99,11 @@ final class PublicationCheck
             if (get_post_meta($eventId, 'source_candidate_id', true) != $newer) {
                 $fail('A stale candidate changed the current event source.');
             }
+            $withoutType = $make('update', $eventId, 'reviewer', 'No new event type', null);
+            $publisher->publish($withoutType);
+            if (! has_term('social', 'adct_event_type', $eventId)) {
+                $fail('An update without an event_type removed the existing event type.');
+            }
 
             foreach ([
                 'update' => ['scheduled', 'update'],
@@ -128,7 +142,7 @@ final class PublicationCheck
 
             $previousSource = (int) get_post_meta($eventId, 'source_candidate_id', true);
             $previousChanges = $count($changes, $eventId);
-            $failed = $make('update', $eventId);
+            $failed = $make('update', $eventId, 'reviewer', 'Rollback occurrence candidate', 'spiritual');
             $inject = static function (string $query) use ($occurrences): string {
                 return str_starts_with($query, "INSERT INTO {$occurrences} ")
                     ? 'INSERT INTO adct_publication_intentional_failure VALUES (1)'
@@ -148,18 +162,23 @@ final class PublicationCheck
                 $candidates->findById($failed)['status'] !== 'awaiting_approval'
                 || $candidates->findById($previousSource)['status'] !== 'published'
                 || get_post_meta($eventId, 'source_candidate_id', true) != $previousSource
+                || get_post($eventId)?->post_title !== 'Sample parish event'
+                || ! has_term('social', 'adct_event_type', $eventId)
+                || has_term('spiritual', 'adct_event_type', $eventId)
                 || $count($changes, $eventId) !== $previousChanges
                 || $count($occurrences, $eventId) !== 1
             ) {
                 $fail('A failed occurrence refresh left a partially published event or candidate.');
             }
-            if ($publisher->publish($failed) !== $eventId) {
+            if ($publisher->publish($failed) !== $eventId
+                || get_post($eventId)?->post_title !== 'Rollback occurrence candidate'
+                || ! has_term('spiritual', 'adct_event_type', $eventId)) {
                 $fail('A failed publication could not be retried.');
             }
 
             $previousSource = $failed;
             $previousChanges = $count($changes, $eventId);
-            $failedHistory = $make('cancellation', $eventId);
+            $failedHistory = $make('cancellation', $eventId, 'reviewer', 'Rollback history candidate', 'social');
             $breakHistory = static function (string $query) use ($changes): string {
                 return str_starts_with($query, "INSERT INTO {$changes} ")
                     ? 'INSERT INTO adct_publication_intentional_failure VALUES (1)'
@@ -179,6 +198,9 @@ final class PublicationCheck
                 $candidates->findById($failedHistory)['status'] !== 'awaiting_approval'
                 || $candidates->findById($previousSource)['status'] !== 'published'
                 || get_post_meta($eventId, 'source_candidate_id', true) != $previousSource
+                || get_post($eventId)?->post_title !== 'Rollback occurrence candidate'
+                || ! has_term('spiritual', 'adct_event_type', $eventId)
+                || has_term('social', 'adct_event_type', $eventId)
                 || get_post_meta($eventId, 'status_flag', true) !== 'scheduled'
                 || $count($changes, $eventId) !== $previousChanges
                 || $count($occurrences, $eventId) !== 1
