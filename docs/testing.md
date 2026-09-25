@@ -11,11 +11,11 @@ Tests protect the project from breaking as more people and sessions work on it.
 | 1. Unit | Domain core: parsing stages, date/recurrence, matching, trust rules, tokens, MIME parsing. Includes a token-based check that `src/Core/` has no WordPress dependencies. | GitHub Actions + locally | Every push / PR |
 | 2. Parser fixtures ("golden" tests) | Anonymised real parish emails (`tests/fixtures/emails/*.eml`) with expected output (`*.expected.json`). | GitHub Actions + locally | Every push / PR |
 | 3. WordPress integration | Activation from the built release zip without PHP errors/notices; schema v2 sets version 2, creates all 15 `adct_pi_*` tables, upgrades venue metadata and preserves the legacy table; directory imports seed provisional defaults, linked outstation venues and official office-email sources idempotently; parish sources can be registered and switched official, health can be recorded, and the Sources submenu and parish Sources tab render; venue creation, default selection, location lookup and the parish Venues tab work; the Parish Intake menu and Manual parser page register and render, and the parser renders every bulletin candidate while storing the first in the legacy table. | GitHub Actions using `wp-env` (Docker) and WP-CLI | Every PR |
-| 4. IMAP integration | Polling, duplicate prevention, checkpoints, folder moves, retention, against a throwaway IMAP server (GreenMail in a Docker service container). | GitHub Actions | Every PR touching ingestion |
+| 4. IMAP integration | SMTP delivery followed by mailbox search, raw fetch, folder creation, seen marking and move against throwaway GreenMail. The test group is isolated from the default unit suite. | Separate GitHub Actions job with a pinned GreenMail service image | Every PR |
 | 5. Manual preview | Click-through of admin/portal/approver/public UI. | WordPress Playground **PR preview button** (every PR); InstaWP / TasteWP with the CI-built zip for real mail | Every PR (Playground); as needed (InstaWP/TasteWP) |
 | 6. Pre-launch check | Real xneelo PHP/cron/mail limits with a test mailbox. | A **temporary** staging instance on xneelo, removed afterwards (no permanent staging) | Once before launch; optionally before big releases |
 
-The unit-test CI matrix runs PHP **8.2** (production), **8.3** and **8.4**. The WordPress integration job runs separately on PHP 8.2.
+The unit-test CI matrix runs PHP **8.2** (production), **8.3** and **8.4**. The WordPress integration job and GreenMail IMAP integration job run separately on PHP 8.2.
 
 See [ADR 0009](decisions/0009-preview-and-test-environments.md) for why previews and test sites are set up this way.
 
@@ -94,9 +94,12 @@ With PHP and Composer installed:
 composer install
 composer test        # PHPUnit (tests/Unit) + prototype smoke test
 composer test:unit   # PHPUnit only
+vendor/bin/phpunit --group greenmail tests/Integration/Imap # requires the GreenMail service
 composer fixture-score # Per-fixture and overall golden-field score
 composer test:integration # WordPress integration tests; requires npm ci and a built release zip
 ```
+
+The GreenMail group uses plain IMAP only in its explicit test configuration and delivers invented `example.test` messages over SMTP. Start the pinned service and run the group using the Docker-network commands in the [development guide](development.md#local-setup-windows-no-php-install-needed). The tests live outside `tests/Unit`, so `composer test` does not start or require GreenMail.
 
 `composer test` includes `CoreIsolationTest`, which tokenizes every PHP file under `src/Core/` and rejects WordPress function calls (`wp_*`, `esc_*`, `sanitize_*`, translation helpers such as `__()`/`_e()`, and the listed global WordPress APIs including `get_option`, `add_action`, `current_user_can`, and `dbDelta`), `WP_*` classes, WordPress constants such as `ABSPATH`/`ARRAY_A`, and WordPress globals such as `$wpdb`/`$wp`. It also catches `function_exists()` checks for those APIs. Comments and ordinary strings are ignored; PHP-native helpers such as `function_exists('mb_strtolower')` are allowed.
 
@@ -110,7 +113,7 @@ docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
 npm run test:integration
 ```
 
-The test runner creates and stops its own isolated `wp-env` environment. Its test-only Docker data is retained under the system temporary directory for faster local reruns; CI runners discard it with the job. `composer test` remains the unit/smoke suite and does not start WordPress. CI (`.github/workflows/ci.yml`) runs `composer validate`, a `php -l` lint and `composer test` on PHP 8.2, 8.3 and 8.4 for every PR and push to `main`, plus the WordPress integration job on PHP 8.2.
+The test runner creates and stops its own isolated `wp-env` environment. Its test-only Docker data is retained under the system temporary directory for faster local reruns; CI runners discard it with the job. `composer test` remains the unit/smoke suite and does not start WordPress. CI (`.github/workflows/ci.yml`) runs `composer validate`, a `php -l` lint and `composer test` on PHP 8.2, 8.3 and 8.4 for every PR and push to `main`, plus separate WordPress and GreenMail integration jobs on PHP 8.2.
 
 `wp-env` is used instead of the Playground CLI for integration tests because it supplies a normal WordPress/MySQL environment and WP-CLI in Docker. That lets CI install the exact release zip and exercise the admin menu/page without browser automation.
 

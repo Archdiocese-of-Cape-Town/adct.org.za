@@ -73,3 +73,33 @@ jobs:
 
       - name: Run WordPress integration tests
         run: composer test:integration
+
+  imap-greenmail:
+    name: IMAP integration (GreenMail, PHP 8.2)
+    runs-on: ubuntu-latest
+    services:
+      greenmail:
+        image: greenmail/standalone:2.1.13
+        ports:
+          - 3025:3025
+          - 3143:3143
+    env:
+      IMAP_TEST_HOST: 127.0.0.1
+      IMAP_TEST_PORT: 3143
+      IMAP_TEST_SMTP_PORT: 3025
+      IMAP_TEST_USERNAME: intake@example.test
+      IMAP_TEST_PASSWORD: greenmail-test-password
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2.37.2
+        with:
+          php-version: '8.2'
+          coverage: none
+          tools: composer:v2
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress
+
+      - name: Run GreenMail integration tests
+        run: vendor/bin/phpunit --group greenmail tests/Integration/Imap
