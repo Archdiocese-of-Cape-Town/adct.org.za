@@ -40,6 +40,13 @@ if (! class_exists(ADCT\ParishIntake\WordPress\Autoloader::class, false)
     || ! class_exists(ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage::class, false)
     || ! class_exists(ADCT\ParishIntake\WordPress\Database\Schema::class, false)
     || ! class_exists(ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler::class, false)
+    || ! class_exists(ADCT\ParishIntake\Core\Ingestion\Imap\ImapMailbox::class)
+    || ! class_exists(ADCT\ParishIntake\Core\Ingestion\Imap\ImapProtocolClient::class)
+    || ! class_exists(ADCT\ParishIntake\Core\Ingestion\Imap\MailboxConnectionConfig::class)
+    || ! class_exists(ADCT\ParishIntake\Core\Ingestion\Imap\StreamTransport::class)
+    || ! class_exists(ADCT\ParishIntake\Core\Ingestion\MailboxSearchCriteria::class)
+    || ! class_exists(ADCT\ParishIntake\Core\Ingestion\RawMailMessage::class)
+    || ! interface_exists(ADCT\ParishIntake\Core\Ingestion\Imap\TransportInterface::class)
 ) {
     fwrite(STDERR, "Plugin autoloader did not load the bootstrap classes.\n");
     exit(1);
