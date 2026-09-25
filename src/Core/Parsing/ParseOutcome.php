@@ -4,6 +4,8 @@ namespace ADCT\ParishIntake\Core\Parsing;
 
 final class ParseOutcome
 {
+    public const MAX_CANDIDATES = 50;
+
     /** @var ParseResult[] */
     private array $candidates;
     private array $notes;

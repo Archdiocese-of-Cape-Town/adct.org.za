@@ -31,22 +31,50 @@ final class Pipeline
     {
         $this->context->reset();
         $split = $this->blockSplitter->split($message);
-        $blocks = $split->getCandidateBlocks();
+        $allCandidateBlocks = $split->getCandidateBlocks();
+        $totalCandidates = count($allCandidateBlocks);
+        $candidateLimitExceeded = $totalCandidates > ParseOutcome::MAX_CANDIDATES;
+        $blocks = array_slice($allCandidateBlocks, 0, ParseOutcome::MAX_CANDIDATES);
+        $candidateCount = count($blocks);
         $candidates = [];
+        $candidateLimitError = $candidateLimitExceeded
+            ? sprintf('candidate_limit_exceeded:%d', $totalCandidates)
+            : null;
+        $candidateLimitNote = $candidateLimitExceeded
+            ? sprintf(
+                'Candidate limit exceeded; returned the first %d of %d event candidates in document order and lowered their confidence for manual review.',
+                ParseOutcome::MAX_CANDIDATES,
+                $totalCandidates
+            )
+            : null;
 
         foreach ($blocks as $block) {
-            $subject = $this->subjectForBlock($message, $block, count($blocks));
+            $subject = $this->subjectForBlock($message, $block, $candidateCount);
             $blockMessage = $message->withBody($block->getParseText(), $subject);
-            $useBlockTitle = count($blocks) > 1 || $subject !== $message->getSubject();
-            $candidates[] = $this->parseBlock(
+            $useBlockTitle = $candidateCount > 1 || $subject !== $message->getSubject();
+            $candidate = $this->parseBlock(
                 $blockMessage,
                 $block,
                 $useBlockTitle ? $block->getTitle() : null
             );
+
+            if ($candidateLimitExceeded) {
+                $candidate->setConfidence(0.0);
+                $candidate->setNeedsReprocess(true);
+                $candidate->addError((string) $candidateLimitError);
+                $candidate->addNote((string) $candidateLimitNote);
+            }
+
+            $candidates[] = $candidate;
         }
 
         $notes = $split->getNotes();
         $errors = $split->getErrors();
+
+        if ($candidateLimitExceeded) {
+            $notes[] = (string) $candidateLimitNote;
+            $errors[] = (string) $candidateLimitError;
+        }
 
         foreach ($candidates as $candidate) {
             foreach ($candidate->getErrors() as $error) {
@@ -65,11 +93,35 @@ final class Pipeline
             $primaryResult = $candidates[0];
         }
 
+        $blockMetadata = $split->getBlockMetadata();
+
+        if ($candidateLimitExceeded) {
+            $retainedBlockIndexes = array_fill_keys(
+                array_map(
+                    static fn (EventBlock $block): int => $block->getBlockIndex(),
+                    $blocks
+                ),
+                true
+            );
+
+            foreach ($blockMetadata as &$metadata) {
+                if (
+                    ! empty($metadata['candidate'])
+                    && ! isset($retainedBlockIndexes[$metadata['block_index']])
+                ) {
+                    $metadata['candidate'] = false;
+                    $metadata['classification'] = 'skipped';
+                    $metadata['reason'] = 'candidate_limit_exceeded';
+                }
+            }
+            unset($metadata);
+        }
+
         return new ParseOutcome(
             $candidates,
             $notes,
             $errors,
-            $split->getBlockMetadata(),
+            $blockMetadata,
             $primaryResult
         );
     }

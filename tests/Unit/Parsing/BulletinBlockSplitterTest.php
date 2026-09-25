@@ -6,6 +6,7 @@ namespace ADCT\ParishIntake\Tests\Unit\Parsing;
 
 use ADCT\ParishIntake\Core\Parsing\BulletinBlockSplitter;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
+use ADCT\ParishIntake\Core\Parsing\ParseOutcome;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
@@ -215,6 +216,44 @@ TEXT);
             trim($candidate->getSourceSnippet()),
             $candidate->getSourceSnippet()
         );
+    }
+
+    public function testCapsCandidatesAndFlagsRetainedResultsForManualReview(): void
+    {
+        $rows = ['Date | Event | Time | Venue'];
+
+        for ($index = 1; $index <= ParseOutcome::MAX_CANDIDATES + 1; ++$index) {
+            $rows[] = sprintf(
+                '10 October 2026 | Fictional gathering %02d | 16:00 | Fictional Parish Hall',
+                $index
+            );
+        }
+
+        $outcome = (new PipelineFactory())
+            ->create()
+            ->parseAll(self::message(implode("\n", $rows)));
+        $candidates = $outcome->getCandidates();
+
+        self::assertSame(50, ParseOutcome::MAX_CANDIDATES);
+        self::assertCount(ParseOutcome::MAX_CANDIDATES, $candidates);
+        self::assertSame('Fictional gathering 01', $candidates[0]->getField('title'));
+        self::assertSame('Fictional gathering 50', $candidates[49]->getField('title'));
+        self::assertSame(0.0, $candidates[0]->getConfidence());
+        self::assertTrue($candidates[0]->needsReprocess());
+        self::assertContains('candidate_limit_exceeded:51', $outcome->getErrors());
+        self::assertContains('candidate_limit_exceeded:51', $candidates[0]->getErrors());
+        self::assertStringContainsString(
+            'manual review',
+            strtolower(implode(' ', $outcome->getNotes()))
+        );
+
+        $limitBlocks = array_values(array_filter(
+            $outcome->getBlocks(),
+            static fn (array $block): bool => ($block['reason'] ?? '') === 'candidate_limit_exceeded'
+        ));
+        self::assertCount(1, $limitBlocks);
+        self::assertFalse($limitBlocks[0]['candidate']);
+        self::assertSame('skipped', $limitBlocks[0]['classification']);
     }
 
     /**
