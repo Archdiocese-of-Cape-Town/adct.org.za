@@ -1680,6 +1680,7 @@ if (
     get_post_meta($eventPostId, 'exdates', true) !== ['2026-11-06T16:00']
     || get_post_meta($eventPostId, 'rdates', true) !== ['2026-11-13T16:00']
     || ! in_array(get_post_meta($eventPostId, 'featured', true), [true, 1, '1'], true)
+    || get_post_meta($eventPostId, EventEditor::FEATURED_OVERRIDE_META, true) !== '1'
     || (get_post_meta($eventPostId, 'contact', true)['email'] ?? '') !== 'event-contact@example.test'
 ) {
     $_POST = $originalEventPost;
@@ -1776,10 +1777,68 @@ $eventColumns = apply_filters('manage_adct_event_posts_columns', [
     'date' => 'Date',
 ]);
 
-foreach (['event_start', 'event_parish', 'event_type', 'event_status', 'event_featured'] as $column) {
+foreach (['event_start', 'event_next', 'event_parish', 'event_type', 'event_recurring', 'event_status', 'event_featured'] as $column) {
     if (! array_key_exists($column, $eventColumns)) {
         $fail('The event admin list is missing the ' . $column . ' column.');
     }
+}
+ob_start();
+do_action('restrict_manage_posts', EventPostType::POST_TYPE);
+$eventListFilters = (string) ob_get_clean();
+foreach (['adct_pi_parish', 'adct_pi_next', 'adct_pi_recurring', 'adct_pi_featured', 'adct_pi_status'] as $filterName) {
+    if (! str_contains($eventListFilters, 'name="' . $filterName . '"')) {
+        $fail('The event admin list is missing the ' . $filterName . ' filter.');
+    }
+}
+$previousEventScreen = get_current_screen();
+$previousEventGet = $_GET;
+$previousMainQuery = $GLOBALS['wp_the_query'] ?? null;
+set_current_screen('edit-adct_event');
+try {
+    if (! is_admin()) {
+        $fail('The event admin list filter test could not enter an admin screen.');
+    }
+    $matchingEventIds = static function (array $filters): array {
+        $_GET = $filters;
+        $query = new WP_Query();
+        $GLOBALS['wp_the_query'] = $query;
+        $query->query([
+            'post_type' => EventPostType::POST_TYPE,
+            'post_status' => 'publish',
+            'posts_per_page' => 100,
+        ]);
+        return array_map('intval', wp_list_pluck($query->posts, 'ID'));
+    };
+    $nextEventDate = $wpdb->get_var($wpdb->prepare(
+        "SELECT start_local_date FROM {$wpdb->prefix}adct_pi_occurrences "
+        . 'WHERE event_id = %d ORDER BY start_utc ASC LIMIT 1',
+        $eventPostId
+    ));
+    if (! is_string($nextEventDate)
+        || ! in_array($eventPostId, $matchingEventIds([
+            'adct_pi_parish' => (string) $firstParishId,
+            'adct_pi_next' => $nextEventDate,
+            'adct_pi_recurring' => 'yes',
+            'adct_pi_featured' => 'yes',
+            'adct_pi_status' => 'scheduled',
+        ]), true)) {
+        $fail('Combined event admin list filters hid a matching event.');
+    }
+    foreach ([
+        ['adct_pi_parish' => 'none'],
+        ['adct_pi_recurring' => 'no'],
+        ['adct_pi_featured' => 'no'],
+        ['adct_pi_status' => 'cancelled'],
+        ['adct_pi_next' => '2026-12-25'],
+    ] as $filter) {
+        if (in_array($eventPostId, $matchingEventIds($filter), true)) {
+            $fail('An event admin list filter did not exclude a nonmatching event: ' . wp_json_encode($filter));
+        }
+    }
+} finally {
+    $_GET = $previousEventGet;
+    $GLOBALS['wp_the_query'] = $previousMainQuery;
+    set_current_screen($previousEventScreen ?? 'front');
 }
 
 $currentEventUserId = get_current_user_id();

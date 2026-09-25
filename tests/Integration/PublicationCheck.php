@@ -5,6 +5,7 @@ declare(strict_types=1);
 use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
+use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Plugin;
 
 final class PublicationCheck
@@ -27,7 +28,8 @@ final class PublicationCheck
             ?int $match,
             ?string $via = 'reviewer',
             string $title = 'Sample parish event',
-            ?string $eventType = 'social'
+            ?string $eventType = 'social',
+            ?bool $featured = null
         ) use (
             $candidates, $date, $now, &$candidateIds
         ): int {
@@ -40,6 +42,9 @@ final class PublicationCheck
             ];
             if ($eventType !== null) {
                 $fields['event_type'] = $eventType;
+            }
+            if ($featured !== null) {
+                $fields['featured'] = $featured;
             }
             $id = $candidates->insert([
                 'block_index' => 0,
@@ -107,6 +112,21 @@ final class PublicationCheck
             $publisher->publish($withoutType);
             if (! has_term('social', 'adct_event_type', $eventId)) {
                 $fail('An update without an event_type removed the existing event type.');
+            }
+            $publisher->publish($make('update', $eventId, 'reviewer', 'Featured suggestion', null, true));
+            if (! in_array(get_post_meta($eventId, 'featured', true), [true, 1, '1'], true)) {
+                $fail('A reviewed featured suggestion was not published.');
+            }
+            update_post_meta($eventId, 'featured', false);
+            update_post_meta($eventId, EventEditor::FEATURED_OVERRIDE_META, '1');
+            $publisher->publish($make('update', $eventId, 'reviewer', 'Keep admin choice', null, true));
+            if (get_post_meta($eventId, 'featured', true) !== '') {
+                $fail('A parser suggestion overrode an explicit admin unfeatured choice.');
+            }
+            update_post_meta($eventId, 'featured', true);
+            $publisher->publish($make('update', $eventId, 'reviewer', 'Keep admin featured', null, false));
+            if (! in_array(get_post_meta($eventId, 'featured', true), [true, 1, '1'], true)) {
+                $fail('A routine parser update removed an explicit admin featured choice.');
             }
 
             foreach ([

@@ -200,6 +200,8 @@ The public `adct_event` post type has an `/events` archive and REST representati
 
 Registered post meta holds `parish_id`, `venue_id`, `start_local`, `end_local`, `all_day`, `rrule`, `exdates`, `rdates`, `featured`, `status_flag` (`scheduled`, `cancelled`, `postponed`), `source_candidate_id` and `contact`. `start_local` and `end_local` use the strict local format `Y-m-d\TH:i`; all-day values are normalized to local midnight and an end date is inclusive. `exdates` and `rdates` are lists of local datetimes stored as WordPress metadata arrays. RRULE values are checked against and expanded from the supported RFC 5545 subset (DAILY/WEEKLY/MONTHLY/YEARLY, INTERVAL, COUNT, UNTIL, BYDAY, BYMONTHDAY, BYMONTH and BYSETPOS).
 
+The private post meta `_adct_pi_featured_override` records that an editor explicitly set or cleared Featured in the event form or REST edit. For subsequent approved candidate updates, the publisher keeps that value instead of replacing it with a parser suggestion. New candidates still require the usual approval, and unedited events can accept new suggestions. No table or migration is needed.
+
 `contact` stores the contact name, email and phone for authorized event editors only and is deliberately absent from public REST responses. `source_candidate_id` is internal provenance, not an editor field. Parish and venue IDs are checked against the directory adapter when metadata is saved; a venue must belong to the selected parish. A parish or venue may be omitted for an archdiocese-wide event; the REST API represents an omitted ID as `0`.
 
 A post type (rather than only custom tables) gives WordPress revisions, search, REST, theme templates and editor familiarity for admins.
