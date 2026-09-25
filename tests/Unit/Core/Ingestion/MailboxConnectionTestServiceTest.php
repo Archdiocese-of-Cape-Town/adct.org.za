@@ -55,6 +55,29 @@ final class MailboxConnectionTestServiceTest extends TestCase
         self::assertStringNotContainsString('server-private-response', (string) $health->state->lastError);
     }
 
+    public function testFailureMessageDoesNotExposePasswordOrRawServerResponse(): void
+    {
+        $password = 'imap-test-DO-NOT-ECHO-456';
+        $rawServerResponse = 'AUTH failed for ' . $password . '; server-private-response';
+        $health = new MailboxTestHealthStore();
+        $service = new MailboxConnectionTestService(
+            new SourceHealthRecorder($health, new MailboxTestClock()),
+            static function (MailboxConnectionConfig $config) use ($rawServerResponse): MailboxInterface {
+                throw new ProtocolError($rawServerResponse);
+            }
+        );
+
+        $result = $service->test($this->settings(), $password);
+
+        self::assertSame(MailboxConnectionTestStatus::PROTOCOL_ERROR, $result->status);
+        self::assertSame('The server returned an unexpected response', $result->message());
+        self::assertStringNotContainsString($password, $result->message());
+        self::assertStringNotContainsString($rawServerResponse, $result->message());
+        self::assertNotNull($health->state);
+        self::assertStringNotContainsString($password, (string) $health->state->lastError);
+        self::assertStringNotContainsString($rawServerResponse, (string) $health->state->lastError);
+    }
+
     public static function failureCases(): array
     {
         return [

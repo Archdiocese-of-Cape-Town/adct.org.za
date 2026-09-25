@@ -238,9 +238,9 @@ final class GreenMailConnectionTestServiceTest extends TestCase
 
     private function username(): string
     {
-        $username = getenv('IMAP_TEST_USERNAME');
+        $username = getenv('IMAP_CONNECTION_TEST_USERNAME');
 
-        return is_string($username) && $username !== '' ? $username : 'intake@example.test';
+        return is_string($username) && $username !== '' ? $username : 'connection-test@example.test';
     }
 
     private function password(): string

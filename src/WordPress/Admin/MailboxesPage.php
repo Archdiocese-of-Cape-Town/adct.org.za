@@ -360,7 +360,7 @@ final class MailboxesPage
                                 <?php else : ?>
                                     <p class="description">After saving this mailbox, its form will show the per-mailbox password constant name.</p>
                                 <?php endif; ?>
-                                <input id="<?php echo esc_attr($prefix); ?>-password" class="regular-text" name="password" type="password" autocomplete="new-password" value="" />
+                                <input id="<?php echo esc_attr($prefix); ?>-password" class="regular-text" name="password" type="password" autocomplete="new-password" />
                                 <?php if ($hasStoredPassword) : ?>
                                     <p class="description">A password is saved. Leave blank to keep it.</p>
                                     <label><input type="checkbox" name="remove_password" value="1" /> Remove saved password</label>

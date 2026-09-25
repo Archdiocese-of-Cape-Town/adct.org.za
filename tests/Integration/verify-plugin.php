@@ -1133,13 +1133,19 @@ try {
     $_GET = $originalGet;
 }
 
+$passwordInput = '';
+
+if (preg_match('/<input\b(?=[^>]*\bname="password")[^>]*>/i', $mailboxesEditHtml, $passwordInputMatches) === 1) {
+    $passwordInput = $passwordInputMatches[0];
+}
+
 if (
     strpos($mailboxesListHtml, 'Test connection') === false
     || strpos($mailboxesListHtml, 'Secondary integration mailbox') === false
     || strpos($mailboxesListHtml, $mailboxPassword) !== false
     || strpos($mailboxesEditHtml, $mailboxPassword) !== false
-    || strpos($mailboxesEditHtml, 'name="password"') === false
-    || strpos($mailboxesEditHtml, 'value=""') === false
+    || $passwordInput === ''
+    || preg_match('/\bvalue\s*=/i', $passwordInput) === 1
     || strpos($mailboxesEditHtml, 'A password is saved. Leave blank to keep it.') === false
     || strpos($mailboxesEditHtml, 'name="remove_password"') === false
     || strpos($mailboxesEditHtml, 'name="verify_tls_certificate"') !== false

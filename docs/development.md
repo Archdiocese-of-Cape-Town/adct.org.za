@@ -49,7 +49,7 @@ The IMAP protocol tests use a scripted transport and run with PHPUnit's regular 
 
 ```powershell
 docker network create adct-imap-test
-docker run -d --name adct-imap-greenmail --network adct-imap-test --network-alias greenmail -p 3025:3025 -p 3143:3143 -e GREENMAIL_OPTS="-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=intake:greenmail-test-password@example.test -Dgreenmail.users.login=EMAIL" greenmail/standalone:2.1.13
+docker run -d --name adct-imap-greenmail --network adct-imap-test --network-alias greenmail -p 3025:3025 -p 3143:3143 -e GREENMAIL_OPTS="-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=intake:greenmail-test-password@example.test,connection-test:greenmail-test-password@example.test -Dgreenmail.users.login=EMAIL" greenmail/standalone:2.1.13
 docker run --rm --network adct-imap-test -e IMAP_TEST_HOST=greenmail -v "${PWD}:/app" -w /app php:8.2-cli vendor/bin/phpunit --group greenmail tests/Integration/Imap
 docker stop adct-imap-greenmail
 docker rm adct-imap-greenmail
