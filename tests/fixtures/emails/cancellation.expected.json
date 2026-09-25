@@ -6,7 +6,18 @@
     "event_date": "2026-10-12",
     "event_time": "18:00"
   },
+  "directory_snapshot": "change-notice-directory.json",
+  "existing_event": {
+    "id": 17,
+    "parish_id": 101,
+    "fields": {
+      "title": "Evening gathering",
+      "event_date": "2026-10-12",
+      "event_time": "18:00"
+    }
+  },
   "match_kind": "cancellation",
+  "event_status": "cancelled",
   "known_failures": {
     "match_kind": "#46"
   }

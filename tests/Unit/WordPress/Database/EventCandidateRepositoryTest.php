@@ -188,6 +188,89 @@ final class EventCandidateRepositoryTest extends TestCase
         self::assertNull($fields['match_event_id'] ?? null);
     }
 
+    public function testPostponementOfPendingCandidateRemainsADraftForReview(): void
+    {
+        $database = new EventCandidateRepositoryDatabase();
+        $database->matchRows = [[
+            'id' => '12',
+            'parish_id' => '7',
+            'fields' => '{"title":"Parish market","event_date":"2026-10-10","event_time":"09:00"}',
+            'recurrence' => null,
+            'match_event_id' => null,
+            'status' => 'awaiting_submitter',
+        ]];
+        $candidate = $this->candidate(0, 'Postponement: Parish market');
+        $candidate['parish_id'] = 7;
+        $candidate['fields'] = json_encode([
+            'title' => 'Postponement: Parish market',
+            'event_date' => '2026-10-17',
+            'event_time' => '10:00',
+            'source_snippet' => 'The market is postponed to 17 October 2026 at 10:00.',
+        ], JSON_THROW_ON_ERROR);
+
+        (new EventCandidateRepository($database))->replaceDraftCandidatesForMessage(
+            42,
+            [$candidate],
+            '2026-10-01 09:00:00'
+        );
+
+        $insert = array_values(array_filter(
+            $database->prepared,
+            static fn (array $call): bool => str_contains($call['query'], 'INSERT INTO wp_adct_pi_event_candidates')
+        ))[0];
+        $fields = json_decode($insert['arguments'][1], true, 32, JSON_THROW_ON_ERROR);
+        self::assertContains('postponement', $insert['arguments']);
+        self::assertContains('draft', $insert['arguments']);
+        self::assertSame(12, $fields['matched_candidate_id']);
+        self::assertTrue($fields['match_review_required']);
+        self::assertNotContains(17, $insert['arguments']);
+    }
+
+    public function testUnresolvedPublishedChangeDoesNotPersistAnAutomaticEventMatch(): void
+    {
+        $database = new EventCandidateRepositoryDatabase();
+        $database->matchRows = [[
+            'id' => '12',
+            'parish_id' => '7',
+            'fields' => '{"title":"Parish market","event_date":"2026-10-10","event_time":"09:00"}',
+            'recurrence' => null,
+            'match_event_id' => '17',
+            'status' => 'published',
+            'live_title' => 'Parish market',
+            'live_description' => '',
+            'live_start' => '2026-10-10T09:00',
+            'live_rule' => '',
+        ]];
+        $candidate = $this->candidate(0, 'Postponement: Parish market');
+        $candidate['parish_id'] = 7;
+        $candidate['fields'] = json_encode([
+            'title' => 'Postponement: Parish market',
+            'event_date' => '2026-10-10',
+            'event_time' => '09:00',
+            'replacement_schedule_unresolved' => true,
+        ], JSON_THROW_ON_ERROR);
+
+        (new EventCandidateRepository($database))->replaceDraftCandidatesForMessage(
+            42,
+            [$candidate],
+            '2026-10-01 09:00:00'
+        );
+
+        $insert = array_values(array_filter(
+            $database->prepared,
+            static fn (array $call): bool => str_contains($call['query'], 'INSERT INTO wp_adct_pi_event_candidates')
+        ))[0];
+        $fields = json_decode($insert['arguments'][1], true, 32, JSON_THROW_ON_ERROR);
+        self::assertContains('new', $insert['arguments']);
+        self::assertContains('draft', $insert['arguments']);
+        self::assertTrue($fields['match_review_required']);
+        self::assertNotContains(17, $insert['arguments']);
+        self::assertStringContainsString(
+            'manual review',
+            implode(' ', array_filter($insert['arguments'], 'is_string'))
+        );
+    }
+
     /**
      * @return array{
      *     block_index: int,

@@ -43,6 +43,11 @@ final class EventNoticeMatcher
         if ($title === '') {
             return $none;
         }
+        if (($fields['replacement_schedule_unresolved'] ?? false) === true) {
+            return array_merge($none, [
+                'note' => 'The replacement schedule requires manual review; no event was selected.',
+            ]);
+        }
         $notice = strtolower(
             (is_string($fields['source_snippet'] ?? null) ? $fields['source_snippet'] : '')
             . ' ' . (string) ($fields['title'] ?? '')
