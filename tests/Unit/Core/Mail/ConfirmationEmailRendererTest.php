@@ -87,7 +87,7 @@ final class ConfirmationEmailRendererTest extends TestCase
         self::assertStringContainsString('aria-label="please check"', $content->html);
         self::assertStringContainsString('color:#704f00;">Please check</span>', $content->html);
         self::assertStringContainsString('(please check)', $content->text);
-        self::assertStringContainsString('Approve all (not active)', $content->text);
-        self::assertStringContainsString('clicking one will not approve, deny, edit, or publish', $content->text);
+        self::assertStringContainsString('Confirm all:', $content->text);
+        self::assertStringContainsString('the Edit link is not active yet', $content->text);
     }
 }

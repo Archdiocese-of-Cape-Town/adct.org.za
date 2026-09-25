@@ -1,7 +1,7 @@
 Please review your event preview
 
 We found 1 event in your notice. Please check each preview below.
-Highlighted details may be uncertain or missing. Online action links are not active yet; clicking one will not approve, deny, edit, or publish an event.
+Highlighted details may be uncertain or missing. Confirm and Deny links now open a review page; the Edit link is not active yet.
 Every new event still needs approval by a dean or an Archdiocese reviewer.
 
 Event 1: Parish Harvest <script>alert("x")</script> (please check)
@@ -16,11 +16,11 @@ Contact: Office: office@example.test; Phone: 000 000 0000
 Recurrence: One-time event
 Review notes: The stated weekday does not match the parsed event date; verify it.
 Parser confidence: 48%
-Approve (not active): https://adct.example.test/action?token=approve-101
-Deny (not active): https://adct.example.test/action?token=deny-101
+Confirm: https://adct.example.test/action?token=approve-101
+Deny: https://adct.example.test/action?token=deny-101
 Edit (not active): https://adct.example.test/action?token=edit-101
 
-Approve all (not active): https://adct.example.test/action?token=approve-all-901
+Confirm all: https://adct.example.test/action?token=approve-all-901
 
 If any detail is wrong, contact events@adct.org.za. Replies to this message are not yet processed automatically.
 
