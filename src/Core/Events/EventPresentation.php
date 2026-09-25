@@ -6,6 +6,7 @@ namespace ADCT\ParishIntake\Core\Events;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use InvalidArgumentException;
 
 final class EventPresentation
 {
@@ -117,6 +118,8 @@ final class EventPresentation
 
     /**
      * @param DateTimeImmutable $startLocal The event start in the site's local timezone.
+     * @param list<string> $exdates
+     * @param list<string> $rdates
      */
     public static function googleCalendarUrl(
         string $title,
@@ -125,11 +128,12 @@ final class EventPresentation
         DateTimeImmutable $startLocal,
         ?DateTimeImmutable $endLocal,
         bool $allDay,
-        ?string $rrule = null
+        ?string $rrule = null,
+        array $exdates = [],
+        array $rdates = []
     ): string {
         $utc = new DateTimeZone('UTC');
         $johannesburg = new DateTimeZone('Africa/Johannesburg');
-        $end = $endLocal ?? ($allDay ? $startLocal->modify('+1 day') : $startLocal->modify('+1 hour'));
 
         $query = [
             'action' => 'TEMPLATE',
@@ -143,23 +147,53 @@ final class EventPresentation
 
         if ($allDay) {
             $startDate = $startLocal->setTimezone($johannesburg)->setTime(0, 0);
-            $endDate = $end->setTimezone($johannesburg)->setTime(0, 0)->modify('+1 day');
+            // Stored all-day end dates are inclusive; Google Calendar expects an exclusive end date.
+            $endDate = $endLocal === null
+                ? $startDate->modify('+1 day')
+                : $endLocal->setTimezone($johannesburg)->setTime(0, 0)->modify('+1 day');
+
+            if ($endDate <= $startDate) {
+                $endDate = $startDate->modify('+1 day');
+            }
 
             $query['dates'] = $startDate->format('Ymd')
                 . '/'
                 . $endDate->format('Ymd');
         } else {
+            $end = $endLocal ?? $startLocal->modify('+1 hour');
             $query['dates'] = $startLocal->setTimezone($utc)->format('Ymd\THis\Z')
                 . '/'
                 . $end->setTimezone($utc)->format('Ymd\THis\Z');
         }
 
-        $normalizedRule = trim((string) $rrule);
-        if ($normalizedRule !== '') {
-            $normalizedRule = strncasecmp($normalizedRule, 'RRULE:', 6) === 0
-                ? substr($normalizedRule, 6)
-                : $normalizedRule;
-            $query['recur'] = 'RRULE:' . $normalizedRule;
+        if (! array_is_list($exdates) || ! array_is_list($rdates)) {
+            throw new InvalidArgumentException('Google Calendar recurrence dates must be lists.');
+        }
+
+        $recurrence = [];
+        $rule = (new RRuleValidator())->validate($rrule, $allDay);
+        if ($rule->errors !== []) {
+            throw new InvalidArgumentException('The event recurrence is invalid for Google Calendar.');
+        }
+        if ($rule->normalizedRule !== null) {
+            $recurrence[] = 'RRULE:' . $rule->normalizedRule;
+        }
+
+        foreach (['EXDATE' => $exdates, 'RDATE' => $rdates] as $property => $dates) {
+            foreach ($dates as $date) {
+                if (! is_string($date)) {
+                    throw new InvalidArgumentException('Google Calendar recurrence dates must be text.');
+                }
+
+                $local = self::recurrenceDate($date, $johannesburg);
+                $recurrence[] = $allDay
+                    ? $property . ';VALUE=DATE:' . $local->format('Ymd')
+                    : $property . ';TZID=Africa/Johannesburg:' . $local->format('Ymd\THis');
+            }
+        }
+
+        if ($recurrence !== []) {
+            $query['recur'] = implode("\n", $recurrence);
         }
 
         return self::GOOGLE_CALENDAR_BASE . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
@@ -178,6 +212,22 @@ final class EventPresentation
         }
 
         return 'https://www.google.com/maps/search/?api=1&query=' . rawurlencode($location);
+    }
+
+    private static function recurrenceDate(string $value, DateTimeZone $timezone): DateTimeImmutable
+    {
+        if (preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}\z/', $value) !== 1) {
+            throw new InvalidArgumentException('Google Calendar recurrence dates must be local date-times.');
+        }
+
+        $date = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i', $value, $timezone);
+        $errors = DateTimeImmutable::getLastErrors();
+        if ($date === false || $date->format('Y-m-d\TH:i') !== $value
+            || ($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0))) {
+            throw new InvalidArgumentException('Google Calendar recurrence dates must be valid local date-times.');
+        }
+
+        return $date;
     }
 
     private static function joinWithAnd(array $items): string

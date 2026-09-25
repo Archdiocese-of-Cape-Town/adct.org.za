@@ -28,6 +28,13 @@ final class SingleEventPageCheck
         );
         $venueRepository = new VenueRepository(new WordPressDatabaseConnection());
         $window = OccurrenceWindow::rollingTwelveMonths($clock->now(), $timezone);
+        $tomorrow = $clock->now()->setTimezone($timezone)->modify('+1 day');
+        $recurrenceStart = $tomorrow->setTime(18, 0);
+        $recurrenceEnd = $recurrenceStart->modify('+1 hour');
+        $recurrenceException = $recurrenceStart->modify('+1 week');
+        $recurrenceAddition = $recurrenceStart->modify('+3 days');
+        $allDayStart = $tomorrow->setTime(0, 0);
+        $allDayInclusiveEnd = $allDayStart->modify('+1 day');
         $ownedIds = [];
 
         $createEvent = static function (
@@ -103,8 +110,8 @@ final class SingleEventPageCheck
             [
                 'parish_id' => $firstParishId,
                 'venue_id' => $occurrenceVenue->id,
-                'start_local' => (new DateTimeImmutable('tomorrow', $timezone))->setTime(18, 0)->format('Y-m-d\TH:i'),
-                'end_local' => (new DateTimeImmutable('tomorrow', $timezone))->setTime(19, 0)->format('Y-m-d\TH:i'),
+                'start_local' => $recurrenceStart->format('Y-m-d\TH:i'),
+                'end_local' => $recurrenceEnd->format('Y-m-d\TH:i'),
                 'all_day' => 0,
                 'rrule' => 'FREQ=WEEKLY;COUNT=4',
                 'status_flag' => 'scheduled',
@@ -123,11 +130,11 @@ final class SingleEventPageCheck
             [
                 'parish_id' => $firstParishId,
                 'venue_id' => $occurrenceVenue->id,
-                'start_local' => (new DateTimeImmutable('tomorrow', $timezone))->setTime(18, 0)->format('Y-m-d\TH:i'),
-                'end_local' => (new DateTimeImmutable('tomorrow', $timezone))->setTime(19, 0)->format('Y-m-d\TH:i'),
+                'start_local' => $recurrenceStart->format('Y-m-d\TH:i'),
+                'end_local' => $recurrenceEnd->format('Y-m-d\TH:i'),
                 'all_day' => 0,
                 'rrule' => 'FREQ=WEEKLY;COUNT=4',
-                'exdates' => [(new DateTimeImmutable('+1 week', $timezone))->setTime(18, 0)->format('Y-m-d\TH:i')],
+                'exdates' => [$recurrenceException->format('Y-m-d\TH:i')],
                 'rdates' => [],
                 'status_flag' => 'scheduled',
             ]
@@ -139,17 +146,40 @@ final class SingleEventPageCheck
             [
                 'parish_id' => $firstParishId,
                 'venue_id' => $occurrenceVenue->id,
-                'start_local' => (new DateTimeImmutable('tomorrow', $timezone))->setTime(18, 0)->format('Y-m-d\TH:i'),
-                'end_local' => (new DateTimeImmutable('tomorrow', $timezone))->setTime(19, 0)->format('Y-m-d\TH:i'),
+                'start_local' => $recurrenceStart->format('Y-m-d\TH:i'),
+                'end_local' => $recurrenceEnd->format('Y-m-d\TH:i'),
                 'all_day' => 0,
                 'rrule' => 'FREQ=WEEKLY;COUNT=4',
                 'exdates' => [],
-                'rdates' => [
-                    (new DateTimeImmutable('tomorrow', $timezone))
-                        ->setTime(18, 0)
-                        ->modify('+3 days')
-                        ->format('Y-m-d\TH:i'),
-                ],
+                'rdates' => [$recurrenceAddition->format('Y-m-d\TH:i')],
+                'status_flag' => 'scheduled',
+            ]
+        );
+
+        $multiDayAllDayId = $createEvent(
+            'Fictional multi-day all-day event',
+            '<p>Public details for the fictional multi-day all-day event.</p>',
+            [
+                'parish_id' => $firstParishId,
+                'venue_id' => $occurrenceVenue->id,
+                'start_local' => $allDayStart->format('Y-m-d\TH:i'),
+                'end_local' => $allDayInclusiveEnd->format('Y-m-d\TH:i'),
+                'all_day' => 1,
+                'rrule' => '',
+                'status_flag' => 'scheduled',
+            ]
+        );
+
+        $allDayWithoutEndId = $createEvent(
+            'Fictional all-day event without an end',
+            '<p>Public details for the fictional one-day all-day event.</p>',
+            [
+                'parish_id' => $firstParishId,
+                'venue_id' => $occurrenceVenue->id,
+                'start_local' => $allDayStart->format('Y-m-d\TH:i'),
+                'end_local' => '',
+                'all_day' => 1,
+                'rrule' => '',
                 'status_flag' => 'scheduled',
             ]
         );
@@ -224,7 +254,8 @@ final class SingleEventPageCheck
             false,
             Venue::ACTIVE
         );
-        $savedVenue = $venueRepository->saveVenue($venueWithoutCoordinates, (new DateTimeImmutable('now', $timezone))->format('Y-m-d H:i:s'));
+        $venueCreatedAt = $clock->now()->setTimezone($timezone)->format('Y-m-d H:i:s');
+        $savedVenue = $venueRepository->saveVenue($venueWithoutCoordinates, $venueCreatedAt);
         $venueWithAddressOnlyId = $createEvent(
             'Fictional venue-address event',
             '<p>Venue address should win over parish coordinates.</p>',
@@ -233,6 +264,33 @@ final class SingleEventPageCheck
                 'venue_id' => $savedVenue->id,
                 'start_local' => (new DateTimeImmutable('tomorrow', $timezone))->setTime(22, 0)->format('Y-m-d\TH:i'),
                 'end_local' => (new DateTimeImmutable('tomorrow', $timezone))->setTime(23, 0)->format('Y-m-d\TH:i'),
+                'all_day' => 0,
+                'rrule' => '',
+                'status_flag' => 'scheduled',
+            ]
+        );
+
+        $venueWithCoordinates = new Venue(
+            0,
+            (int) $firstParishId,
+            'Fictional venue with coordinates',
+            [],
+            '99 Sample Street',
+            'Cape Town',
+            -34.123456,
+            18.765432,
+            false,
+            Venue::ACTIVE
+        );
+        $savedCoordinateVenue = $venueRepository->saveVenue($venueWithCoordinates, $venueCreatedAt);
+        $venueWithCoordinatesId = $createEvent(
+            'Fictional venue-coordinate event',
+            '<p>Venue coordinates should win over parish coordinates.</p>',
+            [
+                'parish_id' => $firstParishId,
+                'venue_id' => $savedCoordinateVenue->id,
+                'start_local' => $recurrenceStart->modify('+2 hours')->format('Y-m-d\TH:i'),
+                'end_local' => $recurrenceEnd->modify('+2 hours')->format('Y-m-d\TH:i'),
                 'all_day' => 0,
                 'rrule' => '',
                 'status_flag' => 'scheduled',
@@ -287,10 +345,14 @@ final class SingleEventPageCheck
             'next_dates' => true,
             'poster' => false,
             'venue' => true,
-            'google_calendar' => false,
+            'google_calendar' => true,
             'private_string' => null,
             'ics_contains' => 'EXDATE',
             'status' => 'https://schema.org/EventScheduled',
+            'google_calendar_recur_contains' => [
+                'RRULE:FREQ=WEEKLY;COUNT=4',
+                'EXDATE;TZID=Africa/Johannesburg:' . $recurrenceException->format('Ymd\THis'),
+            ],
         ], $fail);
 
         self::assertPage($recurringWithAdditionsId, 200, [
@@ -300,10 +362,46 @@ final class SingleEventPageCheck
             'next_dates' => true,
             'poster' => false,
             'venue' => true,
-            'google_calendar' => false,
+            'google_calendar' => true,
             'private_string' => null,
             'ics_contains' => 'RDATE',
             'status' => 'https://schema.org/EventScheduled',
+            'google_calendar_recur_contains' => [
+                'RRULE:FREQ=WEEKLY;COUNT=4',
+                'RDATE;TZID=Africa/Johannesburg:' . $recurrenceAddition->format('Ymd\THis'),
+            ],
+        ], $fail);
+
+        self::assertPage($multiDayAllDayId, 200, [
+            'title' => 'Fictional multi-day all-day event',
+            'banner' => null,
+            'recurrence' => null,
+            'next_dates' => false,
+            'poster' => false,
+            'venue' => true,
+            'google_calendar' => true,
+            'private_string' => null,
+            'ics_contains' => 'UID:adct-event-' . $multiDayAllDayId . '@adct.org.za',
+            'status' => 'https://schema.org/EventScheduled',
+            'google_calendar_dates' => $allDayStart->format('Ymd')
+                . '/'
+                . $allDayInclusiveEnd->modify('+1 day')->format('Ymd'),
+        ], $fail);
+
+        self::assertPage($allDayWithoutEndId, 200, [
+            'title' => 'Fictional all-day event without an end',
+            'banner' => null,
+            'recurrence' => null,
+            'next_dates' => false,
+            'poster' => false,
+            'venue' => true,
+            'google_calendar' => true,
+            'private_string' => null,
+            'ics_contains' => 'UID:adct-event-' . $allDayWithoutEndId . '@adct.org.za',
+            'status' => 'https://schema.org/EventScheduled',
+            'google_calendar_dates' => $allDayStart->format('Ymd')
+                . '/'
+                . $allDayStart->modify('+1 day')->format('Ymd'),
         ], $fail);
 
         self::assertPage($cancelledId, 200, [
@@ -371,6 +469,34 @@ final class SingleEventPageCheck
             || ($venueAddressJsonLd['location']['url'] ?? null) !== $expectedVenueAddressMap
         ) {
             $fail('The venue map link used parish coordinates instead of the venue address.');
+        }
+
+        self::assertPage($venueWithCoordinatesId, 200, [
+            'title' => 'Fictional venue-coordinate event',
+            'banner' => null,
+            'recurrence' => null,
+            'next_dates' => false,
+            'poster' => false,
+            'venue' => true,
+            'google_calendar' => true,
+            'private_string' => null,
+            'ics_contains' => 'UID:adct-event-' . $venueWithCoordinatesId . '@adct.org.za',
+            'status' => 'https://schema.org/EventScheduled',
+        ], $fail);
+
+        $coordinateVenueResponse = self::fetch(get_permalink($venueWithCoordinatesId));
+        if (is_wp_error($coordinateVenueResponse)) {
+            $fail('The venue-coordinate page request failed: ' . $coordinateVenueResponse->get_error_message());
+        }
+        $coordinateVenueHtml = (string) wp_remote_retrieve_body($coordinateVenueResponse);
+        $coordinateVenueMap = self::extractLink($coordinateVenueHtml, 'Open map');
+        $coordinateVenueJsonLd = self::extractJsonLd($coordinateVenueHtml);
+        $expectedCoordinateVenueMap = 'https://www.google.com/maps/search/?api=1&query=-34.123456%2C18.765432';
+        if (
+            $coordinateVenueMap !== $expectedCoordinateVenueMap
+            || ($coordinateVenueJsonLd['location']['url'] ?? null) !== $expectedCoordinateVenueMap
+        ) {
+            $fail('The venue map link did not use venue coordinates in preference to parish coordinates.');
         }
 
         $hostileResponse = self::fetch(get_permalink($hostileId));
@@ -463,7 +589,9 @@ final class SingleEventPageCheck
      *     venue: bool,
      *     private_string: string|null,
      *     ics_contains: string,
-     *     status: string
+     *     status: string,
+     *     google_calendar_dates?: string,
+     *     google_calendar_recur_contains?: list<string>
      * } $expectations
      */
     private static function assertPage(int $postId, int $expectedStatus, array $expectations, callable $fail): void
@@ -481,6 +609,7 @@ final class SingleEventPageCheck
         $html = (string) wp_remote_retrieve_body($response);
         $jsonLd = self::extractJsonLd($html);
         $calendarUrl = self::extractLink($html, 'Download ICS');
+        $googleCalendarUrl = self::extractLink($html, 'Add to Google Calendar');
 
         if (! str_contains($html, $expectations['title'])) {
             $fail('The public event page did not render the title.');
@@ -520,6 +649,25 @@ final class SingleEventPageCheck
         }
         if (! ($expectations['google_calendar'] ?? true) && str_contains($html, 'Add to Google Calendar')) {
             $fail('The public event page rendered an unexpected Google Calendar link.');
+        }
+        if (($expectations['google_calendar'] ?? true) && (
+            isset($expectations['google_calendar_dates'])
+            || isset($expectations['google_calendar_recur_contains'])
+        )) {
+            $googleCalendarQuery = [];
+            parse_str((string) parse_url($googleCalendarUrl, PHP_URL_QUERY), $googleCalendarQuery);
+
+            if (isset($expectations['google_calendar_dates'])
+                && ($googleCalendarQuery['dates'] ?? null) !== $expectations['google_calendar_dates']) {
+                $fail('The Google Calendar link used the wrong event dates.');
+            }
+
+            $recurrence = (string) ($googleCalendarQuery['recur'] ?? '');
+            foreach ($expectations['google_calendar_recur_contains'] ?? [] as $component) {
+                if (! str_contains($recurrence, $component)) {
+                    $fail('The Google Calendar link omitted a recurrence component.');
+                }
+            }
         }
         if (! str_contains($calendarUrl, 'event=' . $postId)) {
             $fail('The public event page did not point to the single-event ICS download.');
