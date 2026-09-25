@@ -43,6 +43,26 @@ A deanery approver must also have an active assignment to one or more deaneries.
 
 The parish portal, magic-link sign-in and its long-session policy are separate later work. This change establishes roles and access boundaries only; parish contacts and deanery approvers do not gain a `wp-admin` interface.
 
+## Manage the parish directory
+
+An Administrator or Intake manager with the `adct_pi_manage_directory` capability can open **Parish Intake → Parishes**. The list searches name, slug, area and suburb, and can be filtered by kind, deanery and status. Use **Add parish** or select a parish name to edit it. The form includes its deanery and parent parish, address, coordinates, website, phone, expected cadence, reminders, status and notes.
+
+The map helper opens OpenStreetMap at saved coordinates, or searches the saved address in Google Maps when coordinates are blank. Copy the latitude and longitude from the map into the form; geocoding is not automatic.
+
+### Import parishes
+
+1. If the directory has no deaneries yet, upload `deaneries.csv` first using **Import deaneries**. Its columns are `slug`, `name`, `dean`, `vice_dean` and `secretary`; the names are display-only and do not assign approvers.
+2. Upload a parish CSV using **Import parishes**. The seed file `data/seed/parishes.csv` is accepted as-is. For private files, download the template first. Its columns are `slug`, `name`, `area`, `church`, `kind`, `is_mother_parish`, `parent_slug`, `deanery_slug`, `address`, `office_email`, `latitude`, `longitude`, `suburb`, `website`, `phone`, `expected_cadence_days`, `reminders_enabled`, `status` and `notes`.
+3. Review the preview. Each row is marked **Create**, **Update**, **Unchanged** or **Error**. Rows match existing parishes by slug; re-importing updates matching records and never deletes a parish. Parent references resolve even if the parent row appears later in the CSV.
+4. If any row has an error, no rows are imported. Fix the CSV and upload it again. Common errors include a missing name or slug, an unsupported kind, coordinates outside latitude `-90..90` or longitude `-180..180`, an unknown deanery or parent slug, a slug repeated in the file, or an invalid office email. Import the deaneries before using their slugs; a blank deanery or parent slug is allowed.
+5. Select **Confirm import** only after the preview is correct. The uploaded content and parsed preview are held in a user-bound admin transient for 15 minutes; the plugin does not save the uploaded file to its own filesystem.
+
+The v1 schema stores known parent relationships through `parent_slug`/`parent_parish_id`; it does not store the seed's separate `is_mother_parish` flag. That column is accepted for seed-file compatibility, but an export leaves it blank when no parent relationship is recorded.
+
+An `office_email` in the CSV is added as a verified parish contact with a verification timestamp if that parish/email pair does not already exist. Existing contact rows and their trust status are left untouched. Use the import to add new official office addresses; contact management is a separate screen.
+
+**Export parishes CSV** downloads the current directory using the template's columns. **Download CSV template** provides the same header with no data rows. The export includes a verified office email when one is available; it does not include unknown, pending or blocked contacts. Keep private contact details out of the public repository.
+
 ## Check database installation and upgrade (staging)
 
 Do this on a staging site with a recent database backup; do not change schema options on the live site.

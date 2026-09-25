@@ -50,6 +50,18 @@ final class WordPressDatabaseConnection implements DatabaseConnectionInterface
         return is_array($row) ? $row : null;
     }
 
+    public function getResults(string $query): array
+    {
+        $rows = $this->connection()->get_results($query, ARRAY_A);
+
+        return is_array($rows) ? $rows : [];
+    }
+
+    public function escapeLike(string $text): string
+    {
+        return $this->connection()->esc_like($text);
+    }
+
     public function insertId(): int
     {
         return (int) $this->connection()->insert_id;

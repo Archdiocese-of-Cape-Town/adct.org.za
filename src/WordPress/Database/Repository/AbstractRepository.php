@@ -32,14 +32,8 @@ abstract class AbstractRepository
             "SELECT * FROM {$table} WHERE id = %d LIMIT 1",
             $id
         );
-        $this->database->clearLastError();
-        $row = $this->database->getRow($query);
 
-        if ($this->database->lastError() !== '') {
-            throw new RuntimeException('The database read failed: ' . $this->database->lastError());
-        }
-
-        return $row;
+        return $this->fetchRow($query);
     }
 
     /**
@@ -104,9 +98,39 @@ abstract class AbstractRepository
         return $this->execute($query, 'delete');
     }
 
-    private function tableName(): string
+    protected function tableName(): string
     {
         return $this->database->prefix() . static::TABLE_SUFFIX;
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    protected function fetchRows(string $query): array
+    {
+        $this->database->clearLastError();
+        $rows = $this->database->getResults($query);
+
+        if ($this->database->lastError() !== '') {
+            throw new RuntimeException('The database read failed: ' . $this->database->lastError());
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    protected function fetchRow(string $query): ?array
+    {
+        $this->database->clearLastError();
+        $row = $this->database->getRow($query);
+
+        if ($this->database->lastError() !== '') {
+            throw new RuntimeException('The database read failed: ' . $this->database->lastError());
+        }
+
+        return $row;
     }
 
     private function assertValidId(int $id): void
