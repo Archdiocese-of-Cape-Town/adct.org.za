@@ -5009,6 +5009,8 @@ require_once __DIR__ . '/ConfirmationDecisionCheck.php';
 ConfirmationDecisionCheck::run($fail);
 require_once __DIR__ . '/ApprovalDecisionCheck.php';
 ApprovalDecisionCheck::run($fail);
+require_once __DIR__ . '/ReviewQueueCheck.php';
+ReviewQueueCheck::run($fail);
 
 foreach (['administrator', 'editor'] as $roleName) {
     $role = get_role($roleName);

@@ -35,13 +35,23 @@ Parish Intake adds these WordPress roles and capabilities:
 | Intake reviewer (`adct_pi_intake_reviewer`) | Review, reports and event management. |
 | Editor | Review, reports and event management. The Parish Intake review access is **provisional** and the project owner may change it. |
 | Parish contact (`parish_contact`) | Read only; cannot use `wp-admin` or the admin bar. |
-| Deanery approver (`deanery_approver`) | Deanery approval only; cannot use `wp-admin` or the admin bar. |
+| Deanery approver (`deanery_approver`) | Deanery approval only; can open their scoped Review queue in `wp-admin`, but not other admin screens or the admin bar. |
 
 Assign a role from **Users → All Users → Edit** (or while adding a user). Role changes are additive: upgrades add missing Parish Intake capabilities and do not replace other capabilities already assigned to a role.
 
 A deanery approver must also have an active assignment to one or more deaneries. Manage these assignments from **Parish Intake → Deaneries**; a role without an active assignment cannot approve deanery items, so do not attempt direct database edits. An archdiocese reviewer with the `adct_pi_review` capability can approve items from any deanery, including parishes with no deanery.
 
-The parish portal, magic-link sign-in and its long-session policy are separate later work. The directory screens manage deanery assignments, but parish contacts and deanery approvers still do not gain a `wp-admin` interface.
+The parish portal, magic-link sign-in and its long-session policy are separate later work. Parish contacts still cannot use `wp-admin`; assigned deanery approvers can open only their Review queue.
+
+### Review incoming events
+
+Reviewers open **Parish Intake → Review queue**. Assigned deanery approvers can open the **Review queue** top-level menu; they see only candidates for parishes in their active deaneries. The menu badge counts all their awaiting-approval candidates, including flagged ones. Use the sender, parish or event-title search to narrow results; counts then reflect that search. **Awaiting approval** is a scoped all-items view, while **Unknown senders** and **Low confidence** are disjoint priority categories (unknown sender takes precedence). **Failed** includes expired items, failed previews, unusual states and approvals still awaiting publication; **Awaiting submitter** includes unsent drafts and is read-only. **Recently published** and **Recent decisions** show only the past 30 days. **Recent changes** stays empty until #71 implements verified-contact instant changes; ordinary approved updates are not shown as instant changes.
+
+Select up to 25 pending items to approve or reject. The first decision wins; subsequent attempts cannot overwrite it, and the row displays the deciding address and UTC time. If publishing fails after an approval is recorded, the item stays in the queue's **Failed** category, and the same approver can select it again to retry publication without another decision or audit record. Fix invalid event details before retrying. Ambiguous matches and pending duplicates cannot be bulk-approved: they need manual match resolution in the future candidate editor (#61); an undecided item still in awaiting approval can instead be rejected. The candidate link opens a bounded read-only preview, not an editor.
+
+If a future parser supplies skipped-section notes, the queue shows only a generic warning and the count of potentially missed sections, never the skipped source text. Those notes will start flowing from #98; this screen does not invent missing parser findings.
+
+Reviewers may assign selected *undecided awaiting-approval* candidates to an active parish. This updates the candidate and approval route, **not** the sender's trust; verify or link the sender separately on **Parish Intake → Senders**. If the candidate has a venue from a different parish, assignment stops until the venue is resolved. A deanery approver cannot reassign a parish. Each successful decision or assignment creates a candidate audit record. Nothing on this screen sends email or changes the live site without an operator's action.
 
 ### Create and edit events
 
