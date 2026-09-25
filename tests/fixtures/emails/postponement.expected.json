@@ -16,12 +16,6 @@
       "event_time": "09:00"
     }
   },
-  "match_kind": "update",
-  "event_status": "postponed",
-  "known_failures": {
-    "fields.event_date": "#46",
-    "fields.event_time": "#46",
-    "match_kind": "#46",
-    "event_status": "#46"
-  }
+  "match_kind": "postponement",
+  "event_status": "postponed"
 }
