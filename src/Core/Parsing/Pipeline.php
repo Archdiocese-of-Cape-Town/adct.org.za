@@ -65,6 +65,13 @@ final class Pipeline
                 $candidate->addNote((string) $candidateLimitNote);
             }
 
+            $sectionKeywordOverride = $block->getSectionKeywordOverride();
+
+            if ($sectionKeywordOverride !== null) {
+                $candidate->setConfidence($candidate->getConfidence() - 0.1);
+                $candidate->addNote('section_keyword_overridden: ' . $sectionKeywordOverride);
+            }
+
             $candidates[] = $candidate;
         }
 

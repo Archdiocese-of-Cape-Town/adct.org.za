@@ -6,6 +6,7 @@ use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
+use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
 use ADCT\ParishIntake\WordPress\Database\Schema;
@@ -17,6 +18,7 @@ final class ParserPage
     private const SETTINGS_CAPABILITY = Capabilities::MANAGE_SETTINGS;
     private const REVIEW_CAPABILITY = Capabilities::REVIEW;
     private const REPORTS_CAPABILITY = Capabilities::VIEW_REPORTS;
+    private const SECTION_KEYWORDS_OPTION = 'adct_parish_intake_section_keywords';
 
     private Schema $schema;
     private PipelineFactory $pipelineFactory;
@@ -78,6 +80,14 @@ final class ParserPage
 
         check_admin_referer('adct_parish_intake_save_settings', 'adct_parish_intake_settings_nonce');
 
+        if (isset($_POST['reset_section_keywords'])) {
+            update_option(
+                self::SECTION_KEYWORDS_OPTION,
+                SectionSkipper::defaultKeywordLists()
+            );
+            return;
+        }
+
         update_option('adct_parish_intake_ai_enabled', isset($_POST['ai_enabled']) ? '1' : '0');
         update_option('adct_parish_intake_ai_provider', sanitize_text_field(wp_unslash($_POST['ai_provider'] ?? 'none')));
         update_option('adct_parish_intake_openrouter_model', sanitize_text_field(wp_unslash($_POST['openrouter_model'] ?? 'openrouter/auto')));
@@ -87,6 +97,27 @@ final class ParserPage
         }
 
         update_option('adct_parish_intake_ai_threshold', (string) max(0, min(1, (float) wp_unslash($_POST['ai_threshold'] ?? '0.55'))));
+
+        $submittedKeywords = wp_unslash($_POST['section_keywords'] ?? []);
+        $keywordLists = [];
+
+        if (is_array($submittedKeywords)) {
+            foreach (SectionSkipper::CATEGORIES as $category => $label) {
+                $value = $submittedKeywords[$category] ?? null;
+
+                if (! is_string($value)) {
+                    continue;
+                }
+
+                $phrases = preg_split('/\R/u', $value) ?: [];
+                $keywordLists[$category] = array_map('sanitize_text_field', $phrases);
+            }
+        }
+
+        update_option(
+            self::SECTION_KEYWORDS_OPTION,
+            SectionSkipper::sanitizeKeywordLists($keywordLists)
+        );
     }
 
     public function renderSettingsPage(): void
@@ -150,6 +181,23 @@ final class ParserPage
                         </td>
                     </tr>
                 </table>
+                <h2>Skip non-event bulletin sections</h2>
+                <p>These phrases help keep routine or sensitive bulletin sections out of event candidates and AI enrichment. Matching is case- and punctuation-insensitive; a skipped section continues until the next heading. Leave a category blank to use its built-in defaults.</p>
+                <table class="form-table" role="presentation">
+                    <?php foreach (SectionSkipper::CATEGORIES as $category => $label) : ?>
+                        <tr>
+                            <th scope="row"><?php echo esc_html($label); ?></th>
+                            <td>
+                                <textarea class="large-text code" rows="4" name="section_keywords[<?php echo esc_attr($category); ?>]"><?php echo esc_textarea(implode("\n", $settings['section_keywords'][$category])); ?></textarea>
+                                <p class="description">Enter one heading or leading phrase per line.</p>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </table>
+                <p>
+                    <button class="button" type="submit" name="reset_section_keywords" value="1">Reset section keywords to defaults</button>
+                    <span class="description">This changes only the section keyword lists.</span>
+                </p>
                 <?php submit_button('Save settings'); ?>
             </form>
 
@@ -189,6 +237,7 @@ final class ParserPage
                 'ai_enabled' => get_option('adct_parish_intake_ai_enabled', '0') === '1',
                 'ai_threshold' => (float) get_option('adct_parish_intake_ai_threshold', '0.55'),
                 'ai_provider' => $this->buildAiProvider(),
+                'section_keywords' => $this->sectionKeywords(),
             ]);
 
             $outcome = $pipeline->parseAll($message);
@@ -326,6 +375,16 @@ final class ParserPage
             'ai_provider' => (string) get_option('adct_parish_intake_ai_provider', 'none'),
             'openrouter_model' => (string) get_option('adct_parish_intake_openrouter_model', 'openrouter/auto'),
             'ai_threshold' => (float) get_option('adct_parish_intake_ai_threshold', '0.55'),
+            'section_keywords' => $this->sectionKeywords(),
         ];
+    }
+
+    private function sectionKeywords(): array
+    {
+        $keywordLists = get_option(self::SECTION_KEYWORDS_OPTION, []);
+
+        return is_array($keywordLists)
+            ? SectionSkipper::sanitizeKeywordLists($keywordLists)
+            : SectionSkipper::defaultKeywordLists();
     }
 }

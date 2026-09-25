@@ -24,9 +24,14 @@ final class PipelineFactory
     public function create(array $options = []): Pipeline
     {
         $provider = $options['ai_provider'] ?? new NullAiProvider();
+        $sectionKeywords = $options['section_keywords'] ?? null;
 
         if (! $provider instanceof AiProviderInterface) {
             $provider = new NullAiProvider();
+        }
+
+        if (! is_array($sectionKeywords)) {
+            $sectionKeywords = null;
         }
 
         $context = new ParseContext([
@@ -41,6 +46,6 @@ final class PipelineFactory
             new RecurrenceDetectionStage(),
             new ConfidenceScoringStage(),
             new AiEnrichmentStage($provider),
-        ], $context);
+        ], $context, new BulletinBlockSplitter(null, new SectionSkipper($sectionKeywords)));
     }
 }

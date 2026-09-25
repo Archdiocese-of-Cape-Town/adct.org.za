@@ -1,0 +1,15 @@
+{
+  "classification": "event",
+  "candidate_count": 1,
+  "candidates": [
+    {
+      "fields": {
+        "title": "Family picnic",
+        "event_date": "2026-11-15",
+        "event_time": "12:00",
+        "venue": "Fictional Community Gardens",
+        "contact": "021 555 0107"
+      }
+    }
+  ]
+}
