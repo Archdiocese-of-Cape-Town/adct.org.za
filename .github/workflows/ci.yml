@@ -68,6 +68,9 @@ jobs:
       - name: Install wp-env
         run: npm ci
 
+      - name: Verify isolated wp-env config identity
+        run: npm run test:integration-config
+
       - name: Build the installable plugin zip
         run: sh scripts/build-release.sh
 

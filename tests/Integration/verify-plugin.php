@@ -132,8 +132,8 @@ if (
     $fail('Fresh plugin activation did not default outbound test mode to off with an empty allow-list.');
 }
 
-if ((int) get_option('adct_pi_db_version', 0) !== 5) {
-    $fail('Activation did not set the parish intake schema version to 5.');
+if ((int) get_option('adct_pi_db_version', 0) !== 6) {
+    $fail('Activation did not set the parish intake schema version to 6.');
 }
 
 if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CURRENT_VERSION) {
@@ -248,6 +248,7 @@ global $wpdb;
 $installedTables = (array) $wpdb->get_col('SHOW TABLES');
 $expectedTableSuffixes = [
     'adct_pi_action_tokens',
+    'adct_pi_action_token_rate_limits',
     'adct_pi_attachments',
     'adct_pi_audit_log',
     'adct_pi_deaneries',
@@ -279,7 +280,7 @@ if ($actualTables !== $expectedTables) {
     $missingTables = array_diff($expectedTables, $actualTables);
     $unexpectedTables = array_diff($actualTables, $expectedTables);
     $fail(sprintf(
-        'Schema v5 tables differ. Missing: [%s]; unexpected: [%s].',
+        'Schema v6 tables differ. Missing: [%s]; unexpected: [%s].',
         implode(', ', $missingTables),
         implode(', ', $unexpectedTables)
     ));
@@ -329,6 +330,13 @@ if ($forcedNotNull === false) {
     $fail('The v3-to-v4 migration test could not restore the v3 occurrences column definition.');
 }
 
+$rateLimitTable = $wpdb->prefix . 'adct_pi_action_token_rate_limits';
+$dropRateLimitTableForV3Upgrade = $wpdb->query("DROP TABLE {$rateLimitTable}");
+
+if ($dropRateLimitTableForV3Upgrade === false) {
+    $fail('The v3-to-v6 migration test could not restore the pre-v6 schema.');
+}
+
 update_option('adct_pi_db_version', 3, false);
 do_action('admin_init');
 $occurrenceParishColumn = $wpdb->get_row(
@@ -337,7 +345,7 @@ $occurrenceParishColumn = $wpdb->get_row(
 );
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 5
+    (int) get_option('adct_pi_db_version', 0) !== 6
     || ! is_array($occurrenceParishColumn)
     || strtoupper((string) ($occurrenceParishColumn['Null'] ?? '')) !== 'YES'
 ) {
@@ -461,7 +469,7 @@ $preservedQueueRowCount = (int) $wpdb->get_var($wpdb->prepare(
 ));
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 5
+    (int) get_option('adct_pi_db_version', 0) !== 6
     || ! $upgradedMailQueueIndexIsUnique
     || array_values($upgradedMailQueueIndexColumns) !== ['recipient', 'group_key']
     || $preservedQueueRowCount !== 1
@@ -481,6 +489,57 @@ $deletedPreservedQueueRows = $wpdb->delete(
 if ($deletedPreservedQueueRows !== 1) {
     $fail('The preserved v4-to-v5 mail queue fixture could not be removed.');
 }
+
+$droppedRateLimitTable = $wpdb->query("DROP TABLE {$rateLimitTable}");
+
+if ($droppedRateLimitTable === false) {
+    $fail('The v5-to-v6 migration test could not prepare the pre-v6 schema.');
+}
+
+update_option('adct_pi_db_version', 5, false);
+do_action('admin_init');
+$recreatedRateLimitTable = $wpdb->get_var($wpdb->prepare(
+    'SHOW TABLES LIKE %s',
+    $rateLimitTable
+));
+$rateLimitColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$rateLimitTable}", 0);
+$rateLimitIndexes = (array) $wpdb->get_results("SHOW INDEX FROM {$rateLimitTable}", ARRAY_A);
+$scopeHashIsPrimaryKey = false;
+$windowStartedAtIsIndexed = false;
+
+foreach ($rateLimitIndexes as $index) {
+    if (
+        ($index['Key_name'] ?? '') === 'PRIMARY'
+        && ($index['Column_name'] ?? '') === 'scope_hash'
+        && (int) ($index['Non_unique'] ?? 1) === 0
+    ) {
+        $scopeHashIsPrimaryKey = true;
+    }
+
+    if (
+        ($index['Key_name'] ?? '') === 'window_started_at'
+        && ($index['Column_name'] ?? '') === 'window_started_at'
+    ) {
+        $windowStartedAtIsIndexed = true;
+    }
+}
+
+if (
+    (int) get_option('adct_pi_db_version', 0) !== 6
+    || $recreatedRateLimitTable !== $rateLimitTable
+    || ! in_array('scope_hash', $rateLimitColumns, true)
+    || ! in_array('window_started_at', $rateLimitColumns, true)
+    || ! in_array('hit_count', $rateLimitColumns, true)
+    || in_array('id', $rateLimitColumns, true)
+    || count($rateLimitIndexes) !== 2
+    || ! $scopeHashIsPrimaryKey
+    || ! $windowStartedAtIsIndexed
+) {
+    $fail('The v5-to-v6 migration did not create the primary-keyed hashed rate-limit table.');
+}
+
+require_once __DIR__ . '/ActionTokenEndpointCheck.php';
+ActionTokenEndpointCheck::run($fail);
 
 $venueTable = $wpdb->prefix . 'adct_pi_venues';
 $sourceTable = $wpdb->prefix . 'adct_pi_sources';
@@ -4206,4 +4265,4 @@ foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
     }
 }
 
-WP_CLI::success('Release ZIP activation, schema v5/v3-to-v5 and v4-to-v5 migrations, fresh and upgraded mail queue unique indexes with duplicate preservation, occurrence expansion/save/REST/job behavior, mailbox settings and safe password rendering, polling, inbound processing and Inbox reprocessing without candidate, attachment, checkpoint, email or privacy regressions, outbound-mail job registration, inbound-message de-duplication/skip notices, login-priority delivery ahead of 200 queued digests through intercepted wp_mail, mail group idempotency and atomic hourly-cap claims, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
+WP_CLI::success('Release ZIP activation, schema v6/v3-to-v6/v4-to-v5/v5-to-v6 migrations, hashed action-token storage and renewal limits, GET preview and nonce-protected single-use POST behavior, fresh and upgraded mail queue unique indexes with duplicate preservation, occurrence expansion/save/REST/job behavior, mailbox settings and safe password rendering, polling, inbound processing and Inbox reprocessing without candidate, attachment, checkpoint, email or privacy regressions, outbound-mail job registration, inbound-message de-duplication/skip notices, login-priority delivery ahead of 200 queued digests through intercepted wp_mail, mail group idempotency and atomic hourly-cap claims, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');

@@ -4,6 +4,10 @@ namespace ADCT\ParishIntake\WordPress;
 
 use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
+use ADCT\ParishIntake\Core\Auth\ActionTokenHandlerRegistry;
+use ADCT\ParishIntake\Core\Auth\ActionTokenRateLimiter;
+use ADCT\ParishIntake\Core\Auth\ActionTokenRenewalService;
+use ADCT\ParishIntake\Core\Auth\ActionTokenService;
 use ADCT\ParishIntake\Core\Auth\RoleInstaller;
 use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
 use ADCT\ParishIntake\Core\Database\CreateSchemaMigration;
@@ -60,8 +64,12 @@ use ADCT\ParishIntake\WordPress\Admin\ParishesPage;
 use ADCT\ParishIntake\WordPress\Admin\SendersPage;
 use ADCT\ParishIntake\WordPress\Admin\SourcesPage;
 use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
+use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
+use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRateLimitKeyProvider;
+use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRenewalDelivery;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleCapabilityStore;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleVersionStore;
+use ADCT\ParishIntake\WordPress\Database\ActionTokenRateLimitSchemaMigration;
 use ADCT\ParishIntake\WordPress\Database\DbDeltaSchemaInstaller;
 use ADCT\ParishIntake\WordPress\Database\MailQueueGroupKeyMigration;
 use ADCT\ParishIntake\WordPress\Database\OccurrenceParishNullableMigration;
@@ -79,6 +87,8 @@ use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\Schema;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
+use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenRateLimitStore;
+use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressMailQueueRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressEventCandidateStore;
@@ -113,6 +123,9 @@ final class Plugin
 
     private string $pluginFile;
     private Schema $schema;
+    private ActionTokenService $actionTokenService;
+    private ActionTokenHandlerRegistry $actionTokenHandlers;
+    private ActionTokenEndpoint $actionTokenEndpoint;
     private PipelineFactory $pipelineFactory;
     private ParserPage $parserPage;
     private HttpClientInterface $httpClient;
@@ -271,6 +284,25 @@ final class Plugin
             new WordPressMailQueueImmediateDispatch($jobRunner, $mailQueueSenderJob)
         );
         $protectedInboundMailStorage = new ProtectedInboundMailStorage();
+        $this->actionTokenService = new ActionTokenService(
+            new WordPressActionTokenStore($database),
+            $clock
+        );
+        $actionTokenRateLimiter = new ActionTokenRateLimiter(
+            new WordPressActionTokenRateLimitStore($database),
+            $clock,
+            new WordPressActionTokenRateLimitKeyProvider()
+        );
+        $this->actionTokenHandlers = new ActionTokenHandlerRegistry();
+        $this->actionTokenEndpoint = new ActionTokenEndpoint(
+            $this->actionTokenService,
+            $this->actionTokenHandlers,
+            new ActionTokenRenewalService(
+                $this->actionTokenService,
+                $actionTokenRateLimiter,
+                new WordPressActionTokenRenewalDelivery($this->mailQueue)
+            )
+        );
         $mailboxPollingJob = new MailboxPollingJob(
             $mailboxes,
             $sources,
@@ -352,6 +384,24 @@ final class Plugin
         }
 
         return self::$instance->mailQueue;
+    }
+
+    public static function actionTokenService(): ActionTokenService
+    {
+        if (! self::$instance instanceof self) {
+            throw new \RuntimeException('The Parish Intake plugin has not been booted.');
+        }
+
+        return self::$instance->actionTokenService;
+    }
+
+    public static function actionTokenHandlers(): ActionTokenHandlerRegistry
+    {
+        if (! self::$instance instanceof self) {
+            throw new \RuntimeException('The Parish Intake plugin has not been booted.');
+        }
+
+        return self::$instance->actionTokenHandlers;
     }
 
     public static function mailQueueStats(): MailQueueStats
@@ -476,6 +526,8 @@ final class Plugin
             return;
         }
 
+        add_filter('query_vars', [$this->actionTokenEndpoint, 'registerQueryVars']);
+        add_action('template_redirect', [$this->actionTokenEndpoint, 'handleRequest'], 0);
         add_action('init', [$this->eventPostType, 'register'], 5);
         add_action('add_meta_boxes_adct_event', [$this->eventEditor, 'registerMetaBox']);
         add_action('save_post_adct_event', [$this->eventEditor, 'handleSavePost'], 10, 3);
@@ -587,6 +639,7 @@ final class Plugin
                 new MailboxSchemaMigration(new DbDeltaSchemaInstaller($database)),
                 new OccurrenceParishNullableMigration($database),
                 new MailQueueGroupKeyMigration($database),
+                new ActionTokenRateLimitSchemaMigration(new DbDeltaSchemaInstaller($database)),
             ],
             new WordPressMigrationVersionStore(),
             new WordPressMigrationLogger()
