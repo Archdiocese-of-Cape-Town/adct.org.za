@@ -171,7 +171,7 @@ Parish contacts are WordPress users with a custom `parish_contact` role, linked 
 - Action tokens: random 32-byte values, stored hashed, single-use, with expiry; GET shows a confirmation page, POST performs the action.
 - Email HTML is never rendered unsanitised; attachments are stored outside the web root or with deny rules, and only allowed MIME types are processed.
 - AI prompts treat email content as untrusted data; AI output is schema-validated and never decides publishing.
-- Secrets (IMAP password, API keys) are preferably defined as constants in `wp-config.php` rather than stored in the database; the settings UI says so.
+- Secrets are registered by purpose (`ADCT_PI_AI_API_KEY`, `ADCT_PI_IMAP_PASSWORD`, `ADCT_PI_OCR_API_KEY`). A non-empty string constant in `wp-config.php` takes precedence over its stored option; the Core resolver receives constant and option readers as injected callbacks, and the WordPress adapter supplies those readers. Empty or non-string constants fall back to the option. Register future global secrets as `ADCT_PI_<PURPOSE>` constants paired with `adct_parish_intake_<purpose>` options; secret reads must go through the resolver. For mailbox-specific IMAP credentials, use `ADCT_PI_IMAP_PASSWORD_<SLUG>` with a stable uppercase slug and underscores in place of hyphens (for example, `ADCT_PI_IMAP_PASSWORD_CENTRAL_OFFICE`). Secret values are not included in settings output, parse results, or debug output.
 - Uninstall removes the plugin's custom roles and its custom capabilities from built-in roles. Tables and plugin data are retained until the owner makes a separate data-deletion decision.
 
 ## Related documents

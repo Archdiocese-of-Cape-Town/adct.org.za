@@ -256,11 +256,23 @@ if (has_action($settingsHook) === false) {
     $fail('The Settings page callback was not registered.');
 }
 
+$storedTestApiKey = 'sk-test-DO-NOT-ECHO-123';
+update_option('adct_parish_intake_openrouter_api_key', $storedTestApiKey);
+
 ob_start();
 try {
     do_action($settingsHook);
 } finally {
     $settingsHtml = (string) ob_get_clean();
+}
+
+if (
+    strpos($settingsHtml, $storedTestApiKey) !== false
+    || strpos($settingsHtml, 'name="openrouter_api_key" value=""') === false
+    || strpos($settingsHtml, 'A key is saved. Leave blank to keep it.') === false
+    || strpos($settingsHtml, 'name="remove_openrouter_api_key"') === false
+) {
+    $fail('The Settings page exposed a stored API key or omitted its safe saved-key controls.');
 }
 
 foreach ([
@@ -292,6 +304,7 @@ $_POST = [
     'adct_parish_intake_save_settings' => '1',
     'ai_provider' => 'none',
     'openrouter_model' => 'openrouter/auto',
+    'openrouter_api_key' => '',
     'ai_threshold' => '0.55',
     'section_keywords' => [
         'sick_list' => " \n<strong>Care Circle</strong>\nCARE-CIRCLE\n ",
@@ -306,6 +319,55 @@ if (
     || ($customSectionKeywords['sick_list'] ?? null) !== ['Care Circle']
 ) {
     $fail('The Settings handler did not sanitize and save a custom section keyword list.');
+}
+
+if (get_option('adct_parish_intake_openrouter_api_key') !== $storedTestApiKey) {
+    $fail('Saving a blank API key unexpectedly removed the stored key.');
+}
+
+$_POST = [
+    'adct_parish_intake_settings_nonce' => wp_create_nonce('adct_parish_intake_save_settings'),
+    'adct_parish_intake_save_settings' => '1',
+    'ai_provider' => 'none',
+    'openrouter_model' => 'openrouter/auto',
+    'ai_threshold' => '0.55',
+    'openrouter_api_key' => '',
+    'remove_openrouter_api_key' => '1',
+    'section_keywords' => [
+        'sick_list' => 'Care Circle',
+    ],
+];
+$_REQUEST = $_POST;
+do_action('admin_init');
+
+if (get_option('adct_parish_intake_openrouter_api_key', false) !== false) {
+    $fail('The Settings handler did not remove the stored API key when requested.');
+}
+
+$constantTestApiKey = 'sk-test-wp-config-DO-NOT-ECHO-456';
+define('ADCT_PI_AI_API_KEY', $constantTestApiKey);
+update_option('adct_parish_intake_openrouter_api_key', $storedTestApiKey);
+$resolvedConstantApiKey = (new \ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver())
+    ->resolve(\ADCT\ParishIntake\Core\Security\SecretRegistry::AI_API_KEY);
+
+if ($resolvedConstantApiKey !== $constantTestApiKey) {
+    $fail('The wp-config.php API key constant did not take precedence over the stored option.');
+}
+
+ob_start();
+try {
+    do_action($settingsHook);
+} finally {
+    $constantSettingsHtml = (string) ob_get_clean();
+}
+
+if (
+    strpos($constantSettingsHtml, 'Set in wp-config.php') === false
+    || strpos($constantSettingsHtml, 'name="openrouter_api_key"') !== false
+    || strpos($constantSettingsHtml, $constantTestApiKey) !== false
+    || strpos($constantSettingsHtml, 'Remove saved key') === false
+) {
+    $fail('The Settings page did not render the read-only wp-config.php secret state.');
 }
 
 $_POST = $originalSettingsPost;
@@ -338,7 +400,11 @@ try {
     $manualParserHtml = (string) ob_get_clean();
 }
 
-if (strpos($manualParserHtml, '<h1>Parish Intake Manual Parser</h1>') === false) {
+if (
+    strpos($manualParserHtml, '<h1>Parish Intake Manual Parser</h1>') === false
+    || strpos($manualParserHtml, $storedTestApiKey) !== false
+    || strpos($manualParserHtml, $constantTestApiKey) !== false
+) {
     $fail('The Manual parser page did not render for an administrator.');
 }
 
@@ -375,8 +441,30 @@ if (
     || strpos($submittedParserHtml, 'Family picnic') === false
     || strpos($submittedParserHtml, 'skipped_sections: sick_list=1') === false
     || strpos($submittedParserHtml, 'Fictional Person Alpha') !== false
+    || strpos($submittedParserHtml, $storedTestApiKey) !== false
+    || strpos($submittedParserHtml, $constantTestApiKey) !== false
 ) {
     $fail('The Manual parser did not render candidates and text-free skip metadata for a bulletin.');
+}
+
+$_POST = [
+    'adct_parish_intake_settings_nonce' => wp_create_nonce('adct_parish_intake_save_settings'),
+    'adct_parish_intake_save_settings' => '1',
+    'remove_openrouter_api_key' => '1',
+];
+$_REQUEST = $_POST;
+$removalScreen = $GLOBALS['current_screen'] ?? null;
+set_current_screen('dashboard');
+do_action('admin_init');
+
+if (get_option('adct_parish_intake_openrouter_api_key', false) !== false) {
+    $fail('The Settings handler did not remove a stored key while a constant was configured.');
+}
+
+if ($removalScreen !== null) {
+    $GLOBALS['current_screen'] = $removalScreen;
+} else {
+    unset($GLOBALS['current_screen']);
 }
 
 $legacyParserRow = $wpdb->get_row(

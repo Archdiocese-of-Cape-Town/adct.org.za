@@ -78,4 +78,21 @@ final readonly class MailboxConnectionConfig
 
         $this->folders = array_replace(['inbox' => 'INBOX', 'processed' => 'Processed'], $folders);
     }
+
+    public function __debugInfo(): array
+    {
+        return [
+            'host' => $this->host,
+            'port' => $this->port,
+            'encryption' => $this->encryption,
+            'username' => $this->username,
+            'password' => '[redacted]',
+            'folders' => $this->folders,
+            'connectTimeout' => $this->connectTimeout,
+            'readTimeout' => $this->readTimeout,
+            'verifyPeer' => $this->verifyPeer,
+            'maxMessageSizeBytes' => $this->maxMessageSizeBytes,
+            'allowInsecureForTesting' => $this->allowInsecureForTesting,
+        ];
+    }
 }

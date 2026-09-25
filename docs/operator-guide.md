@@ -107,6 +107,20 @@ To investigate a possible false skip or keyword override, paste the source into 
 
 If an event after a Mass-intentions or prayer list is missed, give the events their own heading (e.g. EVENTS).
 
+## Configure API keys and mailbox passwords
+
+The OpenRouter API key can be stored in the WordPress options database or supplied as `ADCT_PI_AI_API_KEY`. A non-empty constant takes precedence. On **Parish Intake → Settings**, a configured constant is shown only as **Set in wp-config.php**; a saved database key is never displayed, and leaving its password field blank keeps it. Select **Remove saved key** to delete a database key, including one overridden by a constant. Mailbox and OCR secrets are registered for their later settings screens; their fields are not part of the current settings page. Future global secrets follow the `ADCT_PI_<PURPOSE>` constant and `adct_parish_intake_<purpose>` option naming pattern and must be added to the secrets registry.
+
+To keep secrets out of the database, edit `wp-config.php` and add the needed definitions above the line that says `That's all, stop editing!`:
+
+```php
+define('ADCT_PI_AI_API_KEY', 'replace-with-your-openrouter-api-key');
+define('ADCT_PI_IMAP_PASSWORD', 'replace-with-your-mailbox-password');
+define('ADCT_PI_OCR_API_KEY', 'replace-with-your-ocr-api-key');
+```
+
+The values above are placeholders; replace them with the site's credentials and do not commit those values to a repository. For a mailbox-specific password, use `ADCT_PI_IMAP_PASSWORD_<SLUG>`, where a stable mailbox slug is uppercased and hyphens become underscores (for example, `central-office` becomes `ADCT_PI_IMAP_PASSWORD_CENTRAL_OFFICE`). This pattern is ready for the mailbox settings feature; per-mailbox configuration is not available yet.
+
 ## Check database installation and upgrade (staging)
 
 Do this on a staging site with a recent database backup; do not change schema options on the live site.
