@@ -279,6 +279,25 @@ final class OccurrenceExpanderTest extends TestCase
         ], $this->starts($occurrences));
     }
 
+    public function testSetPositionIsChosenFromTheWholeMonthWhenWindowStartsMidMonth(): void
+    {
+        $lastWeekday = $this->expand(
+            '2026-01-30T09:00',
+            'FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1',
+            '2026-03-15',
+            '2026-04-15'
+        );
+        $firstWeekday = $this->expand(
+            '2026-01-02T09:00',
+            'FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=1',
+            '2026-03-15',
+            '2026-04-15'
+        );
+
+        self::assertSame(['2026-03-31T09:00'], $this->starts($lastWeekday));
+        self::assertSame(['2026-04-01T09:00'], $this->starts($firstWeekday));
+    }
+
     public function testCountIncludesTheStartAndIsNotExtendedByAnExclusion(): void
     {
         $occurrences = $this->expand(
