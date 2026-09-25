@@ -3490,9 +3490,9 @@ if (
     || strpos((string) ($confirmationQueueRow['body_html'] ?? ''), 'Event 2: Integration event two') === false
     || strpos($confirmationBodyText, 'Event 1: Integration <one>') === false
     || strpos($confirmationBodyText, 'Event 2: Integration event two (please check)') === false
-    || strpos((string) ($confirmationQueueRow['body_html'] ?? ''), 'Approve all (not active)') === false
+    || strpos((string) ($confirmationQueueRow['body_html'] ?? ''), 'Confirm all') === false
 ) {
-    $fail('The confirmation email did not render both candidates or explicitly mark its inactive action links.');
+    $fail('The confirmation email did not render both candidates and the confirm-all action.');
 }
 
 if (
@@ -4871,6 +4871,8 @@ PublicationCheck::run($fail);
 require WP_CONTENT_DIR . '/test-harness/IcsFeedCheck.php';
 require_once __DIR__ . '/RepeatMatchingCheck.php';
 RepeatMatchingCheck::run($fail, $icsSource->id, $firstParishId);
+require_once __DIR__ . '/ConfirmationDecisionCheck.php';
+ConfirmationDecisionCheck::run($fail);
 
 foreach (['administrator', 'editor'] as $roleName) {
     $role = get_role($roleName);

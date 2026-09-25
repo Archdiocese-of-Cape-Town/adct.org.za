@@ -72,6 +72,7 @@ use ADCT\ParishIntake\WordPress\Admin\SourcesPage;
 use ADCT\ParishIntake\WordPress\Ai\OpenAiCompatibleProvider;
 use ADCT\ParishIntake\WordPress\Ai\WordPressAiCallGate;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
+use ADCT\ParishIntake\WordPress\Auth\ConfirmationDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\WordPressConfirmationActionLinkProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRateLimitKeyProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRenewalDelivery;
@@ -341,6 +342,16 @@ final class Plugin
             new WordPressActionTokenRateLimitKeyProvider()
         );
         $this->actionTokenHandlers = new ActionTokenHandlerRegistry();
+        foreach ([\ADCT\ParishIntake\Core\Auth\ActionTokenPurpose::CONFIRM,
+            \ADCT\ParishIntake\Core\Auth\ActionTokenPurpose::DENY] as $purpose) {
+            $this->actionTokenHandlers->register(new ConfirmationDecisionHandler(
+                $purpose,
+                $database,
+                $approvalRouteResolver,
+                $this->candidatePublisher,
+                $clock
+            ));
+        }
         $this->actionTokenEndpoint = new ActionTokenEndpoint(
             $this->actionTokenService,
             $this->actionTokenHandlers,
