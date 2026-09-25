@@ -285,7 +285,10 @@ final class ParserPage
                     </tr>
                     <tr>
                         <th scope="row">Sender email</th>
-                        <td><input type="email" class="regular-text" name="sender_email" value="" /></td>
+                        <td>
+                            <input type="email" class="regular-text" name="sender_email" value="" />
+                            <p class="description">A verified address linked to one parish fills that parish and its default venue; other senders are matched from message text.</p>
+                        </td>
                     </tr>
                     <tr>
                         <th scope="row">Sender name</th>

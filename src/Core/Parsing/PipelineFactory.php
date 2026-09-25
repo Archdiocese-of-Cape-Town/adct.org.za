@@ -2,23 +2,30 @@
 
 namespace ADCT\ParishIntake\Core\Parsing;
 
+use ADCT\ParishIntake\Core\Directory\DirectoryLookup;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\Stages\AiEnrichmentStage;
 use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
+use ADCT\ParishIntake\Core\Parsing\Stages\DirectoryLookupStage;
 use ADCT\ParishIntake\Core\Parsing\Stages\RecurrenceDetectionStage;
 use ADCT\ParishIntake\Core\Parsing\Stages\RuleBasedExtractionStage;
 use ADCT\ParishIntake\Core\Parsing\Stages\SourceNormalizationStage;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
+use ADCT\ParishIntake\Core\Ports\DirectorySnapshotProviderInterface;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 
 final class PipelineFactory
 {
     private ClockInterface $clock;
+    private ?DirectorySnapshotProviderInterface $directorySnapshots;
 
-    public function __construct(?ClockInterface $clock = null)
-    {
+    public function __construct(
+        ?ClockInterface $clock = null,
+        ?DirectorySnapshotProviderInterface $directorySnapshots = null
+    ) {
         $this->clock = $clock ?? new SystemClock();
+        $this->directorySnapshots = $directorySnapshots;
     }
 
     public function create(array $options = []): Pipeline
@@ -39,13 +46,19 @@ final class PipelineFactory
             'ai_threshold' => (float) ($options['ai_threshold'] ?? 0.55),
             'ai_enabled' => (bool) ($options['ai_enabled'] ?? false),
         ]);
-
-        return new Pipeline([
+        $stages = [
             new SourceNormalizationStage(),
             new RuleBasedExtractionStage($this->clock),
-            new RecurrenceDetectionStage(),
-            new ConfidenceScoringStage(),
-            new AiEnrichmentStage($provider),
-        ], $context, new BulletinBlockSplitter(null, new SectionSkipper($sectionKeywords)));
+        ];
+
+        if ($this->directorySnapshots !== null) {
+            $stages[] = new DirectoryLookupStage(new DirectoryLookup($this->directorySnapshots));
+        }
+
+        $stages[] = new RecurrenceDetectionStage();
+        $stages[] = new ConfidenceScoringStage();
+        $stages[] = new AiEnrichmentStage($provider);
+
+        return new Pipeline($stages, $context, new BulletinBlockSplitter(null, new SectionSkipper($sectionKeywords)));
     }
 }

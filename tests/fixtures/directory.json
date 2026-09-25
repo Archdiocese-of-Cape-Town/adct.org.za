@@ -1,0 +1,77 @@
+{
+  "parishes": [
+    {
+      "id": 101,
+      "name": "Example District: St Mary's",
+      "slug": "example-district-st-marys",
+      "area": "Example District",
+      "church": "St Mary's",
+      "suburb": "Fictionalville",
+      "aliases": [
+        "Saint Marys",
+        "St. Mary"
+      ],
+      "status": "active"
+    },
+    {
+      "id": 102,
+      "name": "Sample District: Holy Cross",
+      "slug": "sample-district-holy-cross",
+      "area": "Sample District",
+      "church": "Holy Cross",
+      "suburb": "Example Suburb",
+      "aliases": [
+        "Holy Cross Mission"
+      ],
+      "status": "active"
+    }
+  ],
+  "venues": [
+    {
+      "id": 501,
+      "parish_id": 101,
+      "name": "St Mary's Hall",
+      "aliases": [
+        "Saint Marys Hall",
+        "St. Mary Hall"
+      ],
+      "address": "1 Fictional Road",
+      "suburb": "Fictionalville",
+      "latitude": -33.91,
+      "longitude": 18.42,
+      "is_default": true,
+      "status": "active"
+    },
+    {
+      "id": 502,
+      "parish_id": 102,
+      "name": "Holy Cross Church",
+      "aliases": [
+        "Holy Cross Chapel"
+      ],
+      "address": "2 Sample Lane",
+      "suburb": "Example Suburb",
+      "latitude": -33.92,
+      "longitude": 18.43,
+      "is_default": true,
+      "status": "active"
+    }
+  ],
+  "contacts": [
+    {
+      "parish_id": 101,
+      "email": "events@example.test",
+      "trust": "verified"
+    },
+    {
+      "parish_id": 101,
+      "email": "shared@example.test",
+      "trust": "verified"
+    },
+    {
+      "parish_id": 102,
+      "email": "shared@example.test",
+      "trust": "verified"
+    }
+  ]
+}

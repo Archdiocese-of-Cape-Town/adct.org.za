@@ -1,0 +1,28 @@
+{
+  "directory_snapshot": "directory.json",
+  "candidate_count": 1,
+  "candidates": [
+    {
+      "fields": {
+        "title": "Holy Cross community gathering",
+        "parish_name": "Sample District: Holy Cross",
+        "parish_id": 102,
+        "parish_match": {
+          "source": "text",
+          "confidence": 0.9,
+          "parish_id": 102
+        },
+        "venue": "Holy Cross Chapel",
+        "venue_id": 502,
+        "venue_latitude": -33.92,
+        "venue_longitude": 18.43,
+        "venue_match": {
+          "source": "label",
+          "confidence": 0.98,
+          "venue_id": 502,
+          "parish_id": 102
+        }
+      }
+    }
+  ]
+}

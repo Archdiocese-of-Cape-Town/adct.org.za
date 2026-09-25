@@ -27,26 +27,8 @@ final class ContactService
     public function lookup(string $email): SenderLookupResult
     {
         $email = EmailAddress::normalize($email);
-        $rows = $this->contacts->findByEmail($email);
 
-        if ($rows === []) {
-            return new SenderLookupResult($email, SenderTrust::UNKNOWN, []);
-        }
-
-        $parishIds = [];
-
-        foreach ($rows as $row) {
-            $parishId = (int) ($row['parish_id'] ?? 0);
-
-            if ($parishId > 0) {
-                $parishIds[] = $parishId;
-            }
-        }
-
-        $parishIds = array_values(array_unique($parishIds));
-        sort($parishIds, SORT_NUMERIC);
-
-        return new SenderLookupResult($email, $this->trustOf($rows), $parishIds);
+        return SenderLookup::fromRows($email, $this->contacts->findByEmail($email));
     }
 
     public function isBlocked(string $email): bool

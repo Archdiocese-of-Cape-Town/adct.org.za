@@ -1,0 +1,28 @@
+{
+  "directory_snapshot": "directory.json",
+  "candidate_count": 1,
+  "candidates": [
+    {
+      "fields": {
+        "title": "Community gathering",
+        "parish_name": "Example District: St Mary's",
+        "parish_id": 101,
+        "parish_match": {
+          "source": "sender",
+          "confidence": 1.0,
+          "parish_id": 101
+        },
+        "venue": "St Mary's Hall",
+        "venue_id": 501,
+        "venue_latitude": -33.91,
+        "venue_longitude": 18.42,
+        "venue_match": {
+          "source": "default",
+          "confidence": 1.0,
+          "venue_id": 501,
+          "parish_id": 101
+        }
+      }
+    }
+  ]
+}

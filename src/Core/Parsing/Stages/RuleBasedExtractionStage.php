@@ -111,10 +111,25 @@ final class RuleBasedExtractionStage implements StageInterface
             $result->addNote('The stated event end is before its start; verify the range.');
         }
 
-        $venue = $this->extractVenue($body)
-            ?? $this->extractVenue($message->getSubject())
-            ?? (isset($blockContext['venue']) ? (string) $blockContext['venue'] : null);
+        $venue = $this->extractVenue($body);
+        $venueSource = $venue === null
+            ? null
+            : ($this->hasLabelledVenue($body) ? 'label' : 'text');
+
+        if ($venue === null) {
+            $venue = $this->extractVenue($message->getSubject());
+            $venueSource = $venue === null
+                ? null
+                : ($this->hasLabelledVenue($message->getSubject()) ? 'label' : 'text');
+        }
+
+        if ($venue === null && isset($blockContext['venue'])) {
+            $venue = (string) $blockContext['venue'];
+            $venueSource = 'context';
+        }
+
         $result->setField('venue', $venue);
+        $context->setRuntimeValue('venue_source', $venueSource);
         $result->setField('contact', $this->extractContact($text . "\n" . $signature, $message->getSenderEmail()));
         $result->setField('description', $this->eventDescription($body));
         $result->setField('attachment_names', array_map(static fn ($attachment) => $attachment->getName(), $message->getAttachments()));
@@ -652,6 +667,11 @@ final class RuleBasedExtractionStage implements StageInterface
         }
 
         return null;
+    }
+
+    private function hasLabelledVenue(string $text): bool
+    {
+        return preg_match('/(?:venue|where|location)\s*[:\-]/iu', $text) === 1;
     }
 
     private function extractContact(string $text, string $fallbackEmail): ?string

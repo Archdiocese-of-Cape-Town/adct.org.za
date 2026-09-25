@@ -9,6 +9,7 @@ use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Ports\ApprovalRouteRepositoryInterface;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
+use ADCT\ParishIntake\Core\Ports\DirectorySnapshotProviderInterface;
 use ADCT\ParishIntake\Core\Ports\EventRepositoryInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Ports\MailerInterface;
@@ -81,6 +82,7 @@ final class CoreIsolationTest extends TestCase
         foreach ([
             ClockInterface::class,
             ApprovalRouteRepositoryInterface::class,
+            DirectorySnapshotProviderInterface::class,
             MailboxInterface::class,
             MailerInterface::class,
             EventRepositoryInterface::class,

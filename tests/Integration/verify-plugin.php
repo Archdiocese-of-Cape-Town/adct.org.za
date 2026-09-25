@@ -30,6 +30,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
 use ADCT\ParishIntake\WordPress\Directory\DeaneryApproverAssignmentService;
+use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
 
 require_once ABSPATH . 'wp-admin/includes/plugin.php';
 
@@ -423,10 +424,11 @@ if (! is_string($seedDeaneriesCsv) || ! is_string($seedParishesCsv)) {
 }
 
 $database = new WordPressDatabaseConnection($wpdb);
-$parishRepository = new ParishRepository($database);
+$directoryVersions = new WordPressDirectoryVersionStore($database);
+$parishRepository = new ParishRepository($database, $directoryVersions);
 $deaneryRepository = new DeaneryRepository($database);
-$contactRepository = new ParishContactRepository($database);
-$venueRepository = new VenueRepository($database);
+$contactRepository = new ParishContactRepository($database, $directoryVersions);
+$venueRepository = new VenueRepository($database, $directoryVersions);
 $sourceRepository = new SourceRepository($database);
 $clock = new SystemClock();
 $contactService = new ContactService($contactRepository, $clock);
@@ -727,6 +729,46 @@ $defaultAfterReactivation = $venueLookup->defaultVenueFor($firstParishId);
 
 if ($defaultAfterReactivation === null || $defaultAfterReactivation->venueId !== $replacementVenue->id) {
     $fail('Reactivating a venue changed the parish default unexpectedly.');
+}
+
+$manualParserVerifiedEmail = 'manual-parser@example.test';
+$contactService->linkOfficial($firstParishId, $manualParserVerifiedEmail);
+$manualParserDefaultVenue = $venueLookup->defaultVenueFor($firstParishId);
+
+if ($manualParserDefaultVenue === null) {
+    $fail('The verified-sender parser integration fixture has no active default venue.');
+}
+
+$previousPost = $_POST;
+$previousRequest = $_REQUEST;
+$_POST = [
+    'adct_parish_intake_parse_nonce' => wp_create_nonce('adct_parish_intake_parse'),
+    'adct_parish_intake_parse' => '1',
+    'source_type' => 'manual-test',
+    'source_identifier' => 'verified-sender-lookup-test',
+    'sender_email' => $manualParserVerifiedEmail,
+    'sender_name' => 'Fictional Parser Desk',
+    'subject' => 'Verified sender gathering',
+    'body' => 'A community gathering is on Sunday 11 October 2026 at 16:00.',
+];
+$_REQUEST = $_POST;
+ob_start();
+try {
+    do_action($pageHook);
+} finally {
+    $verifiedParserHtml = (string) ob_get_clean();
+    $_POST = $previousPost;
+    $_REQUEST = $previousRequest;
+}
+
+$verifiedParserOutput = html_entity_decode($verifiedParserHtml, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+if (
+    strpos($verifiedParserOutput, '"parish_id": ' . $firstParishId) === false
+    || strpos($verifiedParserOutput, '"venue_id": ' . $manualParserDefaultVenue->venueId) === false
+    || strpos($verifiedParserOutput, '"source": "sender"') === false
+) {
+    $fail('The Manual parser did not resolve a parish and default venue from the verified test sender.');
 }
 
 $parishesPageSlug = 'adct-parish-intake-parishes';

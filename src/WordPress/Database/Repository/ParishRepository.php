@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Database\Repository;
 
+use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
+use ADCT\ParishIntake\WordPress\Directory\DirectoryVersionStoreInterface;
 use InvalidArgumentException;
 use RuntimeException;
 
@@ -33,6 +35,49 @@ final class ParishRepository extends AbstractRepository
         'created_at' => '%s',
         'updated_at' => '%s',
     ];
+
+    public function __construct(
+        DatabaseConnectionInterface $database,
+        private ?DirectoryVersionStoreInterface $directoryVersions = null
+    ) {
+        parent::__construct($database);
+    }
+
+    /**
+     * @param array<string, scalar|null> $values
+     */
+    public function insert(array $values): int
+    {
+        $id = parent::insert($values);
+        $this->directoryVersions?->bump();
+
+        return $id;
+    }
+
+    /**
+     * @param array<string, scalar|null> $values
+     */
+    public function update(int $id, array $values): int
+    {
+        $affectedRows = parent::update($id, $values);
+
+        if ($affectedRows > 0) {
+            $this->directoryVersions?->bump();
+        }
+
+        return $affectedRows;
+    }
+
+    public function delete(int $id): int
+    {
+        $affectedRows = parent::delete($id);
+
+        if ($affectedRows > 0) {
+            $this->directoryVersions?->bump();
+        }
+
+        return $affectedRows;
+    }
 
     /**
      * @param array<string, mixed> $filters
@@ -155,6 +200,10 @@ final class ParishRepository extends AbstractRepository
             throw new RuntimeException(
                 'The parish deanery assignments could not be saved: ' . $this->database->lastError()
             );
+        }
+
+        if ($result > 0) {
+            $this->directoryVersions?->bump();
         }
 
         return $result;
