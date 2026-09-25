@@ -29,6 +29,7 @@ use DomainException;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use Throwable;
 
 final class MailQueueServiceTest extends TestCase
 {
@@ -276,6 +277,67 @@ final class MailQueueServiceTest extends TestCase
         self::assertSame(MailQueueDispatchStatus::EMPTY, $dispatcher->dispatchOne()->status);
     }
 
+    public function testUnknownDeliveryExceptionKeepsTheCapReservationUntilRecovery(): void
+    {
+        $repository = new InMemoryMailQueueRepository();
+        $clock = new MailQueueTestClock($this->start);
+        $service = $this->service($repository, $clock);
+        $unknown = $service->enqueue($this->email('unknown@example.test', MailPriority::APPROVER_OR_CHANGE));
+        $waiting = $service->enqueue($this->email('waiting@example.test', MailPriority::REMINDER_OR_DIGEST));
+        $delivery = new RecordingMailDelivery();
+        $delivery->exception = new RuntimeException('SMTP may have accepted the message.');
+        $dispatcher = $this->dispatcher($repository, $clock, $delivery, null, 1);
+
+        $dispatch = $dispatcher->dispatchOne();
+
+        self::assertSame(MailQueueDispatchStatus::OUTCOME_UNKNOWN, $dispatch->status);
+        self::assertSame(MailQueueStatus::SENDING, $repository->records[$unknown->id]->status);
+        self::assertSame(1, $repository->records[$unknown->id]->attempts);
+        self::assertSame(MailQueueStatus::QUEUED, $repository->records[$waiting->id]->status);
+
+        $clock->advance(3599);
+
+        self::assertSame(MailQueueDispatchStatus::CAP_REACHED, $dispatcher->dispatchOne()->status);
+        self::assertSame(MailQueueStatus::SENDING, $repository->records[$unknown->id]->status);
+        self::assertSame(0, $service->stats()->sentInLastHour);
+        self::assertSame(0, $service->stats()->failedCount);
+
+        $clock->advance(1);
+
+        self::assertSame(
+            MailQueueDispatchStatus::INTERRUPTED_REQUEUED,
+            $dispatcher->dispatchOne()->status
+        );
+        self::assertSame(MailQueueStatus::QUEUED, $repository->records[$unknown->id]->status);
+        self::assertSame(
+            $clock->now()->getTimestamp() + 60,
+            $repository->records[$unknown->id]->nextAttemptAt?->getTimestamp()
+        );
+        self::assertCount(1, $delivery->delivered);
+    }
+
+    public function testUnknownDeliveryResultLeavesTheClaimReserved(): void
+    {
+        $repository = new InMemoryMailQueueRepository();
+        $clock = new MailQueueTestClock($this->start);
+        $service = $this->service($repository, $clock);
+        $enqueued = $service->enqueue($this->email(
+            'unknown-result@example.test',
+            MailPriority::APPROVER_OR_CHANGE
+        ));
+        $delivery = new RecordingMailDelivery();
+        $delivery->result = MailDeliveryResult::unknown();
+        $dispatcher = $this->dispatcher($repository, $clock, $delivery);
+
+        self::assertSame(
+            MailQueueDispatchStatus::OUTCOME_UNKNOWN,
+            $dispatcher->dispatchOne()->status
+        );
+        self::assertSame(MailQueueStatus::SENDING, $repository->records[$enqueued->id]->status);
+        self::assertSame(1, $repository->records[$enqueued->id]->attempts);
+        self::assertSame(0, $service->stats()->failedCount);
+    }
+
     public function testInterruptedClaimRemainsReservedForAnHourThenRetries(): void
     {
         $repository = new InMemoryMailQueueRepository();
@@ -408,6 +470,7 @@ final class RecordingMailDelivery implements MailDeliveryInterface
     public array $delivered = [];
 
     public MailDeliveryResult $result;
+    public ?Throwable $exception = null;
 
     public function __construct()
     {
@@ -417,6 +480,10 @@ final class RecordingMailDelivery implements MailDeliveryInterface
     public function deliver(OutboundEmail $email): MailDeliveryResult
     {
         $this->delivered[] = $email;
+
+        if ($this->exception !== null) {
+            throw $this->exception;
+        }
 
         return $this->result;
     }

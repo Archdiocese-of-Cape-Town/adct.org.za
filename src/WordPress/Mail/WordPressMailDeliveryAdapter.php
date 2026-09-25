@@ -38,7 +38,7 @@ final class WordPressMailDeliveryAdapter implements MailDeliveryInterface
                 ? MailDeliveryResult::sent()
                 : MailDeliveryResult::failed('wp_mail_returned_false');
         } catch (Throwable) {
-            return MailDeliveryResult::failed('wp_mail_exception');
+            return MailDeliveryResult::unknown();
         } finally {
             remove_action('phpmailer_init', $setAlternativeBody, 10);
         }

@@ -71,7 +71,18 @@ final class MailQueueDispatcher
         try {
             $delivery = $this->delivery->deliver($claimed->email);
         } catch (Throwable) {
-            $delivery = MailDeliveryResult::failed('delivery_exception');
+            return new MailQueueDispatchResult(
+                MailQueueDispatchStatus::OUTCOME_UNKNOWN,
+                $claimed->id
+            );
+        }
+
+        if ($delivery->outcomeUnknown) {
+            // Leave the SENDING row intact until the full reservation window expires.
+            return new MailQueueDispatchResult(
+                MailQueueDispatchStatus::OUTCOME_UNKNOWN,
+                $claimed->id
+            );
         }
 
         if ($delivery->sent) {

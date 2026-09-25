@@ -224,7 +224,7 @@ CREATE TABLE {table_prefix}adct_pi_occurrences (
     start_utc datetime NOT NULL,
     end_utc datetime NULL,
     start_local_date date NOT NULL,
-    parish_id bigint(20) unsigned NOT NULL,
+    parish_id bigint(20) unsigned NULL,
     event_type_term_id bigint(20) unsigned NULL,
     latitude decimal(9,6) NULL,
     longitude decimal(9,6) NULL,
@@ -328,6 +328,7 @@ CREATE TABLE {table_prefix}adct_pi_mail_queue (
     PRIMARY KEY  (id),
     KEY queue_order (status,priority,next_attempt_at),
     KEY group_key (group_key),
+    UNIQUE KEY recipient_group (recipient,group_key),
     KEY sent_at (sent_at)
 ) {charset_collate};
 SQL,

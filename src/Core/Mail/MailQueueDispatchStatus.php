@@ -8,6 +8,7 @@ enum MailQueueDispatchStatus: string
 {
     case SENT = 'sent';
     case RETRY_SCHEDULED = 'retry_scheduled';
+    case OUTCOME_UNKNOWN = 'outcome_unknown';
     case FAILED = 'failed';
     case SUPPRESSED = 'suppressed';
     case INTERRUPTED_REQUEUED = 'interrupted_requeued';
@@ -21,6 +22,7 @@ enum MailQueueDispatchStatus: string
         return in_array($this, [
             self::SENT,
             self::RETRY_SCHEDULED,
+            self::OUTCOME_UNKNOWN,
             self::FAILED,
             self::SUPPRESSED,
             self::INTERRUPTED_REQUEUED,

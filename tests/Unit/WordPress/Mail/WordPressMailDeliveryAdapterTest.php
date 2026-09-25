@@ -135,7 +135,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Mail {
             self::assertSame('wp_mail_returned_false', $result->failureCode);
         }
 
-        public function testTransportExceptionIsNotExposedInTheFailureResult(): void
+        public function testTransportExceptionIsReportedAsAnUnknownOutcomeWithoutDetails(): void
         {
             WordPressMailDeliveryFixture::$exception = new RuntimeException(
                 'SMTP secret and private message content'
@@ -144,8 +144,8 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Mail {
             $result = (new WordPressMailDeliveryAdapter())->deliver($this->email());
 
             self::assertFalse($result->sent);
-            self::assertSame('wp_mail_exception', $result->failureCode);
-            self::assertStringNotContainsString('SMTP secret', (string) $result->failureCode);
+            self::assertTrue($result->outcomeUnknown);
+            self::assertNull($result->failureCode);
         }
 
         private function email(): OutboundEmail
