@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveWpEnvHome } from './wp-env-home.mjs';
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 const releaseZip = join(repositoryRoot, 'dist', 'adct-parish-intake.zip');
@@ -16,7 +16,7 @@ if (!npmCli) {
   throw new Error('Run this harness with `npm run test:integration` or `composer test:integration`.');
 }
 
-const wpEnvHome = join(tmpdir(), 'adct-parish-intake-wp-env');
+const wpEnvHome = resolveWpEnvHome(repositoryRoot);
 const environment = {
   ...process.env,
   WP_ENV_HOME: wpEnvHome,
@@ -42,12 +42,12 @@ function runWpEnv(args) {
   }
 }
 
-let startAttempted = false;
+let started = false;
 let failure = null;
 
 try {
-  startAttempted = true;
   runWpEnv(['start']);
+  started = true;
   runWpEnv([
     'run',
     'cli',
@@ -75,7 +75,7 @@ try {
   failure = error;
 } finally {
   try {
-    if (startAttempted) {
+    if (started) {
       runWpEnv(['stop']);
     }
   } catch (cleanupError) {
