@@ -475,6 +475,18 @@ final class Plugin
             2
         );
         add_filter(
+            'rest_request_before_callbacks',
+            [$this->eventOccurrenceHooks, 'beginRestWrite'],
+            10,
+            3
+        );
+        add_filter(
+            'rest_request_after_callbacks',
+            [$this->eventOccurrenceHooks, 'endRestWrite'],
+            10,
+            3
+        );
+        add_filter(
             'rest_post_dispatch',
             [$this->eventOccurrenceHooks, 'filterRestResponse'],
             10,

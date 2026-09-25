@@ -2107,6 +2107,8 @@ if (count($preexistingOccurrenceRows) !== 3) {
 
 $forcedVenueFailureEventId = $occurrenceEventId;
 $failedUpdateStart = $restOccurrenceStart->modify('+3 weeks');
+// Ensure an unintended duplicate rebuild changes second-resolution timestamps.
+sleep(1);
 $failedUpdateRequest = new WP_REST_Request(
     'PATCH',
     '/wp/v2/adct_event/' . $occurrenceEventId

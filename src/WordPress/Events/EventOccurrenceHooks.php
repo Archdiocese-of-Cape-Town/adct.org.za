@@ -16,6 +16,8 @@ final class EventOccurrenceHooks
      */
     private array $restFailures = [];
 
+    private int $restWriteDepth = 0;
+
     public function __construct(
         private WordPressEventOccurrenceMaintenance $maintenance,
         private ClockInterface $clock,
@@ -32,6 +34,7 @@ final class EventOccurrenceHooks
             || wp_is_post_autosave($postId)
             || (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE)
             || (defined('REST_REQUEST') && REST_REQUEST)
+            || $this->restWriteDepth > 0
         ) {
             return;
         }
@@ -103,6 +106,34 @@ final class EventOccurrenceHooks
 
     /**
      * @param mixed $response
+     * @param array<string, mixed> $handler
+     * @return mixed
+     */
+    public function beginRestWrite($response, array $handler, \WP_REST_Request $request)
+    {
+        if ($this->isEventRestWrite($request)) {
+            $this->restWriteDepth++;
+        }
+
+        return $response;
+    }
+
+    /**
+     * @param mixed $response
+     * @param array<string, mixed> $handler
+     * @return mixed
+     */
+    public function endRestWrite($response, array $handler, \WP_REST_Request $request)
+    {
+        if ($this->isEventRestWrite($request) && $this->restWriteDepth > 0) {
+            $this->restWriteDepth--;
+        }
+
+        return $response;
+    }
+
+    /**
+     * @param mixed $response
      * @return mixed
      */
     public function filterRestResponse(
@@ -110,15 +141,11 @@ final class EventOccurrenceHooks
         \WP_REST_Server $server,
         \WP_REST_Request $request
     ) {
-        $method = strtoupper($request->get_method());
-
-        if (
-            ! in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)
-            || preg_match('#^/wp/v2/adct_event(?:/\d+)?$#', $request->get_route()) !== 1
-        ) {
+        if (! $this->isEventRestWrite($request)) {
             return $response;
         }
 
+        $method = strtoupper($request->get_method());
         $postId = absint($request->get_param('id'));
 
         if ($postId < 1 && $response instanceof \WP_REST_Response) {
@@ -196,6 +223,12 @@ final class EventOccurrenceHooks
     private function currentWindow(): OccurrenceWindow
     {
         return OccurrenceWindow::rollingTwelveMonths($this->clock->now(), $this->timezone);
+    }
+
+    private function isEventRestWrite(\WP_REST_Request $request): bool
+    {
+        return in_array(strtoupper($request->get_method()), ['POST', 'PUT', 'PATCH', 'DELETE'], true)
+            && preg_match('#^/wp/v2/adct_event(?:/\d+)?$#', $request->get_route()) === 1;
     }
 
     private function deleteForNonPublicEvent(int $postId): void
