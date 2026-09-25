@@ -53,6 +53,7 @@ try {
         'name' => 'Private fictional contact',
         'email' => 'private-contact@example.test',
     ]);
+    update_post_meta($seedIds[0], 'raw_mail', 'fictional-raw-message-body');
 
     $placeholderGroups = [];
     $values = [];
@@ -100,6 +101,7 @@ try {
         || ! str_contains($html, 'Social')
         || ! str_contains($html, 'Occurrence integration hall')
         || str_contains($html, 'private-contact@example.test')
+        || str_contains($html, 'fictional-raw-message-body')
     ) {
         $fail('The public date-range listing omitted required cards or exposed private contact details.');
     }
@@ -193,6 +195,7 @@ try {
         $restResult->get_status() !== 200
         || ! str_contains((string) ($restResult->get_data()['html'] ?? ''), 'Fictional listing event 5')
         || str_contains((string) ($restResult->get_data()['html'] ?? ''), 'private-contact@example.test')
+        || str_contains((string) ($restResult->get_data()['html'] ?? ''), 'fictional-raw-message-body')
     ) {
         $fail('The public REST selection did not match the listing or leaked a private contact.');
     }
@@ -272,6 +275,17 @@ try {
     if (! str_contains(do_shortcode('[adct_events]'), 'role="alert"')) {
         $fail('The listing accepted an array-valued page.');
     }
+    foreach ([
+        ['adct_types' => ['999999999999999999999']],
+        ['adct_types' => range(1, 21)],
+        ['adct_parish' => ['1']],
+    ] as $invalid) {
+        $_GET = $listingPeriod + $invalid;
+        if (! str_contains(do_shortcode('[adct_events]'), 'role="alert"')) {
+            $fail('The no-JavaScript listing accepted an invalid event selection.');
+        }
+    }
+    $_GET = $listingPeriod;
     unset($_GET['adct_page']);
     $_GET['adct_from'] = '2026-02-30';
     if (! str_contains(do_shortcode('[adct_events]'), 'role="alert"')) {
