@@ -3719,6 +3719,8 @@ $sharedSenderEmail = 'sender@example.test';
 $contactService->link($firstParishId, $sharedSenderEmail, 'Sample Sender', 'Secretary', true);
 $contactService->link($secondParishId, $sharedSenderEmail, 'Sample Sender', 'Secretary', true);
 $contactService->block($sharedSenderEmail);
+$pendingSenderEmail = 'pending@example.test';
+$contactService->linkPending($firstParishId, $pendingSenderEmail, 'Sample Sender', 'Secretary', true);
 $sharedSenderLinks = $wpdb->get_results($wpdb->prepare(
     "SELECT parish_id, trust FROM {$contactTable} WHERE email = %s ORDER BY parish_id ASC",
     $sharedSenderEmail
@@ -3736,6 +3738,20 @@ if (
     || $sharedSenderParishIds !== $expectedSharedSenderParishIds
 ) {
     $fail('Blocking a shared sender did not update both parish contact links.');
+}
+
+$pendingSenderRow = $wpdb->get_row($wpdb->prepare(
+    "SELECT parish_id, trust, verified_at FROM {$contactTable} WHERE email = %s LIMIT 1",
+    $pendingSenderEmail
+), ARRAY_A);
+
+if (
+    ! is_array($pendingSenderRow)
+    || (int) ($pendingSenderRow['parish_id'] ?? 0) !== $firstParishId
+    || ($pendingSenderRow['trust'] ?? '') !== 'pending'
+    || $pendingSenderRow['verified_at'] !== null
+) {
+    $fail('A pending sender contact was not created with a conservative parish guess.');
 }
 
 $senderAddressRows = $contactRepository->findSenderAddresses(['search' => $sharedSenderEmail], 20, 0);
@@ -3976,6 +3992,24 @@ foreach ([
 if ($missingSendersContent !== []) {
     $fail('The Senders page did not render the shared blocked sender and actions (missing: '
         . implode(', ', $missingSendersContent) . ').');
+}
+
+$_GET = ['page' => $sendersSlug];
+$_GET['search'] = $pendingSenderEmail;
+ob_start();
+try {
+    do_action($sendersPageHook);
+} finally {
+    $pendingSendersHtml = (string) ob_get_clean();
+    $_GET = $previousGet;
+}
+
+if (
+    strpos($pendingSendersHtml, $pendingSenderEmail) === false
+    || strpos($pendingSendersHtml, 'Pending') === false
+    || strpos($pendingSendersHtml, 'Confirm link') === false
+) {
+    $fail('The Senders page did not render the pending sender confirmation action.');
 }
 
 update_option(

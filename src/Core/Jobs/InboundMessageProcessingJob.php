@@ -5,11 +5,14 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Core\Jobs;
 
 use ADCT\ParishIntake\Core\Directory\DirectoryLookup;
+use ADCT\ParishIntake\Core\Directory\SenderLearningService;
 use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingFailure;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingRecord;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
 use ADCT\ParishIntake\Core\Ingestion\MimeMessageParser;
+use ADCT\ParishIntake\Core\Parsing\Input\Message;
+use ADCT\ParishIntake\Core\Parsing\ParseOutcome;
 use ADCT\ParishIntake\Core\Parsing\Pipeline;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\DirectorySnapshotProviderInterface;
@@ -17,6 +20,7 @@ use ADCT\ParishIntake\Core\Ports\EventCandidateStoreInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingFailureLoggerInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingStoreInterface;
+use ADCT\ParishIntake\Core\Ports\SourceStoreInterface;
 use Closure;
 use DateTimeZone;
 use InvalidArgumentException;
@@ -49,7 +53,9 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
         private EventCandidateStoreInterface $candidates,
         private InboundMessageProcessingFailureLoggerInterface $failureLogger,
         DirectorySnapshotProviderInterface $directorySnapshots,
-        private ClockInterface $clock
+        private ClockInterface $clock,
+        private ?SourceStoreInterface $sources = null,
+        private ?SenderLearningService $senderLearning = null
     ) {
         parent::__construct(
             'process_inbound_messages',
@@ -192,6 +198,18 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
                 );
             }
 
+            if ($this->senderLearning !== null && ! $message->isAutoReply && $outcome->getCandidates() !== []) {
+                try {
+                    $this->learnUnknownSender($message, $parsedMessage, $outcome);
+                } catch (Throwable $failure) {
+                    throw new InboundMessageProcessingFailure(
+                        'The sender could not be learned safely. Reprocess the message, and contact support if this continues.',
+                        InboundMessageProcessingFailure::CONTEXT_SENDER_LEARNING,
+                        $failure
+                    );
+                }
+            }
+
             try {
                 $this->candidates->replaceDraftCandidatesForMessage(
                     $message->id,
@@ -245,6 +263,32 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
         }
 
         return JobStepResult::continueAt($checkpoint);
+    }
+
+    private function learnUnknownSender(
+        InboundMessageProcessingRecord $message,
+        Message $parsedMessage,
+        ParseOutcome $outcome
+    ): void {
+        $senderEmail = trim((string) $parsedMessage->getSenderEmail());
+
+        if ($senderEmail === '' || filter_var($senderEmail, FILTER_VALIDATE_EMAIL) === false) {
+            return;
+        }
+
+        $sourceParishId = $this->sourceParishId($message->sourceId);
+        $this->senderLearning->learnUnknownSender($senderEmail, $sourceParishId, $outcome);
+    }
+
+    private function sourceParishId(int $sourceId): ?int
+    {
+        if ($this->sources === null) {
+            return null;
+        }
+
+        $source = $this->sources->findSource($sourceId);
+
+        return $source?->parishId;
     }
 
     private function nextMessage(): ?InboundMessageProcessingRecord

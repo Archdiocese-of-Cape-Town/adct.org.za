@@ -54,6 +54,24 @@ final class ContactService
         );
     }
 
+    public function linkPending(
+        int $parishId,
+        string $email,
+        string $displayName = '',
+        string $roleLabel = '',
+        bool $receivesReminders = true
+    ): SenderLookupResult {
+        return $this->linkWithInitialTrust(
+            $parishId,
+            $email,
+            $displayName,
+            $roleLabel,
+            $receivesReminders,
+            SenderTrust::PENDING,
+            true
+        );
+    }
+
     public function linkOfficial(int $parishId, string $email): SenderLookupResult
     {
         return $this->linkWithInitialTrust(

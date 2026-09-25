@@ -23,6 +23,7 @@ use ADCT\ParishIntake\Core\Events\RRuleValidator;
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
 use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
+use ADCT\ParishIntake\Core\Directory\SenderLearningService;
 use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
 use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\Core\Jobs\FrameworkHeartbeatJob;
@@ -216,6 +217,7 @@ final class Plugin
             $clock
         );
         $contactService = new ContactService($contacts, $clock);
+        $senderLearningService = new SenderLearningService($contactService);
         $venueAdministrationService = new VenueAdministrationService($venues, $clock);
         $approvalRouteResolver = new ApprovalRouteResolver(new ApprovalRouteRepository($database));
         $this->sourcesPage = new SourcesPage($sources, $sourceRegistryService, $parishes);
@@ -383,7 +385,9 @@ final class Plugin
             new WordPressEventCandidateStore(new EventCandidateRepository($database)),
             new WordPressInboundMessageProcessingFailureLogger(),
             $directorySnapshots,
-            $clock
+            $clock,
+            $sources,
+            $senderLearningService
         );
         $this->inboundMessagesPage = new InboundMessagesPage(
             $inboundMessages,

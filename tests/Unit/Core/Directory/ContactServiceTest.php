@@ -145,6 +145,18 @@ final class ContactServiceTest extends TestCase
         self::assertSame(SenderTrust::VERIFIED, $service->lookup('new-office@example.test')->trust);
     }
 
+    public function testPendingLinksStayPendingUntilAnApproverConfirmsThem(): void
+    {
+        $store = new FakeParishContactStore();
+        $service = new ContactService($store, new FixedContactClock());
+
+        $service->linkPending(11, 'sender@example.test', 'Office', 'Secretary', false);
+
+        self::assertSame(SenderTrust::PENDING, $service->lookup('sender@example.test')->trust);
+        self::assertSame(false, (bool) $store->rows[1]['receives_reminders']);
+        self::assertNull($store->rows[1]['verified_at']);
+    }
+
     public function testChangingALinkEmailUsesExistingAddressTrustAndDeduplicatesParishLinks(): void
     {
         $store = new FakeParishContactStore();
