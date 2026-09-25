@@ -8,7 +8,7 @@ use RuntimeException;
 
 final class VersionedRoleInstaller
 {
-    public const CURRENT_VERSION = 2;
+    public const CURRENT_VERSION = 3;
 
     private RoleInstaller $installer;
     private RoleVersionStoreInterface $versionStore;

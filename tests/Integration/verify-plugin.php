@@ -34,6 +34,7 @@ use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
 
 require_once ABSPATH . 'wp-admin/includes/plugin.php';
+require_once ABSPATH . 'wp-admin/includes/user.php';
 
 $fail = static function (string $message): void {
     WP_CLI::error($message);
@@ -123,6 +124,33 @@ if (
     || ! $eventTaxonomy->show_in_rest
 ) {
     $fail('The public event post type or hierarchical REST taxonomy was not registered correctly.');
+}
+
+$expectedEventPostCapabilities = [
+    'edit_posts' => Capabilities::EDIT_EVENTS,
+    'create_posts' => Capabilities::EDIT_EVENTS,
+    'edit_others_posts' => Capabilities::EDIT_OTHERS_EVENTS,
+    'edit_private_posts' => Capabilities::EDIT_PRIVATE_EVENTS,
+    'edit_published_posts' => Capabilities::EDIT_PUBLISHED_EVENTS,
+    'publish_posts' => Capabilities::PUBLISH_EVENTS,
+    'read_private_posts' => Capabilities::READ_PRIVATE_EVENTS,
+    'delete_posts' => Capabilities::DELETE_EVENTS,
+    'delete_private_posts' => Capabilities::DELETE_PRIVATE_EVENTS,
+    'delete_published_posts' => Capabilities::DELETE_PUBLISHED_EVENTS,
+    'delete_others_posts' => Capabilities::DELETE_OTHERS_EVENTS,
+];
+
+foreach ($expectedEventPostCapabilities as $capabilityName => $capability) {
+    if (
+        ! ($eventPostType instanceof WP_Post_Type)
+        || ($eventPostType->cap->{$capabilityName} ?? null) !== $capability
+    ) {
+        $fail('The event post type does not map ' . $capabilityName . ' to ' . $capability . '.');
+    }
+}
+
+if (($eventTaxonomy->cap->assign_terms ?? '') !== Capabilities::EDIT_EVENTS) {
+    $fail('The event type taxonomy does not use the namespaced event assignment capability.');
 }
 
 foreach (['title', 'editor', 'excerpt', 'thumbnail', 'revisions', 'custom-fields'] as $support) {
@@ -1003,6 +1031,94 @@ foreach (['parish_id', 'venue_id', 'start_local', 'end_local', 'all_day', 'rrule
     }
 }
 
+$eventRestTestUsers = [];
+
+foreach (['subscriber', 'editor', 'adct_pi_intake_manager'] as $roleName) {
+    $username = 'adct-event-' . str_replace('_', '-', $roleName) . '-'
+        . strtolower(wp_generate_password(8, false, false));
+    $userId = wp_insert_user([
+        'user_login' => $username,
+        'user_pass' => wp_generate_password(32, true, true),
+        'user_email' => $username . '@example.test',
+        'role' => $roleName,
+    ]);
+
+    if (is_wp_error($userId)) {
+        $fail('The ' . $roleName . ' event REST test user could not be created.');
+    }
+
+    $eventRestTestUsers[$roleName] = (int) $userId;
+}
+
+$subscriberId = $eventRestTestUsers['subscriber'];
+wp_set_current_user($subscriberId);
+$subscriberCanEditMeta = current_user_can('edit_post_meta', $eventPostId, 'featured');
+$subscriberRestUpdateRequest = new WP_REST_Request(
+    'POST',
+    '/wp/v2/adct_event/' . $eventPostId
+);
+$subscriberRestUpdateRequest->set_param('meta', ['featured' => false]);
+$subscriberRestUpdateResponse = rest_do_request($subscriberRestUpdateRequest);
+
+if (
+    $subscriberCanEditMeta
+    || ! ($subscriberRestUpdateResponse instanceof WP_REST_Response)
+    || ! in_array($subscriberRestUpdateResponse->get_status(), [401, 403], true)
+    || ! in_array(get_post_meta($eventPostId, 'featured', true), [true, 1, '1'], true)
+) {
+    $fail('A subscriber could edit event metadata through the REST API.');
+}
+
+foreach ([
+    'editor' => false,
+    'adct_pi_intake_manager' => true,
+] as $roleName => $featuredValue) {
+    wp_set_current_user($eventRestTestUsers[$roleName]);
+
+    if (
+        ! current_user_can('edit_post', $eventPostId)
+        || ! current_user_can('edit_post_meta', $eventPostId, 'featured')
+    ) {
+        $fail('The ' . $roleName . ' role cannot edit event metadata.');
+    }
+
+    $eventRoleUpdateRequest = new WP_REST_Request(
+        'POST',
+        '/wp/v2/adct_event/' . $eventPostId
+    );
+    $eventRoleUpdateRequest->set_param('meta', ['featured' => $featuredValue]);
+    $eventRoleUpdateResponse = rest_do_request($eventRoleUpdateRequest);
+    $storedFeatured = get_post_meta($eventPostId, 'featured', true);
+    $roleResponseData = $eventRoleUpdateResponse instanceof WP_REST_Response
+        ? $eventRoleUpdateResponse->get_data()
+        : [];
+    $roleResponseMeta = is_array($roleResponseData) ? ($roleResponseData['meta'] ?? null) : null;
+    $featuredMatches = is_array($roleResponseMeta)
+        && array_key_exists('featured', $roleResponseMeta)
+        && $roleResponseMeta['featured'] === $featuredValue;
+
+    if (
+        ! ($eventRoleUpdateResponse instanceof WP_REST_Response)
+        || $eventRoleUpdateResponse->get_status() !== 200
+        || ! $featuredMatches
+    ) {
+        $responseData = $eventRoleUpdateResponse instanceof WP_REST_Response
+            ? $eventRoleUpdateResponse->get_data()
+            : (is_wp_error($eventRoleUpdateResponse) ? $eventRoleUpdateResponse->get_error_message() : gettype($eventRoleUpdateResponse));
+        $responseStatus = $eventRoleUpdateResponse instanceof WP_REST_Response
+            ? (string) $eventRoleUpdateResponse->get_status()
+            : 'no response';
+        $fail('The ' . $roleName . ' role could not update event metadata through the REST API (status: '
+            . $responseStatus . ', response: ' . wp_json_encode($responseData)
+            . ', stored featured value: ' . var_export($storedFeatured, true) . ').');
+    }
+}
+
+wp_set_current_user($currentEventUserId);
+foreach ($eventRestTestUsers as $userId) {
+    wp_delete_user($userId);
+}
+
 $eventRestUpdateRequest = new WP_REST_Request(
     'POST',
     '/wp/v2/adct_event/' . $eventPostId
@@ -1792,4 +1908,46 @@ if ($secondApproverUser instanceof WP_User && in_array('deanery_approver', $seco
     $fail('The final sample approver role was not removed during integration cleanup.');
 }
 
-WP_CLI::success('Release ZIP activation, event post type/taxonomy/default-term seeding, event metadata validation and REST privacy, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
+foreach (['administrator', 'editor'] as $roleName) {
+    $role = get_role($roleName);
+
+    if ($role === null) {
+        $fail('The ' . $roleName . ' role is unavailable for the uninstall capability check.');
+    }
+
+    $role->add_cap('edit_events');
+    $role->add_cap('publish_events');
+}
+
+if (! defined('WP_UNINSTALL_PLUGIN')) {
+    define('WP_UNINSTALL_PLUGIN', $pluginBasename);
+}
+require dirname($pluginFile) . '/uninstall.php';
+
+foreach (['administrator', 'editor'] as $roleName) {
+    $role = get_role($roleName);
+
+    if ($role === null) {
+        $fail('Uninstall removed the built-in ' . $roleName . ' role.');
+    }
+
+    foreach (Capabilities::all() as $capability) {
+        if ($role->has_cap($capability)) {
+            $fail('Uninstall did not remove the ADCT capability ' . $capability . ' from ' . $roleName . '.');
+        }
+    }
+
+    foreach (['edit_events', 'publish_events'] as $unrelatedCapability) {
+        if (! $role->has_cap($unrelatedCapability)) {
+            $fail('Uninstall removed the unrelated ' . $unrelatedCapability . ' capability from ' . $roleName . '.');
+        }
+    }
+}
+
+foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
+    if (get_role($roleName) !== null) {
+        $fail('Uninstall did not remove the Parish Intake role ' . $roleName . '.');
+    }
+}
+
+WP_CLI::success('Release ZIP activation, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Events;
 
+use ADCT\ParishIntake\Core\Auth\Capabilities;
 use RuntimeException;
 
 final class EventPostType
@@ -102,7 +103,7 @@ final class EventPostType
                 'custom-fields',
             ],
             'taxonomies' => [self::TAXONOMY],
-            'capability_type' => ['event', 'events'],
+            'capability_type' => ['adct_event', 'adct_events'],
             'map_meta_cap' => true,
         ]);
     }
@@ -134,7 +135,7 @@ final class EventPostType
             'show_in_rest' => true,
             'rest_base' => 'event-types',
             'capabilities' => [
-                'assign_terms' => 'edit_events',
+                'assign_terms' => Capabilities::EDIT_EVENTS,
             ],
             'default_term' => [
                 'name' => 'Other',
@@ -145,16 +146,6 @@ final class EventPostType
 
     private function registerMeta(): void
     {
-        $publicAccess = static function (
-            $allowed,
-            $metaKey,
-            $postId,
-            $userId,
-            $cap,
-            $caps
-        ): bool {
-            return true;
-        };
         $editorAccess = static function (
             $allowed,
             $metaKey,
@@ -182,7 +173,7 @@ final class EventPostType
                     'context' => ['view', 'edit'],
                 ]],
                 'sanitize_callback' => [self::class, 'sanitizeInteger'],
-                'auth_callback' => $publicAccess,
+                'auth_callback' => $editorAccess,
             ],
             'venue_id' => [
                 'type' => 'integer',
@@ -195,7 +186,7 @@ final class EventPostType
                     'context' => ['view', 'edit'],
                 ]],
                 'sanitize_callback' => [self::class, 'sanitizeInteger'],
-                'auth_callback' => $publicAccess,
+                'auth_callback' => $editorAccess,
             ],
             'start_local' => [
                 'type' => 'string',
@@ -205,7 +196,7 @@ final class EventPostType
                     'context' => ['view', 'edit'],
                 ])],
                 'sanitize_callback' => [self::class, 'sanitizeText'],
-                'auth_callback' => $publicAccess,
+                'auth_callback' => $editorAccess,
             ],
             'end_local' => [
                 'type' => 'string',
@@ -215,7 +206,7 @@ final class EventPostType
                     'context' => ['view', 'edit'],
                 ])],
                 'sanitize_callback' => [self::class, 'sanitizeText'],
-                'auth_callback' => $publicAccess,
+                'auth_callback' => $editorAccess,
             ],
             'all_day' => [
                 'type' => 'boolean',
@@ -227,7 +218,7 @@ final class EventPostType
                     'context' => ['view', 'edit'],
                 ]],
                 'sanitize_callback' => [self::class, 'sanitizeBoolean'],
-                'auth_callback' => $publicAccess,
+                'auth_callback' => $editorAccess,
             ],
             'rrule' => [
                 'type' => 'string',
@@ -239,7 +230,7 @@ final class EventPostType
                     'context' => ['view', 'edit'],
                 ]],
                 'sanitize_callback' => [self::class, 'sanitizeText'],
-                'auth_callback' => $publicAccess,
+                'auth_callback' => $editorAccess,
             ],
             'exdates' => [
                 'type' => 'array',
@@ -254,7 +245,7 @@ final class EventPostType
                     'context' => ['view', 'edit'],
                 ]],
                 'sanitize_callback' => [self::class, 'sanitizeDateList'],
-                'auth_callback' => $publicAccess,
+                'auth_callback' => $editorAccess,
             ],
             'rdates' => [
                 'type' => 'array',
@@ -269,7 +260,7 @@ final class EventPostType
                     'context' => ['view', 'edit'],
                 ]],
                 'sanitize_callback' => [self::class, 'sanitizeDateList'],
-                'auth_callback' => $publicAccess,
+                'auth_callback' => $editorAccess,
             ],
             'featured' => [
                 'type' => 'boolean',
@@ -281,7 +272,7 @@ final class EventPostType
                     'context' => ['view', 'edit'],
                 ]],
                 'sanitize_callback' => [self::class, 'sanitizeBoolean'],
-                'auth_callback' => $publicAccess,
+                'auth_callback' => $editorAccess,
             ],
             'status_flag' => [
                 'type' => 'string',
@@ -294,7 +285,7 @@ final class EventPostType
                     'context' => ['view', 'edit'],
                 ]],
                 'sanitize_callback' => [self::class, 'sanitizeKey'],
-                'auth_callback' => $publicAccess,
+                'auth_callback' => $editorAccess,
             ],
             'source_candidate_id' => [
                 'type' => 'integer',

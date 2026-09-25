@@ -79,13 +79,19 @@ final class RoleInstallerTest extends TestCase
     public function testUpgradingExistingRolesAddsEventCapabilitiesWithoutReplacingOtherAccess(): void
     {
         $store = new FakeRoleCapabilityStore();
-        $versionStore = new FakeRoleVersionStore(1);
+        $versionStore = new FakeRoleVersionStore(2);
         $store->roles['administrator']['capabilities']['site_specific_capability'] = true;
+        $store->roles['administrator']['capabilities']['edit_events'] = true;
+        $store->roles['editor']['capabilities']['edit_events'] = true;
         $installer = new VersionedRoleInstaller(new RoleInstaller($store), $versionStore);
 
         self::assertTrue($installer->upgradeIfNeeded());
-        self::assertSame(2, $versionStore->getVersion());
+        self::assertSame(3, $versionStore->getVersion());
         self::assertTrue($store->hasCapability('administrator', 'site_specific_capability'));
+        self::assertTrue($store->hasCapability('administrator', 'edit_events'));
+        self::assertTrue($store->hasCapability('editor', 'edit_events'));
+        self::assertTrue($store->hasCapability('administrator', Capabilities::EDIT_EVENTS));
+        self::assertTrue($store->hasCapability('editor', Capabilities::EDIT_EVENTS));
         self::assertTrue($store->hasCapability('administrator', Capabilities::PUBLISH_EVENTS));
         self::assertTrue($store->hasCapability('editor', Capabilities::PUBLISH_EVENTS));
         self::assertTrue($store->hasCapability('adct_pi_intake_manager', Capabilities::PUBLISH_EVENTS));

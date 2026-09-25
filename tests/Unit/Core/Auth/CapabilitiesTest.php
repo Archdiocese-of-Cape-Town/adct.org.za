@@ -17,17 +17,32 @@ final class CapabilitiesTest extends TestCase
             'adct_pi_review',
             'adct_pi_view_reports',
             'adct_pi_approve_deanery',
-            'edit_events',
-            'edit_others_events',
-            'edit_private_events',
-            'edit_published_events',
-            'publish_events',
-            'read_private_events',
-            'delete_events',
-            'delete_private_events',
-            'delete_published_events',
-            'delete_others_events',
+            'edit_adct_events',
+            'edit_others_adct_events',
+            'edit_private_adct_events',
+            'edit_published_adct_events',
+            'publish_adct_events',
+            'read_private_adct_events',
+            'delete_adct_events',
+            'delete_private_adct_events',
+            'delete_published_adct_events',
+            'delete_others_adct_events',
         ], Capabilities::all());
+    }
+
+    public function testPluginOwnedCapabilitiesAreNamespacedForGrantAndRemoval(): void
+    {
+        $pattern = '/^(?:adct_[a-z0-9_]+|(?:edit|read|publish|delete)(?:_(?:others|private|published))?_adct_[a-z0-9_]+)$/';
+
+        foreach (Capabilities::all() as $capability) {
+            self::assertMatchesRegularExpression($pattern, $capability);
+        }
+
+        foreach (Capabilities::builtInRoles() as $role) {
+            foreach (Capabilities::roleCapabilities()[$role] as $capability) {
+                self::assertContains($capability, Capabilities::all());
+            }
+        }
     }
 
     public function testDefaultAdministratorAndEditorCapabilitiesAreMapped(): void
