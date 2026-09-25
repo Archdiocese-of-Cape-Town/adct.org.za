@@ -15,6 +15,7 @@ use ADCT\ParishIntake\Core\Database\MailboxSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MigrationRunner;
 use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
 use ADCT\ParishIntake\Core\Events\EventValidator;
+use ADCT\ParishIntake\Core\Events\IcsCalendar;
 use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
 use ADCT\ParishIntake\Core\Events\OccurrenceExpander;
 use ADCT\ParishIntake\Core\Events\RRulePresetMapper;
@@ -116,6 +117,7 @@ use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
 use ADCT\ParishIntake\WordPress\Events\PublicEventListing;
+use ADCT\ParishIntake\WordPress\Events\PublicIcsFeed;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
 use ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance;
 use ADCT\ParishIntake\WordPress\Publishing\WordPressPublicationStore;
@@ -147,6 +149,7 @@ final class Plugin
     private EventOccurrenceHooks $eventOccurrenceHooks;
     private CandidatePublisher $candidatePublisher;
     private PublicEventListing $publicEventListing;
+    private PublicIcsFeed $publicIcsFeed;
     private MailboxesPage $mailboxesPage;
     private InboundMessagesPage $inboundMessagesPage;
 
@@ -243,6 +246,7 @@ final class Plugin
             $pluginFile,
             $listingGeneration
         );
+        $this->publicIcsFeed = new PublicIcsFeed($clock, $listingGeneration, new IcsCalendar());
         $this->eventEditor = new EventEditor(
             $parishes,
             $venues,
@@ -566,6 +570,7 @@ final class Plugin
 
         add_filter('query_vars', [$this->actionTokenEndpoint, 'registerQueryVars']);
         add_action('template_redirect', [$this->actionTokenEndpoint, 'handleRequest'], 0);
+        add_action('template_redirect', [$this->publicIcsFeed, 'handleRequest'], 1);
         add_action('init', [$this->eventPostType, 'register'], 5);
         add_action('init', [$this->publicEventListing, 'register'], 10);
         add_action('wp_enqueue_scripts', [$this->publicEventListing, 'styles']);
