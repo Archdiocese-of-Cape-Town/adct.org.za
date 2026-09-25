@@ -25,6 +25,14 @@ final class OpenRouterProvider implements AiProviderInterface
         return 'openrouter';
     }
 
+    public function __debugInfo(): array
+    {
+        return [
+            'name' => $this->name(),
+            'model' => $this->model,
+        ];
+    }
+
     public function isAvailable(): bool
     {
         return $this->apiKey !== '' && $this->httpClient->isAvailable();

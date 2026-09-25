@@ -65,6 +65,7 @@ Pure PHP 8.2, covered by unit tests and loaded through Composer PSR-4:
 - `Sources` – typed source registry and `SourceHealthRecorder`; the WordPress source repository persists registry and health state without putting WordPress dependencies in the core.
 - `Ingestion` – `MimeMessageParser` parses raw RFC 822 mail into `Message` + attachment metadata using the pure-PHP `zbateson/mail-mime-parser` dependency. It decodes multipart/alternative, related and mixed bodies, transfer encodings and charsets; selects useful plain text before HTML; and retains thread/list/automation/authentication headers without interpreting authentication results.
 - `Ingestion\Imap` – `ImapMailbox` implements `MailboxInterface` with a bounded pure-PHP IMAP client. It searches by UID, fetches raw RFC 822 bytes and metadata, lists/creates folders, marks messages seen, and moves them using MOVE or COPY/STORE/EXPUNGE. It checks message size before fetching the body (30 MiB by default) and uses PHP stream sockets with TLS peer verification enabled by default; unencrypted or unverified connections require an explicit test-only opt-in (ADR 0013).
+- Mailbox settings use a validated Core value object and a connection-test service. The service logs in, counts unseen messages in the inbox, checks the processed folder, closes the connection, and records only safe success/failure health details; it does not fetch message bodies or poll.
 - `Support\EmailTextCleaner` – reusable plain-text cleanup that separates quoted replies and signatures, extracts original forward headers, and removes common newsletter footers. `Support\HtmlToTextConverter` preserves paragraphs, lists and table rows without requiring `ext-dom`.
 - `Tokens` – signed, single-use action tokens.
 - `Jobs` – due checks, bounded item processing, checkpoints, lock/state ports and run results.
@@ -90,7 +91,7 @@ The Manual parser displays the full `ParseOutcome` and uses the same cached dire
 - `WordPress\Ai\OpenRouterProvider` implements the core AI port and receives `HttpClientInterface`; only `WordPress\Http\WordPressHttpClient` calls `wp_remote_post`.
 - Repositories using `$wpdb` (custom tables in the site's existing WordPress MySQL database) and the `adct_event` post type.
 - `WordPressDirectorySnapshotLoader` reads parish, venue and contact repositories; `WordPressDirectorySnapshotCache` stores the snapshot in a transient keyed by the non-autoloaded directory version option. Parish, venue and contact repositories increment that version after successful writes.
-- Admin screens (dashboard, review/approval queue, parishes, deaneries and approvers, sources, settings, health). Parish sources are editable from each parish's Sources tab; the Sources submenu also lists all sources and manages archdiocese-wide ones.
+- Admin screens (dashboard, review/approval queue, parishes, deaneries and approvers, sources, mailboxes, settings, health). Mailboxes are linked to archdiocese-wide email sources; the Mailboxes screen supports settings and an explicit test-connection action. Parish sources are editable from each parish's Sources tab; the Sources submenu also lists all sources and manages archdiocese-wide ones.
 - Front-end approver queue for deans (magic-link login, no wp-admin).
 - Public views: shortcode/block for the events page, single event template, ICS endpoint, REST endpoints for filtering.
 - Scheduled jobs via WP-Cron hooks, triggered by site traffic, a 2-hourly xneelo cron backstop, an optional external pinger and a "Check now" button ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
@@ -99,7 +100,7 @@ The Manual parser displays the full `ParseOutcome` and uses the same cached dire
 The Composer PSR-4 mappings keep `ADCT\ParishIntake\Core\…` and `ADCT\ParishIntake\WordPress\…` separate. The release zip includes a small source autoloader in `WordPress\Autoloader` alongside the namespace-prefixed Composer dependency loader; development and tests use Composer's generated autoloader.
 
 ### 3. Infrastructure adapters
-- `ImapMailbox` – the Core's PHP-stream IMAP client (no `ext-imap` or additional Composer package); retrieval and folder operations are behind `MailboxInterface`. The separate GreenMail test delivers a throwaway RFC 822 message over SMTP and verifies search, fetch, folder creation, seen marking and move.
+- `ImapMailbox` – the Core's PHP-stream IMAP client (no `ext-imap` or additional Composer package); retrieval and folder operations are behind `MailboxInterface`. GreenMail integration tests verify protocol operations and the connection-test service's success, wrong-password and missing-processed-folder results.
 - `IcsSource` – fetches and parses ICS feeds (Google Calendar).
 - `PdfTextExtractor` – pure-PHP text extraction (e.g. `smalot/pdfparser`) that uses text positions to rebuild columns, because most bulletins have 2–3 columns ([parser findings](parser-samples.md)).
 - Optional `OcrProvider`s (OCR.space free tier, OpenAI-compatible vision models) – off by default.
@@ -168,10 +169,11 @@ Parish contacts are WordPress users with a custom `parish_contact` role, linked 
 - `parish_contact` and `deanery_approver` are read-only roles. They cannot use `wp-admin` or the admin bar, except for AJAX and `admin-post.php` requests; users who also have editorial `edit_posts` access are not blocked.
 - Deanery approvals require an active assignment in `adct_pi_deanery_approvers` matching the parish's `deanery_id`. `adct_pi_review` holders can approve across deaneries, including parishes without a deanery.
 - Admin actions use capabilities + nonces. Portal actions check parish ownership.
+- Mailbox settings always verify the TLS peer and hostname in production. A TLS failure advises operators to use the server hostname listed on its certificate; unencrypted connections and disabled verification remain explicit test-only options (ADR 0013).
 - Action tokens: random 32-byte values, stored hashed, single-use, with expiry; GET shows a confirmation page, POST performs the action.
 - Email HTML is never rendered unsanitised; attachments are stored outside the web root or with deny rules, and only allowed MIME types are processed.
 - AI prompts treat email content as untrusted data; AI output is schema-validated and never decides publishing.
-- Secrets (IMAP password, API keys) are preferably defined as constants in `wp-config.php` rather than stored in the database; the settings UI says so.
+- Secrets are registered by purpose (`ADCT_PI_AI_API_KEY`, `ADCT_PI_IMAP_PASSWORD`, `ADCT_PI_OCR_API_KEY`). A non-empty string constant in `wp-config.php` takes precedence over its stored option; the Core resolver receives constant and option readers as injected callbacks, and the WordPress adapter supplies those readers. Empty or non-string constants fall back to the option. Mailbox passwords use a stable mailbox-ID scope: `ADCT_PI_IMAP_PASSWORD_MAILBOX_<ID>` overrides the default `ADCT_PI_IMAP_PASSWORD`, which overrides that mailbox's non-autoloaded option. Register future global secrets as `ADCT_PI_<PURPOSE>` constants paired with `adct_parish_intake_<purpose>` options; secret reads must go through the resolver. Secret values are not included in settings output, parse results, or debug output.
 - Uninstall removes the plugin's custom roles and its custom capabilities from built-in roles. Tables and plugin data are retained until the owner makes a separate data-deletion decision.
 
 ## Related documents

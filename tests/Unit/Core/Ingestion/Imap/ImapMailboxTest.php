@@ -106,6 +106,20 @@ final class ImapMailboxTest extends TestCase
         }
     }
 
+    public function testMailboxPasswordIsRedactedFromDebugOutput(): void
+    {
+        $password = 'test-secret-not-for-debug';
+        $config = $this->config(password: $password);
+
+        ob_start();
+        var_dump($config);
+        $debugOutput = (string) ob_get_clean();
+
+        self::assertStringNotContainsString($password, $debugOutput);
+        self::assertStringNotContainsString($password, print_r($config, true));
+        self::assertStringContainsString('[redacted]', $debugOutput);
+    }
+
     public function testBadCommandStatusBecomesPlainLanguageProtocolError(): void
     {
         $transport = new ScriptedTransport(

@@ -51,6 +51,19 @@ final class SourceRepository extends AbstractRepository implements SourceStoreIn
         return $row === null ? null : $this->mapSource($row);
     }
 
+    public function findGlobalEmailSource(string $email): ?Source
+    {
+        $identifier = SourceType::normalizeIdentifier(SourceType::EMAIL, $email);
+        $row = $this->fetchRow($this->database->prepare(
+            'SELECT * FROM ' . $this->tableName()
+            . ' WHERE parish_id IS NULL AND type = %s AND identifier = %s ORDER BY id ASC LIMIT 1',
+            SourceType::EMAIL,
+            $identifier
+        ));
+
+        return $row === null ? null : $this->mapSource($row);
+    }
+
     /**
      * @return list<Source>
      */

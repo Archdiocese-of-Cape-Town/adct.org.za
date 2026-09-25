@@ -88,6 +88,19 @@ final class OpenRouterProviderTest extends TestCase
             $request['messages'][1]['content']
         );
     }
+
+    public function testApiKeyIsExcludedFromDebugOutput(): void
+    {
+        $apiKey = 'sk-test-DO-NOT-ECHO-123';
+        $provider = new OpenRouterProvider($apiKey, 'test/model', new RecordingHttpClient(null));
+
+        ob_start();
+        var_dump($provider);
+        $debugOutput = (string) ob_get_clean();
+
+        self::assertStringNotContainsString($apiKey, $debugOutput);
+        self::assertStringNotContainsString($apiKey, print_r($provider, true));
+    }
 }
 
 final class RecordingHttpClient implements HttpClientInterface
