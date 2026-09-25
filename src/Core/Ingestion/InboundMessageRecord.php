@@ -10,7 +10,19 @@ use InvalidArgumentException;
 final readonly class InboundMessageRecord
 {
     public const STATUS_RECEIVED = 'received';
+    public const STATUS_EXTRACTING = 'extracting';
+    public const STATUS_PARSED = 'parsed';
+    public const STATUS_FAILED = 'failed';
+    public const STATUS_IGNORED = 'ignored';
     public const STATUS_SKIPPED = 'skipped';
+
+    public const FILTER_STATUSES = [
+        self::STATUS_RECEIVED,
+        self::STATUS_EXTRACTING,
+        self::STATUS_PARSED,
+        self::STATUS_FAILED,
+        self::STATUS_IGNORED,
+    ];
 
     /**
      * @param list<InboundAttachmentRecord> $attachments

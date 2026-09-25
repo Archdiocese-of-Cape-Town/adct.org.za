@@ -5,6 +5,7 @@ namespace ADCT\ParishIntake\WordPress\Admin;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
+use ADCT\ParishIntake\Core\Parsing\Pipeline;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
@@ -37,6 +38,18 @@ final class ParserPage
         $this->pipelineFactory = $pipelineFactory;
         $this->reportGenerator = $reportGenerator;
         $this->httpClient = $httpClient;
+    }
+
+    public function createConfiguredPipeline(): Pipeline
+    {
+        $settings = $this->settings();
+
+        return $this->pipelineFactory->create([
+            'ai_enabled' => $settings['ai_enabled'],
+            'ai_threshold' => $settings['ai_threshold'],
+            'ai_provider' => $this->buildAiProvider(),
+            'section_keywords' => $settings['section_keywords'],
+        ]);
     }
 
     public function registerMenu(): void
@@ -229,9 +242,9 @@ final class ParserPage
                 <?php submit_button('Save settings'); ?>
             </form>
 
-            <h2>Email inbox parsing</h2>
-            <p>This prototype does not yet include automated inbox polling or IMAP/mailbox connection settings.</p>
-            <p class="description">Right now, the available workflow is manual testing through <strong>Parish Intake → Manual parser</strong>. When inbox ingestion is built, its connection and scheduling options will appear here.</p>
+            <h2>Email inbox processing</h2>
+            <p>Configure mailbox connections under <strong>Parish Intake → Mailboxes</strong>. Stored messages appear in <strong>Parish Intake → Inbox</strong> with their processing status and any action needed.</p>
+            <p class="description">Reprocessing uses the protected copy already stored by the plugin. It does not reconnect to the mailbox, change its checkpoint, or send confirmation email.</p>
         </div>
         <?php
     }
@@ -261,14 +274,7 @@ final class ParserPage
                 sanitize_textarea_field(wp_unslash($_POST['body'] ?? ''))
             );
 
-            $pipeline = $this->pipelineFactory->create([
-                'ai_enabled' => get_option('adct_parish_intake_ai_enabled', '0') === '1',
-                'ai_threshold' => (float) get_option('adct_parish_intake_ai_threshold', '0.55'),
-                'ai_provider' => $this->buildAiProvider(),
-                'section_keywords' => $this->sectionKeywords(),
-            ]);
-
-            $outcome = $pipeline->parseAll($message);
+            $outcome = $this->createConfiguredPipeline()->parseAll($message);
             $this->schema->insertMessageResult($message, $outcome->getPrimaryResult());
             if ($canViewReports) {
                 $report = $this->reportGenerator->generate();
