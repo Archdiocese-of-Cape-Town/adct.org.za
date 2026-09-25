@@ -72,12 +72,18 @@ use ADCT\ParishIntake\WordPress\Admin\ReviewQueuePage;
 use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
 use ADCT\ParishIntake\WordPress\Auth\ConfirmationDecisionHandler;
+use ADCT\ParishIntake\WordPress\Auth\ApprovalDecisionHandler;
+use ADCT\ParishIntake\WordPress\Auth\ApprovalEditHandler;
+use ADCT\ParishIntake\WordPress\Approval\ApprovalNoticeJob;
+use ADCT\ParishIntake\WordPress\Approval\ApprovalRecipients;
+use ADCT\ParishIntake\WordPress\Approval\ReviewerNotificationPreference;
 use ADCT\ParishIntake\WordPress\Auth\WordPressConfirmationActionLinkProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRateLimitKeyProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRenewalDelivery;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleCapabilityStore;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleVersionStore;
 use ADCT\ParishIntake\WordPress\Database\ActionTokenRateLimitSchemaMigration;
+use ADCT\ParishIntake\WordPress\Database\ApprovalNoticesMigration;
 use ADCT\ParishIntake\WordPress\Database\ConfirmationEmailPreviewSchemaMigration;
 use ADCT\ParishIntake\WordPress\Database\DbDeltaSchemaInstaller;
 use ADCT\ParishIntake\WordPress\Database\MailQueueGroupKeyMigration;
@@ -160,6 +166,7 @@ final class Plugin
     private MailboxesPage $mailboxesPage;
     private InboundMessagesPage $inboundMessagesPage;
     private ?ReviewQueuePage $reviewQueuePage = null;
+    private ReviewerNotificationPreference $reviewerNotificationPreference;
 
     private function __construct(string $pluginFile)
     {
@@ -217,6 +224,8 @@ final class Plugin
         $contactService = new ContactService($contacts, $clock);
         $venueAdministrationService = new VenueAdministrationService($venues, $clock);
         $approvalRouteResolver = new ApprovalRouteResolver(new ApprovalRouteRepository($database));
+        $approvalRecipients = new ApprovalRecipients($approvalRouteResolver);
+        $this->reviewerNotificationPreference = new ReviewerNotificationPreference();
         $this->sourcesPage = new SourcesPage($sources, $sourceRegistryService, $parishes);
         $this->deaneriesPage = new DeaneriesPage(
             $deaneries,
@@ -355,6 +364,15 @@ final class Plugin
                 $clock
             ));
         }
+        foreach ([\ADCT\ParishIntake\Core\Auth\ActionTokenPurpose::APPROVE_EVENT,
+            \ADCT\ParishIntake\Core\Auth\ActionTokenPurpose::REJECT_EVENT] as $purpose) {
+            $this->actionTokenHandlers->register(new ApprovalDecisionHandler(
+                $purpose, $database, $approvalRecipients, $this->candidatePublisher, $this->mailQueue, $clock
+            ));
+        }
+        $this->actionTokenHandlers->register(new ApprovalEditHandler(
+            $database, $approvalRecipients, $clock
+        ));
         $this->actionTokenEndpoint = new ActionTokenEndpoint(
             $this->actionTokenService,
             $this->actionTokenHandlers,
@@ -432,6 +450,10 @@ final class Plugin
                 new FrameworkHeartbeatJob(),
                 $mailboxPollingJob,
                 $confirmationPreviewJob,
+                new ApprovalNoticeJob(
+                    $database, $approvalRecipients, $this->actionTokenService,
+                    $this->mailQueue, $mailQueueRepository, $clock
+                ),
                 $inboundMessageProcessingJob,
                 new OccurrenceExpansionJob($occurrenceMaintenance, $clock, $timezone),
                 $mailQueueSenderJob,
@@ -624,6 +646,7 @@ final class Plugin
             throw new \LogicException('The review queue was not initialized.');
         }
 
+        $this->reviewerNotificationPreference->registerHooks();
         add_filter('query_vars', [$this->actionTokenEndpoint, 'registerQueryVars']);
         add_action('template_redirect', [$this->actionTokenEndpoint, 'handleRequest'], 0);
         add_action('init', [$this->eventPostType, 'register'], 5);
@@ -751,6 +774,7 @@ final class Plugin
                 new MailQueueGroupKeyMigration($database),
                 new ActionTokenRateLimitSchemaMigration(new DbDeltaSchemaInstaller($database)),
                 new ConfirmationEmailPreviewSchemaMigration($database),
+                new ApprovalNoticesMigration(new DbDeltaSchemaInstaller($database)),
             ],
             new WordPressMigrationVersionStore(),
             new WordPressMigrationLogger()

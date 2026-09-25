@@ -31,6 +31,8 @@ See [ADR 0009](decisions/0009-preview-and-test-environments.md) for why previews
 
 ## Planned approval flow test cases
 
+The installed-ZIP `ApprovalDecisionCheck` exercises grouped dean/reviewer notifications, a read-only GET, nonce validation, a competing decision, winner replay, reviewer-only routing, edits without publication, rejection with an escaped reason, daily digest, ambiguous-match manual routing, suppression and queue idempotency. Existing `MailQueueServiceTest` checks that both priority-2 notices and priority-3 digests use the rolling hourly cap and retry/backoff dispatcher. The integration check enables queue test mode with invented `example.test` addresses; it does not dispatch real mail. To run only these cases against an already activated installed ZIP in the isolated wp-env CLI: `wp eval-file /var/www/html/wp-content/test-harness/approval-only.php`.
+
 The route-resolution subset is covered by #68: unit tests exercise two active approvers, a parish without a deanery, no active approvers (including an inactive assignment), and an inactive deanery. The WordPress integration suite also assigns two approvers to a deanery, resolves routes for its parishes, checks reviewer-only behavior without a deanery, and verifies role retention and removal. End-to-end event lifecycle cases remain planned alongside the approval work ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md)):
 - A new event from a verified contact doesn't publish after confirmation alone. It goes to `awaiting_approval`.
 - An awaiting item is visible to the parish's deanery approvers **and** to archdiocese reviewers, and not to approvers of other deaneries.
