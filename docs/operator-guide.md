@@ -135,6 +135,8 @@ The admin banner remains visible while Test mode is on. A message to a non-allow
 
 The **Queue event confirmation previews** job runs every 10 minutes. For each parsed inbound message with draft event candidates, it composes one HTML and plain-text email containing every draft candidate, then enqueues that message through the outbound queue. It addresses a safe sender or a verified, safe Reply-To. The preview uses table-based email markup, highlights uncertain details, and replies with sanitized `In-Reply-To` and `References` headers when the original Message-ID is valid.
 
+The **Manual parser** is diagnostic-only: it saves the test parse in the legacy prototype table, but does not create an inbound-message/candidate record, issue action tokens or enqueue confirmation email. Only the background jobs process stored inbox mail for confirmation.
+
 The Mailboxes screen's **Recent message screening and confirmation** summary shows the latest confirmation outcome without displaying the sender, subject, raw headers or message body:
 
 - **Queued for delivery** means the outbound queue accepted the message; delivery may still be pending.

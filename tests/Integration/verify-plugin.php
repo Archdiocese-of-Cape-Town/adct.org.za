@@ -1178,6 +1178,12 @@ if (has_action($pageHook) === false) {
     $fail('The Manual parser page callback was not registered.');
 }
 
+$manualParserQueueCountBefore = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$mailQueueTable}");
+$manualParserActionTokenTable = $wpdb->prefix . 'adct_pi_action_tokens';
+$manualParserTokenCountBefore = (int) $wpdb->get_var(
+    "SELECT COUNT(*) FROM {$manualParserActionTokenTable}"
+);
+
 ob_start();
 try {
     do_action($pageHook);
@@ -1263,6 +1269,18 @@ if (
     || $legacyParserRow['title'] !== 'Youth gathering'
 ) {
     $fail('The legacy Manual parser table did not store the first bulletin candidate.');
+}
+
+$manualParserQueueCountAfter = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$mailQueueTable}");
+$manualParserTokenCountAfter = (int) $wpdb->get_var(
+    "SELECT COUNT(*) FROM {$manualParserActionTokenTable}"
+);
+
+if (
+    $manualParserQueueCountAfter !== $manualParserQueueCountBefore
+    || $manualParserTokenCountAfter !== $manualParserTokenCountBefore
+) {
+    $fail('The Manual parser enqueued a confirmation or issued action tokens during the web request.');
 }
 
 $originalSettingsScreen = $GLOBALS['current_screen'] ?? null;

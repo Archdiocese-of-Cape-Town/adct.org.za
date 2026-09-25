@@ -205,7 +205,9 @@ final class ConfirmationEmailPreviewServiceTest extends TestCase
 
         $blocked = $service->enqueuePreview($this->batch(
             [$this->candidate(101, 'Harvest lunch')],
-            senderTrust: SenderTrust::BLOCKED
+            senderTrust: SenderTrust::BLOCKED,
+            replyToEmail: 'parish-contact@example.test',
+            replyToTrust: SenderTrust::VERIFIED
         ));
         $automated = $service->enqueuePreview($this->batch(
             [$this->candidate(102, 'Evening prayer')],
@@ -249,6 +251,60 @@ final class ConfirmationEmailPreviewServiceTest extends TestCase
 
         foreach ($tokens->records as $record) {
             self::assertSame('parish-contact@example.test', $record->binding->email);
+        }
+    }
+
+    public function testBlockedReplyToFallsBackToTheSafeSender(): void
+    {
+        $stored = null;
+        $queue = $this->queueMock(static function () use (&$stored): ?MailQueueRecord {
+            return $stored;
+        });
+        $mailer = new RecordingConfirmationMailer();
+        $this->recordEnqueuedMail($mailer, $stored);
+        $tokens = new InMemoryConfirmationActionTokenStore();
+        $service = $this->service($queue, $mailer, $tokens);
+        $batch = $this->batch(
+            [$this->candidate(101, 'Harvest lunch')],
+            replyToEmail: 'blocked-contact@example.test',
+            replyToTrust: SenderTrust::BLOCKED
+        );
+
+        $result = $service->enqueuePreview($batch);
+
+        self::assertSame(ConfirmationEmailOutcome::QUEUED, $result->outcome);
+        self::assertSame('sender@example.test', $mailer->emails[0]->recipient);
+        self::assertCount(4, $tokens->records);
+
+        foreach ($tokens->records as $record) {
+            self::assertSame('sender@example.test', $record->binding->email);
+        }
+    }
+
+    public function testNoReplyReplyToFallsBackToTheSafeSenderEvenWhenVerified(): void
+    {
+        $stored = null;
+        $queue = $this->queueMock(static function () use (&$stored): ?MailQueueRecord {
+            return $stored;
+        });
+        $mailer = new RecordingConfirmationMailer();
+        $this->recordEnqueuedMail($mailer, $stored);
+        $tokens = new InMemoryConfirmationActionTokenStore();
+        $service = $this->service($queue, $mailer, $tokens);
+        $batch = $this->batch(
+            [$this->candidate(101, 'Harvest lunch')],
+            replyToEmail: 'no-reply@example.test',
+            replyToTrust: SenderTrust::VERIFIED
+        );
+
+        $result = $service->enqueuePreview($batch);
+
+        self::assertSame(ConfirmationEmailOutcome::QUEUED, $result->outcome);
+        self::assertSame('sender@example.test', $mailer->emails[0]->recipient);
+        self::assertCount(4, $tokens->records);
+
+        foreach ($tokens->records as $record) {
+            self::assertSame('sender@example.test', $record->binding->email);
         }
     }
 
