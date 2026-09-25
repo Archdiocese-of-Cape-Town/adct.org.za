@@ -149,12 +149,14 @@ final class ReviewQueueRepository
             if ($candidate === null) {
                 throw new DomainException('This candidate is outside your review queue.');
             }
+            if ($action === 'approve'
+                && in_array($candidate['status'], ['awaiting_approval', 'duplicate'], true)
+                && $this->policy->requiresMatchResolution($candidate)) {
+                $this->execute('COMMIT');
+                return 'manual_review';
+            }
             if (! $this->policy->canDecide($candidate)) {
                 $this->execute('COMMIT');
-                if ($action === 'approve' && $candidate['status'] === 'duplicate'
-                    && $this->policy->requiresMatchResolution($candidate)) {
-                    return 'manual_review';
-                }
                 return $action === 'approve' && ! empty($candidate['can_retry'])
                     ? 'retry' : 'already_decided';
             }

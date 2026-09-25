@@ -241,6 +241,56 @@ final class ReviewQueueCheck
             $check(has_action('admin_post_adct_pi_review_bulk') !== false,
                 'bulk action must be registered on the installed plugin.');
 
+            $awaitingMatchReview = $candidate('match-review', 'awaiting_approval', $parishOne, $contact, 0.9, [
+                'fields' => ['matched_candidate_id' => 58, 'match_review_required' => true],
+            ]);
+            $approvedMatchReview = $candidate('approved-match-review', 'awaiting_approval', $parishOne,
+                $contact, 0.9, [
+                    'fields' => ['matched_candidate_id' => 58, 'match_review_required' => true],
+                    'approved_by' => $deanAssignmentEmail,
+                    'approved_at' => $stamp,
+                    'approved_via' => 'dean',
+                    'decided_by' => $deanAssignmentEmail,
+                    'decided_at' => $stamp,
+                ]);
+            $check($queue->decide($approvedMatchReview, 'approve', $dean->ID, $dean->user_email, false)
+                    === 'manual_review',
+                'a flagged candidate must not bypass manual resolution through publication retry.');
+            $approvedMatchState = $wpdb->get_row($wpdb->prepare(
+                "SELECT status, approved_by FROM {$prefix}event_candidates WHERE id = %d",
+                $approvedMatchReview
+            ), ARRAY_A);
+            $check($approvedMatchState !== null && $approvedMatchState['status'] === 'awaiting_approval'
+                && $approvedMatchState['approved_by'] === $deanAssignmentEmail,
+                'blocking the ambiguous retry must leave the original decision untouched.');
+            $approvedMatchSearch = 'Queue approved-match-review ' . $suffix;
+            $_GET = ['tab' => 'failed', 'search' => $approvedMatchSearch];
+            ob_start();
+            $page->renderPage();
+            $approvedMatchHtml = (string) ob_get_clean();
+            $check(! str_contains($approvedMatchHtml, 'Approve selected')
+                && ! str_contains($approvedMatchHtml, 'name="candidate_ids[]" value="'
+                    . $approvedMatchReview . '"')
+                && ! str_contains($approvedMatchHtml, 'name="manual_review_candidate_ids[]" value="'
+                    . $approvedMatchReview . '"'),
+                'a previously decided ambiguous candidate must not expose a publication retry.');
+            $matchReviewSearch = 'Queue match-review ' . $suffix;
+            $_GET = ['tab' => 'awaiting_approval', 'search' => $matchReviewSearch];
+            ob_start();
+            $page->renderPage();
+            $matchReviewHtml = (string) ob_get_clean();
+            $check(str_contains($matchReviewHtml, 'name="manual_review_candidate_ids[]" value="'
+                . $awaitingMatchReview . '"'),
+                'ambiguous awaiting items must have a manual-review selection.');
+            $check(! str_contains($matchReviewHtml, 'name="candidate_ids[]" value="'
+                . $awaitingMatchReview . '"'),
+                'ambiguous awaiting items must not enter the ordinary approval selection.');
+            $check(! str_contains($matchReviewHtml, 'Approve selected'),
+                'an ambiguous-only view must not expose ordinary bulk approval.');
+            $check(str_contains($matchReviewHtml, 'Reject selected')
+                && str_contains($matchReviewHtml, 'Manual resolution required before approval'),
+                'ambiguous awaiting items must retain rejection and manual-resolution guidance.');
+
             $dieHandler = static function (): callable {
                 return static function ($message): never {
                     throw new RuntimeException(wp_strip_all_tags((string) $message));
@@ -262,6 +312,24 @@ final class ReviewQueueCheck
                 $check($wpdb->get_var($wpdb->prepare(
                     "SELECT status FROM {$prefix}event_candidates WHERE id = %d", $normal
                 )) === 'awaiting_approval', 'invalid nonce must not approve.');
+                wp_set_current_user($reviewer->ID);
+                $_POST = [
+                    'bulk_action' => 'approve',
+                    'manual_review_candidate_ids' => [(string) $awaitingMatchReview],
+                    'tab' => 'awaiting_approval',
+                    'review_nonce' => wp_create_nonce('adct_pi_review_bulk'),
+                ];
+                $_REQUEST = $_POST;
+                try {
+                    $page->handleBulk();
+                    $fail('Review queue: ambiguous candidate was accepted for ordinary bulk approval.');
+                } catch (RuntimeException $error) {
+                    $check(str_contains(strtolower($error->getMessage()), 'manual resolution'),
+                        'the bulk handler must explicitly reject an ambiguous approval selection.');
+                }
+                $check($wpdb->get_var($wpdb->prepare(
+                    "SELECT status FROM {$prefix}event_candidates WHERE id = %d", $awaitingMatchReview
+                )) === 'awaiting_approval', 'blocked ambiguous approval must leave the candidate undecided.');
                 wp_set_current_user($contactUser->ID);
                 try {
                     $page->renderPage();
@@ -293,6 +361,11 @@ final class ReviewQueueCheck
                 remove_filter('wp_die_handler', $dieHandler);
             }
 
+            $check($queue->decide($awaitingMatchReview, 'approve', $reviewer->ID, $reviewer->user_email, true)
+                    === 'manual_review'
+                && $queue->decide($awaitingMatchReview, 'reject', $reviewer->ID, $reviewer->user_email, true,
+                    'Manual match review required') === 'decided',
+                'ambiguous candidates must fail closed for approval while preserving the rejection path.');
             $check($queue->decide($ambiguous, 'approve', $reviewer->ID, $reviewer->user_email, true)
                 === 'manual_review', 'pending matches must never bulk-publish.');
             $check($queue->decide($normal, 'approve', $dean->ID, $dean->user_email, false)
