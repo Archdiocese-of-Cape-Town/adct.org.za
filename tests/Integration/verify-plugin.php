@@ -168,6 +168,7 @@ if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CUR
 }
 
 $parentSlug = 'adct-parish-intake';
+$settingsSlug = 'adct-parish-intake-settings';
 $manualParserSlug = 'adct-parish-intake-manual-parser';
 $GLOBALS['menu'] = [];
 $GLOBALS['submenu'] = [];
@@ -180,6 +181,81 @@ $parentItems = array_values(array_filter(
 
 if (count($parentItems) !== 1 || strip_tags($parentItems[0][0]) !== 'Parish Intake') {
     $fail('The Parish Intake admin menu was not registered.');
+}
+
+$settingsItems = array_values(array_filter(
+    $GLOBALS['submenu'][$parentSlug] ?? [],
+    static fn ($item): bool => is_array($item) && ($item[2] ?? null) === $settingsSlug
+));
+
+if (count($settingsItems) !== 1 || $settingsItems[0][0] !== 'Settings') {
+    $fail('The Parish Intake Settings submenu was not registered.');
+}
+
+$settingsHook = get_plugin_page_hookname($settingsSlug, $parentSlug);
+if (has_action($settingsHook) === false) {
+    $fail('The Settings page callback was not registered.');
+}
+
+ob_start();
+try {
+    do_action($settingsHook);
+} finally {
+    $settingsHtml = (string) ob_get_clean();
+}
+
+foreach ([
+    'mass_times',
+    'mass_intentions',
+    'sick_list',
+    'deceased',
+    'anniversaries',
+    'raffle_winners',
+    'collections_finances',
+    'banking_details',
+    'readings',
+] as $category) {
+    if (strpos($settingsHtml, 'name="section_keywords[' . $category . ']"') === false) {
+        $fail('The Settings page did not render the section keyword field for ' . $category . '.');
+    }
+}
+
+if (strpos($settingsHtml, 'Reset section keywords to defaults') === false) {
+    $fail('The Settings page did not render the section keyword reset action.');
+}
+
+$originalSettingsPost = $_POST;
+$originalSettingsRequest = $_REQUEST;
+$originalSettingsScreen = $GLOBALS['current_screen'] ?? null;
+set_current_screen('dashboard');
+$_POST = [
+    'adct_parish_intake_settings_nonce' => wp_create_nonce('adct_parish_intake_save_settings'),
+    'adct_parish_intake_save_settings' => '1',
+    'ai_provider' => 'none',
+    'openrouter_model' => 'openrouter/auto',
+    'ai_threshold' => '0.55',
+    'section_keywords' => [
+        'sick_list' => " \n<strong>Care Circle</strong>\nCARE-CIRCLE\n ",
+    ],
+];
+$_REQUEST = $_POST;
+do_action('admin_init');
+$customSectionKeywords = get_option('adct_parish_intake_section_keywords');
+
+if (
+    ! is_array($customSectionKeywords)
+    || ($customSectionKeywords['sick_list'] ?? null) !== ['Care Circle']
+) {
+    $fail('The Settings handler did not sanitize and save a custom section keyword list.');
+}
+
+$_POST = $originalSettingsPost;
+$_REQUEST = $originalSettingsRequest;
+
+if ($originalSettingsScreen !== null) {
+    $GLOBALS['current_screen'] = $originalSettingsScreen;
+} else {
+    unset($GLOBALS['current_screen']);
 }
 
 $manualParserItems = array_values(array_filter(
@@ -221,7 +297,7 @@ $_POST = [
     'sender_email' => 'events@example.test',
     'sender_name' => 'Fictional Parish Office',
     'subject' => 'Fictional Parish bulletin',
-    'body' => "Parish: Fictional Parish\nOCTOBER 2026\nUPCOMING EVENTS\n- Youth gathering on Saturday 10 October 2026 at 16:00.\n- Family picnic on Sunday 11 October 2026 at 12:00.",
+    'body' => "Parish: Fictional Parish\nOCTOBER 2026\nUPCOMING EVENTS\n- Youth gathering on Saturday 10 October 2026 at 16:00.\n- Family picnic on Sunday 11 October 2026 at 12:00.\n\nCARE-CIRCLE\nFictional Person Alpha has a fictional health concern.",
 ];
 $_REQUEST = $_POST;
 ob_start();
@@ -238,8 +314,10 @@ if (
     || strpos($submittedParserHtml, 'candidate_count') === false
     || strpos($submittedParserHtml, 'Youth gathering') === false
     || strpos($submittedParserHtml, 'Family picnic') === false
+    || strpos($submittedParserHtml, 'skipped_sections: sick_list=1') === false
+    || strpos($submittedParserHtml, 'Fictional Person Alpha') !== false
 ) {
-    $fail('The Manual parser did not render all candidates for a bulletin.');
+    $fail('The Manual parser did not render candidates and text-free skip metadata for a bulletin.');
 }
 
 $legacyParserRow = $wpdb->get_row(
@@ -253,6 +331,30 @@ if (
     || $legacyParserRow['title'] !== 'Youth gathering'
 ) {
     $fail('The legacy Manual parser table did not store the first bulletin candidate.');
+}
+
+$originalSettingsScreen = $GLOBALS['current_screen'] ?? null;
+set_current_screen('dashboard');
+$_POST = [
+    'adct_parish_intake_settings_nonce' => wp_create_nonce('adct_parish_intake_save_settings'),
+    'adct_parish_intake_save_settings' => '1',
+    'reset_section_keywords' => '1',
+];
+$_REQUEST = $_POST;
+do_action('admin_init');
+$resetSectionKeywords = get_option('adct_parish_intake_section_keywords');
+
+if ($resetSectionKeywords !== \ADCT\ParishIntake\Core\Parsing\SectionSkipper::defaultKeywordLists()) {
+    $fail('The Settings handler did not reset section keywords to their built-in defaults.');
+}
+
+$_POST = $originalSettingsPost;
+$_REQUEST = $originalSettingsRequest;
+
+if ($originalSettingsScreen !== null) {
+    $GLOBALS['current_screen'] = $originalSettingsScreen;
+} else {
+    unset($GLOBALS['current_screen']);
 }
 
 $seedDeaneriesCsv = file_get_contents(__DIR__ . '/seed/deaneries.csv');
@@ -909,4 +1011,4 @@ if ($secondApproverUser instanceof WP_User && in_array('deanery_approver', $seco
     $fail('The final sample approver role was not removed during integration cleanup.');
 }
 
-WP_CLI::success('Release ZIP activation, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
+WP_CLI::success('Release ZIP activation, settings and parser safeguards, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');

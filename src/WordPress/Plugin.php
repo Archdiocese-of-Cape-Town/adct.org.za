@@ -15,6 +15,7 @@ use ADCT\ParishIntake\Core\Jobs\FrameworkHeartbeatJob;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
+use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Support\SystemClock;
@@ -145,6 +146,7 @@ final class Plugin
         add_option('adct_parish_intake_ai_provider', 'none');
         add_option('adct_parish_intake_openrouter_model', 'openrouter/auto');
         add_option('adct_parish_intake_ai_threshold', '0.55');
+        add_option('adct_parish_intake_section_keywords', SectionSkipper::defaultKeywordLists());
 
         self::createRoleInstaller()->install();
         (new Schema())->install();

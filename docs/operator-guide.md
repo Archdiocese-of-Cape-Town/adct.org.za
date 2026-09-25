@@ -80,6 +80,14 @@ An `office_email` in the CSV is added as a verified parish contact with a verifi
 3. Use **Verify address** only after checking the contact with the parish. Verification fills in the sender's linked parish information and permits immediate changes to already-published events; every new event still needs approval by a dean or archdiocese reviewer.
 4. **Block address** stops intake for that email address across every linked parish. An administrator can use **Unblock address** to return it to `unknown`; verify it again before treating it as trusted. A blocked address cannot lose its final parish link until an administrator explicitly unblocks it, so removing one of several links does not change trust for the remaining links.
 
+## Configure parser safeguards
+
+An Administrator or Intake manager with settings access can open **Parish Intake → Settings** and edit the non-event section phrases. Enter one heading or leading phrase per line in each category. Matching ignores case and punctuation; a recognized section is skipped through the next heading. Weekly Mass-times tables with weekday/time rows that identify Mass or Service are also skipped automatically.
+
+These safeguards cover Mass times and intentions, sick lists, deceased, anniversaries, raffle winners, collections/finances, banking details and readings. Keep recognizable phrases in each category so these sections stay out of event candidates and AI enrichment. A blank category uses its built-in defaults. Select **Reset section keywords to defaults** to restore all built-in lists; **Save settings** saves the current lists.
+
+To investigate a possible false skip, paste the source into **Parish Intake → Manual parser**. The latest outcome reports each skipped block's zero-based `block_index` and category in its `reason`; use the index to find the section in the raw text you supplied. Skipped text is deliberately absent from the parse outcome. A full viewer for stored inbound messages is not part of the current admin screens.
+
 ## Check database installation and upgrade (staging)
 
 Do this on a staging site with a recent database backup; do not change schema options on the live site.

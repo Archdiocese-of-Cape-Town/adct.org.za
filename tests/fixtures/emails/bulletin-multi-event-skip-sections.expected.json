@@ -6,7 +6,7 @@
     "event_date": "2026-10-10",
     "event_time": "16:00",
     "venue": "Example Parish Hall",
-    "description": "- Join us for a youth gathering on Saturday 10 October 2026 at 16:00 at Example Parish Hall.\n- The family picnic is on Sunday 11 October 2026 at 12:00 at Fictional Community Gardens."
+    "description": "- Join us for a youth gathering on Saturday 10 October 2026 at 16:00 at Example Parish Hall."
   },
   "candidate_count": 2,
   "candidates": [
@@ -28,8 +28,5 @@
         "venue": "Fictional Community Gardens"
       }
     }
-  ],
-  "known_failures": {
-    "fields.description": "#74"
-  }
+  ]
 }
