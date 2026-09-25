@@ -15,6 +15,7 @@ use ADCT\ParishIntake\Core\Database\MailboxSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MigrationRunner;
 use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
 use ADCT\ParishIntake\Core\Events\EventValidator;
+use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
 use ADCT\ParishIntake\Core\Events\OccurrenceExpander;
 use ADCT\ParishIntake\Core\Events\RRulePresetMapper;
 use ADCT\ParishIntake\Core\Events\RRuleValidator;
@@ -79,6 +80,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\MailboxRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\OccurrenceRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\Schema;
@@ -109,6 +111,7 @@ use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
 use ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance;
+use ADCT\ParishIntake\WordPress\Publishing\WordPressPublicationStore;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
 use DateTimeZone;
 
@@ -135,6 +138,7 @@ final class Plugin
     private EventPostType $eventPostType;
     private EventEditor $eventEditor;
     private EventOccurrenceHooks $eventOccurrenceHooks;
+    private CandidatePublisher $candidatePublisher;
     private MailboxesPage $mailboxesPage;
 
     private function __construct(string $pluginFile)
@@ -234,6 +238,16 @@ final class Plugin
             new OccurrenceRepository($database),
             new OccurrenceExpander($timezone, $rruleValidator),
             $clock
+        );
+        $this->candidatePublisher = new CandidatePublisher(
+            new WordPressPublicationStore(
+                $database,
+                new EventCandidateRepository($database),
+                $occurrenceMaintenance,
+                $clock,
+                $timezone
+            ),
+            new EventValidator($timezone, $rruleValidator)
         );
         $this->eventOccurrenceHooks = new EventOccurrenceHooks(
             $occurrenceMaintenance,
@@ -369,6 +383,15 @@ final class Plugin
         }
 
         return self::$instance->actionTokenService;
+    }
+
+    public static function candidatePublisher(): CandidatePublisher
+    {
+        if (! self::$instance instanceof self) {
+            throw new \RuntimeException('The Parish Intake plugin has not been booted.');
+        }
+
+        return self::$instance->candidatePublisher;
     }
 
     public static function actionTokenHandlers(): ActionTokenHandlerRegistry

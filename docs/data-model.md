@@ -257,6 +257,8 @@ stateDiagram-v2
 
 `awaiting_approval` items appear in the queue of every active approver of the parish's deanery **and** in the archdiocese reviewers' queue. The move out of `awaiting_approval` is a single conditional update (`… SET status = 'published' WHERE id = ? AND status = 'awaiting_approval'`), so only the first approver's action takes effect. Later clicks show "already decided by …".
 
+The candidate publisher accepts only a recorded `dean`, `reviewer` or `self` approval with an approver and approval time; submitter confirmation alone never authorizes publication. The `contact_change` label by itself is not proof of a verified contact and remains unavailable until the verified-contact workflow in E5.5 supplies that proof. Publishing locks the candidate and, for changes, its matched event; post/meta, before/after revision, occurrences and candidate state commit together. Retries of an already-published candidate return the linked event without writing a second revision. New events have no change row; updates, cancellations and postponements each keep a complete before/after payload. Approval and publication must be coordinated by the calling approval flow so a failed publication does not acknowledge a completed approval.
+
 ### Published event
 `scheduled` → `cancelled` / `postponed` (still visible, clearly marked) → the event is trashed only by an admin. Past events stay visible in an archive view.
 

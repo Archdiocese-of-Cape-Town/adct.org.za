@@ -3928,6 +3928,9 @@ if ($secondApproverUser instanceof WP_User && in_array('deanery_approver', $seco
     $fail('The final sample approver role was not removed during integration cleanup.');
 }
 
+require_once __DIR__ . '/PublicationCheck.php';
+PublicationCheck::run($fail);
+
 foreach (['administrator', 'editor'] as $roleName) {
     $role = get_role($roleName);
 

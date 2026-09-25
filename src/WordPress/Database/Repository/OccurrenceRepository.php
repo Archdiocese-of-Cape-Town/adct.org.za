@@ -134,7 +134,8 @@ final class OccurrenceRepository
         ?float $latitude,
         ?float $longitude,
         bool $isCancelled,
-        DateTimeImmutable $now
+        DateTimeImmutable $now,
+        bool $transactional = true
     ): void {
         $this->assertEventMetadata($eventId, $parishId, $eventTypeTermId, $latitude, $longitude);
 
@@ -151,7 +152,7 @@ final class OccurrenceRepository
         $createdAt = $now->setTimezone($this->utc)->format('Y-m-d H:i:s');
         $table = $this->occurrencesTable();
 
-        $this->transaction(function () use (
+        $replace = function () use (
             $eventId,
             $occurrences,
             $parishId,
@@ -181,7 +182,13 @@ final class OccurrenceRepository
                     $createdAt
                 );
             }
-        });
+        };
+
+        if ($transactional) {
+            $this->transaction($replace);
+        } else {
+            $replace();
+        }
     }
 
     public function deleteForEvent(int $eventId): void
