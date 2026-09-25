@@ -20,6 +20,7 @@ use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
 use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\Core\Jobs\FrameworkHeartbeatJob;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
+use ADCT\ParishIntake\Core\Jobs\MailQueueSenderJob;
 use ADCT\ParishIntake\Core\Ingestion\Imap\ImapMailbox;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxConnectionConfig;
 use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
@@ -30,12 +31,18 @@ use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
 use ADCT\ParishIntake\Core\Ingestion\MessageContentHasher;
 use ADCT\ParishIntake\Core\Ingestion\RawMessageInspector;
 use ADCT\ParishIntake\Core\Jobs\MailboxPollingJob;
+use ADCT\ParishIntake\Core\Mail\AllowAllRecipientPolicy;
+use ADCT\ParishIntake\Core\Mail\MailQueueConfiguration;
+use ADCT\ParishIntake\Core\Mail\MailQueueDispatcher;
+use ADCT\ParishIntake\Core\Mail\MailQueueService;
+use ADCT\ParishIntake\Core\Mail\MailQueueStats;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
+use ADCT\ParishIntake\Core\Ports\MailerInterface;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
@@ -63,6 +70,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\Schema;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
+use ADCT\ParishIntake\WordPress\Database\WordPressMailQueueRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationLogger;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationVersionStore;
@@ -77,6 +85,8 @@ use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
+use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
+use ADCT\ParishIntake\WordPress\Mail\WordPressMailQueueImmediateDispatch;
 use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
@@ -94,6 +104,7 @@ final class Plugin
     private HttpClientInterface $httpClient;
     private WordPressJobScheduler $jobScheduler;
     private ScheduledJobsPage $scheduledJobsPage;
+    private MailQueueService $mailQueue;
     private DeaneriesPage $deaneriesPage;
     private ParishesPage $parishesPage;
     private SendersPage $sendersPage;
@@ -214,6 +225,23 @@ final class Plugin
             JobRunner::DEFAULT_ITEM_BUDGET,
             JobRunner::DEFAULT_LOCK_TTL_SECONDS
         );
+        $mailQueueConfiguration = self::mailQueueConfiguration();
+        $mailRecipientPolicy = new AllowAllRecipientPolicy();
+        $mailQueueRepository = new WordPressMailQueueRepository($database);
+        $mailQueueDispatcher = new MailQueueDispatcher(
+            $mailQueueRepository,
+            new WordPressMailDeliveryAdapter(),
+            $mailRecipientPolicy,
+            $clock,
+            $mailQueueConfiguration
+        );
+        $mailQueueSenderJob = new MailQueueSenderJob($mailQueueDispatcher);
+        $this->mailQueue = new MailQueueService(
+            $mailQueueRepository,
+            $mailRecipientPolicy,
+            $clock,
+            new WordPressMailQueueImmediateDispatch($jobRunner, $mailQueueSenderJob)
+        );
         $mailboxPollingJob = new MailboxPollingJob(
             $mailboxes,
             $sources,
@@ -244,7 +272,7 @@ final class Plugin
             }
         );
         $this->jobScheduler = new WordPressJobScheduler(
-            [new FrameworkHeartbeatJob(), $mailboxPollingJob],
+            [new FrameworkHeartbeatJob(), $mailboxPollingJob, $mailQueueSenderJob],
             $jobRunner,
             $stateStore,
             $clock
@@ -264,6 +292,24 @@ final class Plugin
 
         self::$instance = new self($pluginFile);
         self::$instance->registerHooks();
+    }
+
+    public static function mailer(): MailerInterface
+    {
+        if (! self::$instance instanceof self) {
+            throw new \RuntimeException('The Parish Intake plugin has not been booted.');
+        }
+
+        return self::$instance->mailQueue;
+    }
+
+    public static function mailQueueStats(): MailQueueStats
+    {
+        if (! self::$instance instanceof self) {
+            throw new \RuntimeException('The Parish Intake plugin has not been booted.');
+        }
+
+        return self::$instance->mailQueue->stats();
     }
 
     public static function activate(): void
@@ -450,6 +496,42 @@ final class Plugin
             ],
             new WordPressMigrationVersionStore(),
             new WordPressMigrationLogger()
+        );
+    }
+
+    private static function mailQueueConfiguration(): MailQueueConfiguration
+    {
+        if (! defined('ADCT_PI_MAIL_HOURLY_CAP')) {
+            return new MailQueueConfiguration();
+        }
+
+        $configuredCap = constant('ADCT_PI_MAIL_HOURLY_CAP');
+
+        if (
+            ! is_int($configuredCap)
+            && (
+                ! is_string($configuredCap)
+                || preg_match('/\A\d+\z/D', $configuredCap) !== 1
+            )
+        ) {
+            self::logInvalidMailQueueCap();
+
+            return new MailQueueConfiguration();
+        }
+
+        try {
+            return new MailQueueConfiguration((int) $configuredCap);
+        } catch (\InvalidArgumentException) {
+            self::logInvalidMailQueueCap();
+
+            return new MailQueueConfiguration();
+        }
+    }
+
+    private static function logInvalidMailQueueCap(): void
+    {
+        error_log(
+            '[ADCT Parish Intake] ADCT_PI_MAIL_HOURLY_CAP must be an integer from 1 to 500; using default 100.'
         );
     }
 

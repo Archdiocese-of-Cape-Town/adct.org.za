@@ -136,6 +136,72 @@ final class CoreIsolationTest extends TestCase
         self::assertSame([], $violations, implode(PHP_EOL, $violations));
     }
 
+    public function testWordPressMailIsCalledOnlyByTheQueueDeliveryAdapter(): void
+    {
+        $repositoryRoot = dirname(__DIR__, 3);
+        $sourcePaths = [
+            $repositoryRoot . DIRECTORY_SEPARATOR . 'src',
+            $repositoryRoot . DIRECTORY_SEPARATOR . 'parish-intake.php',
+            $repositoryRoot . DIRECTORY_SEPARATOR . 'uninstall.php',
+        ];
+        $callSites = [];
+
+        foreach ($sourcePaths as $sourcePath) {
+            if (is_dir($sourcePath)) {
+                $files = new RecursiveIteratorIterator(
+                    new RecursiveDirectoryIterator($sourcePath, RecursiveDirectoryIterator::SKIP_DOTS)
+                );
+            } elseif (is_file($sourcePath)) {
+                $files = [new SplFileInfo($sourcePath)];
+            } else {
+                continue;
+            }
+
+            foreach ($files as $file) {
+                if (! $file instanceof SplFileInfo || $file->getExtension() !== 'php') {
+                    continue;
+                }
+
+                $source = file_get_contents($file->getPathname());
+                self::assertNotFalse($source, 'Unable to read ' . $file->getPathname());
+                $tokens = token_get_all($source, TOKEN_PARSE);
+
+                foreach ($tokens as $index => $token) {
+                    if (! is_array($token) || ! self::isNameToken($token[0])) {
+                        continue;
+                    }
+
+                    $name = ltrim($token[1], '\\');
+                    $basename = substr($name, strrpos('\\' . $name, '\\'));
+                    $basename = ltrim($basename, '\\');
+
+                    if (strcasecmp($basename, 'wp_mail') !== 0) {
+                        continue;
+                    }
+
+                    $openParenthesisIndex = self::nextSignificantTokenIndex($tokens, $index + 1);
+
+                    if ($openParenthesisIndex === null || $tokens[$openParenthesisIndex] !== '(') {
+                        continue;
+                    }
+
+                    $relativePath = substr(
+                        $file->getPathname(),
+                        strlen($repositoryRoot) + strlen(DIRECTORY_SEPARATOR)
+                    );
+                    $callSites[] = str_replace('\\', '/', $relativePath);
+                }
+            }
+        }
+
+        sort($callSites, SORT_STRING);
+        self::assertSame(
+            ['src/WordPress/Mail/WordPressMailDeliveryAdapter.php'],
+            $callSites,
+            'All plugin wp_mail() calls must use the queue delivery adapter.'
+        );
+    }
+
     public function testScannerRecognizesWordPressFunctionChecksAndGlobals(): void
     {
         $violations = self::findWordPressDependencies(

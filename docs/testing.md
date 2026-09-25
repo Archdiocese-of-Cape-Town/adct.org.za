@@ -17,6 +17,8 @@ Tests protect the project from breaking as more people and sessions work on it.
 
 The unit-test CI matrix runs PHP **8.2** (production), **8.3** and **8.4**. The WordPress integration job and GreenMail IMAP integration job run separately on PHP 8.2.
 
+E4.7 unit tests cover the outbound queue's rolling cap across runs, atomic in-flight reservations, priority ordering (including a login link ahead of 200 digests), per-recipient group-key idempotency, exponential retries and terminal failure, retry after an interrupted claim, and allowlist suppression without delivery or cap usage. WordPress integration tests verify the sender job wiring and database-backed queue state; a `pre_wp_mail` interception accepts only a fake `example.test` recipient so the test never sends real mail.
+
 See [ADR 0009](decisions/0009-preview-and-test-environments.md) for why previews and test sites are set up this way.
 
 ## Planned approval flow test cases
@@ -44,7 +46,8 @@ From [ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md) and [AD
 - WP-Cron scheduling and cleanup failures are logged without escaping the scheduler; unexpected cron callback failures are logged and recorded when job state can still be saved.
 - WordPress integration tests should cover the custom ten-minute cron hook, deactivation cleanup, and the Run now capability/nonce flow. The current registered heartbeat does not poll mail or process a queue.
 - The scheduled-jobs page reports per-job state. The health warning after 2 h 15 min remains a future health-dashboard behavior.
-- Mail queue: hourly cap enforced across runs; priority 1 goes before priority 3; notices grouped per approver; retries with backoff; Test mode suppresses non-allow-listed recipients.
+- Mail queue: the successful-recipient cap is enforced across runs with reservations for concurrent sends; priority 1 goes before priorities 2–3; identical composed per-recipient notices are idempotent by `group_key`; changed content under the same key errors; retries use exponential backoff and stop after 5 attempts; suppressed allowlist recipients never reach `wp_mail()` or count against the cap.
+- A crash with an unknown delivery outcome holds its reservation for 60 minutes before retry. This protects the cap, but if SMTP accepted the message before the process died, that retry may deliver one duplicate. The unit tests cover both the reservation window and retry.
 
 ## Parser fixture corpus
 
@@ -78,7 +81,7 @@ All of these use the **same zip that CI builds**. The plugin bundles prefixed Co
   - The blueprint `.github/playground/blueprint.json` installs and activates the release zip, logs in as `admin`, and opens the Manual parser page. **TODO (follow-up now that #22 has landed):** add anonymised parish and event records through a fixture/seed mechanism; the current blueprint intentionally does not load application data until that mechanism exists.
   - Limitation: no raw socket connections, so IMAP polling can't be tested there.
 - **InstaWP / TasteWP**: free temporary WordPress sites on real servers.
-  - Install the CI-built zip by URL. They can reach external IMAP/SMTP, so use them to try a test mailbox end to end, with **Test mode** on (outbound email only to allow-listed addresses).
+  - Install the CI-built zip by URL. They can reach external IMAP/SMTP, but the Test mode allow-list UI is not available until #48; do not use real SMTP delivery for testing before then.
   - InstaWP can also deploy from a GitHub branch and has a per-PR GitHub Action. Its Composer step is a paid feature, so the zip is simpler.
   - Sites expire, so don't keep anything important there, and use only a **test** mailbox with a throwaway password.
 - **Local**: `wp-env` (needs Docker) or Local (by WP Engine) for developers.
@@ -87,7 +90,7 @@ All of these use the **same zip that CI builds**. The plugin bundles prefixed Co
 
 There is no permanent staging site. Before the first launch (and optionally before big releases):
 - Create a temporary xneelo instance (e.g. a subdomain with its own database) with the release zip and a separate test mailbox (e.g. `events-test@adct.org.za`).
-- Turn on **Test mode**, so outgoing email only goes to an allow-list of test addresses.
+- Do not send real mail until #48 provides the Test mode allow-list setting and banner. The current queue's recipient-policy seam defaults to production allow-all and is not an operator setting.
 - Release checklist: install zip → run migrations → send test emails (single event, bulletin, poster PDF, recurring event) → confirm via the emailed links → approve as a dean and as a reviewer → make a change as a verified contact and revert it → check the events page and ICS feed → check the health dashboard, that the 2-hourly xneelo cron and the external pinger both trigger jobs within the time budget, and that the mail queue respects the hourly cap.
 - Remove the instance afterwards. Launch starts with a few pilot parishes.
 

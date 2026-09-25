@@ -105,6 +105,24 @@ On a parish's Sources tab, add or edit a source and select its type, identifier,
 
 Pollable sources default to 1,440 minutes (24 hours) and cannot be set below 10 minutes; both values are provisional. Manual sources are not polled and have no poll interval. Health fields are read-only. The mailbox job is scheduled every 10 minutes but opens IMAP only when an active source's `last_checked_at` is absent or its configured interval has elapsed; the interval is measured from `last_checked_at`. An incomplete UID scan resumes promptly on the next run instead of waiting for the full interval. After a failed poll, a provisional retry backoff starts at 10 minutes, doubles with each consecutive failure and is capped at 6 hours; it is also measured from `last_checked_at` and takes precedence over the source interval. The mailbox poller marks an active email source **Unreliable** after five consecutive failures (provisional); **Paused** and **Disabled** sources are not changed by failures. Only active email sources with active mailbox settings and a configured password are polled. An Unreliable source is not polled again until an operator investigates the connection and changes its status back to **Active**. A successful poll clears the failure count and last error. Last errors are technical diagnostics only; do not put message contents or personal information in them.
 
+## Outbound email and hourly cap
+
+All plugin email is stored in `adct_pi_mail_queue` and delivered one recipient at a time through WordPress `wp_mail()`. The site-wide FluentSMTP configuration routes it through xneelo's authenticated SMTP; Parish Intake stores no SMTP credentials. Outbound mail has no BCC recipients or attachments.
+
+The queue sends login links and confirmations first, approver and change notices second, then reminders and digests. It counts successfully sent recipients in the preceding 60 minutes and reserves capacity for active sends so overlapping workers cannot exceed the cap. The default is **100 per hour**, leaving room for the rest of adct.org.za under xneelo's shared 500-recipient limit.
+
+There is no admin setting for the cap yet. A technical operator can set `ADCT_PI_MAIL_HOURLY_CAP` in `wp-config.php` to an integer from `1` to `500`; if it is absent, the cap stays at 100. **Keep 100 unless the site owner has reviewed other site mail volume. A value of 500 can consume the whole shared allowance.** An invalid value is logged and safely falls back to 100.
+
+```php
+define('ADCT_PI_MAIL_HOURLY_CAP', 100);
+```
+
+Failed deliveries retry with exponential backoff and become terminally failed after five attempts. An interrupted send with an unknown outcome conservatively holds its cap reservation for 60 minutes before retrying; in the rare case that SMTP accepted it just before the process stopped, that retry may deliver a duplicate. The status API exposes pending count, oldest pending age, successful sends in the preceding hour and terminal failure count for the planned health dashboard, but there is not yet an operator queue screen.
+
+`group_key` is an idempotency key for one fully composed message to one recipient. Repeating the same key and payload does not create another row; changing content under the same recipient/key is an error, not a silent merge or drop. Compose a complete approver digest before enqueueing it, then use a recipient-specific key.
+
+The Test mode allow-list screen and banner are tracked by #48 and are not available yet. Production currently uses the permissive recipient policy; do not test email delivery on the live site before #48 exists. The Core allowlist seam is covered with synthetic `example.test` recipients in automated tests.
+
 ## Configure parser safeguards
 
 An Administrator or Intake manager with settings access can open **Parish Intake → Settings** and edit the non-event section phrases. Enter one heading or leading phrase per line in each category. Matching ignores case and punctuation. A standalone category phrase or a match formatted as a Markdown/underlined, all-caps or colon-terminated heading skips through the next heading, even when that section contains dates or times. A phrase at the start of running text skips only its block when there is no explicit date plus time or event noun. If that event signal is present, the candidate is kept with a text-free `section_keyword_overridden: <category>` note and its confidence is reduced by 0.1 for closer review. Weekly Mass-times tables with weekday/time rows that identify Mass or Service are also skipped automatically.

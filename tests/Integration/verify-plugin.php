@@ -19,6 +19,10 @@ use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
 use ADCT\ParishIntake\Core\Ingestion\InboundAttachmentRecord;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
+use ADCT\ParishIntake\Core\Mail\MailPriority;
+use ADCT\ParishIntake\Core\Mail\MailQueueClaimStatus;
+use ADCT\ParishIntake\Core\Mail\MailQueueStatus;
+use ADCT\ParishIntake\Core\Mail\OutboundEmail;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\Source;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
@@ -39,6 +43,8 @@ use ADCT\ParishIntake\WordPress\Database\Repository\MailboxRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
+use ADCT\ParishIntake\WordPress\Database\WordPressMailQueueRepository;
+use ADCT\ParishIntake\WordPress\Plugin;
 use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
 use ADCT\ParishIntake\WordPress\Directory\DeaneryApproverAssignmentService;
@@ -1514,6 +1520,10 @@ if (has_action('adct_pi_job_poll_mailboxes') === false) {
     $fail('The mailbox polling job was not registered with the scheduled-job framework.');
 }
 
+if (has_action('adct_pi_job_send_mail') === false) {
+    $fail('The outbound mail sender was not registered with the scheduled-job framework.');
+}
+
 $inboundMessageRepository = new InboundMessageRepository($mailboxDatabase);
 $attachmentRepository = new AttachmentRepository($mailboxDatabase);
 $inboundMessageStore = new WordPressInboundMessageStore(
@@ -2310,6 +2320,117 @@ if ($missingSendersContent !== []) {
         . implode(', ', $missingSendersContent) . ').');
 }
 
+$mailQueueRecipient = 'queue-test@example.test';
+$mailQueueGroupKey = 'integration:mail-queue:' . bin2hex(random_bytes(8));
+$mailQueueEmail = new OutboundEmail(
+    $mailQueueRecipient,
+    'A fictional queue integration notice',
+    '<p>Queue integration fixture.</p>',
+    'Queue integration fixture.',
+    MailPriority::LOGIN_OR_CONFIRMATION,
+    $mailQueueGroupKey
+);
+$mailQueueAttempts = [];
+$mailQueueIntercept = static function ($pre, $arguments) use (&$mailQueueAttempts) {
+    $mailQueueAttempts[] = $arguments;
+
+    return true;
+};
+add_filter('pre_wp_mail', $mailQueueIntercept, 10, 2);
+
+try {
+    $mailQueueResult = Plugin::mailer()->enqueue($mailQueueEmail);
+    $mailQueueDuplicate = Plugin::mailer()->enqueue($mailQueueEmail);
+} finally {
+    remove_filter('pre_wp_mail', $mailQueueIntercept, 10);
+}
+
+if (
+    $mailQueueResult->status !== MailQueueStatus::SENT
+    || $mailQueueDuplicate->status !== MailQueueStatus::SENT
+    || ! $mailQueueDuplicate->duplicate
+    || count($mailQueueAttempts) !== 1
+) {
+    $fail('The mail queue did not immediately deliver and de-duplicate the fictional priority-one notice.');
+}
+
+$mailQueueAttempt = $mailQueueAttempts[0];
+if (
+    ($mailQueueAttempt['to'] ?? null) !== $mailQueueRecipient
+    || ($mailQueueAttempt['subject'] ?? null) !== $mailQueueEmail->subject
+    || ($mailQueueAttempt['message'] ?? null) !== $mailQueueEmail->htmlBody
+    || ($mailQueueAttempt['attachments'] ?? null) !== []
+) {
+    $fail('The WordPress mail adapter did not call wp_mail with one fake recipient and no attachments.');
+}
+
+$mailQueueTable = $wpdb->prefix . 'adct_pi_mail_queue';
+$mailQueueRow = $wpdb->get_row($wpdb->prepare(
+    "SELECT status, attempts, sent_at FROM {$mailQueueTable} WHERE recipient = %s AND group_key = %s LIMIT 1",
+    $mailQueueRecipient,
+    $mailQueueGroupKey
+), ARRAY_A);
+
+if (
+    ! is_array($mailQueueRow)
+    || ($mailQueueRow['status'] ?? '') !== MailQueueStatus::SENT->value
+    || (int) ($mailQueueRow['attempts'] ?? 0) !== 1
+    || ! is_string($mailQueueRow['sent_at'] ?? null)
+) {
+    $fail('The immediate mail sender did not persist its successful attempt in the mail queue.');
+}
+
+$mailQueueStats = Plugin::mailQueueStats();
+
+if ($mailQueueStats->sentInLastHour < 1) {
+    $fail('The mail queue status API did not count the safely intercepted test delivery.');
+}
+
+$mailQueueRepository = new WordPressMailQueueRepository(new WordPressDatabaseConnection());
+$queueNow = (new SystemClock())->now();
+$claimOne = $mailQueueRepository->enqueue(
+    new OutboundEmail(
+        'claim-one@example.test',
+        'Fictional claim one',
+        '<p>Claim fixture.</p>',
+        'Claim fixture.',
+        MailPriority::APPROVER_OR_CHANGE
+    ),
+    MailQueueStatus::QUEUED,
+    $queueNow
+);
+$claimTwo = $mailQueueRepository->enqueue(
+    new OutboundEmail(
+        'claim-two@example.test',
+        'Fictional claim two',
+        '<p>Claim fixture.</p>',
+        'Claim fixture.',
+        MailPriority::APPROVER_OR_CHANGE
+    ),
+    MailQueueStatus::QUEUED,
+    $queueNow
+);
+$oneRemainingSlot = $mailQueueStats->sentInLastHour + 1;
+$firstDatabaseClaim = $mailQueueRepository->claim($claimOne->id, $queueNow, $oneRemainingSlot, 3600);
+$secondDatabaseClaim = $mailQueueRepository->claim($claimTwo->id, $queueNow, $oneRemainingSlot, 3600);
+
+if (
+    $firstDatabaseClaim->status !== MailQueueClaimStatus::CLAIMED
+    || $secondDatabaseClaim->status !== MailQueueClaimStatus::CAP_REACHED
+) {
+    $fail('Database-backed mail claims did not reserve the final hourly slot atomically.');
+}
+
+$deletedClaimFixtures = $wpdb->query($wpdb->prepare(
+    "DELETE FROM {$mailQueueTable} WHERE id IN (%d, %d)",
+    $claimOne->id,
+    $claimTwo->id
+));
+
+if ($deletedClaimFixtures !== 2) {
+    $fail('The temporary fake-recipient claim fixtures could not be removed.');
+}
+
 $assignmentService->deactivateAssignment(
     $approverAssignmentIds[1],
     $centralDeaneryId,
@@ -2363,4 +2484,4 @@ foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
     }
 }
 
-WP_CLI::success('Release ZIP activation, schema v3 mailbox settings and safe password rendering, polling-job registration and inbound-message de-duplication/skip notices, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
+WP_CLI::success('Release ZIP activation, schema v3 mailbox settings and safe password rendering, polling and outbound-mail job registration, inbound-message de-duplication/skip notices, intercepted priority-one wp_mail delivery, mail group idempotency and atomic hourly-cap claims, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');

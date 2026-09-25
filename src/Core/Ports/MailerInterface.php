@@ -2,15 +2,13 @@
 
 namespace ADCT\ParishIntake\Core\Ports;
 
+use ADCT\ParishIntake\Core\Mail\MailQueueEnqueueResult;
+use ADCT\ParishIntake\Core\Mail\OutboundEmail;
+
 interface MailerInterface
 {
     /**
-     * Provisional: the signature will be refined by its first consumer, the mail-queue adapter in ADR 0011.
+     * Queue one validated, single-recipient message; implementations must not bypass the queue for delivery.
      */
-    public function send(
-        string $recipient,
-        string $subject,
-        string $htmlBody,
-        string $textBody
-    ): void;
+    public function enqueue(OutboundEmail $email): MailQueueEnqueueResult;
 }
