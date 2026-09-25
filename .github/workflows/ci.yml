@@ -80,6 +80,8 @@ jobs:
     services:
       greenmail:
         image: greenmail/standalone:2.1.13
+        env:
+          GREENMAIL_OPTS: "-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=intake:greenmail-test-password@example.test,connection-test:greenmail-test-password@example.test -Dgreenmail.users.login=EMAIL"
         ports:
           - 3025:3025
           - 3143:3143
@@ -89,6 +91,7 @@ jobs:
       IMAP_TEST_SMTP_PORT: 3025
       IMAP_TEST_USERNAME: intake@example.test
       IMAP_TEST_PASSWORD: greenmail-test-password
+      IMAP_CONNECTION_TEST_USERNAME: connection-test@example.test
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
@@ -101,5 +104,5 @@ jobs:
       - name: Install dependencies
         run: composer install --no-interaction --no-progress
 
-      - name: Run GreenMail integration tests
+      - name: Run GreenMail IMAP and connection-test integration tests
         run: vendor/bin/phpunit --group greenmail tests/Integration/Imap

@@ -2,7 +2,7 @@
 
 All custom tables live in the **site's existing WordPress database** (MySQL; on xneelo this is MariaDB 10.11, a MySQL-compatible server). No separate database is needed. SQL must work on both MySQL 8 and MariaDB 10.11: no engine-specific features, and JSON is stored in `longtext`. Tables use the WordPress table prefix (shown as `wp_` here) and the `adct_pi_` namespace. Every table has an auto-incrementing `bigint(20) unsigned` `id` and UTC `created_at` / `updated_at` columns. Local-time values are stored with the timezone `Africa/Johannesburg`. Schema changes go through ordered, versioned migrations (`adct_pi_db_version` plus `dbDelta`). Scheduled-job checkpoints, locks, and run history are stored in non-autoloaded WordPress options and do not add custom tables.
 
-**Current schema version: 2.** Version 1 creates the 15 `adct_pi_*` tables listed below; version 2 extends `adct_pi_venues` without changing that table count. `adct_event` remains a WordPress custom post type and is not a custom table migration. Schema v1 stores JSON in `longtext`, booleans in `tinyint(1)`, and uses indexed `varchar` columns no longer than 191 characters for utf8mb4 key limits. Relationships shown as foreign keys below are logical references; physical foreign-key constraints are intentionally not used so `dbDelta` can upgrade the schema on both supported database servers. For columns whose prose description did not specify storage types, v1 uses unsigned `bigint(20)` for WordPress and relationship IDs, `datetime` for UTC instants, and `date` for `occurrences.start_local_date`; enum-like values use `varchar` rather than database `ENUM`. `attachments.size_bytes` is unsigned `bigint(20)`, and `event_candidates.confidence` is `decimal(4,3)`. `mail_queue.subject` is `varchar(255)`, action-token `created_ip` is `varchar(45)`, and event-change snapshots use `before_payload` / `after_payload` `longtext` columns.
+**Current schema version: 3.** Version 1 creates the 15 `adct_pi_*` tables listed below; version 2 extends `adct_pi_venues` without changing that table count; version 3 adds `adct_pi_mailboxes` for 16 tables total. `adct_event` remains a WordPress custom post type and is not a custom table migration. Schema v1 stores JSON in `longtext`, booleans in `tinyint(1)`, and uses indexed `varchar` columns no longer than 191 characters for utf8mb4 key limits. Relationships shown as foreign keys below are logical references; physical foreign-key constraints are intentionally not used so `dbDelta` can upgrade the schema on both supported database servers. For columns whose prose description did not specify storage types, v1 uses unsigned `bigint(20)` for WordPress and relationship IDs, `datetime` for UTC instants, and `date` for `occurrences.start_local_date`; enum-like values use `varchar` rather than database `ENUM`. `attachments.size_bytes` is unsigned `bigint(20)`, and `event_candidates.confidence` is `decimal(4,3)`. `mail_queue.subject` is `varchar(255)`, action-token `created_ip` is `varchar(45)`, and event-change snapshots use `before_payload` / `after_payload` `longtext` columns.
 
 The prototype table `wp_adct_parish_intake_items` is retained as a legacy table. Versioned migrations neither alter, drop, nor migrate it; the current Manual parser and static report continue using it unchanged. Its future disposition is pending an explicit owner decision: migrate its rows into `inbound_messages` + `event_candidates`, or drop it only after explicit admin confirmation. It must never be dropped silently.
 
@@ -14,6 +14,7 @@ erDiagram
     DEANERY ||--o{ DEANERY_APPROVER : "approved by"
     PARISH ||--o{ PARISH_CONTACT : has
     PARISH ||--o{ SOURCE : has
+    SOURCE ||--o| MAILBOX : "connection settings"
     PARISH ||--o{ VENUE : has
     SOURCE ||--o{ INBOUND_MESSAGE : produces
     INBOUND_MESSAGE ||--o{ ATTACHMENT : has
@@ -124,6 +125,18 @@ The source registry already exists in schema v1, so source management does not n
 Source health is changed only by the Core `SourceHealthRecorder`, not by the admin form. A success updates check/success times, resets failures and clears the last error; its item time changes only when a new item time is supplied. A failure increments the count and marks an active source `unreliable` after five consecutive failures (provisional), without overriding `paused` or `disabled`. A later success resets the failure count but does not reactivate an unreliable source; an operator must change its status. Last errors are technical diagnostics, limited to 500 characters, with email addresses redacted; adapters must not pass fetched content or personal data into the recorder.
 
 During a parish directory import, a verified office email is also registered as that parish's official `email` source only when the parish has no official source. This is idempotent on repeat imports and provisional; an existing official source is not replaced.
+
+### `adct_pi_mailboxes`
+| Column | Notes |
+|---|---|
+| source_id | unique logical link to one archdiocese-wide `email` source; the source identifier is the mailbox username/address |
+| label | operator-facing mailbox name |
+| host, port, encryption, username | IMAP connection settings; the UI offers SSL/TLS or STARTTLS only |
+| inbox_folder, processed_folder | server folder names; defaults are `INBOX` and `Processed` |
+| max_message_size_bytes | maximum accepted message size; defaults to 30 MiB and is configurable from 1–30 MiB |
+| active | operator-controlled mailbox enablement flag |
+
+Mailbox connection settings are kept separately from source identity and health. Passwords are not stored in this table: a saved mailbox uses the non-autoloaded `adct_parish_intake_imap_password_mailbox_<ID>` option unless a scoped `ADCT_PI_IMAP_PASSWORD_MAILBOX_<ID>` or default `ADCT_PI_IMAP_PASSWORD` constant is configured. A scoped constant takes precedence over the default constant, and either non-empty constant takes precedence over the stored option. Option-backed passwords are not encrypted by the plugin. The Mailboxes screen never renders a saved password. Production connections always verify the TLS certificate; disabling verification remains test-only.
 
 ### `adct_pi_inbound_messages`
 | Column | Notes |

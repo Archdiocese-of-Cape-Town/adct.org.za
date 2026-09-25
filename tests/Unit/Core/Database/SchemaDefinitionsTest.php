@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Tests\Unit\Core\Database;
 
 use ADCT\ParishIntake\Core\Database\CreateSchemaMigration;
+use ADCT\ParishIntake\Core\Database\MailboxSchemaMigration;
 use ADCT\ParishIntake\Core\Database\SchemaDefinitions;
 use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
 use ADCT\ParishIntake\Core\Ports\SchemaInstallerInterface;
@@ -100,6 +101,30 @@ final class SchemaDefinitionsTest extends TestCase
             "status varchar(20) NOT NULL DEFAULT 'active'",
             'source_parish_id bigint(20) unsigned NULL',
             'UNIQUE KEY source_parish_id (source_parish_id)',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $installer->statements[0]);
+        }
+    }
+
+    public function testMailboxSchemaMigrationAddsVersionThreeTable(): void
+    {
+        $installer = new RecordingSchemaInstaller();
+        $migration = new MailboxSchemaMigration($installer);
+
+        $migration->apply();
+
+        self::assertSame(3, $migration->version());
+        self::assertCount(1, $installer->statements);
+
+        foreach ([
+            'CREATE TABLE {table_prefix}adct_pi_mailboxes',
+            'source_id bigint(20) unsigned NOT NULL',
+            "encryption varchar(20) NOT NULL DEFAULT 'ssl'",
+            "inbox_folder varchar(191) NOT NULL DEFAULT 'INBOX'",
+            "processed_folder varchar(191) NOT NULL DEFAULT 'Processed'",
+            'max_message_size_bytes bigint(20) unsigned NOT NULL DEFAULT 31457280',
+            'active tinyint(1) NOT NULL DEFAULT 1',
+            'UNIQUE KEY source_id (source_id)',
         ] as $fragment) {
             self::assertStringContainsString($fragment, $installer->statements[0]);
         }

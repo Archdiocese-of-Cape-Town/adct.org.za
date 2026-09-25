@@ -12,6 +12,9 @@ use ADCT\ParishIntake\Core\Directory\Venue;
 use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
 use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\Core\Directory\VenueLookup;
+use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxEncryption;
+use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
+use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\Source;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
@@ -25,6 +28,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\MailboxRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
@@ -82,8 +86,8 @@ if (! is_plugin_active($pluginBasename)) {
     $fail('The release plugin was not active after activation.');
 }
 
-if ((int) get_option('adct_pi_db_version', 0) !== 2) {
-    $fail('Activation did not set the parish intake schema version to 2.');
+if ((int) get_option('adct_pi_db_version', 0) !== 3) {
+    $fail('Activation did not set the parish intake schema version to 3.');
 }
 
 if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CURRENT_VERSION) {
@@ -119,6 +123,7 @@ $expectedTableSuffixes = [
     'adct_pi_event_changes',
     'adct_pi_follow_ups',
     'adct_pi_inbound_messages',
+    'adct_pi_mailboxes',
     'adct_pi_mail_queue',
     'adct_pi_occurrences',
     'adct_pi_parish_contacts',
@@ -141,7 +146,7 @@ if ($actualTables !== $expectedTables) {
     $missingTables = array_diff($expectedTables, $actualTables);
     $unexpectedTables = array_diff($actualTables, $expectedTables);
     $fail(sprintf(
-        'Schema v1 tables differ. Missing: [%s]; unexpected: [%s].',
+        'Schema v3 tables differ. Missing: [%s]; unexpected: [%s].',
         implode(', ', $missingTables),
         implode(', ', $unexpectedTables)
     ));
@@ -190,6 +195,26 @@ foreach ([
 ] as $column) {
     if (! in_array($column, $sourceColumns, true)) {
         $fail('The source registry table is missing the ' . $column . ' column.');
+    }
+}
+
+$mailboxTable = $wpdb->prefix . 'adct_pi_mailboxes';
+$mailboxColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$mailboxTable}", 0);
+
+foreach ([
+    'source_id',
+    'label',
+    'host',
+    'port',
+    'encryption',
+    'username',
+    'inbox_folder',
+    'processed_folder',
+    'max_message_size_bytes',
+    'active',
+] as $column) {
+    if (! in_array($column, $mailboxColumns, true)) {
+        $fail('The v3 mailbox settings table is missing the ' . $column . ' column.');
     }
 }
 
@@ -967,6 +992,170 @@ if (
     $fail('The archdiocese-wide Add source form is missing required registry fields.');
 }
 
+$mailboxesPageSlug = 'adct-parish-intake-mailboxes';
+$mailboxesPageItems = array_values(array_filter(
+    $GLOBALS['submenu'][$parentSlug] ?? [],
+    static fn ($item): bool => is_array($item) && ($item[2] ?? null) === $mailboxesPageSlug
+));
+
+if (count($mailboxesPageItems) !== 1 || $mailboxesPageItems[0][0] !== 'Mailboxes') {
+    $fail('The Mailboxes admin submenu was not registered.');
+}
+
+$mailboxesPageHook = get_plugin_page_hookname($mailboxesPageSlug, $parentSlug);
+
+if (has_action($mailboxesPageHook) === false) {
+    $fail('The Mailboxes page callback was not registered.');
+}
+
+$mailboxEmail = 'intake-mailbox-integration@example.test';
+$mailboxSource = $sourceRepository->findGlobalEmailSource($mailboxEmail);
+$mailboxSource = $sourceRegistry->save(new Source(
+    $mailboxSource?->id ?? 0,
+    null,
+    SourceType::EMAIL,
+    $mailboxEmail,
+    SourceRole::OFFICIAL,
+    $mailboxSource?->status ?? SourceStatus::ACTIVE,
+    $mailboxSource?->pollIntervalMinutes,
+    $mailboxSource?->lastCheckedAt,
+    $mailboxSource?->lastSuccessAt,
+    $mailboxSource?->lastItemAt,
+    $mailboxSource?->consecutiveFailures ?? 0,
+    $mailboxSource?->lastError
+));
+$mailboxRepository = new MailboxRepository(new WordPressDatabaseConnection());
+$existingMailbox = $mailboxRepository->findMailboxBySourceId($mailboxSource->id);
+$mailboxSettings = (new MailboxSettingsValidator())->validate([
+    'label' => 'Integration mailbox',
+    'host' => 'imap.example.test',
+    'port' => '993',
+    'encryption' => 'ssl',
+    'username' => $mailboxEmail,
+    'inbox_folder' => 'INBOX',
+    'processed_folder' => 'Processed-Integration',
+    'max_message_size_mb' => '15',
+    'active' => '1',
+], $existingMailbox?->id ?? 0, $mailboxSource->id)->withIdentity(
+    $existingMailbox?->id ?? 0,
+    $mailboxSource->id
+);
+$savedMailbox = $mailboxRepository->saveMailbox($mailboxSettings, '2026-09-25 00:00:00');
+$persistedMailbox = $mailboxRepository->findMailboxById($savedMailbox->id);
+$persistedMailboxSource = $sourceRepository->findSource($savedMailbox->sourceId);
+
+if (
+    $persistedMailbox === null
+    || $persistedMailbox->host !== 'imap.example.test'
+    || $persistedMailbox->maxMessageSizeBytes !== 15 * 1024 * 1024
+    || ! $persistedMailbox->active
+    || $persistedMailboxSource === null
+    || $persistedMailboxSource->parishId !== null
+    || $persistedMailboxSource->type !== SourceType::EMAIL
+    || $persistedMailboxSource->identifier !== $mailboxEmail
+    || $persistedMailboxSource->role !== SourceRole::OFFICIAL
+) {
+    $fail('Mailbox settings did not persist with their archdiocese-wide email source.');
+}
+
+$secondaryMailboxEmail = 'intake-mailbox-secondary@example.test';
+$secondaryMailboxSource = $sourceRepository->findGlobalEmailSource($secondaryMailboxEmail);
+$secondaryMailboxSource = $sourceRegistry->save(new Source(
+    $secondaryMailboxSource?->id ?? 0,
+    null,
+    SourceType::EMAIL,
+    $secondaryMailboxEmail,
+    SourceRole::OFFICIAL,
+    $secondaryMailboxSource?->status ?? SourceStatus::ACTIVE,
+    $secondaryMailboxSource?->pollIntervalMinutes,
+    $secondaryMailboxSource?->lastCheckedAt,
+    $secondaryMailboxSource?->lastSuccessAt,
+    $secondaryMailboxSource?->lastItemAt,
+    $secondaryMailboxSource?->consecutiveFailures ?? 0,
+    $secondaryMailboxSource?->lastError
+));
+$existingSecondaryMailbox = $mailboxRepository->findMailboxBySourceId($secondaryMailboxSource->id);
+$secondaryMailboxSettings = (new MailboxSettingsValidator())->validate([
+    'label' => 'Secondary integration mailbox',
+    'host' => 'imap-secondary.example.test',
+    'port' => '143',
+    'encryption' => 'starttls',
+    'username' => $secondaryMailboxEmail,
+    'inbox_folder' => 'INBOX',
+    'processed_folder' => 'Processed-Secondary',
+    'max_message_size_mb' => '30',
+    'active' => '0',
+], $existingSecondaryMailbox?->id ?? 0, $secondaryMailboxSource->id)->withIdentity(
+    $existingSecondaryMailbox?->id ?? 0,
+    $secondaryMailboxSource->id
+);
+$savedSecondaryMailbox = $mailboxRepository->saveMailbox($secondaryMailboxSettings, '2026-09-25 00:00:00');
+$persistedSecondaryMailbox = $mailboxRepository->findMailboxById($savedSecondaryMailbox->id);
+$allMailboxes = $mailboxRepository->findAllMailboxes();
+
+if (
+    $persistedSecondaryMailbox === null
+    || $persistedSecondaryMailbox->sourceId === $savedMailbox->sourceId
+    || $persistedSecondaryMailbox->encryption !== MailboxEncryption::STARTTLS
+    || $persistedSecondaryMailbox->active
+    || count($allMailboxes) < 2
+) {
+    $fail('The Mailboxes store did not persist multiple independent mailbox configurations.');
+}
+
+$mailboxPassword = 'imap-test-DO-NOT-ECHO-456';
+$mailboxPasswordOption = SecretRegistry::optionName(
+    SecretRegistry::IMAP_PASSWORD,
+    $savedMailbox->secretScope()
+);
+update_option($mailboxPasswordOption, $mailboxPassword, false);
+$originalGet = $_GET;
+$_GET = ['page' => $mailboxesPageSlug];
+ob_start();
+try {
+    do_action($mailboxesPageHook);
+} finally {
+    $mailboxesListHtml = (string) ob_get_clean();
+    $_GET = $originalGet;
+}
+
+$originalGet = $_GET;
+$_GET = [
+    'page' => $mailboxesPageSlug,
+    'action' => 'edit',
+    'id' => (string) $savedMailbox->id,
+];
+ob_start();
+try {
+    do_action($mailboxesPageHook);
+} finally {
+    $mailboxesEditHtml = (string) ob_get_clean();
+    $_GET = $originalGet;
+}
+
+$passwordInput = '';
+
+if (preg_match('/<input\b(?=[^>]*\bname="password")[^>]*>/i', $mailboxesEditHtml, $passwordInputMatches) === 1) {
+    $passwordInput = $passwordInputMatches[0];
+}
+
+if (
+    strpos($mailboxesListHtml, 'Test connection') === false
+    || strpos($mailboxesListHtml, 'Secondary integration mailbox') === false
+    || strpos($mailboxesListHtml, $mailboxPassword) !== false
+    || strpos($mailboxesEditHtml, $mailboxPassword) !== false
+    || $passwordInput === ''
+    || preg_match('/\bvalue\s*=/i', $passwordInput) === 1
+    || strpos($mailboxesEditHtml, 'A password is saved. Leave blank to keep it.') === false
+    || strpos($mailboxesEditHtml, 'name="remove_password"') === false
+    || strpos($mailboxesEditHtml, 'name="verify_tls_certificate"') !== false
+    || strpos($mailboxesEditHtml, 'value="none"') !== false
+) {
+    $fail('The Mailboxes page did not persist and render settings without exposing a saved password.');
+}
+
+delete_option($mailboxPasswordOption);
+
 if ($wpdb->query($wpdb->prepare(
     "UPDATE {$contactTable} SET trust = %s, verified_at = NULL WHERE id = %d",
     'blocked',
@@ -1562,4 +1751,4 @@ if ($secondApproverUser instanceof WP_User && in_array('deanery_approver', $seco
     $fail('The final sample approver role was not removed during integration cleanup.');
 }
 
-WP_CLI::success('Release ZIP activation, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
+WP_CLI::success('Release ZIP activation, schema v3 mailbox settings and safe password rendering, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
