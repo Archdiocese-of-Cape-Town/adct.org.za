@@ -21,6 +21,7 @@ use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
+use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
@@ -51,6 +52,7 @@ use ADCT\ParishIntake\WordPress\Directory\DeaneryApproverAssignmentService;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
+use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
 
 final class Plugin
 {
@@ -337,7 +339,7 @@ final class Plugin
             return new NullAiProvider();
         }
 
-        $apiKey = trim((string) get_option('adct_parish_intake_openrouter_api_key', ''));
+        $apiKey = (new WordPressSecretResolver())->resolve(SecretRegistry::AI_API_KEY);
         $model = trim((string) get_option('adct_parish_intake_openrouter_model', 'openrouter/auto'));
 
         if ($apiKey === '') {

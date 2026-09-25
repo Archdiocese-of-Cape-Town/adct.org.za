@@ -8,9 +8,11 @@ use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
+use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
 use ADCT\ParishIntake\WordPress\Database\Schema;
 use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
+use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
 
 final class ParserPage
 {
@@ -92,8 +94,21 @@ final class ParserPage
         update_option('adct_parish_intake_ai_provider', sanitize_text_field(wp_unslash($_POST['ai_provider'] ?? 'none')));
         update_option('adct_parish_intake_openrouter_model', sanitize_text_field(wp_unslash($_POST['openrouter_model'] ?? 'openrouter/auto')));
 
-        if (isset($_POST['openrouter_api_key']) && $_POST['openrouter_api_key'] !== '') {
-            update_option('adct_parish_intake_openrouter_api_key', sanitize_text_field(wp_unslash($_POST['openrouter_api_key'])));
+        $secretResolver = new WordPressSecretResolver();
+        $apiKeyOption = SecretRegistry::optionName(SecretRegistry::AI_API_KEY);
+
+        if (isset($_POST['remove_openrouter_api_key'])) {
+            delete_option($apiKeyOption);
+        } elseif (
+            ! $secretResolver->isConstantConfigured(SecretRegistry::AI_API_KEY)
+            && isset($_POST['openrouter_api_key'])
+            && is_string($_POST['openrouter_api_key'])
+        ) {
+            $apiKey = trim(wp_unslash($_POST['openrouter_api_key']));
+
+            if ($apiKey !== '') {
+                update_option($apiKeyOption, sanitize_text_field($apiKey));
+            }
         }
 
         update_option('adct_parish_intake_ai_threshold', (string) max(0, min(1, (float) wp_unslash($_POST['ai_threshold'] ?? '0.55'))));
@@ -169,8 +184,21 @@ final class ParserPage
                     <tr>
                         <th scope="row">OpenRouter API key</th>
                         <td>
-                            <input class="regular-text" type="password" name="openrouter_api_key" value="" placeholder="Leave blank to keep existing key" />
-                            <p class="description">Paste a valid API key only when you need to add or replace it.</p>
+                            <?php if ($settings['openrouter_api_key_is_constant']) : ?>
+                                <p class="description">Set in wp-config.php</p>
+                                <?php if ($settings['openrouter_api_key_is_saved']) : ?>
+                                    <p class="description">A database key is also saved.</p>
+                                    <label><input type="checkbox" name="remove_openrouter_api_key" value="1" /> Remove saved key</label>
+                                <?php endif; ?>
+                            <?php else : ?>
+                                <input class="regular-text" type="password" name="openrouter_api_key" value="" autocomplete="new-password" />
+                                <?php if ($settings['openrouter_api_key_is_saved']) : ?>
+                                    <p class="description">A key is saved. Leave blank to keep it.</p>
+                                    <label><input type="checkbox" name="remove_openrouter_api_key" value="1" /> Remove saved key</label>
+                                <?php else : ?>
+                                    <p class="description">Paste a valid API key only when you need to add or replace it.</p>
+                                <?php endif; ?>
+                            <?php endif; ?>
                         </td>
                     </tr>
                     <tr>
@@ -358,7 +386,7 @@ final class ParserPage
     {
         $enabled = get_option('adct_parish_intake_ai_enabled', '0') === '1';
         $provider = get_option('adct_parish_intake_ai_provider', 'none');
-        $apiKey = trim((string) get_option('adct_parish_intake_openrouter_api_key', ''));
+        $apiKey = (new WordPressSecretResolver())->resolve(SecretRegistry::AI_API_KEY);
         $model = trim((string) get_option('adct_parish_intake_openrouter_model', 'openrouter/auto'));
 
         if (! $enabled || $provider !== 'openrouter' || $apiKey === '') {
@@ -370,10 +398,14 @@ final class ParserPage
 
     private function settings(): array
     {
+        $secretResolver = new WordPressSecretResolver();
+
         return [
             'ai_enabled' => get_option('adct_parish_intake_ai_enabled', '0') === '1',
             'ai_provider' => (string) get_option('adct_parish_intake_ai_provider', 'none'),
             'openrouter_model' => (string) get_option('adct_parish_intake_openrouter_model', 'openrouter/auto'),
+            'openrouter_api_key_is_constant' => $secretResolver->isConstantConfigured(SecretRegistry::AI_API_KEY),
+            'openrouter_api_key_is_saved' => $secretResolver->hasStoredOption(SecretRegistry::AI_API_KEY),
             'ai_threshold' => (float) get_option('adct_parish_intake_ai_threshold', '0.55'),
             'section_keywords' => $this->sectionKeywords(),
         ];
