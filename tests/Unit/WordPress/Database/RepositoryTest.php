@@ -15,7 +15,9 @@ use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\Core\Directory\SenderTrust;
+use ADCT\ParishIntake\Core\Directory\Venue;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
@@ -55,6 +57,7 @@ final class RepositoryTest extends TestCase
             SourceRepository::class,
             InboundMessageRepository::class,
             EventCandidateRepository::class,
+            VenueRepository::class,
         ];
         $expectedTables = [
             'wp_adct_pi_deaneries',
@@ -62,6 +65,7 @@ final class RepositoryTest extends TestCase
             'wp_adct_pi_sources',
             'wp_adct_pi_inbound_messages',
             'wp_adct_pi_event_candidates',
+            'wp_adct_pi_venues',
         ];
 
         foreach ($repositoryClasses as $index => $repositoryClass) {
@@ -326,6 +330,101 @@ final class RepositoryTest extends TestCase
             '2026-09-25 00:00:00',
             'sender@example.test',
         ], $database->preparedQueries[2]['arguments']);
+    }
+
+    public function testVenueDefaultWritesArePreparedAndScopedToTheParish(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $database->rowResult = [
+            'id' => '12',
+            'parish_id' => '7',
+            'status' => 'active',
+        ];
+        $repository = new VenueRepository($database);
+
+        $repository->setDefaultForParish(7, 12, '2026-09-25 00:00:00');
+
+        self::assertCount(4, $database->preparedQueries);
+        self::assertStringContainsString(
+            'SELECT id FROM wp_adct_pi_parishes WHERE id = %d FOR UPDATE',
+            $database->preparedQueries[0]['query']
+        );
+        self::assertSame([7], $database->preparedQueries[0]['arguments']);
+        self::assertStringContainsString(
+            'SELECT id, parish_id, status FROM wp_adct_pi_venues',
+            $database->preparedQueries[1]['query']
+        );
+        self::assertSame([12], $database->preparedQueries[1]['arguments']);
+        self::assertStringContainsString(
+            'UPDATE wp_adct_pi_venues SET is_default = 0',
+            $database->preparedQueries[2]['query']
+        );
+        self::assertSame(['2026-09-25 00:00:00', 7], $database->preparedQueries[2]['arguments']);
+        self::assertStringContainsString(
+            'UPDATE wp_adct_pi_venues SET is_default = 1',
+            $database->preparedQueries[3]['query']
+        );
+        self::assertSame(['2026-09-25 00:00:00', 12, 7], $database->preparedQueries[3]['arguments']);
+    }
+
+    public function testImportedVenueInsertIsIdempotentBySourceParish(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $repository = new VenueRepository($database);
+        $venue = new Venue(
+            0,
+            7,
+            'Sample Outstation',
+            ['Sample Area: St Mark'],
+            '2 Example Road',
+            'Sample Area',
+            -33.8,
+            18.5,
+            false,
+            Venue::ACTIVE,
+            18
+        );
+
+        $repository->insertImportedVenue($venue, '2026-09-25 00:00:00');
+
+        self::assertCount(1, $database->preparedQueries);
+        self::assertStringContainsString(
+            'INSERT INTO wp_adct_pi_venues',
+            $database->preparedQueries[0]['query']
+        );
+        self::assertStringContainsString(
+            'ON DUPLICATE KEY UPDATE id = id',
+            $database->preparedQueries[0]['query']
+        );
+        self::assertSame(18, $database->preparedQueries[0]['arguments'][1]);
+    }
+
+    public function testActiveVenueReadMapsAliasesAndCoordinates(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $database->resultRows = [[
+            'id' => '21',
+            'parish_id' => '9',
+            'name' => 'Sample Hall',
+            'aliases' => '["Community Hall"]',
+            'address' => '3 Example Road',
+            'suburb' => 'Sample Suburb',
+            'latitude' => '-33.900000',
+            'longitude' => '18.400000',
+            'is_default' => '1',
+            'status' => 'active',
+            'source_parish_id' => null,
+        ]];
+        $repository = new VenueRepository($database);
+
+        $venues = $repository->findActiveVenues();
+
+        self::assertCount(1, $venues);
+        self::assertSame(21, $venues[0]->id);
+        self::assertSame(['Community Hall'], $venues[0]->aliases);
+        self::assertSame(-33.9, $venues[0]->latitude);
+        self::assertSame(18.4, $venues[0]->longitude);
+        self::assertTrue($venues[0]->isDefault);
     }
 
     public function testSenderDirectorySearchAndLinkedParishReadsArePrepared(): void

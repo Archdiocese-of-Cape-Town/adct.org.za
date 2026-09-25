@@ -61,6 +61,7 @@ Pure PHP 8.2, covered by unit tests and loaded through Composer PSR-4:
 - `Matching` – duplicate/update detection between candidates and existing events.
 - `Trust` – decides the next step for a candidate: send for confirmation, route to the approval queues, publish (self-approval or a verified contact's change to a published event), or ignore.
 - `Approval` – parallel dean/reviewer queues, atomic "first to act wins", self-approval, reminders.
+- `Directory` – parish/contact import and a parser-facing venue lookup over active names and aliases, returning venue and parish IDs with address coordinates.
 - `Ingestion` – `MimeMessageParser` parses raw RFC 822 mail into `Message` + attachment metadata using the pure-PHP `zbateson/mail-mime-parser` dependency. It decodes multipart/alternative, related and mixed bodies, transfer encodings and charsets; selects useful plain text before HTML; and retains thread/list/automation/authentication headers without interpreting authentication results.
 - `Support\EmailTextCleaner` – reusable plain-text cleanup that separates quoted replies and signatures, extracts original forward headers, and removes common newsletter footers. `Support\HtmlToTextConverter` preserves paragraphs, lists and table rows without requiring `ext-dom`.
 - `Tokens` – signed, single-use action tokens.
