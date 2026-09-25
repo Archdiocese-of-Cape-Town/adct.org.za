@@ -15,7 +15,9 @@ final class ActionTokenPreview
         public readonly string $title,
         public readonly string $summary,
         public readonly string $submitLabel,
-        public readonly array $details = []
+        public readonly array $details = [],
+        public readonly bool $actionable = true,
+        public readonly array $formFields = []
     ) {
         if (trim($title) === '' || trim($summary) === '' || trim($submitLabel) === '') {
             throw new InvalidArgumentException('An action token preview needs display text.');
