@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { prepareIsolatedWpEnvConfig } from './wp-env-config.mjs';
-import { resolveWpEnvHome } from './wp-env-home.mjs';
+import { resolveWpEnvHome, stopWpEnvAfterTests } from './wp-env-home.mjs';
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 const releaseZip = join(repositoryRoot, 'dist', 'adct-parish-intake.zip');
@@ -28,6 +28,7 @@ const isolatedConfig = prepareIsolatedWpEnvConfig(repositoryRoot, wpEnvHome);
 const wpEnvConfigDirectory = isolatedConfig.configDirectory;
 console.log(`Using isolated wp-env project ${isolatedConfig.projectHash}.`);
 
+const stopAfterTests = stopWpEnvAfterTests();
 const environment = {
   ...process.env,
   WP_ENV_HOME: wpEnvHome,
@@ -86,7 +87,7 @@ try {
   failure = error;
 } finally {
   try {
-    if (started) {
+    if (started && stopAfterTests) {
       runWpEnv(['stop']);
     }
   } catch (cleanupError) {
