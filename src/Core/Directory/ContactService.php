@@ -80,8 +80,7 @@ final class ContactService
             $email,
             $displayName,
             $roleLabel,
-            $receivesReminders,
-            $secondLookup
+            $receivesReminders
         );
     }
 
@@ -268,8 +267,7 @@ final class ContactService
         string $email,
         string $displayName,
         string $roleLabel,
-        bool $receivesReminders,
-        SenderLookupResult $secondLookup
+        bool $receivesReminders
     ): SenderLookupResult {
         if ($parishId < 1) {
             throw new InvalidArgumentException('A parish must be selected for this contact.');
@@ -279,7 +277,7 @@ final class ContactService
         $roleLabel = $this->normalizeLabel($roleLabel);
         $timestamp = $this->timestamp();
 
-        $createdRows = $this->contacts->savePendingLink(
+        $this->contacts->savePendingLink(
             $parishId,
             $email,
             $displayName,

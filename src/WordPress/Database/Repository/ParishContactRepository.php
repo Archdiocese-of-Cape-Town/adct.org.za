@@ -26,31 +26,35 @@ final class ParishContactRepository implements ParishContactStoreInterface
             throw new RuntimeException('A parish ID is required when adding an office contact.');
         }
 
-        $table = $this->database->prefix() . 'adct_pi_parish_contacts';
-        $query = $this->database->prepare(
-            "INSERT INTO {$table} "
-            . '(parish_id, email, trust, verified_at, created_at, updated_at) '
-            . "VALUES (%d, %s, 'verified', %s, %s, %s) "
-            . 'ON DUPLICATE KEY UPDATE id = id',
-            $parishId,
-            strtolower(trim($email)),
-            $verifiedAt,
-            $verifiedAt,
-            $verifiedAt
-        );
+        $email = strtolower(trim($email));
 
-        $this->database->clearLastError();
-        $result = $this->database->query($query);
-
-        if ($result === false) {
-            throw new RuntimeException(
-                'The parish office contact could not be saved: ' . $this->database->lastError()
+        return $this->withEmailLock($email, function () use ($parishId, $email, $verifiedAt): bool {
+            $table = $this->database->prefix() . 'adct_pi_parish_contacts';
+            $query = $this->database->prepare(
+                "INSERT INTO {$table} "
+                . '(parish_id, email, trust, verified_at, created_at, updated_at) '
+                . "VALUES (%d, %s, 'verified', %s, %s, %s) "
+                . 'ON DUPLICATE KEY UPDATE id = id',
+                $parishId,
+                $email,
+                $verifiedAt,
+                $verifiedAt,
+                $verifiedAt
             );
-        }
 
-        $this->markDirectoryChanged($result);
+            $this->database->clearLastError();
+            $result = $this->database->query($query);
 
-        return $result > 0;
+            if ($result === false) {
+                throw new RuntimeException(
+                    'The parish office contact could not be saved: ' . $this->database->lastError()
+                );
+            }
+
+            $this->markDirectoryChanged($result);
+
+            return $result > 0;
+        });
     }
 
     public function findByEmail(string $email): array

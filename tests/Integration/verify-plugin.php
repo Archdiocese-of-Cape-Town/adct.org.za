@@ -1443,6 +1443,41 @@ if ($firstParishId < 1 || $firstContactId < 1) {
     $fail('An imported parish office contact could not be found.');
 }
 
+$lockEmail = 'locked-office@example.invalid';
+$lockName = 'adct_pi_pc_' . substr(hash('sha256', strtolower(trim($lockEmail))), 0, 40);
+$contentionDb = new wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
+$lockAcquired = (string) $contentionDb->get_var($contentionDb->prepare('SELECT GET_LOCK(%s, %d)', $lockName, 0));
+
+if ($lockAcquired !== '1') {
+    $fail('The contention test could not acquire its setup lock.');
+}
+
+try {
+    try {
+        $contactRepository->insertVerifiedIfMissing($firstParishId, $lockEmail, '2026-09-25 00:00:00');
+        $fail('A locked office contact insert unexpectedly succeeded.');
+    } catch (RuntimeException $exception) {
+        if (! str_contains($exception->getMessage(), 'lock')) {
+            $fail('The locked office contact insert failed for the wrong reason: ' . $exception->getMessage());
+        }
+    }
+
+    if ((int) $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM {$contactTable} WHERE parish_id = %d AND email = %s",
+        $firstParishId,
+        $lockEmail
+    )) !== 0) {
+        $fail('A locked office contact insert still created a parish contact row.');
+    }
+} finally {
+    $released = (string) $contentionDb->get_var($contentionDb->prepare('SELECT RELEASE_LOCK(%s)', $lockName));
+    $contentionDb->close();
+
+    if ($released !== '1') {
+        $fail('The contention test lock could not be released.');
+    }
+}
+
 $officialSources = array_values(array_filter(
     $sourceRepository->findForParish($firstParishId),
     static fn (Source $source): bool => $source->role === SourceRole::OFFICIAL
