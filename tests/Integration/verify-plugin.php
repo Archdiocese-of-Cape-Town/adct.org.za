@@ -1793,6 +1793,7 @@ foreach (['adct_pi_parish', 'adct_pi_next', 'adct_pi_recurring', 'adct_pi_featur
 $previousEventScreen = get_current_screen();
 $previousEventGet = $_GET;
 $previousMainQuery = $GLOBALS['wp_the_query'] ?? null;
+$legacyFeaturedValue = false;
 set_current_screen('edit-adct_event');
 try {
     if (! is_admin()) {
@@ -1835,7 +1836,27 @@ try {
             $fail('An event admin list filter did not exclude a nonmatching event: ' . wp_json_encode($filter));
         }
     }
+    if ($wpdb->update(
+        $wpdb->postmeta,
+        ['meta_value' => '0'],
+        ['post_id' => $eventPostId, 'meta_key' => 'featured'],
+        ['%s'],
+        ['%d', '%s']
+    ) !== 1) {
+        $fail('Could not seed a legacy explicit false featured value.');
+    }
+    $legacyFeaturedValue = true;
+    clean_post_cache($eventPostId);
+    $unfeaturedIds = $matchingEventIds(['adct_pi_featured' => 'no']);
+    $featuredIds = $matchingEventIds(['adct_pi_featured' => 'yes']);
+    if (! in_array($eventPostId, $unfeaturedIds, true)
+        || in_array($eventPostId, $featuredIds, true)) {
+        $fail('The featured admin filter omitted a published event stored with explicit false metadata.');
+    }
 } finally {
+    if ($legacyFeaturedValue) {
+        update_post_meta($eventPostId, 'featured', true);
+    }
     $_GET = $previousEventGet;
     $GLOBALS['wp_the_query'] = $previousMainQuery;
     set_current_screen($previousEventScreen ?? 'front');

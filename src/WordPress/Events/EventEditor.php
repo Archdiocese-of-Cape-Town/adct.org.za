@@ -701,10 +701,14 @@ final class EventEditor
             if ($value === 'yes') {
                 $meta[] = ['key' => $key, 'value' => $key === 'featured' ? '1' : '', 'compare' => $key === 'featured' ? '=' : '!='];
             } elseif ($value === 'no') {
-                $meta[] = ['relation' => 'OR',
+                $notSet = ['relation' => 'OR',
                     ['key' => $key, 'compare' => 'NOT EXISTS'],
                     ['key' => $key, 'value' => '', 'compare' => '='],
                 ];
+                if ($key === 'featured') {
+                    $notSet[] = ['key' => $key, 'value' => '0', 'compare' => '='];
+                }
+                $meta[] = $notSet;
             }
         }
         $status = $filters['adct_pi_status'];
