@@ -8,7 +8,13 @@ use InvalidArgumentException;
 
 final class ActionTokenOutcome
 {
-    public function __construct(public readonly string $message)
+    /**
+     * @param list<string> $eventUrls
+     */
+    public function __construct(
+        public readonly string $message,
+        public readonly array $eventUrls = []
+    )
     {
         if (trim($message) === '') {
             throw new InvalidArgumentException('An action token outcome needs display text.');

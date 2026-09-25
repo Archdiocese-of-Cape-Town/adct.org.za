@@ -10,8 +10,12 @@ use ADCT\ParishIntake\Core\Auth\ActionTokenDeliveryException;
 use ADCT\ParishIntake\Core\Auth\ActionTokenPreview;
 use ADCT\ParishIntake\Core\Auth\ActionTokenRenewalService;
 use ADCT\ParishIntake\Core\Auth\ActionTokenStatus;
+use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 use ADCT\ParishIntake\Core\Auth\ActionTokenService;
 use ADCT\ParishIntake\Core\Ports\ActionTokenHandlerRegistryInterface;
+use ADCT\ParishIntake\Core\Ports\AtomicActionTokenHandlerInterface;
+use DomainException;
+use RuntimeException;
 
 final class ActionTokenEndpoint
 {
@@ -19,6 +23,7 @@ final class ActionTokenEndpoint
     public const TOKEN_PARAM = 'adct_token';
     public const ACTION_FIELD = 'adct_token_action';
     public const NONCE_FIELD = 'adct_token_nonce';
+    public const REASON_FIELD = 'adct_denial_reason';
 
     private const ROUTE_VALUE = '1';
 
@@ -52,6 +57,7 @@ final class ActionTokenEndpoint
         $postToken = $this->stringInput($_POST[self::TOKEN_PARAM] ?? null);
         $postAction = $this->stringInput($_POST[self::ACTION_FIELD] ?? null);
         $nonce = $this->stringInput($_POST[self::NONCE_FIELD] ?? null);
+        $reason = $this->stringInput($_POST[self::REASON_FIELD] ?? null);
         $remoteAddress = $this->stringInput($_SERVER['REMOTE_ADDR'] ?? null);
 
         $response = $this->respond(
@@ -60,7 +66,8 @@ final class ActionTokenEndpoint
             $postToken,
             $postAction,
             $nonce,
-            $remoteAddress
+            $remoteAddress,
+            $reason
         );
 
         $this->send($response);
@@ -72,7 +79,8 @@ final class ActionTokenEndpoint
         string $postToken,
         string $postAction,
         string $nonce,
-        string $remoteAddress
+        string $remoteAddress,
+        string $reason = ''
     ): ActionTokenHttpResponse {
         $method = strtoupper($method);
 
@@ -115,7 +123,7 @@ final class ActionTokenEndpoint
             return $this->respondToRenewal($postToken, $remoteAddress);
         }
 
-        return $this->respondToAction($postToken);
+        return $this->respondToAction($postToken, $reason);
     }
 
     public static function urlForToken(string $token): string
@@ -147,14 +155,17 @@ final class ActionTokenEndpoint
             return $this->invalidResponse();
         }
 
-        return new ActionTokenHttpResponse(200, $this->renderPreview($preview, $token));
+        return new ActionTokenHttpResponse(200, $this->renderPreview($preview, $token, $inspection->binding->purpose));
     }
 
-    private function respondToAction(string $token): ActionTokenHttpResponse
+    private function respondToAction(string $token, string $reason): ActionTokenHttpResponse
     {
         $inspection = $this->tokens->inspect($token);
 
-        if ($inspection->status !== ActionTokenStatus::VALID || $inspection->binding === null) {
+        if (
+            ! in_array($inspection->status, [ActionTokenStatus::VALID, ActionTokenStatus::USED], true)
+            || $inspection->binding === null
+        ) {
             return $this->statusResponse($inspection, $token);
         }
 
@@ -164,23 +175,55 @@ final class ActionTokenEndpoint
             return $this->unavailableResponse();
         }
 
-        if ($handler->preview($inspection->binding) === null) {
+        if ($inspection->status === ActionTokenStatus::VALID && $handler->preview($inspection->binding) === null) {
             return $this->invalidResponse();
         }
 
-        $consumption = $this->tokens->consume($token, $inspection->binding);
+        if ($handler instanceof AtomicActionTokenHandlerInterface) {
+            if (strlen($reason) > 1000 || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $reason)) {
+                return new ActionTokenHttpResponse(400, $this->renderPage(
+                    __('Reason is too long or invalid', 'adct-parish-intake'),
+                    __('Please shorten your reason and try again.', 'adct-parish-intake')
+                ));
+            }
+            try {
+                $outcome = $inspection->status === ActionTokenStatus::USED
+                    ? $handler->recover($inspection->binding)
+                    : $handler->performAtomic($inspection->binding, $token, $this->tokens, trim($reason));
+            } catch (DomainException) {
+                return new ActionTokenHttpResponse(409, $this->renderPage(
+                    __('Already decided or unavailable', 'adct-parish-intake'),
+                    __('This event cannot be changed using this link.', 'adct-parish-intake')
+                ));
+            } catch (RuntimeException $failure) {
+                error_log('[ADCT Parish Intake] Confirmation action failed (' . get_class($failure) . ').');
+                return new ActionTokenHttpResponse(503, $this->renderPage(
+                    __('The event could not be completed', 'adct-parish-intake'),
+                    __('Please try this button again later; no new decision will be recorded.', 'adct-parish-intake')
+                ));
+            }
+        } else {
+            if ($inspection->status !== ActionTokenStatus::VALID) {
+                return $this->statusResponse($inspection, $token);
+            }
+            $consumption = $this->tokens->consume($token, $inspection->binding);
 
-        if ($consumption->status !== ActionTokenStatus::CONSUMED) {
-            return $this->statusResponse($consumption, $token);
+            if ($consumption->status !== ActionTokenStatus::CONSUMED) {
+                return $this->statusResponse($consumption, $token);
+            }
+            $outcome = $handler->perform($inspection->binding);
         }
-
-        $outcome = $handler->perform($inspection->binding);
 
         return new ActionTokenHttpResponse(
             200,
             $this->renderPage(
                 __('Response recorded', 'adct-parish-intake'),
-                $outcome->message
+                $outcome->message,
+                implode('', array_map(
+                    static fn (string $url): string => '<p><a href="' . esc_url($url) . '">'
+                        . esc_html__('View published event', 'adct-parish-intake') . '</a></p>',
+                    $outcome->eventUrls
+                ))
             )
         );
     }
@@ -247,7 +290,7 @@ final class ActionTokenEndpoint
         return $this->invalidResponse();
     }
 
-    private function renderPreview(ActionTokenPreview $preview, string $token): string
+    private function renderPreview(ActionTokenPreview $preview, string $token, ActionTokenPurpose $purpose): string
     {
         $details = '';
 
@@ -265,6 +308,10 @@ final class ActionTokenEndpoint
             . $this->hiddenField(self::TOKEN_PARAM, $token)
             . $this->hiddenField(self::ACTION_FIELD, 'perform')
             . $this->nonceField('perform', $token)
+            . ($purpose === ActionTokenPurpose::DENY
+                ? '<label>' . esc_html__('Reason (optional)', 'adct-parish-intake')
+                    . ' <textarea name="' . esc_attr(self::REASON_FIELD) . '" maxlength="1000"></textarea></label>'
+                : '')
             . '<button type="submit">' . esc_html($preview->submitLabel) . '</button>'
             . '</form>';
 

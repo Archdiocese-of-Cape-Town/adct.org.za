@@ -155,7 +155,7 @@ See [ADR 0004](decisions/0004-trust-and-confirmation-model.md) (confirmation, sa
 - **Every new event** goes through two steps:
   1. The **submitter confirms** the emailed preview.
   2. It then appears **at the same time** in the queue of the parish's **deanery approvers** (the dean) and of the **archdiocese reviewers**. The first to Approve or Reject decides.
-- The E4.2 job now queues the submitter preview only. Its Approve, Deny, Edit and Approve-all links are marked inactive until their action handlers are registered; clicking them cannot change candidate state or publish an event. Confirmation status is tracked separately from the candidate lifecycle.
+- The E4.2 job queues the submitter preview only. E4.3 activates Confirm, Deny and Confirm-all through nonce-checked POSTs; Edit remains inactive. A GET never decides an event. Confirmation status remains separate from candidate lifecycle, and suppressed previews cannot be acted on.
 - Approvers get an email with the preview and Approve / Reject / Edit links, or a daily digest. Reminders go out after N days (can be switched off).
 - **Self-approval:** if the submitter is an approver for that parish, their confirmation publishes directly.
 - **Known sender** (a verified address linked to a parish): parish and venue are filled in automatically. Their **changes and cancellations to published events publish immediately**, and approvers get a change notice with Revert / Unpublish.

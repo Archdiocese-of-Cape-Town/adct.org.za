@@ -42,7 +42,7 @@ final class ConfirmationEmailRenderer
                 . (count($batch->candidates) === 1 ? ' event' : ' events')
                 . ' in your notice. Please check each preview below.</p>',
             '<p style="margin:0 0 20px;padding:12px 14px;border-left:4px solid #d99a00;background-color:#fff4d6;font-size:14px;line-height:1.5;">'
-                . 'Highlighted details may be uncertain or missing. Online action links are not active yet; clicking one will not approve, deny, edit, or publish an event. '
+                . 'Highlighted details may be uncertain or missing. Confirm and Deny links now open a review page; the Edit link is not active yet. '
                 . 'Every new event still needs approval by a dean or an Archdiocese reviewer.</p>',
             '</td></tr>',
         ];
@@ -54,7 +54,7 @@ final class ConfirmationEmailRenderer
                 count($batch->candidates),
                 count($batch->candidates) === 1 ? 'event' : 'events'
             ),
-            'Highlighted details may be uncertain or missing. Online action links are not active yet; clicking one will not approve, deny, edit, or publish an event.',
+            'Highlighted details may be uncertain or missing. Confirm and Deny links now open a review page; the Edit link is not active yet.',
             'Every new event still needs approval by a dean or an Archdiocese reviewer.',
             '',
         ];
@@ -91,8 +91,8 @@ final class ConfirmationEmailRenderer
                     : '')
                 . '</td></tr>';
             $html[] = '<tr><td style="padding:0 18px 18px;">';
-            $html[] = $this->renderActionLink($candidateLinks['approve'], 'Approve (not active)', '#285d3c');
-            $html[] = $this->renderActionLink($candidateLinks['deny'], 'Deny (not active)', '#7a3030');
+            $html[] = $this->renderActionLink($candidateLinks['approve'], 'Confirm', '#285d3c');
+            $html[] = $this->renderActionLink($candidateLinks['deny'], 'Deny', '#7a3030');
             $html[] = $this->renderActionLink($candidateLinks['edit'], 'Edit (not active)', '#385b78');
             $html[] = '</td></tr>';
             $html[] = '</table></td></tr>';
@@ -109,8 +109,8 @@ final class ConfirmationEmailRenderer
             $text[] = 'Recurrence: ' . $card['recurrence'];
             $text[] = 'Review notes: ' . $card['notes'];
             $text[] = 'Parser confidence: ' . number_format($candidate->confidence * 100, 0) . '%';
-            $text[] = 'Approve (not active): ' . $candidateLinks['approve'];
-            $text[] = 'Deny (not active): ' . $candidateLinks['deny'];
+            $text[] = 'Confirm: ' . $candidateLinks['approve'];
+            $text[] = 'Deny: ' . $candidateLinks['deny'];
             $text[] = 'Edit (not active): ' . $candidateLinks['edit'];
             $text[] = '';
         }
@@ -119,7 +119,7 @@ final class ConfirmationEmailRenderer
             . '<p style="margin:0 0 12px;font-size:14px;line-height:1.5;">'
             . '<a href="' . $this->escape($links->approveAll) . '" '
             . 'style="display:inline-block;padding:12px 18px;background-color:#285d3c;color:#ffffff;text-decoration:none;font-weight:bold;">'
-            . 'Approve all (not active)</a></p>'
+            . 'Confirm all</a></p>'
             . '<p style="margin:0;font-size:14px;line-height:1.5;">If any detail is wrong, contact '
             . '<a href="mailto:events@adct.org.za" style="color:#17324d;">events@adct.org.za</a>. '
             . 'Replies to this message are not yet processed automatically.</p>'
@@ -130,7 +130,7 @@ final class ConfirmationEmailRenderer
             . '</td></tr>'
             . '</table></td></tr></table></body></html>';
 
-        $text[] = 'Approve all (not active): ' . $links->approveAll;
+        $text[] = 'Confirm all: ' . $links->approveAll;
         $text[] = '';
         $text[] = 'If any detail is wrong, contact events@adct.org.za. Replies to this message are not yet processed automatically.';
         $text[] = '';
