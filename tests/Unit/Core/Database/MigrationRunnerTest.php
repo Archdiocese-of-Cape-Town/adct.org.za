@@ -92,8 +92,9 @@ final class MigrationRunnerTest extends TestCase
 
     public static function migrationPathCases(): iterable
     {
-        yield 'fresh 0 to v8' => [0, 8, [1, 2, 3, 4, 5, 6, 7, 8]];
-        yield 'upgrade 6 to v8' => [6, 8, [7, 8]];
+        yield 'fresh 0 to v9' => [0, 9, [1, 2, 3, 4, 5, 6, 7, 8, 9]];
+        yield 'legacy upgrade 6 to v9' => [6, 9, [7, 8, 9]];
+        yield 'installed upgrade 8 to v9' => [8, 9, [9]];
     }
 
     public function testVersionIsWrittenOnlyAfterItsMigrationSucceeds(): void
@@ -168,11 +169,11 @@ final class MigrationRunnerTest extends TestCase
     public function testMigrationVersionGapCannotAdvanceTheStoredHighWater(): void
     {
         $steps = [];
-        for ($version = 1; $version <= 6; ++$version) {
+        for ($version = 1; $version <= 8; ++$version) {
             $steps[] = new RecordingMigrationStep($version);
         }
-        $steps[] = new RecordingMigrationStep(9);
-        $store = new FakeMigrationVersionStore(6);
+        $steps[] = new RecordingMigrationStep(10);
+        $store = new FakeMigrationVersionStore(8);
 
         try {
             new MigrationRunner($steps, $store, new FakeMigrationLogger());
@@ -181,7 +182,7 @@ final class MigrationRunnerTest extends TestCase
             self::assertStringContainsString('contiguous', $failure->getMessage());
         }
 
-        self::assertSame(6, $store->getVersion());
+        self::assertSame(8, $store->getVersion());
         self::assertSame([], $store->writtenVersions);
     }
 }

@@ -102,4 +102,15 @@ final readonly class MailboxSettings
 
         return 'mailbox-' . $this->id;
     }
+
+    public function processedFolderIdentity(): string
+    {
+        return hash('sha256', implode("\0", [
+            strtolower(rtrim($this->host, '.')),
+            (string) $this->port,
+            $this->encryption->value,
+            $this->username,
+            $this->processedFolder,
+        ]));
+    }
 }

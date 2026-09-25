@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Jobs;
 
-use ADCT\ParishIntake\Core\Ingestion\MailboxSearchCriteria;
 use ADCT\ParishIntake\Core\Ingestion\MailboxCheckpoint;
 use ADCT\ParishIntake\Core\Jobs\AbstractJob;
 use ADCT\ParishIntake\Core\Jobs\JobState;
@@ -13,6 +12,7 @@ use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxSettingsStoreInterface;
+use ADCT\ParishIntake\Core\Ports\ProcessedMailboxMessageStoreInterface;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
 use DateTimeImmutable;
 use DateTimeZone;
@@ -24,7 +24,6 @@ final class RetentionCleanupJob extends AbstractJob
 {
     private const DEFAULT_INTERVAL_SECONDS = 86400;
     private const BATCH_SIZE = 25;
-    private const PROCESSED_SEARCH_WINDOW = 500;
     private const ACTION_TOKEN_RETENTION_DAYS = 30;
     private const AUDIT_LOG_RETENTION_MONTHS = 24;
     /** @var callable */
@@ -38,6 +37,7 @@ final class RetentionCleanupJob extends AbstractJob
 
     public function __construct(
         private DatabaseConnectionInterface $database,
+        private ProcessedMailboxMessageStoreInterface $processedMessages,
         private InboundMailStorageReaderInterface $storage,
         private MailboxSettingsStoreInterface $mailboxes,
         callable $settingsProvider,
@@ -77,7 +77,7 @@ final class RetentionCleanupJob extends AbstractJob
         $phase = $state['phase'];
 
         if ($phase === 'done') {
-            return null;
+            return JobStepResult::completeAt(null);
         }
 
         if ($phase === 'tokens') {
@@ -124,7 +124,7 @@ final class RetentionCleanupJob extends AbstractJob
 
         if ($phase === 'processed') {
             if (! $settings->processedCleanupEnabled()) {
-                return JobStepResult::completeAt($this->encodeCheckpoint('done', null));
+                return JobStepResult::completeAt(null);
             }
 
             $result = $this->pruneProcessedFolder($state['processed'], $settings);
@@ -137,15 +137,13 @@ final class RetentionCleanupJob extends AbstractJob
                 return JobStepResult::continueAt($this->encodeProcessedCheckpoint($result['next_cursor']));
             }
 
-            return JobStepResult::completeAt($this->encodeCheckpoint('done', null));
+            return JobStepResult::completeAt(null);
         }
 
         throw new RuntimeException('The retention cleanup checkpoint is invalid.');
     }
 
-    /**
-     * @return array{phase: string, tokens_last_id: int, audit_last_id: int, raw_last_id: int, processed: array{source_id: int, last_uid: int}}
-     */
+    /** @return array{phase: string, tokens_last_id: int, audit_last_id: int, raw_last_id: int, processed: array{source_id: int, last_uid: int}} */
     private function decodeCheckpoint(?string $checkpoint): array
     {
         if ($checkpoint === null || trim($checkpoint) === '') {
@@ -154,7 +152,10 @@ final class RetentionCleanupJob extends AbstractJob
                 'tokens_last_id' => 0,
                 'audit_last_id' => 0,
                 'raw_last_id' => 0,
-                'processed' => ['source_id' => 0, 'last_uid' => 0],
+                'processed' => [
+                    'source_id' => 0,
+                    'last_uid' => 0,
+                ],
             ];
         }
 
@@ -187,7 +188,7 @@ final class RetentionCleanupJob extends AbstractJob
         $phase = $this->nextEnabledPhase($nextPhase, $settings);
 
         if ($phase === 'done') {
-            return JobStepResult::completeAt($this->encodeCheckpoint('done', null));
+            return JobStepResult::completeAt(null);
         }
 
         return JobStepResult::continueAt($this->encodeCheckpoint($phase, null));
@@ -351,15 +352,11 @@ final class RetentionCleanupJob extends AbstractJob
         );
 
         $sourceId = $cursor['source_id'] ?? 0;
-        $lastUid = $cursor['last_uid'] ?? 0;
         $mailboxIndex = $this->mailboxIndexForSourceId($mailboxes, $sourceId);
 
         if ($mailboxIndex >= count($mailboxes)) {
             return [
-                'cursor' => [
-                    'source_id' => 0,
-                    'last_uid' => 0,
-                ],
+                'cursor' => ['source_id' => 0, 'last_uid' => 0],
                 'next_cursor' => [
                     'source_id' => 0,
                     'last_uid' => 0,
@@ -382,78 +379,39 @@ final class RetentionCleanupJob extends AbstractJob
         }
 
         try {
+            $currentUidValidity = $mailbox->uidValidity($mailboxSettings->processedFolder);
+
+            if ($currentUidValidity < 1 || $currentUidValidity > MailboxCheckpoint::MAX_UID) {
+                throw new RuntimeException('The mailbox adapter returned an invalid processed-folder UIDVALIDITY value.');
+            }
+
+            $this->processedMessages->discardStale($mailboxSettings, $currentUidValidity);
             $cutoff = $this->clock->now()->modify('-' . $settings->processedRetentionDays() . ' days');
-            $windowStart = max(0, $lastUid);
-            $uidNext = $mailbox->uidNext($mailboxSettings->processedFolder);
-
-            if ($uidNext < 1) {
-                throw new RuntimeException('The mailbox adapter returned an invalid UIDNEXT value.');
-            }
-
-            $folderHighWatermark = min(MailboxCheckpoint::MAX_UID, $uidNext - 1);
-
-            if ($windowStart >= $folderHighWatermark) {
-                return [
-                    'cursor' => [
-                        'source_id' => $mailboxSettings->sourceId,
-                        'last_uid' => $windowStart,
-                    ],
-                    'next_cursor' => [
-                        'source_id' => $this->nextMailboxSourceId($mailboxes, $mailboxSettings->sourceId),
-                        'last_uid' => 0,
-                    ],
-                    'more' => false,
-                ];
-            }
-
-            $windowEnd = min($folderHighWatermark, $windowStart + self::PROCESSED_SEARCH_WINDOW);
-
-            $uids = $mailbox->searchFolder(
-                new MailboxSearchCriteria(
-                    before: $cutoff,
-                    afterUid: $windowStart > 0 ? $windowStart : null,
-                    beforeUid: $windowEnd,
-                    folder: $mailboxSettings->processedFolder
-                ),
-                $mailboxSettings->processedFolder
+            $uids = $this->processedMessages->findExpired(
+                $mailboxSettings,
+                $currentUidValidity,
+                $cutoff,
+                $this->batchSize
             );
 
-            if ($uids === []) {
-                return [
-                    'cursor' => [
-                        'source_id' => $mailboxSettings->sourceId,
-                        'last_uid' => $windowEnd,
-                    ],
-                    'next_cursor' => [
-                        'source_id' => $this->nextMailboxSourceId($mailboxes, $mailboxSettings->sourceId),
-                        'last_uid' => 0,
-                    ],
-                    'more' => $windowEnd < $folderHighWatermark,
-                ];
-            }
-
             sort($uids, SORT_NUMERIC);
-            $uids = array_slice($uids, 0, $this->batchSize);
-            $deletedUid = $windowStart;
 
             foreach ($uids as $uid) {
+                if (! is_int($uid) || $uid < 1 || $uid > MailboxCheckpoint::MAX_UID) {
+                    throw new RuntimeException('The processed-mail store returned an invalid message UID.');
+                }
+
                 $mailbox->delete($uid, $mailboxSettings->processedFolder);
-                $deletedUid = $uid;
+                $this->processedMessages->deleteOwned($mailboxSettings, $currentUidValidity, $uid);
             }
 
-            $processedAllInWindow = count($uids) === $this->batchSize;
-            $moreLaterInFolder = $windowEnd < $folderHighWatermark;
-
             return [
-                'cursor' => [
-                    'source_id' => $mailboxSettings->sourceId,
-                    'last_uid' => $processedAllInWindow ? $deletedUid : $windowEnd,
-                ],
+                'cursor' => ['source_id' => $mailboxSettings->sourceId, 'last_uid' => 0],
                 'next_cursor' => [
                     'source_id' => $this->nextMailboxSourceId($mailboxes, $mailboxSettings->sourceId),
                     'last_uid' => 0,
                 ],
-                'more' => $processedAllInWindow || $moreLaterInFolder,
+                'more' => count($uids) === $this->batchSize,
             ];
         } finally {
             $mailbox->close();
