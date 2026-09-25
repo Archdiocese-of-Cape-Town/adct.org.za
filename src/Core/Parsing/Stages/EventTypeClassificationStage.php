@@ -22,7 +22,26 @@ final class EventTypeClassificationStage implements StageInterface
             return $result;
         }
 
-        $body = $context->getRuntimeValue('cleaned_body', '');
+        $existingType = $result->getField('event_type');
+        $eventTypeSource = $result->getField('event_type_source');
+        $isExplicitType = in_array($eventTypeSource, ['admin', 'manual', 'keyword'], true);
+        $aiSuppliedType = $eventTypeSource === 'ai'
+            || in_array('event_type', $result->getAiFieldsFilled(), true);
+
+        if ($existingType !== null && ($isExplicitType || ! $aiSuppliedType)) {
+            return $result;
+        }
+
+        $body = $context->getRuntimeValue(
+            'block_source_text',
+            $context->getRuntimeValue('cleaned_body', '')
+        );
+        $description = $result->getField('description');
+
+        if (is_string($description) && trim($description) !== '') {
+            $body = (is_string($body) ? $body : '') . "\n" . $description;
+        }
+
         $type = $this->classifier->classify(
             (string) $result->getField('title'),
             is_string($body) ? $body : ''

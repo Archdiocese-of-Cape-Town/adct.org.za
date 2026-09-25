@@ -141,6 +141,7 @@ final class Pipeline
             $blockContext = $block->getContext();
             $this->context->setRuntimeValue('block_context', $blockContext);
             $this->context->setRuntimeValue('block_title', $blockTitle);
+            $this->context->setRuntimeValue('block_source_text', $block->getSourceText());
 
             foreach (['shared_signature_text', 'shared_quoted_text'] as $key) {
                 if (isset($blockContext[$key]) && is_string($blockContext[$key])) {

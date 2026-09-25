@@ -4,9 +4,14 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Tests\Unit\Parsing;
 
+use ADCT\ParishIntake\Core\Parsing\Stages\AiEnrichmentStage;
+use ADCT\ParishIntake\Core\Parsing\Stages\EventTypeClassificationStage;
 use ADCT\ParishIntake\Core\Parsing\EventTypeClassifier;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
+use ADCT\ParishIntake\Core\Parsing\ParseContext;
+use ADCT\ParishIntake\Core\Parsing\ParseResult;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
+use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\EventTypeKeywordProviderInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -45,6 +50,157 @@ final class EventTypeClassifierTest extends TestCase
     {
         $result = (new EventTypeClassifier())->classify('Youth gathering', 'Retreat retreat retreat');
         self::assertSame('youth', $result['slug']);
+    }
+
+    public function testBulletinCandidatesAreClassifiedFromTheirOwnSourceBlocks(): void
+    {
+        $message = new Message(
+            'email',
+            'synthetic-bulletin',
+            'sender@example.test',
+            'Parish office',
+            'October bulletin',
+            <<<'TEXT'
+Parish: Fictional Parish
+OCTOBER 2026
+Venue: Fictional Parish Hall
+
+EVENTS
+Sat 5 - Community gathering at 16:00. The Mass follows the event.
+Sat 12 - Community gathering at 16:00. Join us for a retreat.
+TEXT
+        );
+
+        $candidates = (new PipelineFactory())->create()->parseAll($message)->getCandidates();
+
+        self::assertCount(2, $candidates);
+        self::assertSame('liturgy-mass', $candidates[0]->getField('event_type'));
+        self::assertSame('spiritual', $candidates[1]->getField('event_type'));
+        self::assertStringNotContainsString('retreat', $candidates[0]->getSourceSnippet());
+        self::assertStringNotContainsString('Mass', $candidates[1]->getSourceSnippet());
+    }
+
+    /** @return array<string, array{string, string}> */
+    public static function aiRecoveredFields(): array
+    {
+        return [
+            'AI-recovered title' => ['Parish retreat', 'A fictional parish event.'],
+            'AI-recovered description' => ['Community gathering', 'Join us for a retreat.'],
+        ];
+    }
+
+    #[DataProvider('aiRecoveredFields')]
+    public function testClassificationUsesFinalAiEnrichedFields(string $title, string $description): void
+    {
+        $provider = new class($title, $description) implements AiProviderInterface {
+            public function __construct(private string $title, private string $description)
+            {
+            }
+
+            public function name(): string
+            {
+                return 'fixture-ai';
+            }
+
+            public function isAvailable(): bool
+            {
+                return true;
+            }
+
+            public function enrich(Message $message, ParseResult $result): array
+            {
+                return [
+                    'title' => $this->title,
+                    'description' => $this->description,
+                ];
+            }
+        };
+        $message = new Message(
+            'email',
+            'synthetic-ai-event',
+            'sender@example.test',
+            'Parish office',
+            '',
+            'A fictional event announcement.'
+        );
+        $context = new ParseContext(['ai_enabled' => true]);
+        $context->setRuntimeValue('block_source_text', 'A fictional event announcement.');
+        $result = (new AiEnrichmentStage($provider))->process($message, new ParseResult(), $context);
+
+        $result = (new EventTypeClassificationStage(new EventTypeClassifier()))
+            ->process($message, $result, $context);
+
+        self::assertSame('spiritual', $result->getField('event_type'));
+        self::assertSame('keyword', $result->getField('event_type_source'));
+        self::assertContains('title', $result->getAiFieldsFilled());
+        self::assertContains('description', $result->getAiFieldsFilled());
+    }
+
+    public function testClassificationPreservesAnExplicitlyAssignedEventType(): void
+    {
+        $message = new Message(
+            'email',
+            'synthetic-admin-event',
+            'sender@example.test',
+            'Parish office',
+            'A special event',
+            'Mass will be celebrated.'
+        );
+        $context = new ParseContext();
+        $context->setRuntimeValue('block_source_text', 'Mass will be celebrated.');
+        $result = new ParseResult();
+        $result->setField('event_type', 'fundraising');
+        $result->setField('event_type_source', 'admin');
+
+        $result = (new EventTypeClassificationStage(new EventTypeClassifier()))
+            ->process($message, $result, $context);
+
+        self::assertSame('fundraising', $result->getField('event_type'));
+        self::assertSame('admin', $result->getField('event_type_source'));
+        self::assertSame([], $result->getStrategies());
+    }
+
+    public function testPipelineEnrichesBeforeClassifyingEventType(): void
+    {
+        $provider = new class implements AiProviderInterface {
+            public ?string $eventTypeBeforeEnrichment = null;
+
+            public function name(): string
+            {
+                return 'fixture-ai';
+            }
+
+            public function isAvailable(): bool
+            {
+                return true;
+            }
+
+            public function enrich(Message $message, ParseResult $result): array
+            {
+                $eventType = $result->getField('event_type');
+                $this->eventTypeBeforeEnrichment = is_string($eventType) ? $eventType : null;
+
+                return [];
+            }
+        };
+        $message = new Message(
+            'email',
+            'synthetic-ai-order',
+            'sender@example.test',
+            'Parish office',
+            'Community gathering',
+            'Join us on Saturday 10 October 2026 at 16:00.'
+        );
+
+        $candidate = (new PipelineFactory())->create([
+            'ai_provider' => $provider,
+            'ai_enabled' => true,
+            'ai_threshold' => 1.0,
+        ])->parseAll($message)->getCandidates()[0];
+
+        self::assertNull($provider->eventTypeBeforeEnrichment);
+        self::assertSame('other', $candidate->getField('event_type'));
+        self::assertSame('keyword', $candidate->getField('event_type_source'));
     }
 
     public function testEditedAndCustomTermKeywordsTakeEffectInNextPipelineWithoutCodeChange(): void

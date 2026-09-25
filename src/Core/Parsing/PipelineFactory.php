@@ -61,11 +61,11 @@ final class PipelineFactory
         }
 
         $stages[] = new RecurrenceDetectionStage($this->clock);
+        $stages[] = new ConfidenceScoringStage();
+        $stages[] = new AiEnrichmentStage($provider);
         $stages[] = new EventTypeClassificationStage(new EventTypeClassifier(
             $this->eventTypeKeywords?->keywordLists() ?? EventTypeClassifier::DEFAULT_KEYWORDS
         ));
-        $stages[] = new ConfidenceScoringStage();
-        $stages[] = new AiEnrichmentStage($provider);
 
         return new Pipeline($stages, $context, new BulletinBlockSplitter(null, new SectionSkipper($sectionKeywords)));
     }
