@@ -8,6 +8,10 @@ use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
 use ADCT\ParishIntake\Core\Directory\ImportRow;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
+use ADCT\ParishIntake\Core\Directory\Venue;
+use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
+use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
+use ADCT\ParishIntake\Core\Directory\VenueLookup;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
@@ -15,6 +19,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
 use ADCT\ParishIntake\WordPress\Directory\DeaneryApproverAssignmentService;
@@ -69,8 +74,8 @@ if (! is_plugin_active($pluginBasename)) {
     $fail('The release plugin was not active after activation.');
 }
 
-if ((int) get_option('adct_pi_db_version', 0) !== 1) {
-    $fail('Activation did not set the parish intake schema version to 1.');
+if ((int) get_option('adct_pi_db_version', 0) !== 2) {
+    $fail('Activation did not set the parish intake schema version to 2.');
 }
 
 if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CURRENT_VERSION) {
@@ -132,6 +137,32 @@ if ($actualTables !== $expectedTables) {
         implode(', ', $missingTables),
         implode(', ', $unexpectedTables)
     ));
+}
+
+$venueTable = $wpdb->prefix . 'adct_pi_venues';
+$venueColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$venueTable}", 0);
+$venueIndexes = (array) $wpdb->get_results("SHOW INDEX FROM {$venueTable}", ARRAY_A);
+$sourceParishIsUnique = false;
+
+foreach ($venueIndexes as $index) {
+    if (
+        ($index['Key_name'] ?? '') === 'source_parish_id'
+        && (int) ($index['Non_unique'] ?? 1) === 0
+        && ($index['Column_name'] ?? '') === 'source_parish_id'
+    ) {
+        $sourceParishIsUnique = true;
+        break;
+    }
+}
+
+foreach (['aliases', 'latitude', 'longitude', 'is_default', 'status', 'source_parish_id'] as $column) {
+    if (! in_array($column, $venueColumns, true)) {
+        $fail('The v2 venues table is missing the ' . $column . ' column.');
+    }
+}
+
+if (! $sourceParishIsUnique) {
+    $fail('The v2 venues table is missing the unique source-parish index.');
 }
 
 $legacyTable = $wpdb->prefix . 'adct_parish_intake_items';
@@ -368,22 +399,25 @@ $database = new WordPressDatabaseConnection($wpdb);
 $parishRepository = new ParishRepository($database);
 $deaneryRepository = new DeaneryRepository($database);
 $contactRepository = new ParishContactRepository($database);
+$venueRepository = new VenueRepository($database);
 $clock = new SystemClock();
 $contactService = new ContactService($contactRepository, $clock);
+$venueImporter = new VenueDirectoryImporter($venueRepository, $clock);
 $importService = new DirectoryImportService(
     new ParishCsvImporter(),
     new DeaneryCsvImporter(),
     $parishRepository,
     $deaneryRepository,
     $contactService,
-    $clock
+    $clock,
+    $venueImporter
 );
 $contactTable = $wpdb->prefix . 'adct_pi_parish_contacts';
 $parishTable = $wpdb->prefix . 'adct_pi_parishes';
 $deaneryTable = $wpdb->prefix . 'adct_pi_deaneries';
 $approverTable = $wpdb->prefix . 'adct_pi_deanery_approvers';
 
-foreach ([$approverTable, $contactTable, $parishTable, $deaneryTable] as $table) {
+foreach ([$approverTable, $contactTable, $venueTable, $parishTable, $deaneryTable] as $table) {
     if ($wpdb->query("DELETE FROM {$table}") === false) {
         $fail('The integration directory tables could not be reset.');
     }
@@ -412,6 +446,32 @@ if ((int) $wpdb->get_var("SELECT COUNT(*) FROM {$deaneryTable}") !== 8) {
 
 if ((int) $wpdb->get_var("SELECT COUNT(*) FROM {$parishTable}") !== 124) {
     $fail('The parish import did not produce 124 database rows.');
+}
+
+$venueCountAfterFirstImport = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$venueTable}");
+$importedOutstationVenueCount = (int) $wpdb->get_var(
+    "SELECT COUNT(*) FROM {$venueTable} WHERE source_parish_id IS NOT NULL"
+);
+$parishesWithoutDefault = (int) $wpdb->get_var(
+    "SELECT COUNT(*) FROM {$parishTable} p "
+    . "WHERE p.status = 'active' AND NOT EXISTS ("
+    . "SELECT 1 FROM {$venueTable} v "
+    . "WHERE v.parish_id = p.id AND v.status = 'active' AND v.is_default = 1)"
+);
+$parishesWithMultipleDefaults = (int) $wpdb->get_var(
+    "SELECT COUNT(*) FROM ("
+    . "SELECT parish_id FROM {$venueTable} "
+    . "WHERE status = 'active' GROUP BY parish_id HAVING SUM(is_default) > 1"
+    . ') venue_defaults'
+);
+
+if (
+    $venueCountAfterFirstImport < 124
+    || $importedOutstationVenueCount < 1
+    || $parishesWithoutDefault !== 0
+    || $parishesWithMultipleDefaults !== 0
+) {
+    $fail('The parish import did not create provisional defaults and linked outstation venues with one default per parish.');
 }
 
 $seedStream = fopen('php://temp', 'r+');
@@ -471,6 +531,100 @@ if ($firstParishId < 1 || $firstContactId < 1) {
     $fail('An imported parish office contact could not be found.');
 }
 
+$venueAdministration = new VenueAdministrationService($venueRepository, $clock);
+$acceptanceVenue = $venueAdministration->save($firstParishId, 0, [
+    'name' => "St Mary's Hall",
+    'aliases' => "Saint Mary's Hall, St Marys",
+    'address' => '14 Example Road',
+    'suburb' => 'Sample Suburb',
+    'latitude' => '-33.9',
+    'longitude' => '18.4',
+    'is_default' => '1',
+]);
+$venueLookup = new VenueLookup($venueRepository);
+$venueMatch = $venueLookup->match('The gathering will be at Saint Marys Hall.', $firstParishId);
+$defaultVenue = $venueLookup->defaultVenueFor($firstParishId);
+$defaultVenueCount = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT COUNT(*) FROM {$venueTable} WHERE parish_id = %d AND status = 'active' AND is_default = 1",
+    $firstParishId
+));
+
+if (
+    $venueMatch === null
+    || $venueMatch->venueId !== $acceptanceVenue->id
+    || $venueMatch->latitude !== -33.9
+    || $venueMatch->longitude !== 18.4
+    || $defaultVenue === null
+    || $defaultVenue->venueId !== $acceptanceVenue->id
+    || $defaultVenueCount !== 1
+) {
+    $fail('Venue creation, default selection, or location lookup did not work.');
+}
+
+$venueAdministration->save($firstParishId, 0, [
+    'name' => 'Secondary Sample Hall',
+]);
+$replacementVenue = null;
+
+foreach ($venueRepository->findForParish($firstParishId) as $candidateVenue) {
+    if ($candidateVenue->status === Venue::ACTIVE && $candidateVenue->id !== $acceptanceVenue->id) {
+        $replacementVenue = $candidateVenue;
+        break;
+    }
+}
+
+if ($replacementVenue === null) {
+    $fail('The integration venue fixture has no active replacement venue.');
+}
+
+$venueAdministration->deactivate($firstParishId, $acceptanceVenue->id);
+$defaultAfterDeactivation = $venueLookup->defaultVenueFor($firstParishId);
+$deactivatedVenue = $venueRepository->findVenue($acceptanceVenue->id);
+
+if (
+    $defaultAfterDeactivation === null
+    || $defaultAfterDeactivation->venueId !== $replacementVenue->id
+    || $deactivatedVenue === null
+    || $deactivatedVenue->status !== 'inactive'
+) {
+    $fail('Deactivating a default venue did not promote another active venue.');
+}
+
+$venueAdministration->reactivate($firstParishId, $acceptanceVenue->id);
+$defaultAfterReactivation = $venueLookup->defaultVenueFor($firstParishId);
+
+if ($defaultAfterReactivation === null || $defaultAfterReactivation->venueId !== $replacementVenue->id) {
+    $fail('Reactivating a venue changed the parish default unexpectedly.');
+}
+
+$parishesPageSlug = 'adct-parish-intake-parishes';
+$parishesPageHook = get_plugin_page_hookname($parishesPageSlug, $parentSlug);
+
+if (has_action($parishesPageHook) === false) {
+    $fail('The Parishes admin page callback was not registered.');
+}
+
+$originalGet = $_GET;
+$_GET['page'] = $parishesPageSlug;
+$_GET['action'] = 'edit';
+$_GET['id'] = (string) $firstParishId;
+$_GET['tab'] = 'venues';
+ob_start();
+try {
+    do_action($parishesPageHook);
+} finally {
+    $venueTabHtml = (string) ob_get_clean();
+    $_GET = $originalGet;
+}
+
+if (
+    strpos($venueTabHtml, 'Venues for ') === false
+    || strpos($venueTabHtml, 'name="aliases"') === false
+    || strpos($venueTabHtml, 'Deactivate venue') === false
+) {
+    $fail('The parish Venues tab did not render its venue management controls.');
+}
+
 if ($wpdb->query($wpdb->prepare(
     "UPDATE {$contactTable} SET trust = %s, verified_at = NULL WHERE id = %d",
     'blocked',
@@ -479,6 +633,8 @@ if ($wpdb->query($wpdb->prepare(
     $fail('The integration trust-preservation fixture could not be prepared.');
 }
 
+$venueCountBeforeRepeatImport = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$venueTable}");
+$lastVenueIdBeforeRepeatImport = (int) $wpdb->get_var("SELECT MAX(id) FROM {$venueTable}");
 $secondDeaneryImport = $importService->importDeaneries($seedDeaneriesCsv);
 $secondParishImport = $importService->importParishes($seedParishesCsv);
 
@@ -498,6 +654,22 @@ if (
     $fail('A second parish import created or updated rows instead of leaving all 124 unchanged.');
 }
 
+$venueCountAfterSecondImport = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$venueTable}");
+
+if ($venueCountAfterSecondImport !== $venueCountBeforeRepeatImport) {
+    $venuesAddedOnRepeat = (array) $wpdb->get_results($wpdb->prepare(
+        "SELECT id, parish_id, source_parish_id, name, is_default "
+        . "FROM {$venueTable} WHERE id > %d ORDER BY id ASC",
+        $lastVenueIdBeforeRepeatImport
+    ), ARRAY_A);
+    $fail(sprintf(
+        'A repeated parish import changed the venue count (%d before, %d after); added rows: %s.',
+        $venueCountBeforeRepeatImport,
+        $venueCountAfterSecondImport,
+        wp_json_encode($venuesAddedOnRepeat)
+    ));
+}
+
 $contactAfterRepeat = $wpdb->get_row($wpdb->prepare(
     "SELECT trust, verified_at FROM {$contactTable} WHERE id = %d LIMIT 1",
     $firstContactId
@@ -509,6 +681,36 @@ if (
     || $contactAfterRepeat['verified_at'] !== null
 ) {
     $fail('A repeated import changed an existing parish contact trust value.');
+}
+
+$backfillTimestamp = $clock->now()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+$backfillParishId = $parishRepository->insert([
+    'name' => 'Sample Backfill Parish',
+    'slug' => 'sample-backfill-parish',
+    'church' => 'Sample Chapel',
+    'kind' => 'parish',
+    'parent_parish_id' => null,
+    'status' => 'active',
+    'created_at' => $backfillTimestamp,
+    'updated_at' => $backfillTimestamp,
+]);
+$venueCountBeforeBackfill = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$venueTable}");
+$backfillCreated = $importService->ensureVenuesFromDirectory();
+$backfilledVenues = $venueRepository->findForParish($backfillParishId);
+$venueCountAfterBackfill = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$venueTable}");
+$repeatedBackfillCreated = $importService->ensureVenuesFromDirectory();
+$venueCountAfterRepeatedBackfill = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$venueTable}");
+
+if (
+    $backfillCreated !== 1
+    || count($backfilledVenues) !== 1
+    || $backfilledVenues[0]->name !== 'Sample Chapel'
+    || ! $backfilledVenues[0]->isDefault
+    || $venueCountAfterBackfill !== $venueCountBeforeBackfill + 1
+    || $repeatedBackfillCreated !== 0
+    || $venueCountAfterRepeatedBackfill !== $venueCountAfterBackfill
+) {
+    $fail('The existing-directory venue backfill did not create one provisional default idempotently.');
 }
 
 $centralDeanery = $deaneryRepository->findBySlug('central');
@@ -1011,4 +1213,4 @@ if ($secondApproverUser instanceof WP_User && in_array('deanery_approver', $seco
     $fail('The final sample approver role was not removed during integration cleanup.');
 }
 
-WP_CLI::success('Release ZIP activation, settings and parser safeguards, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
+WP_CLI::success('Release ZIP activation, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
