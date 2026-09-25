@@ -2,6 +2,7 @@
 
 namespace ADCT\ParishIntake\WordPress;
 
+use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Auth\RoleInstaller;
 use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
@@ -18,6 +19,7 @@ use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
+use ADCT\ParishIntake\WordPress\Admin\DeaneriesPage;
 use ADCT\ParishIntake\WordPress\Admin\ParserPage;
 use ADCT\ParishIntake\WordPress\Admin\ParishesPage;
 use ADCT\ParishIntake\WordPress\Admin\SendersPage;
@@ -25,6 +27,8 @@ use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleCapabilityStore;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleVersionStore;
 use ADCT\ParishIntake\WordPress\Database\DbDeltaSchemaInstaller;
+use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
@@ -35,6 +39,7 @@ use ADCT\ParishIntake\WordPress\Database\WordPressMigrationVersionStore;
 use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
 use ADCT\ParishIntake\WordPress\Http\WordPressHttpClient;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
+use ADCT\ParishIntake\WordPress\Directory\DeaneryApproverAssignmentService;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
@@ -50,6 +55,7 @@ final class Plugin
     private HttpClientInterface $httpClient;
     private WordPressJobScheduler $jobScheduler;
     private ScheduledJobsPage $scheduledJobsPage;
+    private DeaneriesPage $deaneriesPage;
     private ParishesPage $parishesPage;
     private SendersPage $sendersPage;
 
@@ -70,8 +76,16 @@ final class Plugin
         $database = new WordPressDatabaseConnection();
         $parishes = new ParishRepository($database);
         $deaneries = new DeaneryRepository($database);
+        $approvers = new DeaneryApproverRepository($database);
         $contacts = new ParishContactRepository($database);
         $contactService = new ContactService($contacts, $clock);
+        $approvalRouteResolver = new ApprovalRouteResolver(new ApprovalRouteRepository($database));
+        $this->deaneriesPage = new DeaneriesPage(
+            $deaneries,
+            $approvers,
+            new DeaneryApproverAssignmentService($approvers),
+            $clock
+        );
         $this->parishesPage = new ParishesPage(
             $parishes,
             $deaneries,
@@ -85,6 +99,7 @@ final class Plugin
                 $contactService,
                 $clock
             ),
+            $approvalRouteResolver,
             $clock
         );
         $this->sendersPage = new SendersPage($contacts, $contactService, $parishes);
@@ -226,6 +241,7 @@ final class Plugin
 
         add_filter('show_admin_bar', [$this, 'hideAdminBarForPortalRoles']);
         add_action('admin_menu', [$this->parserPage, 'registerMenu']);
+        add_action('admin_menu', [$this->deaneriesPage, 'registerMenu']);
         add_action('admin_menu', [$this->parishesPage, 'registerMenu']);
         add_action('admin_menu', [$this->sendersPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
@@ -234,7 +250,11 @@ final class Plugin
         add_action('admin_init', [$this, 'maybeRunDatabaseMigrations'], 5);
         add_action('admin_init', [$this->parserPage, 'maybeHandleSettings']);
         add_action('admin_post_adct_pi_save_parish', [$this->parishesPage, 'handleSaveParish']);
+        add_action('admin_post_adct_pi_bulk_assign_parishes', [$this->parishesPage, 'handleBulkAssign']);
         add_action('admin_post_adct_pi_parish_contact', [$this->parishesPage, 'handleContactAction']);
+        add_action('admin_post_adct_pi_save_deanery', [$this->deaneriesPage, 'handleSaveDeanery']);
+        add_action('admin_post_adct_pi_deactivate_deanery', [$this->deaneriesPage, 'handleDeactivateDeanery']);
+        add_action('admin_post_adct_pi_deanery_approver', [$this->deaneriesPage, 'handleApproverAction']);
         add_action('admin_post_adct_pi_directory_import_preview', [$this->parishesPage, 'handleImportPreview']);
         add_action('admin_post_adct_pi_directory_import_confirm', [$this->parishesPage, 'handleImportConfirm']);
         add_action('admin_post_adct_pi_directory_export', [$this->parishesPage, 'handleExport']);

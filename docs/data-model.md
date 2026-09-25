@@ -51,6 +51,10 @@ The 8 official deaneries are seeded from [`data/seed/deaneries.csv`](../data/see
 
 Archdiocese reviewers aren't listed here. They are WordPress users with the `adct_pi_review` capability and approve anything.
 
+The approval-route resolver reads a parish, its deanery status and all of its approver assignments in one repository call. It routes only active assignments in an active deanery; a missing deanery, inactive deanery or deanery with no active approver returns an empty approver list and sends the item to archdiocese reviewers only. Deactivating an approver preserves its row for later reactivation.
+
+Approver WordPress accounts are created with a random password and no notification email. Assigning an existing user adds the `deanery_approver` role without replacing other roles. The role is removed only after the user has no active approver assignments in any deanery.
+
 ### `adct_pi_parishes`
 | Column | Notes |
 |---|---|

@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Tests\Unit\Architecture;
 
+use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
+use ADCT\ParishIntake\Core\Ports\ApprovalRouteRepositoryInterface;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\EventRepositoryInterface;
@@ -78,6 +80,7 @@ final class CoreIsolationTest extends TestCase
     {
         foreach ([
             ClockInterface::class,
+            ApprovalRouteRepositoryInterface::class,
             MailboxInterface::class,
             MailerInterface::class,
             EventRepositoryInterface::class,
@@ -89,6 +92,7 @@ final class CoreIsolationTest extends TestCase
         }
 
         self::assertTrue(class_exists(PipelineFactory::class));
+        self::assertTrue(class_exists(ApprovalRouteResolver::class));
     }
 
     public function testCoreContainsNoWordPressFunctionsClassesOrGlobals(): void

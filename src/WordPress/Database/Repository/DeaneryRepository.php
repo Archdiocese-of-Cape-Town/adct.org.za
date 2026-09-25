@@ -30,6 +30,21 @@ final class DeaneryRepository extends AbstractRepository
     }
 
     /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function findAllWithActiveApproverCounts(): array
+    {
+        $table = $this->tableName();
+        $approvers = $this->database->prefix() . 'adct_pi_deanery_approvers';
+        $query = "SELECT d.*, "
+            . "(SELECT COUNT(*) FROM {$approvers} a "
+            . 'WHERE a.deanery_id = d.id AND a.active = 1) AS active_approver_count '
+            . "FROM {$table} d ORDER BY d.name ASC, d.slug ASC";
+
+        return $this->fetchRows($query);
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     public function findBySlug(string $slug): ?array

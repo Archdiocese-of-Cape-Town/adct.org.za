@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Database;
 
+use ADCT\ParishIntake\Core\Approval\ApprovalRoute;
+use ADCT\ParishIntake\Core\Approval\ApproverSettings;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
+use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
@@ -115,6 +119,140 @@ final class RepositoryTest extends TestCase
             25,
             50,
         ], $query['arguments']);
+    }
+
+    public function testParishBulkDeaneryAssignmentUsesPreparedIdsAndSupportsNoDeanery(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $repository = new ParishRepository($database);
+        $timestamp = '2026-09-25 00:00:00';
+
+        $repository->updateDeaneryForParishes([3, 4], 12, $timestamp);
+        $repository->updateDeaneryForParishes([5], null, $timestamp);
+
+        self::assertCount(2, $database->preparedQueries);
+        self::assertStringContainsString(
+            'UPDATE wp_adct_pi_parishes SET deanery_id = %d, updated_at = %s WHERE id IN (%d, %d)',
+            $database->preparedQueries[0]['query']
+        );
+        self::assertSame([12, $timestamp, 3, 4], $database->preparedQueries[0]['arguments']);
+        self::assertStringContainsString(
+            'UPDATE wp_adct_pi_parishes SET deanery_id = NULL, updated_at = %s WHERE id IN (%d)',
+            $database->preparedQueries[1]['query']
+        );
+        self::assertSame([$timestamp, 5], $database->preparedQueries[1]['arguments']);
+    }
+
+    public function testDeaneryDirectoryQueryIncludesActiveApproverCounts(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $database->resultRows = [['id' => 12, 'active_approver_count' => '2']];
+        $repository = new DeaneryRepository($database);
+
+        $rows = $repository->findAllWithActiveApproverCounts();
+
+        self::assertSame('2', $rows[0]['active_approver_count']);
+        self::assertStringContainsString('FROM wp_adct_pi_deaneries d', $database->selectedQueries[0]);
+        self::assertStringContainsString('wp_adct_pi_deanery_approvers', $database->selectedQueries[0]);
+        self::assertStringContainsString('a.active = 1', $database->selectedQueries[0]);
+    }
+
+    public function testDeaneryApproverRepositoryUsesPreparedAssignmentQueries(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $database->nextInsertId = 21;
+        $database->rowResult = null;
+        $repository = new DeaneryApproverRepository($database);
+        $settings = new ApproverSettings(
+            'approver@example.test',
+            'Dean',
+            ApproverSettings::NOTIFY_DIGEST,
+            false,
+            true
+        );
+        $timestamp = '2026-09-25 00:00:00';
+
+        $assignmentId = $repository->save(12, 101, $settings, $timestamp);
+        $repository->findForDeanery(12);
+        $database->rowResult = ['total' => '2'];
+        $activeCount = $repository->countActiveForUser(101);
+
+        self::assertSame(21, $assignmentId);
+        self::assertSame(2, $activeCount);
+        self::assertCount(4, $database->preparedQueries);
+        self::assertSame(
+            [12, 101],
+            $database->preparedQueries[0]['arguments']
+        );
+        self::assertStringContainsString(
+            'INSERT INTO wp_adct_pi_deanery_approvers',
+            $database->preparedQueries[1]['query']
+        );
+        self::assertSame([
+            12,
+            101,
+            'approver@example.test',
+            'Dean',
+            'digest',
+            0,
+            1,
+            $timestamp,
+            $timestamp,
+        ], $database->preparedQueries[1]['arguments']);
+        self::assertStringContainsString(
+            'LEFT JOIN wp_users u ON u.ID = a.wp_user_id',
+            $database->preparedQueries[2]['query']
+        );
+        self::assertSame([12], $database->preparedQueries[2]['arguments']);
+        self::assertStringContainsString('WHERE wp_user_id = %d AND active = %d', $database->preparedQueries[3]['query']);
+        self::assertSame([101, 1], $database->preparedQueries[3]['arguments']);
+    }
+
+    public function testApprovalRouteRepositoryMapsOneParishAndAllApproverRows(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $database->resultRows = [
+            [
+                'deanery_id' => '12',
+                'deanery_status' => 'active',
+                'approver_id' => '31',
+                'wp_user_id' => '101',
+                'email' => 'one@example.test',
+                'label' => 'Dean',
+                'notify_mode' => 'each',
+                'reminders_enabled' => '1',
+                'active' => '1',
+            ],
+            [
+                'deanery_id' => '12',
+                'deanery_status' => 'active',
+                'approver_id' => '32',
+                'wp_user_id' => '102',
+                'email' => 'two@example.test',
+                'label' => 'Assistant',
+                'notify_mode' => 'digest',
+                'reminders_enabled' => '0',
+                'active' => '0',
+            ],
+        ];
+
+        $snapshot = (new ApprovalRouteRepository($database))->findForParish(7);
+
+        self::assertNotNull($snapshot);
+        self::assertSame(12, $snapshot->deaneryId);
+        self::assertTrue($snapshot->deaneryActive);
+        self::assertCount(2, $snapshot->approvers);
+        self::assertSame(ApprovalRoute::REASON_OK, (new \ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver(
+            new ApprovalRouteRepository($database)
+        ))->forParish(7)->reason);
+        self::assertFalse($snapshot->approvers[1]->active);
+        self::assertSame('digest', $snapshot->approvers[1]->notifyMode);
+        self::assertCount(2, $database->preparedQueries);
+        self::assertSame([7], $database->preparedQueries[0]['arguments']);
+        self::assertStringContainsString(
+            'LEFT JOIN wp_adct_pi_deanery_approvers a ON a.deanery_id = d.id',
+            $database->preparedQueries[0]['query']
+        );
     }
 
     public function testVerifiedOfficeContactInsertIsIdempotentAndNeverUpdatesExistingTrust(): void
@@ -230,9 +368,16 @@ final class FakeDatabaseConnection implements DatabaseConnectionInterface
     public array $executedQueries = [];
 
     /**
+     * @var list<string>
+     */
+    public array $selectedQueries = [];
+
+    /**
      * @var array<int, array<string, mixed>>
      */
     public array $resultRows = [];
+
+    public ?array $rowResult = ['id' => 1];
 
     public int $nextInsertId = 1;
 
@@ -257,11 +402,15 @@ final class FakeDatabaseConnection implements DatabaseConnectionInterface
 
     public function getRow(string $query): ?array
     {
-        return ['id' => 1];
+        $this->selectedQueries[] = $query;
+
+        return $this->rowResult;
     }
 
     public function getResults(string $query): array
     {
+        $this->selectedQueries[] = $query;
+
         return $this->resultRows;
     }
 

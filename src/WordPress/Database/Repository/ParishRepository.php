@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Database\Repository;
 
+use InvalidArgumentException;
+use RuntimeException;
+
 final class ParishRepository extends AbstractRepository
 {
     protected const TABLE_SUFFIX = 'adct_pi_parishes';
@@ -110,6 +113,51 @@ final class ParishRepository extends AbstractRepository
             . 'ORDER BY p.name ASC, p.slug ASC';
 
         return $this->fetchRows($query);
+    }
+
+    /**
+     * @param list<int> $parishIds
+     */
+    public function updateDeaneryForParishes(array $parishIds, ?int $deaneryId, string $updatedAt): int
+    {
+        if ($parishIds === []) {
+            throw new InvalidArgumentException('At least one parish ID is required for a bulk assignment.');
+        }
+
+        if ($deaneryId !== null && $deaneryId < 1) {
+            throw new InvalidArgumentException('A deanery ID must be positive when set.');
+        }
+
+        foreach ($parishIds as $parishId) {
+            if (! is_int($parishId) || $parishId < 1) {
+                throw new InvalidArgumentException('Parish IDs must be positive integers.');
+            }
+        }
+
+        $parishIds = array_values(array_unique($parishIds));
+        $table = $this->tableName();
+        $idPlaceholders = implode(', ', array_fill(0, count($parishIds), '%d'));
+        $deaneryAssignment = $deaneryId === null ? 'NULL' : '%d';
+        $query = "UPDATE {$table} SET deanery_id = {$deaneryAssignment}, updated_at = %s "
+            . "WHERE id IN ({$idPlaceholders})";
+        $arguments = [];
+
+        if ($deaneryId !== null) {
+            $arguments[] = $deaneryId;
+        }
+
+        $arguments[] = $updatedAt;
+        array_push($arguments, ...$parishIds);
+        $this->database->clearLastError();
+        $result = $this->database->query($this->database->prepare($query, ...$arguments));
+
+        if ($result === false) {
+            throw new RuntimeException(
+                'The parish deanery assignments could not be saved: ' . $this->database->lastError()
+            );
+        }
+
+        return $result;
     }
 
     /**
