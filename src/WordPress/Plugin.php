@@ -7,6 +7,7 @@ use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Auth\RoleInstaller;
 use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
 use ADCT\ParishIntake\Core\Database\CreateSchemaMigration;
+use ADCT\ParishIntake\Core\Database\MailboxSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MigrationRunner;
 use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
@@ -16,16 +17,23 @@ use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
 use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\Core\Jobs\FrameworkHeartbeatJob;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
+use ADCT\ParishIntake\Core\Ingestion\Imap\ImapMailbox;
+use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxConnectionConfig;
+use ADCT\ParishIntake\Core\Ingestion\MailboxConnectionTestService;
+use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
+use ADCT\ParishIntake\Core\Ports\MailboxInterface;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
+use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
 use ADCT\ParishIntake\WordPress\Admin\DeaneriesPage;
+use ADCT\ParishIntake\WordPress\Admin\MailboxesPage;
 use ADCT\ParishIntake\WordPress\Admin\ParserPage;
 use ADCT\ParishIntake\WordPress\Admin\ParishesPage;
 use ADCT\ParishIntake\WordPress\Admin\SendersPage;
@@ -39,6 +47,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\MailboxRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\Schema;
@@ -73,6 +82,7 @@ final class Plugin
     private ParishesPage $parishesPage;
     private SendersPage $sendersPage;
     private SourcesPage $sourcesPage;
+    private MailboxesPage $mailboxesPage;
 
     private function __construct(string $pluginFile)
     {
@@ -101,6 +111,18 @@ final class Plugin
             $this->httpClient
         );
         $sourceRegistryService = new SourceRegistryService($sources, $clock);
+        $this->mailboxesPage = new MailboxesPage(
+            new MailboxRepository($database),
+            $sources,
+            $sourceRegistryService,
+            new MailboxSettingsValidator(),
+            new MailboxConnectionTestService(
+                new SourceHealthRecorder($sources, $clock),
+                static fn (MailboxConnectionConfig $config): MailboxInterface => new ImapMailbox($config)
+            ),
+            new WordPressSecretResolver(),
+            $clock
+        );
         $contactService = new ContactService($contacts, $clock);
         $venueAdministrationService = new VenueAdministrationService($venues, $clock);
         $approvalRouteResolver = new ApprovalRouteResolver(new ApprovalRouteRepository($database));
@@ -276,6 +298,7 @@ final class Plugin
         add_action('admin_menu', [$this->parishesPage, 'registerMenu']);
         add_action('admin_menu', [$this->sendersPage, 'registerMenu']);
         add_action('admin_menu', [$this->sourcesPage, 'registerMenu']);
+        add_action('admin_menu', [$this->mailboxesPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
         add_action('admin_init', [$this, 'maybeUpgradeRoles'], 1);
         add_action('admin_init', [$this, 'restrictWpAdminForPortalRoles'], 2);
@@ -287,6 +310,12 @@ final class Plugin
         add_action('admin_post_adct_pi_venue_backfill', [$this->parishesPage, 'handleVenueBackfill']);
         add_action('admin_post_adct_pi_parish_contact', [$this->parishesPage, 'handleContactAction']);
         add_action('admin_post_adct_pi_save_source', [$this->sourcesPage, 'handleSaveSource']);
+        add_action('admin_post_adct_pi_save_mailbox', [$this->mailboxesPage, 'handleSaveMailbox']);
+        add_action('admin_post_adct_pi_test_mailbox', [$this->mailboxesPage, 'handleTestConnection']);
+        add_action(
+            'admin_post_adct_pi_create_mailbox_processed_folder',
+            [$this->mailboxesPage, 'handleCreateProcessedFolder']
+        );
         add_action('admin_post_adct_pi_save_deanery', [$this->deaneriesPage, 'handleSaveDeanery']);
         add_action('admin_post_adct_pi_deactivate_deanery', [$this->deaneriesPage, 'handleDeactivateDeanery']);
         add_action('admin_post_adct_pi_deanery_approver', [$this->deaneriesPage, 'handleApproverAction']);
@@ -329,6 +358,7 @@ final class Plugin
             [
                 new CreateSchemaMigration(new DbDeltaSchemaInstaller($database)),
                 new VenueSchemaMigration(new DbDeltaSchemaInstaller($database)),
+                new MailboxSchemaMigration(new DbDeltaSchemaInstaller($database)),
             ],
             new WordPressMigrationVersionStore(),
             new WordPressMigrationLogger()

@@ -49,14 +49,14 @@ The IMAP protocol tests use a scripted transport and run with PHPUnit's regular 
 
 ```powershell
 docker network create adct-imap-test
-docker run -d --name adct-imap-greenmail --network adct-imap-test --network-alias greenmail -p 3025:3025 -p 3143:3143 greenmail/standalone:2.1.13
+docker run -d --name adct-imap-greenmail --network adct-imap-test --network-alias greenmail -p 3025:3025 -p 3143:3143 -e GREENMAIL_OPTS="-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=intake:greenmail-test-password@example.test -Dgreenmail.users.login=EMAIL" greenmail/standalone:2.1.13
 docker run --rm --network adct-imap-test -e IMAP_TEST_HOST=greenmail -v "${PWD}:/app" -w /app php:8.2-cli vendor/bin/phpunit --group greenmail tests/Integration/Imap
 docker stop adct-imap-greenmail
 docker rm adct-imap-greenmail
 docker network rm adct-imap-test
 ```
 
-GreenMail's standalone image provides a throwaway local IMAP/SMTP server. The test sends only invented `example.test` mail and opts into unencrypted IMAP solely in its test configuration. The CI job pins `greenmail/standalone:2.1.13` and runs this group independently of the existing PHP matrix and WordPress integration job.
+GreenMail's standalone image provides a throwaway local IMAP/SMTP server. Tests send only invented `example.test` mail and opt into unencrypted IMAP solely in test configuration. They cover protocol operations plus the connection-test service's successful login, wrong-password handling, and missing processed-folder result. The CI job pins `greenmail/standalone:2.1.13` and runs this group independently of the existing PHP matrix and WordPress integration job.
 
 The build pins Strauss 0.30.0 and verifies the official [release asset](https://github.com/BrianHenryIE/strauss/releases/download/0.30.0/strauss.phar) against SHA-256 `08c1a8e553594745c22294e158129005fd11ed09ed452d7d4f48566f38c66c96` before running it. To upgrade Strauss, calculate the SHA-256 of the chosen official release asset and update both `STRAUSS_VERSION` and `STRAUSS_SHA256` in `scripts/build-release.sh`, then rebuild the zip locally.
 

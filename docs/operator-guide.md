@@ -109,24 +109,47 @@ If an event after a Mass-intentions or prayer list is missed, give the events th
 
 ## Configure API keys and mailbox passwords
 
-The OpenRouter API key can be stored in the WordPress options database or supplied as `ADCT_PI_AI_API_KEY`. A non-empty constant takes precedence. On **Parish Intake → Settings**, a configured constant is shown only as **Set in wp-config.php**; a saved database key is never displayed, and leaving its password field blank keeps it. Select **Remove saved key** to delete a database key, including one overridden by a constant. Mailbox and OCR secrets are registered for their later settings screens; their fields are not part of the current settings page. Future global secrets follow the `ADCT_PI_<PURPOSE>` constant and `adct_parish_intake_<purpose>` option naming pattern and must be added to the secrets registry.
+### Connect the events mailbox on xneelo
+
+An Administrator or Intake manager with settings access can open **Parish Intake → Mailboxes** and select **Add mailbox**. For the Archdiocese events mailbox, use:
+
+| Field | Value |
+|---|---|
+| Label | `Archdiocese events` |
+| IMAP host | `<IMAP hostname from xneelo konsoleH>` (placeholder; use the exact server hostname shown for the mailbox, not a custom alias) |
+| Port | `993` |
+| Encryption | `SSL/TLS` |
+| Username / email address | `events@adct.org.za` |
+| Inbox folder | `INBOX` |
+| Processed folder | `Processed` |
+| Maximum message size | `30` MB |
+
+TLS certificate and hostname verification is always on for production connections. If **Test connection** reports a secure-connection or certificate error, follow this instruction: **Use the mail server name shown on the certificate (for xneelo, the server hostname from your hosting control panel) instead of a custom alias.** Do not change the hostname to an unverified alias.
+
+Enter the mailbox password in the write-only field, or use a password constant described below. The Mailboxes screen never shows a saved password. When a password is saved in the database, leave the field blank to keep it; select **Remove saved password** to delete it. Database-stored passwords are not encrypted by this plugin.
+
+Select **Test connection** on the mailbox row to sign in, count unseen messages in the inbox and check that the Processed folder exists. If the folder is missing, select **Create processed folder** in the test result. The check does not download message bodies or start polling. Mailbox polling is a separate feature and is not enabled by these settings.
+
+### Configure keys and password constants
+
+The OpenRouter API key can be stored in the WordPress options database or supplied as `ADCT_PI_AI_API_KEY`. A non-empty constant takes precedence. On **Parish Intake → Settings**, a configured constant is shown only as **Set in wp-config.php**; a saved database key is never displayed, and leaving its password field blank keeps it. Select **Remove saved key** to delete a database key, including one overridden by a constant. Mailbox passwords are managed from **Parish Intake → Mailboxes**. OCR secrets are reserved for a later settings screen. Future global secrets follow the `ADCT_PI_<PURPOSE>` constant and `adct_parish_intake_<purpose>` option naming pattern and must be added to the secrets registry.
 
 To keep secrets out of the database, edit `wp-config.php` and add the needed definitions above the line that says `That's all, stop editing!`:
 
 ```php
 define('ADCT_PI_AI_API_KEY', 'replace-with-your-openrouter-api-key');
-define('ADCT_PI_IMAP_PASSWORD', 'replace-with-your-mailbox-password');
+define('ADCT_PI_IMAP_PASSWORD', 'replace-with-the-events-mailbox-password');
 define('ADCT_PI_OCR_API_KEY', 'replace-with-your-ocr-api-key');
 ```
 
-The values above are placeholders; replace them with the site's credentials and do not commit those values to a repository. For a mailbox-specific password, use `ADCT_PI_IMAP_PASSWORD_<SLUG>`, where a stable mailbox slug is uppercased and hyphens become underscores (for example, `central-office` becomes `ADCT_PI_IMAP_PASSWORD_CENTRAL_OFFICE`). This pattern is ready for the mailbox settings feature; per-mailbox configuration is not available yet.
+The values above are placeholders; replace them with the site's credentials and do not commit those values to a repository. The default `ADCT_PI_IMAP_PASSWORD` constant is used for mailboxes without a per-mailbox constant. After saving a mailbox, its form shows the exact per-mailbox constant name; it uses the stable mailbox ID (for example, mailbox ID `12` uses `ADCT_PI_IMAP_PASSWORD_MAILBOX_12`). A per-mailbox constant takes precedence over the default constant, and either non-empty constant takes precedence over a stored database password. Add the constant to `wp-config.php` above the stop-editing line; do not store its value in the repository.
 
 ## Check database installation and upgrade (staging)
 
 Do this on a staging site with a recent database backup; do not change schema options on the live site.
 
-1. On a fresh staging install, activate the plugin and use the site's database manager to confirm `adct_pi_db_version` is `2` and that the 15 `adct_pi_*` tables in [the data model](data-model.md) exist. Confirm `adct_pi_venues` has the aliases, coordinates, default, status and source-parish columns, and `adct_pi_sources` has its registry and health columns.
-2. On a staging copy of a prototype installation, update/activate the new plugin and visit a WordPress admin page to run the upgrade check. Confirm the option is `2`, the venue and source columns exist, and no database-upgrade error notice is shown.
+1. On a fresh staging install, activate the plugin and use the site's database manager to confirm `adct_pi_db_version` is `3` and that the 16 `adct_pi_*` tables in [the data model](data-model.md) exist. Confirm `adct_pi_venues` has the aliases, coordinates, default, status and source-parish columns; `adct_pi_sources` has its registry and health columns; and `adct_pi_mailboxes` has its source link and connection settings.
+2. On a staging copy of a prototype installation, update/activate the new plugin and visit a WordPress admin page to run the upgrade check. Confirm the option is `3`, the venue, source and mailbox tables exist, and no database-upgrade error notice is shown.
 3. Confirm `wp_adct_parish_intake_items` and its row count are unchanged, then open **Parish Intake → Manual parser** and verify that recent stored parses still appear.
 
 ## Keep scheduled jobs running

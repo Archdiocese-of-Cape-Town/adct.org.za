@@ -19,6 +19,22 @@ final class WordPressSecretResolver
 
     public function resolve(string $secretId, ?string $scope = null): string
     {
+        if ($secretId === SecretRegistry::IMAP_PASSWORD && $scope !== null) {
+            $mailboxConstant = SecretRegistry::constantName($secretId, $scope);
+            $mailboxOption = SecretRegistry::optionName($secretId, $scope);
+            $defaultConstant = SecretRegistry::constantName($secretId);
+
+            if ($this->resolver->hasConstant($mailboxConstant)) {
+                return $this->resolver->resolve($mailboxConstant, $mailboxOption);
+            }
+
+            if ($this->resolver->hasConstant($defaultConstant)) {
+                return $this->resolver->resolve($defaultConstant, $mailboxOption);
+            }
+
+            return $this->resolver->resolve($mailboxConstant, $mailboxOption);
+        }
+
         return $this->resolver->resolve(
             SecretRegistry::constantName($secretId, $scope),
             SecretRegistry::optionName($secretId, $scope)
@@ -27,7 +43,26 @@ final class WordPressSecretResolver
 
     public function isConstantConfigured(string $secretId, ?string $scope = null): bool
     {
-        return $this->resolver->hasConstant(SecretRegistry::constantName($secretId, $scope));
+        return $this->configuredConstantName($secretId, $scope) !== null;
+    }
+
+    public function configuredConstantName(string $secretId, ?string $scope = null): ?string
+    {
+        $constantName = SecretRegistry::constantName($secretId, $scope);
+
+        if ($this->resolver->hasConstant($constantName)) {
+            return $constantName;
+        }
+
+        if ($secretId === SecretRegistry::IMAP_PASSWORD && $scope !== null) {
+            $defaultConstant = SecretRegistry::constantName($secretId);
+
+            if ($this->resolver->hasConstant($defaultConstant)) {
+                return $defaultConstant;
+            }
+        }
+
+        return null;
     }
 
     public function hasStoredOption(string $secretId, ?string $scope = null): bool
