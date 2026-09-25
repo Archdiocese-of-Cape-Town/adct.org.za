@@ -2,7 +2,7 @@
 
 All custom tables live in the **site's existing WordPress database** (MySQL; on xneelo this is MariaDB 10.11, a MySQL-compatible server). No separate database is needed. SQL must work on both MySQL 8 and MariaDB 10.11: no engine-specific features, and JSON is stored in `longtext`. Tables use the WordPress table prefix (shown as `wp_` here) and the `adct_pi_` namespace. Every table has an auto-incrementing `bigint(20) unsigned` `id` and UTC `created_at` / `updated_at` columns. Local-time values are stored with the timezone `Africa/Johannesburg`. Schema changes go through ordered, versioned migrations (`adct_pi_db_version` plus `dbDelta`). Scheduled-job checkpoints, locks, and run history are stored in non-autoloaded WordPress options and do not add custom tables.
 
-**Current schema version: 1.** It creates the 15 `adct_pi_*` tables listed below; `adct_event` remains a WordPress custom post type and is not a custom table migration. Schema v1 stores JSON in `longtext`, booleans in `tinyint(1)`, and uses indexed `varchar` columns no longer than 191 characters for utf8mb4 key limits. Relationships shown as foreign keys below are logical references; physical foreign-key constraints are intentionally not used so `dbDelta` can upgrade the schema on both supported database servers. For columns whose prose description did not specify storage types, v1 uses unsigned `bigint(20)` for WordPress and relationship IDs, `datetime` for UTC instants, and `date` for `occurrences.start_local_date`; enum-like values use `varchar` rather than database `ENUM`. `attachments.size_bytes` is unsigned `bigint(20)`, and `event_candidates.confidence` is `decimal(4,3)`. `mail_queue.subject` is `varchar(255)`, action-token `created_ip` is `varchar(45)`, and event-change snapshots use `before_payload` / `after_payload` `longtext` columns.
+**Current schema version: 2.** Version 1 creates the 15 `adct_pi_*` tables listed below; version 2 extends `adct_pi_venues` without changing that table count. `adct_event` remains a WordPress custom post type and is not a custom table migration. Schema v1 stores JSON in `longtext`, booleans in `tinyint(1)`, and uses indexed `varchar` columns no longer than 191 characters for utf8mb4 key limits. Relationships shown as foreign keys below are logical references; physical foreign-key constraints are intentionally not used so `dbDelta` can upgrade the schema on both supported database servers. For columns whose prose description did not specify storage types, v1 uses unsigned `bigint(20)` for WordPress and relationship IDs, `datetime` for UTC instants, and `date` for `occurrences.start_local_date`; enum-like values use `varchar` rather than database `ENUM`. `attachments.size_bytes` is unsigned `bigint(20)`, and `event_candidates.confidence` is `decimal(4,3)`. `mail_queue.subject` is `varchar(255)`, action-token `created_ip` is `varchar(45)`, and event-change snapshots use `before_payload` / `after_payload` `longtext` columns.
 
 The prototype table `wp_adct_parish_intake_items` is retained as a legacy table. Versioned migrations neither alter, drop, nor migrate it; the current Manual parser and static report continue using it unchanged. Its future disposition is pending an explicit owner decision: migrate its rows into `inbound_messages` + `event_candidates`, or drop it only after explicit admin confirmation. It must never be dropped silently.
 
@@ -76,7 +76,17 @@ Approver WordPress accounts are created with a random password and no notificati
 The 124 parishes, outstations and mass centres are seeded from [`data/seed/parishes.csv`](../data/seed/README.md) (public directory data; only official `@adct.org.za` office emails, which become `verified` contacts on import).
 
 ### `adct_pi_venues`
-Named places for a parish (church, hall, outstation), each with its own address and lat/lng. Used by the parser to look up venue names.
+| Column | Notes |
+|---|---|
+| parish_id | FK → the parish that owns this venue |
+| source_parish_id | nullable unique FK → an imported outstation or mass-centre parish; supports idempotent directory imports |
+| name, aliases | aliases are a JSON list in `longtext`; each can also be entered as a comma-separated or newline-separated value |
+| address, suburb | the venue's own location description |
+| latitude, longitude | optional `decimal(9,6)` coordinates |
+| is_default | bool; one active default per parish whenever it has active venues |
+| status | `active`, `inactive`; inactive venues are not lookup candidates |
+
+Selecting a default clears the flag from the parish's other venues. Deactivating a default promotes another active venue; the final active venue cannot be deactivated. Names and aliases are matched case- and punctuation-insensitively, treating `St`/`Saint`, apostrophe variants, and trailing `Church`/`Hall` as equivalent for lookup. Imports create a provisional default from the parish church/name when needed and create a parent-parish venue for linked outstations and mass centres without changing their child-parish records. Automatically generated defaults should be reviewed by an operator.
 
 ### `adct_pi_parish_contacts` (sender registry)
 | Column | Notes |

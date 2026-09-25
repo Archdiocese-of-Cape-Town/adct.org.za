@@ -8,9 +8,12 @@ use ADCT\ParishIntake\Core\Auth\RoleInstaller;
 use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
 use ADCT\ParishIntake\Core\Database\CreateSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MigrationRunner;
+use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
 use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
+use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
+use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\Core\Jobs\FrameworkHeartbeatJob;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
@@ -32,6 +35,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\Schema;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationLogger;
@@ -78,7 +82,9 @@ final class Plugin
         $deaneries = new DeaneryRepository($database);
         $approvers = new DeaneryApproverRepository($database);
         $contacts = new ParishContactRepository($database);
+        $venues = new VenueRepository($database);
         $contactService = new ContactService($contacts, $clock);
+        $venueAdministrationService = new VenueAdministrationService($venues, $clock);
         $approvalRouteResolver = new ApprovalRouteResolver(new ApprovalRouteRepository($database));
         $this->deaneriesPage = new DeaneriesPage(
             $deaneries,
@@ -97,9 +103,12 @@ final class Plugin
                 $parishes,
                 $deaneries,
                 $contactService,
-                $clock
+                $clock,
+                new VenueDirectoryImporter($venues, $clock)
             ),
             $approvalRouteResolver,
+            $venues,
+            $venueAdministrationService,
             $clock
         );
         $this->sendersPage = new SendersPage($contacts, $contactService, $parishes);
@@ -251,6 +260,8 @@ final class Plugin
         add_action('admin_init', [$this->parserPage, 'maybeHandleSettings']);
         add_action('admin_post_adct_pi_save_parish', [$this->parishesPage, 'handleSaveParish']);
         add_action('admin_post_adct_pi_bulk_assign_parishes', [$this->parishesPage, 'handleBulkAssign']);
+        add_action('admin_post_adct_pi_venue_action', [$this->parishesPage, 'handleVenueAction']);
+        add_action('admin_post_adct_pi_venue_backfill', [$this->parishesPage, 'handleVenueBackfill']);
         add_action('admin_post_adct_pi_parish_contact', [$this->parishesPage, 'handleContactAction']);
         add_action('admin_post_adct_pi_save_deanery', [$this->deaneriesPage, 'handleSaveDeanery']);
         add_action('admin_post_adct_pi_deactivate_deanery', [$this->deaneriesPage, 'handleDeactivateDeanery']);
@@ -291,7 +302,10 @@ final class Plugin
         $database = new WordPressDatabaseConnection();
 
         return new MigrationRunner(
-            [new CreateSchemaMigration(new DbDeltaSchemaInstaller($database))],
+            [
+                new CreateSchemaMigration(new DbDeltaSchemaInstaller($database)),
+                new VenueSchemaMigration(new DbDeltaSchemaInstaller($database)),
+            ],
             new WordPressMigrationVersionStore(),
             new WordPressMigrationLogger()
         );

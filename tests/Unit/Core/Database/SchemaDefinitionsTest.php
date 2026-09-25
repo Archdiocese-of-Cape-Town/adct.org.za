@@ -6,6 +6,7 @@ namespace ADCT\ParishIntake\Tests\Unit\Core\Database;
 
 use ADCT\ParishIntake\Core\Database\CreateSchemaMigration;
 use ADCT\ParishIntake\Core\Database\SchemaDefinitions;
+use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
 use ADCT\ParishIntake\Core\Ports\SchemaInstallerInterface;
 use PHPUnit\Framework\TestCase;
 
@@ -79,6 +80,29 @@ final class SchemaDefinitionsTest extends TestCase
 
         self::assertSame(SchemaDefinitions::VERSION, $migration->version());
         self::assertSame(array_values(SchemaDefinitions::statements()), $installer->statements);
+    }
+
+    public function testVenueSchemaMigrationAddsVersionTwoColumnsWithoutChangingV1(): void
+    {
+        $installer = new RecordingSchemaInstaller();
+        $migration = new VenueSchemaMigration($installer);
+
+        $migration->apply();
+
+        self::assertSame(1, SchemaDefinitions::VERSION);
+        self::assertSame(2, $migration->version());
+        self::assertCount(1, $installer->statements);
+
+        foreach ([
+            'CREATE TABLE {table_prefix}adct_pi_venues',
+            'aliases longtext NULL',
+            'is_default tinyint(1) NOT NULL DEFAULT 0',
+            "status varchar(20) NOT NULL DEFAULT 'active'",
+            'source_parish_id bigint(20) unsigned NULL',
+            'UNIQUE KEY source_parish_id (source_parish_id)',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $installer->statements[0]);
+        }
     }
 }
 

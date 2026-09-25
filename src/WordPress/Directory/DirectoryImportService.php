@@ -10,6 +10,7 @@ use ADCT\ParishIntake\Core\Directory\ImportPlan;
 use ADCT\ParishIntake\Core\Directory\ImportRow;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
+use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use DateTimeZone;
@@ -24,7 +25,8 @@ final class DirectoryImportService
         private ParishRepository $parishes,
         private DeaneryRepository $deaneries,
         private ContactService $contacts,
-        private ClockInterface $clock
+        private ClockInterface $clock,
+        private VenueDirectoryImporter $venueImporter
     ) {
     }
 
@@ -125,7 +127,14 @@ final class DirectoryImportService
             }
         }
 
+        $this->venueImporter->import($this->parishes->findAllForImport());
+
         return $plan;
+    }
+
+    public function ensureVenuesFromDirectory(): int
+    {
+        return $this->venueImporter->import($this->parishes->findAllForImport());
     }
 
     public function previewDeaneries(string $csv): ImportPlan

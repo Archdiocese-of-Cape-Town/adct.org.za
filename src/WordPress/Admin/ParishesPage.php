@@ -15,10 +15,13 @@ use ADCT\ParishIntake\Core\Directory\ImportRow;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
 use ADCT\ParishIntake\Core\Directory\ParishDataValidator;
 use ADCT\ParishIntake\Core\Directory\SenderTrust;
+use ADCT\ParishIntake\Core\Directory\Venue;
+use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
 use DateTimeZone;
 use DomainException;
@@ -39,6 +42,8 @@ final class ParishesPage
         private ContactService $contactService,
         private DirectoryImportService $importService,
         private ApprovalRouteResolver $approvalRouteResolver,
+        private VenueRepository $venues,
+        private VenueAdministrationService $venueService,
         private ClockInterface $clock
     ) {
     }
@@ -77,6 +82,12 @@ final class ParishesPage
                 wp_die(esc_html__('The parish could not be found.', 'adct-parish-intake'), '', [
                     'response' => 404,
                 ]);
+            }
+
+            if (sanitize_key($this->getText('tab')) === 'venues') {
+                $this->renderVenueTab($parish);
+
+                return;
             }
 
             $this->renderForm($parish, $deaneries, $parishRows);
@@ -390,6 +401,70 @@ final class ParishesPage
         exit;
     }
 
+    public function handleVenueAction(): void
+    {
+        $this->requireDirectoryCapability();
+        $parishId = absint($this->postText('parish_id'));
+        $venueId = absint($this->postText('venue_id'));
+        $action = sanitize_key($this->postText('venue_action'));
+
+        if (! in_array($action, ['save', 'deactivate', 'reactivate'], true)) {
+            wp_die(esc_html__('Choose a valid venue action.', 'adct-parish-intake'), '', [
+                'response' => 400,
+            ]);
+        }
+
+        check_admin_referer($this->venueNonceAction($action, $parishId, $venueId));
+
+        if ($parishId < 1 || $this->parishes->findWithRelations($parishId) === null) {
+            wp_die(esc_html__('The parish could not be found.', 'adct-parish-intake'), '', [
+                'response' => 404,
+            ]);
+        }
+
+        try {
+            if ($action === 'save') {
+                $this->venueService->save($parishId, $venueId, [
+                    'name' => sanitize_text_field($this->postText('name')),
+                    'aliases' => sanitize_textarea_field($this->postText('aliases')),
+                    'address' => sanitize_textarea_field($this->postText('address')),
+                    'suburb' => sanitize_text_field($this->postText('suburb')),
+                    'latitude' => sanitize_text_field($this->postText('latitude')),
+                    'longitude' => sanitize_text_field($this->postText('longitude')),
+                    'is_default' => $this->postText('is_default') === '1' ? '1' : '0',
+                ]);
+            } elseif ($action === 'deactivate') {
+                $this->venueService->deactivate($parishId, $venueId);
+            } else {
+                $this->venueService->reactivate($parishId, $venueId);
+            }
+        } catch (DomainException | InvalidArgumentException $failure) {
+            wp_die(esc_html($failure->getMessage()), esc_html__('Venue update failed', 'adct-parish-intake'), [
+                'response' => 400,
+            ]);
+        }
+
+        wp_safe_redirect($this->pageUrl([
+            'action' => 'edit',
+            'id' => $parishId,
+            'tab' => 'venues',
+            'venue_saved' => 1,
+        ]));
+        exit;
+    }
+
+    public function handleVenueBackfill(): void
+    {
+        $this->requireDirectoryCapability();
+        check_admin_referer('adct_pi_venue_backfill');
+        $created = $this->importService->ensureVenuesFromDirectory();
+
+        wp_safe_redirect($this->pageUrl([
+            'venues_seeded' => $created,
+        ]));
+        exit;
+    }
+
     public function handleContactAction(): void
     {
         $this->requireDirectoryCapability();
@@ -656,6 +731,10 @@ final class ParishesPage
             <h1><?php echo $isNew ? 'Add parish' : 'Edit parish'; ?></h1>
             <p><a href="<?php echo esc_url($this->pageUrl()); ?>">&larr; Back to parishes</a></p>
 
+            <?php if (! $isNew) : ?>
+                <?php $this->renderEditTabs($id, 'details'); ?>
+            <?php endif; ?>
+
             <?php $this->renderApprovalRouteStatus($isNew ? null : $record); ?>
 
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
@@ -781,6 +860,155 @@ final class ParishesPage
             <?php endif; ?>
         </div>
         <?php
+    }
+
+    /**
+     * @param array<string, mixed> $parish
+     */
+    private function renderVenueTab(array $parish): void
+    {
+        $parishId = (int) ($parish['id'] ?? 0);
+        $venues = $this->venues->findForParish($parishId);
+        ?>
+        <div class="wrap">
+            <h1>Venues for <?php echo esc_html((string) ($parish['name'] ?? '')); ?></h1>
+            <p><a href="<?php echo esc_url($this->pageUrl([
+                'action' => 'edit',
+                'id' => $parishId,
+            ])); ?>">&larr; Back to parish details</a></p>
+            <?php $this->renderEditTabs($parishId, 'venues'); ?>
+            <?php $this->renderVenueNotices(); ?>
+
+            <p class="description">
+                Keep one active default venue for this parish. Selecting a default clears the flag from its other venues.
+                Venues created from the directory are provisional; confirm their names and locations before relying on them.
+            </p>
+
+            <?php if ($venues === []) : ?>
+                <p>No venues are recorded for this parish yet.</p>
+            <?php endif; ?>
+
+            <?php foreach ($venues as $venue) : ?>
+                <section class="postbox" style="padding: 12px 16px; margin-top: 16px;">
+                    <h2 class="hndle">
+                        <?php echo esc_html($venue->name); ?>
+                        <?php if ($venue->isDefault) : ?>
+                            <span class="description">(Default)</span>
+                        <?php endif; ?>
+                    </h2>
+                    <p class="description">
+                        Status: <?php echo esc_html($this->label($venue->status)); ?>
+                        <?php if ($venue->sourceParishId !== null) : ?>
+                            · Imported from linked parish record #<?php echo esc_html((string) $venue->sourceParishId); ?>
+                        <?php endif; ?>
+                    </p>
+                    <?php $this->renderVenueForm($parishId, $venue); ?>
+
+                    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                        <input type="hidden" name="action" value="adct_pi_venue_action" />
+                        <input type="hidden" name="venue_action" value="<?php echo $venue->status === Venue::ACTIVE ? 'deactivate' : 'reactivate'; ?>" />
+                        <input type="hidden" name="parish_id" value="<?php echo esc_attr((string) $parishId); ?>" />
+                        <input type="hidden" name="venue_id" value="<?php echo esc_attr((string) $venue->id); ?>" />
+                        <?php wp_nonce_field($this->venueNonceAction(
+                            $venue->status === Venue::ACTIVE ? 'deactivate' : 'reactivate',
+                            $parishId,
+                            $venue->id
+                        )); ?>
+                        <?php
+                        submit_button(
+                            $venue->status === Venue::ACTIVE ? 'Deactivate venue' : 'Reactivate venue',
+                            $venue->status === Venue::ACTIVE ? 'delete' : 'secondary',
+                            'submit',
+                            false
+                        );
+                        ?>
+                    </form>
+                </section>
+            <?php endforeach; ?>
+
+            <hr />
+            <h2>Add a venue</h2>
+            <p class="description">The first active venue is made the default automatically.</p>
+            <?php $this->renderVenueForm($parishId, null); ?>
+        </div>
+        <?php
+    }
+
+    private function renderEditTabs(int $parishId, string $activeTab): void
+    {
+        ?>
+        <nav class="nav-tab-wrapper wp-clearfix" aria-label="Parish edit sections">
+            <a class="nav-tab <?php echo $activeTab === 'details' ? 'nav-tab-active' : ''; ?>" href="<?php echo esc_url($this->pageUrl([
+                'action' => 'edit',
+                'id' => $parishId,
+            ])); ?>">Parish details</a>
+            <a class="nav-tab <?php echo $activeTab === 'venues' ? 'nav-tab-active' : ''; ?>" href="<?php echo esc_url($this->pageUrl([
+                'action' => 'edit',
+                'id' => $parishId,
+                'tab' => 'venues',
+            ])); ?>">Venues</a>
+        </nav>
+        <?php
+    }
+
+    private function renderVenueForm(int $parishId, ?Venue $venue): void
+    {
+        $venueId = $venue?->id ?? 0;
+        $prefix = 'venue-' . ($venueId > 0 ? (string) $venueId : 'new');
+        ?>
+        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+            <input type="hidden" name="action" value="adct_pi_venue_action" />
+            <input type="hidden" name="venue_action" value="save" />
+            <input type="hidden" name="parish_id" value="<?php echo esc_attr((string) $parishId); ?>" />
+            <input type="hidden" name="venue_id" value="<?php echo esc_attr((string) $venueId); ?>" />
+            <?php wp_nonce_field($this->venueNonceAction('save', $parishId, $venueId)); ?>
+            <table class="form-table" role="presentation">
+                <tr>
+                    <th scope="row"><label for="<?php echo esc_attr($prefix); ?>-name">Name</label></th>
+                    <td><input id="<?php echo esc_attr($prefix); ?>-name" class="regular-text" name="name" type="text" maxlength="191" required value="<?php echo esc_attr($venue?->name ?? ''); ?>" /></td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="<?php echo esc_attr($prefix); ?>-aliases">Aliases</label></th>
+                    <td><textarea id="<?php echo esc_attr($prefix); ?>-aliases" class="large-text" rows="3" name="aliases"><?php echo esc_textarea(implode("\n", $venue?->aliases ?? [])); ?></textarea><p class="description">Enter one alias per line or separate aliases with commas.</p></td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="<?php echo esc_attr($prefix); ?>-address">Address</label></th>
+                    <td><textarea id="<?php echo esc_attr($prefix); ?>-address" class="large-text" rows="3" name="address"><?php echo esc_textarea($venue?->address ?? ''); ?></textarea></td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="<?php echo esc_attr($prefix); ?>-suburb">Suburb</label></th>
+                    <td><input id="<?php echo esc_attr($prefix); ?>-suburb" class="regular-text" name="suburb" type="text" value="<?php echo esc_attr($venue?->suburb ?? ''); ?>" /></td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="<?php echo esc_attr($prefix); ?>-latitude">Latitude</label></th>
+                    <td><input id="<?php echo esc_attr($prefix); ?>-latitude" name="latitude" type="number" step="any" min="-90" max="90" value="<?php echo esc_attr($venue?->latitude === null ? '' : (string) $venue->latitude); ?>" /></td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="<?php echo esc_attr($prefix); ?>-longitude">Longitude</label></th>
+                    <td><input id="<?php echo esc_attr($prefix); ?>-longitude" name="longitude" type="number" step="any" min="-180" max="180" value="<?php echo esc_attr($venue?->longitude === null ? '' : (string) $venue->longitude); ?>" /></td>
+                </tr>
+                <tr>
+                    <th scope="row">Default</th>
+                    <td>
+                        <label>
+                            <input name="is_default" type="checkbox" value="1" <?php checked($venue?->isDefault ?? false); ?> <?php disabled($venue !== null && $venue->status !== Venue::ACTIVE); ?> />
+                            Use as this parish's default venue
+                        </label>
+                    </td>
+                </tr>
+            </table>
+            <?php submit_button($venue === null ? 'Add venue' : 'Save venue', 'primary', 'submit', false); ?>
+        </form>
+        <?php
+    }
+
+    private function renderVenueNotices(): void
+    {
+        if (isset($_GET['venue_saved'])) {
+            ?>
+            <div class="notice notice-success is-dismissible"><p>Parish venue saved.</p></div>
+            <?php
+        }
     }
 
     private function renderContacts(int $parishId): void
@@ -915,6 +1143,14 @@ final class ParishesPage
         <h3>Import parishes</h3>
         <?php $this->renderUploadForm('parishes', 'Preview parish CSV'); ?>
         <p class="description">CSV files are limited to 1 MB and 2,000 data rows. The upload is kept in a short-lived admin transient only until you confirm or the preview expires.</p>
+        <hr />
+        <h3>Set up venue records</h3>
+        <p>Parish imports create missing default venues and linked venues for outstations and mass centres. Use this repeatable action to backfill existing directory rows; it does not duplicate existing imported venues. Generated default venues are provisional and should be checked.</p>
+        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+            <input type="hidden" name="action" value="adct_pi_venue_backfill" />
+            <?php wp_nonce_field('adct_pi_venue_backfill'); ?>
+            <?php submit_button('Create missing venue records', 'secondary', 'submit', false); ?>
+        </form>
         <?php
     }
 
@@ -1096,6 +1332,15 @@ final class ParishesPage
             <?php
         }
 
+        if (isset($_GET['venues_seeded'])) {
+            $count = absint($this->getText('venues_seeded'));
+            ?>
+            <div class="notice notice-success is-dismissible">
+                <p><?php echo esc_html((string) $count); ?> venue record(s) created or default assignment(s) repaired. Generated default venues are provisional; check their names and locations.</p>
+            </div>
+            <?php
+        }
+
         if (isset($_GET['imported'])) {
             $type = sanitize_key($this->getText('import_type'));
             $counts = [
@@ -1110,6 +1355,9 @@ final class ParishesPage
                     <?php echo esc_html((string) $counts['created']); ?> created,
                     <?php echo esc_html((string) $counts['updated']); ?> updated,
                     <?php echo esc_html((string) $counts['unchanged']); ?> unchanged.
+                    <?php if ($type === 'parishes') : ?>
+                        Missing default and linked outstation venues were also set up. Review provisional defaults on the Venues tabs.
+                    <?php endif; ?>
                 </p>
             </div>
             <?php
@@ -1250,6 +1498,11 @@ final class ParishesPage
     private function contactNonceAction(string $action, int $parishId, int $contactId): string
     {
         return 'adct_pi_parish_contact_' . $action . '_' . $parishId . '_' . $contactId;
+    }
+
+    private function venueNonceAction(string $action, int $parishId, int $venueId): string
+    {
+        return 'adct_pi_venue_' . $action . '_' . $parishId . '_' . $venueId;
     }
 
     /**
