@@ -1,7 +1,15 @@
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -16,7 +24,60 @@ if (!npmCli) {
   throw new Error('Run this harness with `npm run test:integration` or `composer test:integration`.');
 }
 
-const wpEnvHome = join(tmpdir(), 'adct-parish-intake-wp-env');
+const hasCustomWpEnvHome = Boolean(process.env.WP_ENV_HOME);
+const wpEnvHome = hasCustomWpEnvHome
+  ? resolve(process.env.WP_ENV_HOME)
+  : join(tmpdir(), 'adct-parish-intake-wp-env');
+const wpEnvCli = join(repositoryRoot, 'node_modules', '@wordpress', 'env', 'bin', 'wp-env');
+
+if (!existsSync(wpEnvCli)) {
+  throw new Error('Install Node dependencies before running WordPress integration tests.');
+}
+
+let temporaryConfigDirectory = null;
+let wpEnvConfigDirectory = repositoryRoot;
+
+if (hasCustomWpEnvHome) {
+  const configCacheDirectory = join(repositoryRoot, 'node_modules', '.cache');
+  mkdirSync(configCacheDirectory, { recursive: true });
+  temporaryConfigDirectory = mkdtempSync(
+    join(configCacheDirectory, 'adct-parish-intake-wp-env-')
+  );
+  wpEnvConfigDirectory = temporaryConfigDirectory;
+
+  try {
+    const wpEnvConfig = JSON.parse(
+      readFileSync(join(repositoryRoot, '.wp-env.json'), 'utf8')
+    );
+    wpEnvConfig.mappings = Object.fromEntries(
+      Object.entries(wpEnvConfig.mappings ?? {}).map(([destination, source]) => [
+        destination,
+        resolve(repositoryRoot, source),
+      ])
+    );
+    writeFileSync(
+      join(wpEnvConfigDirectory, '.wp-env.json'),
+      `${JSON.stringify(wpEnvConfig, null, 2)}\n`
+    );
+
+    const defaultProjectHash = createHash('md5')
+      .update(join(repositoryRoot, '.wp-env.json'))
+      .digest('hex');
+    const isolatedProjectHash = createHash('md5')
+      .update(join(wpEnvConfigDirectory, '.wp-env.json'))
+      .digest('hex');
+
+    if (isolatedProjectHash === defaultProjectHash) {
+      throw new Error('The isolated wp-env configuration must use a distinct project path.');
+    }
+
+    console.log(`Using isolated wp-env project ${isolatedProjectHash}.`);
+  } catch (error) {
+    rmSync(temporaryConfigDirectory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 const environment = {
   ...process.env,
   WP_ENV_HOME: wpEnvHome,
@@ -25,9 +86,9 @@ const environment = {
 function runWpEnv(args) {
   const result = spawnSync(
     process.execPath,
-    [npmCli, 'exec', '--no', '--', 'wp-env', ...args],
+    [wpEnvCli, ...args],
     {
-      cwd: repositoryRoot,
+      cwd: wpEnvConfigDirectory,
       env: environment,
       stdio: 'inherit',
     }
@@ -44,6 +105,7 @@ function runWpEnv(args) {
 
 let startAttempted = false;
 let failure = null;
+let environmentStopped = false;
 
 try {
   startAttempted = true;
@@ -77,6 +139,7 @@ try {
   try {
     if (startAttempted) {
       runWpEnv(['stop']);
+      environmentStopped = true;
     }
   } catch (cleanupError) {
     if (failure === null) {
@@ -84,6 +147,20 @@ try {
     } else {
       console.error('Could not stop the isolated wp-env environment:', cleanupError);
     }
+  }
+
+  if (temporaryConfigDirectory && environmentStopped) {
+    try {
+      rmSync(temporaryConfigDirectory, { recursive: true, force: true });
+    } catch (cleanupError) {
+      if (failure === null) {
+        failure = cleanupError;
+      } else {
+        console.error('Could not remove the temporary wp-env config:', cleanupError);
+      }
+    }
+  } else if (temporaryConfigDirectory) {
+    console.error(`Temporary wp-env config retained at ${temporaryConfigDirectory}.`);
   }
 }
 
