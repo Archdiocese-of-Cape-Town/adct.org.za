@@ -116,6 +116,20 @@ final class ConfirmationDecisionHandler implements AtomicActionTokenHandlerInter
         return new ActionTokenOutcome('Thank you. Your event has been approved and published.', $urls);
     }
 
+    private function truncate(string $value): string
+    {
+        if (strlen($value) <= 1000) {
+            return $value;
+        }
+
+        $value = substr($value, 0, 1000);
+        while ($value !== '' && preg_match('//u', $value) !== 1) {
+            $value = substr($value, 0, -1);
+        }
+
+        return $value . '…';
+    }
+
     public function performAtomic(
         ActionTokenBinding $binding,
         string $token,
@@ -242,18 +256,6 @@ final class ConfirmationDecisionHandler implements AtomicActionTokenHandlerInter
         $url = get_permalink($eventId);
         if (! is_string($url) || $url === '') {
             throw new RuntimeException('The published event permalink is unavailable.');
-        }
-
-        private function truncate(string $value): string
-        {
-            if (strlen($value) <= 1000) {
-                return $value;
-            }
-            $value = substr($value, 0, 1000);
-            while ($value !== '' && preg_match('//u', $value) !== 1) {
-                $value = substr($value, 0, -1);
-            }
-            return $value . '…';
         }
         return $url;
     }

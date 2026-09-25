@@ -199,7 +199,7 @@ final class ActionTokenEndpoint
                 error_log('[ADCT Parish Intake] Confirmation action failed (' . get_class($failure) . ').');
                 return new ActionTokenHttpResponse(503, $this->renderPage(
                     __('The event could not be completed', 'adct-parish-intake'),
-                    __('Please try this button again later; no new decision will be recorded.', 'adct-parish-intake')
+                    __('This decision may already be recorded. Please try this button again later; retrying is safe.', 'adct-parish-intake')
                 ));
             }
         } else {

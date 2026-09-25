@@ -17,6 +17,7 @@ use ADCT\ParishIntake\Core\Mail\MailQueueEnqueueResult;
 use ADCT\ParishIntake\Core\Mail\MailQueueStatus;
 use ADCT\ParishIntake\Core\Mail\OutboundEmail;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
+use ADCT\ParishIntake\Core\Ports\AtomicActionTokenHandlerInterface;
 use ADCT\ParishIntake\Core\Ports\ActionTokenActionHandlerInterface;
 use ADCT\ParishIntake\Core\Ports\MailerInterface;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
@@ -121,6 +122,57 @@ final class ActionTokenEndpointCheck
                 && strpos($replayResponse->body, 'already been used') !== false
                 && $handler->performCount === 1,
             'A token did not act exactly once through the nonce-protected POST endpoint.'
+        );
+
+        $recoveringHandler = new ActionTokenEndpointCheckRecoveringHandler();
+        $recoveringEndpoint = new ActionTokenEndpoint(
+            $tokens,
+            new ActionTokenHandlerRegistry([$recoveringHandler]),
+            new ActionTokenRenewalService(
+                $tokens,
+                $limiter,
+                new WordPressActionTokenRenewalDelivery($mailer)
+            )
+        );
+        $recoveringBinding = new ActionTokenBinding(
+            ActionTokenPurpose::CONFIRM,
+            'candidate',
+            $subjectId + 4,
+            'recover-' . $testSuffix . '@example.test'
+        );
+        $recoveringIssued = $tokens->issue($recoveringBinding, $clock->now()->modify('+5 minutes'));
+        $recoveringNonce = self::nonceFrom(
+            $recoveringEndpoint->respond('GET', $recoveringIssued->token(), '', '', '', '203.0.113.91')->body,
+            $fail
+        );
+        $recoveringFailure = $recoveringEndpoint->respond(
+            'POST',
+            '',
+            $recoveringIssued->token(),
+            'perform',
+            $recoveringNonce,
+            '203.0.113.91'
+        );
+        $recoveringRetry = $recoveringEndpoint->respond(
+            'POST',
+            '',
+            $recoveringIssued->token(),
+            'perform',
+            $recoveringNonce,
+            '203.0.113.91'
+        );
+
+        $check(
+            $recoveringFailure->statusCode === 503
+                && strpos($recoveringFailure->body, 'may already be recorded') !== false
+                && strpos($recoveringFailure->body, 'no new decision') === false
+                && $tokens->inspect($recoveringIssued->token())->status === ActionTokenStatus::USED
+                && $recoveringHandler->performCount === 1
+                && $recoveringHandler->recoverCount === 1
+                && $recoveringRetry->statusCode === 200
+                && strpos($recoveringRetry->body, 'Action completed after recovery.') !== false
+                && strpos($recoveringRetry->body, 'View published event') !== false,
+            'A failed confirmation did not recover safely on replay or report the correct retry guidance.'
         );
 
         $concurrentBinding = new ActionTokenBinding(
@@ -574,6 +626,64 @@ final class ActionTokenEndpointCheckHandler implements ActionTokenActionHandlerI
         ++$this->performCount;
 
         return new ActionTokenOutcome('Action completed.');
+    }
+}
+
+final class ActionTokenEndpointCheckRecoveringHandler implements AtomicActionTokenHandlerInterface
+{
+    public int $performCount = 0;
+    public int $recoverCount = 0;
+    private bool $failedOnce = false;
+
+    public function purpose(): ActionTokenPurpose
+    {
+        return ActionTokenPurpose::CONFIRM;
+    }
+
+    public function preview(ActionTokenBinding $binding): ?ActionTokenPreview
+    {
+        return new ActionTokenPreview(
+            'Confirmation <script>',
+            'Review and confirm this fictional item.',
+            'Confirm',
+            ['Item <private>']
+        );
+    }
+
+    public function perform(ActionTokenBinding $binding): ActionTokenOutcome
+    {
+        return new ActionTokenOutcome('Action completed.');
+    }
+
+    public function performAtomic(
+        ActionTokenBinding $binding,
+        string $token,
+        ActionTokenService $tokens,
+        string $reason
+    ): ActionTokenOutcome {
+        ++$this->performCount;
+
+        $consumption = $tokens->consume($token, $binding);
+        if ($consumption->status !== ActionTokenStatus::CONSUMED) {
+            throw new RuntimeException('The confirmation token could not be consumed.');
+        }
+
+        if (! $this->failedOnce) {
+            $this->failedOnce = true;
+            throw new RuntimeException('The confirmation publish step failed after the decision was recorded.');
+        }
+
+        return $this->recover($binding);
+    }
+
+    public function recover(ActionTokenBinding $binding): ActionTokenOutcome
+    {
+        ++$this->recoverCount;
+
+        return new ActionTokenOutcome(
+            'Action completed after recovery.',
+            ['https://example.test/recovered']
+        );
     }
 }
 

@@ -9,6 +9,7 @@ use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 use ADCT\ParishIntake\Core\Auth\ActionTokenRenewalService;
 use ADCT\ParishIntake\Core\Auth\ActionTokenRateLimiter;
 use ADCT\ParishIntake\Core\Auth\ActionTokenService;
+use ADCT\ParishIntake\Core\Auth\ActionTokenStatus;
 use ADCT\ParishIntake\Core\Ingestion\AuthenticationResult;
 use ADCT\ParishIntake\Core\Ingestion\AuthenticationResults;
 use ADCT\ParishIntake\Core\Support\SystemClock;
@@ -157,7 +158,13 @@ final class ConfirmationDecisionCheck
                 && $wpdb->get_var($wpdb->prepare("SELECT status FROM {$prefix}event_candidates WHERE id = %d", $candidate[0])) === 'draft',
                 'CSRF attempt must not consume a token or change a candidate.');
             $competing = $act(ActionTokenPurpose::DENY, 'event_candidate', $candidate[0], 'unknown-' . $suffix . '@example.test');
-            $check($post()->statusCode === 200 && str_contains($post()->body, 'already been used'),
+            $confirmed = $post();
+            $replayed = $post();
+            $check($confirmed->statusCode === 200
+                && str_contains($confirmed->body, 'approve it shortly')
+                && $tokens->inspect($secret)->status === ActionTokenStatus::USED
+                && $replayed->statusCode === 409
+                && str_contains($replayed->body, 'cannot be changed using this link'),
                 'confirmation must consume a token once.');
             $check($competing[2]()->statusCode === 409, 'a competing denial must not reverse a confirmed candidate.');
             $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$prefix}event_candidates WHERE id = %d", $candidate[0]), ARRAY_A);
@@ -222,6 +229,33 @@ final class ConfirmationDecisionCheck
             $ids['posts'][] = (int) $row['match_event_id'];
             $check($row['status'] === 'published', 'reviewer self-approval must publish.');
 
+            foreach (['queued', 'sending', 'sent'] as $queueStatus) {
+                [$message, $candidate] = $case(
+                    'self-dean-' . $queueStatus,
+                    $deanEmail,
+                    $deanEmail,
+                    $parish,
+                    1,
+                    'new',
+                    $queueStatus
+                );
+                [, , $post] = $act(ActionTokenPurpose::CONFIRM, 'event_candidate', $candidate[0], $deanEmail);
+                $response = $post();
+                $row = $wpdb->get_row($wpdb->prepare(
+                    "SELECT status, approved_via FROM {$prefix}event_candidates WHERE id = %d", $candidate[0]
+                ), ARRAY_A);
+                $check(
+                    $response->statusCode === 200
+                        && $row['status'] === 'published'
+                        && $row['approved_via'] === 'self',
+                    'self-approval must work while the queue item remains ' . $queueStatus . '.'
+                );
+                $ids['posts'][] = (int) $wpdb->get_var($wpdb->prepare(
+                    "SELECT match_event_id FROM {$prefix}event_candidates WHERE id = %d",
+                    $candidate[0]
+                ));
+            }
+
             foreach ([
                 ['wrong-deanery', $deanEmail, $deanEmail, $otherParish, 'sent'],
                 ['spoofed-reply', $deanEmail, 'attacker-' . $suffix . '@example.test', $parish, 'sent'],
@@ -237,6 +271,21 @@ final class ConfirmationDecisionCheck
                     $label . ' must never self-publish.');
                 $check($queueStatus === 'suppressed' ? $response->statusCode === 409 : $response->statusCode === 200,
                     $label . ' action response must match its eligibility.');
+            }
+            foreach ([
+                ['update-review', 'update'],
+                ['cancellation-review', 'cancellation'],
+                ['postponement-review', 'postponement'],
+            ] as [$label, $kind]) {
+                [$message, $candidate] = $case($label, $deanEmail, $deanEmail, $parish, 1, $kind, 'sent');
+                [, , $post] = $act(ActionTokenPurpose::CONFIRM, 'event_candidate', $candidate[0], $deanEmail);
+                $response = $post();
+                $row = $wpdb->get_row($wpdb->prepare(
+                    "SELECT status, approved_via FROM {$prefix}event_candidates WHERE id = %d", $candidate[0]
+                ), ARRAY_A);
+                $check($row['status'] === 'awaiting_approval' && $row['approved_via'] === null,
+                    $label . ' must route to review instead of self-publishing.');
+                $check($response->statusCode === 200, $label . ' must return the approval queue response.');
             }
             $dmarcFail = (new AuthenticationResults([
                 new AuthenticationResult('dmarc', 'fail', 'mx.example.test', true),

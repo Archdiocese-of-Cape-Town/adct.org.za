@@ -35,13 +35,14 @@ The route-resolution subset is covered by #68: unit tests exercise two active ap
 - First to act wins: two approvals (or an approve and a reject) for the same item leave exactly one decision. The second action gets "already decided".
 - Self-approval: a dean submitting for a parish in their deanery, or a reviewer submitting anything, publishes on confirmation with `approved_via = self`.
 - A dean submitting for a parish **outside** their deanery still needs approval.
+- A matched change, cancellation or postponement candidate with `match_review_required = true` stays in approval; it never self-publishes.
 - A change or cancellation by a verified contact to a published event publishes immediately, writes `event_changes`, and notifies approvers. Revert restores the previous version.
 - A change from an unknown sender or a monitored source needs approval.
 - A group without a deanery goes to reviewers only.
 - A parish in a deanery with **no active approver** (dean not set up) goes to reviewers only, is approved by a reviewer, and the dashboard lists that deanery as "no approver".
 - An unchanged repeat of a published or pending event (same parish, title, schedule) is marked `duplicate` and sends **no** confirmation or approval email.
 - Approver digest mode sends one daily email instead of one per item. Reminders respect the on/off switches.
-- Action links: GET renders only a safe preview; nonce-protected POST consumes a token once; invalid, expired and used tokens have friendly states; renewal is queued without exposing recipient data in the page. MariaDB integration tests verify that two concurrent conditional token-consume updates admit exactly one winner, same-second N+1 request denial for both per-email and per-IP limits, and no additional queue delivery after the cap. E4.3 integration checks submitter decisions, confirm-all, rejection reason, audit flags, self-publication for assigned deans/reviewers, wrong-deanery and spoofed Reply-To safeguards, suppressed previews and ambiguous pending matches. Approver decisions and login remain separate issues.
+- Action links: GET renders only a safe preview; nonce-protected POST consumes a token once; invalid, expired and used tokens have friendly states; renewal is queued without exposing recipient data in the page; and a failed self-publication can be retried safely with the same token because the confirmation decision may already be recorded. MariaDB integration tests verify that two concurrent conditional token-consume updates admit exactly one winner, same-second N+1 request denial for both per-email and per-IP limits, and no additional queue delivery after the cap. E4.3 integration checks submitter decisions, confirm-all, rejection reason, audit flags, self-publication for assigned deans/reviewers, wrong-deanery and spoofed Reply-To safeguards, suppressed previews, ambiguous pending matches, and change/cancellation/postponement items staying in review. Approver decisions and login remain separate issues.
 
 ## Scheduling and mail limits test cases
 
