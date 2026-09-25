@@ -17,6 +17,16 @@ final class CapabilitiesTest extends TestCase
             'adct_pi_review',
             'adct_pi_view_reports',
             'adct_pi_approve_deanery',
+            'edit_events',
+            'edit_others_events',
+            'edit_private_events',
+            'edit_published_events',
+            'publish_events',
+            'read_private_events',
+            'delete_events',
+            'delete_private_events',
+            'delete_published_events',
+            'delete_others_events',
         ], Capabilities::all());
     }
 
@@ -28,6 +38,7 @@ final class CapabilitiesTest extends TestCase
         self::assertSame([
             Capabilities::REVIEW,
             Capabilities::VIEW_REPORTS,
+            ...Capabilities::eventCapabilities(),
         ], $roles['editor']);
     }
 
@@ -40,11 +51,13 @@ final class CapabilitiesTest extends TestCase
                 Capabilities::REVIEW,
                 Capabilities::VIEW_REPORTS,
                 'read',
+                ...Capabilities::eventCapabilities(),
             ],
             'adct_pi_intake_reviewer' => [
                 Capabilities::REVIEW,
                 Capabilities::VIEW_REPORTS,
                 'read',
+                ...Capabilities::eventCapabilities(),
             ],
             'parish_contact' => [
                 'read',

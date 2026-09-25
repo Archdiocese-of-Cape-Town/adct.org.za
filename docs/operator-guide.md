@@ -30,10 +30,10 @@ Parish Intake adds these WordPress roles and capabilities:
 
 | Role | Parish Intake access |
 |---|---|
-| Administrator | All five Parish Intake capabilities: settings, directory, review, reports and deanery approval. |
-| Intake manager (`adct_pi_intake_manager`) | Settings, directory, review and reports. |
-| Intake reviewer (`adct_pi_intake_reviewer`) | Review and reports. |
-| Editor | Review and reports. This default is **provisional** and the project owner may change it. |
+| Administrator | All five Parish Intake capabilities: settings, directory, review, reports and deanery approval; full event management. |
+| Intake manager (`adct_pi_intake_manager`) | Settings, directory, review, reports and event management. |
+| Intake reviewer (`adct_pi_intake_reviewer`) | Review, reports and event management. |
+| Editor | Review, reports and event management. The Parish Intake review access is **provisional** and the project owner may change it. |
 | Parish contact (`parish_contact`) | Read only; cannot use `wp-admin` or the admin bar. |
 | Deanery approver (`deanery_approver`) | Deanery approval only; cannot use `wp-admin` or the admin bar. |
 
@@ -42,6 +42,14 @@ Assign a role from **Users → All Users → Edit** (or while adding a user). Ro
 A deanery approver must also have an active assignment to one or more deaneries. Manage these assignments from **Parish Intake → Deaneries**; a role without an active assignment cannot approve deanery items, so do not attempt direct database edits. An archdiocese reviewer with the `adct_pi_review` capability can approve items from any deanery, including parishes with no deanery.
 
 The parish portal, magic-link sign-in and its long-session policy are separate later work. The directory screens manage deanery assignments, but parish contacts and deanery approvers still do not gain a `wp-admin` interface.
+
+### Create and edit events
+
+Users with event-management access can open **Events → Add New**. Enter the public title and description in the standard WordPress editor, then complete the **Event details** box. A parish may be selected, or left blank for an archdiocese-wide event. Venue choices are filtered to the selected parish. Start and end values use the site's local timezone (`Africa/Johannesburg`); an end is optional but cannot be earlier than the start. For an all-day event, the saved times are normalized to local midnight and the selected end date is inclusive.
+
+The recurrence builder supports no recurrence, weekly on a weekday, monthly on the first/second/third/fourth/last weekday, monthly on day 1–31, or a custom RRULE. The custom rule accepts `FREQ`, `INTERVAL`, `COUNT`, `UNTIL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH` and `BYSETPOS`; `COUNT` and `UNTIL` cannot be used together. Enter one local date and time per line in **Excluded dates** or **Additional dates**. These rules are validated and stored by E5.1; occurrence expansion is a separate step and is not performed when saving yet.
+
+The status flag is separate from WordPress's Draft/Published post status: it records Scheduled, Cancelled or Postponed. Publishing an event makes the post public. Contact name, email and phone are private event metadata, available only to users who can edit the event and never exposed by the public REST API. The starter event types (Social, Spiritual, Formation, Liturgy/Mass, Youth, Outreach, Fundraising, Meeting and Other) are **provisional**. Administrators and Editors can manage terms under **Events → Event Types**; event editors can assign existing terms.
 
 ## Manage deaneries and approvers
 

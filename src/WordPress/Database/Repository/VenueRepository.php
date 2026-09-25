@@ -105,6 +105,20 @@ final class VenueRepository extends AbstractRepository implements VenueStoreInte
         );
     }
 
+    /**
+     * @return list<Venue>
+     */
+    public function findForEventEditor(): array
+    {
+        $table = $this->tableName();
+        $query = "SELECT * FROM {$table} ORDER BY parish_id ASC, name ASC, id ASC";
+
+        return array_map(
+            fn (array $row): Venue => $this->mapVenue($row),
+            $this->fetchRows($query)
+        );
+    }
+
     public function findVenue(int $venueId): ?Venue
     {
         $this->assertPositiveId($venueId, 'A venue ID must be positive.');

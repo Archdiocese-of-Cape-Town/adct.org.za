@@ -161,6 +161,17 @@ final class ParishRepository extends AbstractRepository
     }
 
     /**
+     * @return array<int, array{id: int|string, name: string, slug: string, status: string}>
+     */
+    public function findForEventEditor(): array
+    {
+        $table = $this->tableName();
+        $query = "SELECT id, name, slug, status FROM {$table} ORDER BY name ASC, slug ASC, id ASC";
+
+        return $this->fetchRows($query);
+    }
+
+    /**
      * @param list<int> $parishIds
      */
     public function updateDeaneryForParishes(array $parishIds, ?int $deaneryId, string $updatedAt): int

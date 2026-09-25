@@ -31,6 +31,7 @@ use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
 use ADCT\ParishIntake\WordPress\Directory\DeaneryApproverAssignmentService;
 use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
+use ADCT\ParishIntake\WordPress\Events\EventPostType;
 
 require_once ABSPATH . 'wp-admin/includes/plugin.php';
 
@@ -104,6 +105,66 @@ if ($administratorRole === null) {
 foreach (Capabilities::all() as $capability) {
     if (! $administratorRole->has_cap($capability)) {
         $fail('The administrator role is missing the ' . $capability . ' capability.');
+    }
+}
+
+$eventPostType = get_post_type_object(EventPostType::POST_TYPE);
+$eventTaxonomy = get_taxonomy(EventPostType::TAXONOMY);
+
+if (
+    $eventPostType === null
+    || ! $eventPostType->public
+    || $eventPostType->has_archive !== 'events'
+    || ! is_array($eventPostType->rewrite)
+    || ($eventPostType->rewrite['slug'] ?? '') !== 'events'
+    || ! $eventPostType->show_in_rest
+    || $eventTaxonomy === false
+    || ! $eventTaxonomy->hierarchical
+    || ! $eventTaxonomy->show_in_rest
+) {
+    $fail('The public event post type or hierarchical REST taxonomy was not registered correctly.');
+}
+
+foreach (['title', 'editor', 'excerpt', 'thumbnail', 'revisions', 'custom-fields'] as $support) {
+    if (! post_type_supports(EventPostType::POST_TYPE, $support)) {
+        $fail('The event post type is missing support for ' . $support . '.');
+    }
+}
+
+$eventTermsBeforeRepeat = get_terms([
+    'taxonomy' => EventPostType::TAXONOMY,
+    'hide_empty' => false,
+]);
+
+if (is_wp_error($eventTermsBeforeRepeat) || count($eventTermsBeforeRepeat) !== count(EventPostType::DEFAULT_TERMS)) {
+    $fail('Activation did not seed each default event type exactly once.');
+}
+
+$eventContent = new EventPostType();
+$eventContent->activate();
+$eventContent->activate();
+$eventTermsAfterRepeat = get_terms([
+    'taxonomy' => EventPostType::TAXONOMY,
+    'hide_empty' => false,
+]);
+$expectedEventTermSlugs = array_column(EventPostType::DEFAULT_TERMS, 'slug');
+$actualEventTermSlugs = is_array($eventTermsAfterRepeat)
+    ? array_map(static fn (WP_Term $term): string => $term->slug, $eventTermsAfterRepeat)
+    : [];
+sort($expectedEventTermSlugs, SORT_STRING);
+sort($actualEventTermSlugs, SORT_STRING);
+
+if ($actualEventTermSlugs !== $expectedEventTermSlugs) {
+    $fail('Repeated event setup created duplicate or missing default event types.');
+}
+
+foreach (['administrator', 'editor', 'adct_pi_intake_manager', 'adct_pi_intake_reviewer'] as $roleName) {
+    $role = get_role($roleName);
+
+    foreach (Capabilities::eventCapabilities() as $capability) {
+        if ($role === null || ! $role->has_cap($capability)) {
+            $fail(sprintf('The %s role is missing the event capability %s.', $roleName, $capability));
+        }
     }
 }
 
@@ -729,6 +790,263 @@ $defaultAfterReactivation = $venueLookup->defaultVenueFor($firstParishId);
 
 if ($defaultAfterReactivation === null || $defaultAfterReactivation->venueId !== $replacementVenue->id) {
     $fail('Reactivating a venue changed the parish default unexpectedly.');
+}
+
+$originalEventPost = $_POST;
+$originalEventRequest = $_REQUEST;
+$_POST = [];
+$_REQUEST = [];
+$eventPostId = wp_insert_post([
+    'post_type' => EventPostType::POST_TYPE,
+    'post_status' => 'draft',
+    'post_title' => 'Fictional community gathering',
+    'post_content' => 'A fictional event created by the integration test.',
+], true);
+
+if (is_wp_error($eventPostId) || (int) $eventPostId < 1) {
+    $_POST = $originalEventPost;
+    $_REQUEST = $originalEventRequest;
+    $fail('The event integration post could not be created.');
+}
+
+$eventPostId = (int) $eventPostId;
+$eventMeta = [
+    'parish_id' => (string) $firstParishId,
+    'venue_id' => (string) $acceptanceVenue->id,
+    'start_local' => '2026-10-10T16:00',
+    'end_local' => '2026-10-10T17:00',
+    'all_day' => '0',
+    'recurrence_preset' => 'monthly_ordinal',
+    'weekday' => 'FR',
+    'ordinal' => '1',
+    'month_day' => '1',
+    'rrule_custom' => '',
+    'exdates' => "2026-11-06T16:00\n",
+    'rdates' => "2026-11-13T16:00\n",
+    'featured' => '1',
+    'status_flag' => 'scheduled',
+    'contact' => [
+        'name' => 'Fictional Event Contact',
+        'email' => 'event-contact@example.test',
+        'phone' => '021 555 0188',
+    ],
+];
+$_POST = [
+    'adct_event_meta_nonce' => wp_create_nonce('adct_pi_save_event_meta_' . $eventPostId),
+    'adct_event' => $eventMeta,
+];
+$_REQUEST = $_POST;
+$eventSaveResult = wp_update_post([
+    'ID' => $eventPostId,
+    'post_status' => 'publish',
+], true);
+
+if (is_wp_error($eventSaveResult) || (int) $eventSaveResult !== $eventPostId) {
+    $_POST = $originalEventPost;
+    $_REQUEST = $originalEventRequest;
+    $fail('The event integration post could not be published through its save handler.');
+}
+
+foreach ([
+    'parish_id' => $firstParishId,
+    'venue_id' => $acceptanceVenue->id,
+    'start_local' => '2026-10-10T16:00',
+    'end_local' => '2026-10-10T17:00',
+    'rrule' => 'FREQ=MONTHLY;BYDAY=1FR',
+    'status_flag' => 'scheduled',
+] as $metaKey => $expectedValue) {
+    if (get_post_meta($eventPostId, $metaKey, true) != $expectedValue) {
+        $_POST = $originalEventPost;
+        $_REQUEST = $originalEventRequest;
+        $fail('The event save handler did not persist the valid ' . $metaKey . ' value.');
+    }
+}
+
+if (
+    get_post_meta($eventPostId, 'exdates', true) !== ['2026-11-06T16:00']
+    || get_post_meta($eventPostId, 'rdates', true) !== ['2026-11-13T16:00']
+    || ! in_array(get_post_meta($eventPostId, 'featured', true), [true, 1, '1'], true)
+    || (get_post_meta($eventPostId, 'contact', true)['email'] ?? '') !== 'event-contact@example.test'
+) {
+    $_POST = $originalEventPost;
+    $_REQUEST = $originalEventRequest;
+    $fail('The event save handler did not persist all validated schedule and private contact metadata.');
+}
+
+$hadMetaBoxes = array_key_exists('wp_meta_boxes', $GLOBALS);
+$previousMetaBoxes = $GLOBALS['wp_meta_boxes'] ?? null;
+$GLOBALS['wp_meta_boxes'] = [
+    EventPostType::POST_TYPE => [
+        'normal' => [
+            'core' => [
+                'postcustom' => true,
+            ],
+        ],
+    ],
+];
+do_action('add_meta_boxes_adct_event', get_post($eventPostId));
+$eventMetaBoxes = $GLOBALS['wp_meta_boxes'][EventPostType::POST_TYPE]['normal']['high'] ?? [];
+$eventMetaBox = $eventMetaBoxes['adct_event_details'] ?? null;
+
+if (! is_array($eventMetaBox) || ! is_callable($eventMetaBox['callback'] ?? null)) {
+    $fail('The event details meta box was not registered.');
+}
+
+if (($GLOBALS['wp_meta_boxes'][EventPostType::POST_TYPE]['normal']['core']['postcustom'] ?? false) !== false) {
+    $fail('The unrestricted custom-fields meta box was not removed.');
+}
+
+ob_start();
+try {
+    call_user_func($eventMetaBox['callback'], get_post($eventPostId), $eventMetaBox);
+} finally {
+    $eventMetaBoxHtml = (string) ob_get_clean();
+    if ($hadMetaBoxes) {
+        $GLOBALS['wp_meta_boxes'] = $previousMetaBoxes;
+    } else {
+        unset($GLOBALS['wp_meta_boxes']);
+    }
+}
+
+foreach ([
+    'name="adct_event[parish_id]"',
+    'name="adct_event[venue_id]"',
+    'type="datetime-local"',
+    'name="adct_event[recurrence_preset]"',
+    'name="adct_event[exdates]"',
+    'name="adct_event[rdates]"',
+    'name="adct_event[contact][email]"',
+] as $field) {
+    if (strpos($eventMetaBoxHtml, $field) === false) {
+        $fail('The event details meta box did not render the ' . $field . ' control.');
+    }
+}
+
+$invalidEventMeta = $eventMeta;
+$invalidEventMeta['end_local'] = '2026-10-10T15:00';
+$_POST = [
+    'adct_event_meta_nonce' => wp_create_nonce('adct_pi_save_event_meta_' . $eventPostId),
+    'adct_event' => $invalidEventMeta,
+];
+$_REQUEST = $_POST;
+$invalidSaveResult = wp_update_post([
+    'ID' => $eventPostId,
+    'post_excerpt' => 'The invalid event metadata must not replace the previous values.',
+], true);
+
+if (
+    is_wp_error($invalidSaveResult)
+    || (int) $invalidSaveResult !== $eventPostId
+    || get_post_meta($eventPostId, 'end_local', true) !== '2026-10-10T17:00'
+) {
+    $_POST = $originalEventPost;
+    $_REQUEST = $originalEventRequest;
+    $fail('The event save handler accepted invalid metadata or replaced the last valid values.');
+}
+
+$_POST = [
+    'adct_event_meta_nonce' => wp_create_nonce('adct_pi_save_event_meta_' . $eventPostId),
+    'adct_event' => $eventMeta,
+];
+$_REQUEST = $_POST;
+wp_update_post([
+    'ID' => $eventPostId,
+    'post_excerpt' => 'The valid event metadata was restored.',
+], true);
+$_POST = $originalEventPost;
+$_REQUEST = $originalEventRequest;
+
+$eventColumns = apply_filters('manage_adct_event_posts_columns', [
+    'cb' => 'Select',
+    'title' => 'Title',
+    'date' => 'Date',
+]);
+
+foreach (['event_start', 'event_parish', 'event_type', 'event_status', 'event_featured'] as $column) {
+    if (! array_key_exists($column, $eventColumns)) {
+        $fail('The event admin list is missing the ' . $column . ' column.');
+    }
+}
+
+$currentEventUserId = get_current_user_id();
+wp_set_current_user(0);
+$eventRestResponse = rest_do_request(new WP_REST_Request(
+    'GET',
+    '/wp/v2/adct_event/' . $eventPostId
+));
+wp_set_current_user($currentEventUserId);
+
+if (
+    is_wp_error($eventRestResponse)
+    || ! ($eventRestResponse instanceof WP_REST_Response)
+    || $eventRestResponse->get_status() !== 200
+) {
+    $fail('A published event could not be read through the public REST API.');
+}
+
+$eventRestData = $eventRestResponse->get_data();
+$eventRestMeta = is_array($eventRestData) ? ($eventRestData['meta'] ?? null) : null;
+
+if (! is_array($eventRestMeta)) {
+    $responseKeys = is_array($eventRestData) ? implode(', ', array_keys($eventRestData)) : gettype($eventRestData);
+    $fail('The public REST event response did not include a metadata object (response fields: '
+        . $responseKeys . ').');
+}
+
+if (array_key_exists('contact', $eventRestMeta)) {
+    $fail('The public REST event response exposed private contact metadata.');
+}
+
+foreach (['parish_id', 'venue_id', 'start_local', 'end_local', 'all_day', 'rrule', 'exdates', 'rdates', 'featured', 'status_flag'] as $publicMetaKey) {
+    if (! array_key_exists($publicMetaKey, $eventRestMeta)) {
+        $fail('The public REST event response did not expose ' . $publicMetaKey . '.');
+    }
+}
+
+$eventRestUpdateRequest = new WP_REST_Request(
+    'POST',
+    '/wp/v2/adct_event/' . $eventPostId
+);
+$eventRestUpdateRequest->set_param('meta', [
+    'all_day' => true,
+    'start_local' => '2026-10-10T18:00',
+    'end_local' => '2026-10-10T19:00',
+    'exdates' => ['2026-11-06T12:00'],
+    'rdates' => ['2026-11-13T11:00'],
+]);
+$eventRestUpdateResponse = rest_do_request($eventRestUpdateRequest);
+
+if (
+    is_wp_error($eventRestUpdateResponse)
+    || ! ($eventRestUpdateResponse instanceof WP_REST_Response)
+    || $eventRestUpdateResponse->get_status() !== 200
+    || get_post_meta($eventPostId, 'start_local', true) !== '2026-10-10T00:00'
+    || get_post_meta($eventPostId, 'end_local', true) !== '2026-10-10T00:00'
+    || get_post_meta($eventPostId, 'exdates', true) !== ['2026-11-06T00:00']
+    || get_post_meta($eventPostId, 'rdates', true) !== ['2026-11-13T00:00']
+) {
+    $fail('The REST save handler did not normalize a valid all-day event to local midnight.');
+}
+
+$invalidEventRestRequest = new WP_REST_Request(
+    'POST',
+    '/wp/v2/adct_event/' . $eventPostId
+);
+$invalidEventRestRequest->set_param('meta', [
+    'end_local' => '2026-10-09T00:00',
+]);
+$invalidEventRestResponse = rest_do_request($invalidEventRestRequest);
+$invalidEventRestData = $invalidEventRestResponse instanceof WP_REST_Response
+    ? $invalidEventRestResponse->get_data()
+    : [];
+
+if (
+    ! ($invalidEventRestResponse instanceof WP_REST_Response)
+    || $invalidEventRestResponse->get_status() !== 400
+    || ($invalidEventRestData['code'] ?? '') !== 'adct_event_invalid_meta'
+    || get_post_meta($eventPostId, 'end_local', true) !== '2026-10-10T00:00'
+) {
+    $fail('The REST save handler accepted invalid event metadata or replaced the last valid values.');
 }
 
 $manualParserVerifiedEmail = 'manual-parser@example.test';
@@ -1474,4 +1792,4 @@ if ($secondApproverUser instanceof WP_User && in_array('deanery_approver', $seco
     $fail('The final sample approver role was not removed during integration cleanup.');
 }
 
-WP_CLI::success('Release ZIP activation, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
+WP_CLI::success('Release ZIP activation, event post type/taxonomy/default-term seeding, event metadata validation and REST privacy, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');

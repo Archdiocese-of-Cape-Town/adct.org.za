@@ -75,6 +75,24 @@ final class RoleInstallerTest extends TestCase
         self::assertTrue($store->hasCapability('adct_pi_intake_reviewer', Capabilities::VIEW_REPORTS));
         self::assertSame(VersionedRoleInstaller::CURRENT_VERSION, $versionStore->getVersion());
     }
+
+    public function testUpgradingExistingRolesAddsEventCapabilitiesWithoutReplacingOtherAccess(): void
+    {
+        $store = new FakeRoleCapabilityStore();
+        $versionStore = new FakeRoleVersionStore(1);
+        $store->roles['administrator']['capabilities']['site_specific_capability'] = true;
+        $installer = new VersionedRoleInstaller(new RoleInstaller($store), $versionStore);
+
+        self::assertTrue($installer->upgradeIfNeeded());
+        self::assertSame(2, $versionStore->getVersion());
+        self::assertTrue($store->hasCapability('administrator', 'site_specific_capability'));
+        self::assertTrue($store->hasCapability('administrator', Capabilities::PUBLISH_EVENTS));
+        self::assertTrue($store->hasCapability('editor', Capabilities::PUBLISH_EVENTS));
+        self::assertTrue($store->hasCapability('adct_pi_intake_manager', Capabilities::PUBLISH_EVENTS));
+        self::assertTrue($store->hasCapability('adct_pi_intake_reviewer', Capabilities::PUBLISH_EVENTS));
+        self::assertFalse($store->hasCapability('parish_contact', Capabilities::PUBLISH_EVENTS));
+        self::assertFalse($store->hasCapability('deanery_approver', Capabilities::PUBLISH_EVENTS));
+    }
 }
 
 final class FakeRoleCapabilityStore implements RoleCapabilityStoreInterface
