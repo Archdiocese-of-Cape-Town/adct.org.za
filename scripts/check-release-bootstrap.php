@@ -35,12 +35,48 @@ require $pluginFile;
 if (! class_exists(ADCT\ParishIntake\WordPress\Autoloader::class, false)
     || ! class_exists(ADCT\ParishIntake\WordPress\Plugin::class, false)
     || ! class_exists(ADCT\ParishIntake\Core\Parsing\PipelineFactory::class)
+    || ! class_exists(ADCT\ParishIntake\Core\Ingestion\MimeMessageParser::class)
     || ! class_exists(ADCT\ParishIntake\WordPress\Admin\ParserPage::class, false)
     || ! class_exists(ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage::class, false)
     || ! class_exists(ADCT\ParishIntake\WordPress\Database\Schema::class, false)
     || ! class_exists(ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler::class, false)
 ) {
     fwrite(STDERR, "Plugin autoloader did not load the bootstrap classes.\n");
+    exit(1);
+}
+
+foreach ([
+    'DI\\Container' => 'ADCT\\ParishIntake\\Dependencies\\DI\\Container',
+    'Laravel\\SerializableClosure\\SerializableClosure' => 'ADCT\\ParishIntake\\Dependencies\\Laravel\\SerializableClosure\\SerializableClosure',
+    'GuzzleHttp\\Psr7\\Request' => 'ADCT\\ParishIntake\\Dependencies\\GuzzleHttp\\Psr7\\Request',
+] as $unprefixedClass => $prefixedClass) {
+    if (class_exists($unprefixedClass)) {
+        fwrite(STDERR, "Unprefixed dependency class loaded from the release: {$unprefixedClass}\n");
+        exit(1);
+    }
+
+    if (! class_exists($prefixedClass)) {
+        fwrite(STDERR, "Prefixed dependency class did not load from the release: {$prefixedClass}\n");
+        exit(1);
+    }
+}
+
+$mimeMessage = (new ADCT\ParishIntake\Core\Ingestion\MimeMessageParser())->parse(
+    "From: Example Parish Office <events@example.test>\r\n"
+        . "Subject: Release parser check\r\n"
+        . "Date: Thu, 01 Oct 2026 09:00:00 +0200\r\n"
+        . "Content-Type: text/plain; charset=UTF-8\r\n"
+        . "\r\n"
+        . "Release parser body.",
+    'release-bootstrap-check'
+);
+
+if (
+    $mimeMessage->getSenderEmail() !== 'events@example.test'
+    || $mimeMessage->getSubject() !== 'Release parser check'
+    || $mimeMessage->getBody() !== 'Release parser body.'
+) {
+    fwrite(STDERR, "Release MIME parser did not decode the smoke message.\n");
     exit(1);
 }
 

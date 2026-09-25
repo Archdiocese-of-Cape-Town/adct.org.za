@@ -1,0 +1,21 @@
+From: Example Parish Communications <events@example.test>
+To: events@example.test
+Subject: Youth volunteer day
+Date: Wed, 07 Oct 2026 10:00:00 +0200
+Message-ID: <gmail-alternative@example.test>
+MIME-Version: 1.0
+X-Mailer: Gmail
+Content-Type: multipart/alternative; boundary="gmail-alternative"
+
+--gmail-alternative
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: quoted-printable
+
+Parish=3A Example Parish
+Join us for a youth volunteer day on Saturday 24 October 2026 at 09:00 at Example Parish Hall.
+--gmail-alternative
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: quoted-printable
+
+<html><body><p>Parish: Example Parish</p><p>The HTML copy describes a different day on 25 October 2026.</p></body></html>
+--gmail-alternative--

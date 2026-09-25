@@ -39,7 +39,9 @@ Build the installable package from the repository root in PowerShell:
 docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
 ```
 
-This creates `dist/adct-parish-intake.zip`. The script installs production dependencies with `composer install --no-dev`, prefixes them with the pinned Strauss release into `vendor-prefixed/`, then packages the plugin bootstrap, `uninstall.php`, `src/`, and the prefixed runtime dependencies. Strauss is used instead of PHP-Scoper because it directly copies Composer dependencies into one prefixed directory and generates the autoloader the plugin uses. The current plugin does not read `data/seed/` at runtime, so seed data is not shipped.
+This creates `dist/adct-parish-intake.zip`. The script installs production dependencies with `composer install --no-dev` in a temporary directory, copies them into `vendor-prefixed/`, removes dependency documentation and `.github/` metadata, then runs the pinned Strauss release in that directory so generated Composer paths remain package-relative. It packages the plugin bootstrap, `uninstall.php`, `src/`, and the prefixed runtime dependencies. Strauss is used instead of PHP-Scoper because it directly prefixes Composer dependencies into one directory and generates the autoloader the plugin uses. The current plugin does not read `data/seed/` at runtime, so seed data is not shipped.
+
+Inbound RFC 822 parsing uses the pre-approved pure-PHP `zbateson/mail-mime-parser` 3.x package (PHP 8.1+, BSD-2-Clause; see [ADR 0012](decisions/0012-pure-php-mime-parser.md)). It and its runtime dependencies are included in the Strauss-prefixed release; no `ext-imap` or `ext-dom` is needed.
 
 The build pins Strauss 0.30.0 and verifies the official [release asset](https://github.com/BrianHenryIE/strauss/releases/download/0.30.0/strauss.phar) against SHA-256 `08c1a8e553594745c22294e158129005fd11ed09ed452d7d4f48566f38c66c96` before running it. To upgrade Strauss, calculate the SHA-256 of the chosen official release asset and update both `STRAUSS_VERSION` and `STRAUSS_SHA256` in `scripts/build-release.sh`, then rebuild the zip locally.
 

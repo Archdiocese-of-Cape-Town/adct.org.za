@@ -7,8 +7,5 @@
     "event_time": "10:00",
     "venue": "Example Parish Hall",
     "description": "Please join the youth gathering on Saturday 10 October 2026 at 10:00 at Example Parish Hall."
-  },
-  "known_failures": {
-    "fields.description": "#37"
   }
 }

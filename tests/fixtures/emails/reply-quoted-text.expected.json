@@ -7,8 +7,5 @@
     "event_time": "17:30",
     "venue": "Example Parish Hall",
     "description": "The gathering is now scheduled for 11 October 2026 at 17:30 at Example Parish Hall."
-  },
-  "known_failures": {
-    "fields.description": "#37"
   }
 }

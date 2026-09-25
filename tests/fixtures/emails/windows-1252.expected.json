@@ -1,0 +1,11 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Café Day",
+    "parish_name": "Example Parish",
+    "event_date": "2026-10-24",
+    "event_time": "10:00",
+    "venue": "Example Parish Hall",
+    "description": "Join us for Café Day on Saturday 24 October 2026 at 10:00 at Example Parish Hall; tickets cost €2."
+  }
+}

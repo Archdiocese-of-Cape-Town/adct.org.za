@@ -1,0 +1,19 @@
+From: Example Parish Office <events@example.test>
+Subject: Morning prayer breakfast
+Date: Wed, 07 Oct 2026 10:30:00 +0200
+Message-ID: <apple-mail@example.test>
+MIME-Version: 1.0
+X-Mailer: Apple Mail (2.3818.100.11.2.9)
+Content-Type: multipart/alternative; boundary="apple-alternative"
+
+--apple-alternative
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: quoted-printable
+
+Parish=3A Example Parish
+Join us for a morning prayer breakfast on Sunday 18 October 2026 at 08:30 at Example Parish Hall.
+--apple-alternative
+Content-Type: text/html; charset=UTF-8
+
+<html><body><p>Join us for a morning prayer breakfast.</p></body></html>
+--apple-alternative--

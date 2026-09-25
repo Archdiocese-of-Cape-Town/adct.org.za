@@ -1,0 +1,10 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Morning prayer breakfast",
+    "parish_name": "Example Parish",
+    "event_date": "2026-10-18",
+    "event_time": "08:30",
+    "venue": "Example Parish Hall"
+  }
+}

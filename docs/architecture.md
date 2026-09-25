@@ -61,11 +61,14 @@ Pure PHP 8.2, covered by unit tests and loaded through Composer PSR-4:
 - `Matching` – duplicate/update detection between candidates and existing events.
 - `Trust` – decides the next step for a candidate: send for confirmation, route to the approval queues, publish (self-approval or a verified contact's change to a published event), or ignore.
 - `Approval` – parallel dean/reviewer queues, atomic "first to act wins", self-approval, reminders.
-- `Mail` – MIME parsing into `Message` + `Attachment`, auto-reply/bounce detection.
+- `Ingestion` – `MimeMessageParser` parses raw RFC 822 mail into `Message` + attachment metadata using the pure-PHP `zbateson/mail-mime-parser` dependency. It decodes multipart/alternative, related and mixed bodies, transfer encodings and charsets; selects useful plain text before HTML; and retains thread/list/automation/authentication headers without interpreting authentication results.
+- `Support\EmailTextCleaner` – reusable plain-text cleanup that separates quoted replies and signatures, extracts original forward headers, and removes common newsletter footers. `Support\HtmlToTextConverter` preserves paragraphs, lists and table rows without requiring `ext-dom`.
 - `Tokens` – signed, single-use action tokens.
 - `Jobs` – due checks, bounded item processing, checkpoints, lock/state ports and run results.
 
 The core talks to the outside through interfaces (ports): `MailboxInterface`, `ClockInterface`, `EventRepositoryInterface`, `AiProviderInterface`, `OcrProviderInterface`, `MailerInterface` and `HttpClientInterface`. The parsing pipeline, its stages and value objects live under `Core\Parsing`; shared pure-PHP helpers live under `Core\Support`; contracts live under `Core\Ports`. The mailbox, mailer, candidate repository and OCR method signatures are provisional until their first consumers (E2.1, ADR 0011's mail queue, E5.3 and E12 respectively).
+
+`Message` keeps the received sender/date and envelope subject, plus separate quoted text, signature text, original-forward metadata, and raw values for Message-ID, In-Reply-To, References, Auto-Submitted, List-Id and Authentication-Results. Attachment records identify the corresponding MIME part and Content-ID; attachment bytes remain with the stored raw message for a later attachment-extraction stage. The MIME parser dependency is namespace-prefixed into release packages with Strauss (ADR 0012).
 
 ### 2. WordPress adapters (`src/WordPress/…`)
 - Plugin bootstrap and hook wiring, the manual parser/admin UI, database schema/repository access, static reports, and the WordPress HTTP client.
