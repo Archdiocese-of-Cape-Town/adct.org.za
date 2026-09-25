@@ -134,4 +134,33 @@ final class EventNoticeMatcherTest extends TestCase
 
         self::assertSame('update', $result['kind']);
     }
+
+    public function testUnresolvedReplacementCannotSilentlyUpdateAPublishedEvent(): void
+    {
+        $match = (new EventNoticeMatcher())->match([
+            'parish_id' => 4,
+            'fields' => [
+                'title' => 'Postponement: Parish market',
+                'event_date' => '2026-10-10',
+                'event_time' => '09:00',
+                'replacement_schedule_unresolved' => true,
+                'source_snippet' => 'The market is postponed to a later date.',
+            ],
+            'recurrence' => [],
+        ], [[
+            'id' => 9,
+            'parish_id' => 4,
+            'event_id' => 17,
+            'fields' => [
+                'title' => 'Parish market',
+                'event_date' => '2026-10-10',
+                'event_time' => '09:00',
+            ],
+            'recurrence' => [],
+        ]]);
+
+        self::assertSame('new', $match['kind']);
+        self::assertNull($match['event_id']);
+        self::assertNotSame('', $match['note']);
+    }
 }
