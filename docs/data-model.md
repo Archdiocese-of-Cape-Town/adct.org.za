@@ -177,7 +177,7 @@ The Inbox shows received, extracting, parsed, failed and ignored messages to use
 | recurrence | JSON: normalized supported RRULE, human-readable source phrase, RRULE parts, and optional `ambiguous` / `anchor_inferred` flags |
 | confidence | 0–1 |
 | parser_version, strategies, notes | provenance |
-| ai_used, ai_provider, ai_model | provenance |
+| ai_used, ai_provider, ai_model | provenance; `fields.ai_fields_filled` lists only the accepted keys AI actually filled, never credentials |
 | match_event_id, match_kind | `new`, `update`, `duplicate`, `cancellation` |
 | status | see state machine |
 | confirmed_by, confirmed_at | submitter confirmation (email or user) |

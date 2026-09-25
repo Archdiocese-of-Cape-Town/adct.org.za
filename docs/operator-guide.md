@@ -170,7 +170,7 @@ Users with intake review permission can open **Parish Intake → Inbox**. Filter
 
 Fix the reported problem first, then select **Reprocess** beside one failed message or select up to 20 failures and choose **Reprocess selected failed messages**. Only rows still marked Failed are requeued. Reprocessing runs through the normal bounded processing job, reads the same private `.eml` file and updates the same inbound-message record; it does not reconnect to IMAP, change a mailbox checkpoint, replace stored attachments, publish an event or send confirmation email. The job can pause at its 60-second/100-item safety limit; remaining messages stay queued for a later scheduled run. A parsed message's event details remain draft candidates for the usual review workflow. If a DMARC failure was reported, it remains a review flag; reprocessing does not make the sender trusted or publish the candidate.
 
-Reprocessing uses the current parser settings, including the optional AI fallback if it has been enabled. Review the AI setting before reprocessing if message text must remain fully local.
+Admin-triggered reprocessing and Manual parser requests stay local even when AI is enabled; the scheduled cron inbox job uses the optional AI fallback. Review the setting before leaving stored messages for the next scheduled run if message text must remain fully local.
 
 If the same message still fails after you have checked the note, ask the website administrator to check the PHP error log using the message ID. It records the processing step and exception type, not the email content.
 
@@ -196,12 +196,14 @@ Raw mail and accepted attachments are kept in a private uploads subdirectory pro
 
 ### Configure keys and password constants
 
-The OpenRouter API key can be stored in the WordPress options database or supplied as `ADCT_PI_AI_API_KEY`. A non-empty constant takes precedence. On **Parish Intake → Settings**, a configured constant is shown only as **Set in wp-config.php**; a saved database key is never displayed, and leaving its password field blank keeps it. Select **Remove saved key** to delete a database key, including one overridden by a constant. Mailbox passwords are managed from **Parish Intake → Mailboxes**. OCR secrets are reserved for a later settings screen. Future global secrets follow the `ADCT_PI_<PURPOSE>` constant and `adct_parish_intake_<purpose>` option naming pattern and must be added to the secrets registry.
+AI is **off by default**. On **Parish Intake → Settings**, choose OpenRouter, Groq, local Ollama or a custom OpenAI-compatible endpoint; configure its API base URL (the plugin appends `/chat/completions`) and its provider-specific model. The initial OpenRouter example/default is `qwen/qwen3.8-27b:free` (an existing `openrouter/auto` setting is treated as this free default). The [OpenRouter model page](https://openrouter.ai/qwen/qwen3.8-27b:free) lists this free chat model; availability may change. Check availability and pricing with the provider: `:free` models have quotas, and Groq, local hardware and other providers are **not guaranteed free**. A non-`:free` model shows a conspicuous cost warning. AI is used only below the confidence threshold in the cron inbox job, never in Manual parser or an admin-triggered web request. Calls have a 20-second timeout and a default 50-call UTC-day cap shared across jobs and retries; 429 backs off ten minutes, 5xx five minutes. Failures leave the deterministic candidate intact and produce safe diagnostic notes. A reserved call counts even if it times out or returns invalid data. Email data goes to the configured provider, so enable only after reviewing its privacy terms.
+
+The provider API key can be stored in the WordPress options database or supplied as `ADCT_PI_AI_API_KEY`. A non-empty constant takes precedence. Optional `ADCT_PI_AI_BASE_URL` and `ADCT_PI_AI_MODEL` constants override their admin fields; both are non-secret. On **Parish Intake → Settings**, a configured key constant is shown only as **Set in wp-config.php**; a saved database key is never displayed, and leaving its password field blank keeps it. Select **Remove saved key** to delete a database key, including one overridden by a constant. Local Ollama on `http://localhost:11434/v1` needs no key; remote endpoints require HTTPS and an API key. The server running WordPress must be able to reach the local endpoint. Mailbox passwords are managed from **Parish Intake → Mailboxes**. OCR secrets are reserved for a later settings screen.
 
 To keep secrets out of the database, edit `wp-config.php` and add the needed definitions above the line that says `That's all, stop editing!`:
 
 ```php
-define('ADCT_PI_AI_API_KEY', 'replace-with-your-openrouter-api-key');
+define('ADCT_PI_AI_API_KEY', 'replace-with-your-provider-api-key');
 define('ADCT_PI_IMAP_PASSWORD', 'replace-with-the-events-mailbox-password');
 define('ADCT_PI_OCR_API_KEY', 'replace-with-your-ocr-api-key');
 ```

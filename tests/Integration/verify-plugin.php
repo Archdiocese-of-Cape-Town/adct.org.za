@@ -1141,6 +1141,28 @@ if (strpos($manualParserHtml, 'name="body"') === false) {
     $fail('The Manual parser message form did not render.');
 }
 
+update_option('adct_parish_intake_ai_enabled', '1');
+update_option('adct_parish_intake_ai_provider', 'openrouter');
+update_option('adct_parish_intake_openrouter_model', 'paid-example/model');
+ob_start();
+try {
+    do_action($settingsHook);
+} finally {
+    $paidModelSettingsHtml = (string) ob_get_clean();
+}
+if (strpos($paidModelSettingsHtml, 'AI cost warning:') === false
+    || strpos($paidModelSettingsHtml, 'Not marked free:') === false) {
+    $fail('The Settings screen did not prominently warn about a non-free model.');
+}
+$httpAttempts = 0;
+$rejectAiHttp = static function ($preempt, $args, $url) use (&$httpAttempts) {
+    if (str_contains($url, '/chat/completions')) {
+        ++$httpAttempts;
+        return new WP_Error('ai_test_blocked', 'AI HTTP must not run in manual parser.');
+    }
+    return $preempt;
+};
+add_filter('pre_http_request', $rejectAiHttp, 10, 3);
 $previousPost = $_POST;
 $previousRequest = $_REQUEST;
 $_POST = [
@@ -1161,9 +1183,14 @@ try {
     $submittedParserHtml = (string) ob_get_clean();
     $_POST = $previousPost;
     $_REQUEST = $previousRequest;
+    remove_filter('pre_http_request', $rejectAiHttp, 10);
+    update_option('adct_parish_intake_ai_enabled', '0');
+    update_option('adct_parish_intake_ai_provider', 'none');
 }
 
 if (
+    $httpAttempts !== 0
+    ||
     strpos($submittedParserHtml, 'Latest parse outcome') === false
     || strpos($submittedParserHtml, 'candidate_count') === false
     || strpos($submittedParserHtml, 'Youth gathering') === false
@@ -1174,6 +1201,17 @@ if (
     || strpos($submittedParserHtml, $constantTestApiKey) !== false
 ) {
     $fail('The Manual parser did not render candidates and text-free skip metadata for a bulletin.');
+}
+
+$aiGate = new \ADCT\ParishIntake\WordPress\Ai\WordPressAiCallGate(
+    new \ADCT\ParishIntake\WordPress\Database\WordPressActionTokenRateLimitStore(
+        new \ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection()
+    ),
+    new \ADCT\ParishIntake\Core\Support\SystemClock(),
+    2
+);
+if (! $aiGate->reserve() || ! $aiGate->reserve() || $aiGate->reserve()) {
+    $fail('The database-backed daily AI call cap did not atomically reject a third reservation.');
 }
 
 $_POST = [
