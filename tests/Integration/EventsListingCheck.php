@@ -104,6 +104,111 @@ try {
         $fail('The public date-range listing omitted required cards or exposed private contact details.');
     }
 
+    $spiritual = get_term_by('slug', 'spiritual', EventPostType::TAXONOMY);
+    if (! $spiritual instanceof WP_Term) {
+        $fail('The second event type was not installed.');
+    }
+    wp_set_object_terms($seedIds[0], [(int) $occurrenceType->term_id, (int) $spiritual->term_id], EventPostType::TAXONOMY);
+    wp_set_object_terms($seedIds[5], (int) $spiritual->term_id, EventPostType::TAXONOMY);
+    $deaneriesTable = $wpdb->prefix . 'adct_pi_deaneries';
+    if ($wpdb->insert($deaneriesTable, [
+        'name' => 'Fictional filter deanery',
+        'slug' => 'fictional-filter-deanery',
+        'status' => 'active',
+        'created_at' => gmdate('Y-m-d H:i:s'),
+        'updated_at' => gmdate('Y-m-d H:i:s'),
+    ]) !== 1) {
+        $fail('Could not seed a listing deanery.');
+    }
+    $listingDeanery = (int) $wpdb->insert_id;
+    if ($wpdb->update($wpdb->prefix . 'adct_pi_parishes', ['deanery_id' => $listingDeanery], [
+        'id' => $parishIds[5],
+    ]) !== 1) {
+        $fail('Could not associate the parish with the listing deanery.');
+    }
+    $beforeFilteredCache = $transientCount();
+    $_GET = $listingPeriod + [
+        'adct_types' => [(string) $spiritual->term_id, (string) $occurrenceType->term_id],
+        'adct_parish' => (string) $parishIds[5],
+        'adct_deanery' => (string) $listingDeanery,
+    ];
+    $filtered = do_shortcode('[adct_events]');
+    if (
+        ! str_contains($filtered, 'Fictional listing event 5')
+        || str_contains($filtered, 'Fictional listing event 0')
+        || $transientCount() !== $beforeFilteredCache
+    ) {
+        $fail('Combined multi-type, parish/deanery selection or cache bypass failed.');
+    }
+    $_GET = ['adct_period' => 'upcoming', 'adct_types' => [
+        (string) $spiritual->term_id, (string) $occurrenceType->term_id,
+    ]];
+    $multiPage = do_shortcode('[adct_events]');
+    if (! preg_match('/href="([^"]+)">More events<\/a>/', $multiPage, $matches)) {
+        $fail('The type-filtered result has no next-page URL.');
+    }
+    $nextUrl = html_entity_decode($matches[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    parse_str((string) wp_parse_url($nextUrl, PHP_URL_QUERY), $sharedFilters);
+    if (
+        ($sharedFilters['adct_page'] ?? null) !== '2'
+        || count($sharedFilters['adct_types'] ?? []) !== 2
+    ) {
+        $fail('Paging dropped the shareable multi-type selection.');
+    }
+    $_GET = $sharedFilters;
+    if (! str_contains(do_shortcode('[adct_events]'), 'Previous page')) {
+        $fail('A shared filtered URL did not reproduce the second page.');
+    }
+    $_GET = $listingPeriod + [
+        'adct_types' => [(string) $spiritual->term_id],
+    ];
+    $_GET['adct_types'] = [(string) $spiritual->term_id];
+    $_GET['adct_parish'] = (string) $parishIds[0];
+    unset($_GET['adct_deanery']);
+    if (! str_contains(do_shortcode('[adct_events]'), 'Fictional listing event 0')) {
+        $fail('A second assigned type did not match an event whose stored occurrence type differs.');
+    }
+    $_GET['adct_deanery'] = (string) $listingDeanery;
+    if (str_contains(do_shortcode('[adct_events]'), 'Fictional listing event 0')) {
+        $fail('A parish outside the chosen deanery matched both filters.');
+    }
+    $_GET['adct_parish'] = (string) $parishIds[5];
+    $filterBlock = do_blocks('<!-- wp:adct/events /-->');
+    if (! str_contains($filterBlock, 'Fictional listing event 5')) {
+        $fail('The event block did not apply the same filters as the shortcode.');
+    }
+
+    $restListing = static function (array $params): WP_REST_Response|WP_Error {
+        $request = new WP_REST_Request('GET', '/adct-parish-intake/v1/events');
+        $request->set_query_params($params + ['page_url' => home_url('/events/')]);
+        return rest_do_request($request);
+    };
+    $restParams = $listingPeriod + [
+        'adct_types' => [(string) $spiritual->term_id],
+        'adct_parish' => (string) $parishIds[5],
+        'adct_deanery' => (string) $listingDeanery,
+    ];
+    $restResult = $restListing($restParams);
+    if (
+        $restResult->get_status() !== 200
+        || ! str_contains((string) ($restResult->get_data()['html'] ?? ''), 'Fictional listing event 5')
+        || str_contains((string) ($restResult->get_data()['html'] ?? ''), 'private-contact@example.test')
+    ) {
+        $fail('The public REST selection did not match the listing or leaked a private contact.');
+    }
+    foreach ([
+        ['adct_types' => [['1']]],
+        ['adct_types' => range(1, 21)],
+        ['adct_parish' => ['1']],
+        ['adct_page' => '101'],
+        ['page_url' => 'https://outside.example.test/events/'],
+    ] as $invalid) {
+        if ($restListing($invalid)->get_status() !== 400) {
+            $fail('The public REST listing accepted malformed or oversized input.');
+        }
+    }
+    $_GET = $listingPeriod;
+
     $_GET = ['adct_period' => 'upcoming'];
     wp_cache_flush();
     $coldStart = microtime(true);
@@ -179,6 +284,9 @@ try {
     if (str_contains(do_shortcode('[adct_events]'), 'Fictional listing event 0')) {
         $fail('A cached public page exposed an event after it became private.');
     }
+    if (str_contains((string) ($restListing($listingPeriod)->get_data()['html'] ?? ''), 'Fictional listing event 0')) {
+        $fail('The public REST listing exposed a newly private event.');
+    }
     $beforeTitleGeneration = get_option('adct_pi_event_listing_generation');
     $movedStart = $listingStart->modify('-4 days');
     update_post_meta($seedIds[5], 'start_local', $movedStart->format('Y-m-d\TH:i'));
@@ -240,6 +348,9 @@ try {
         $_GET['adct_to'] = $hiddenStart->format('Y-m-d');
         if (str_contains(do_shortcode('[adct_events]'), 'Hidden fictional ' . $status . ' event')) {
             $fail('The public listing exposed a stale ' . $status . ' occurrence.');
+        }
+        if (str_contains((string) ($restListing($listingPeriod)->get_data()['html'] ?? ''), 'Hidden fictional ' . $status . ' event')) {
+            $fail('The public REST listing exposed a stale ' . $status . ' occurrence.');
         }
     }
 

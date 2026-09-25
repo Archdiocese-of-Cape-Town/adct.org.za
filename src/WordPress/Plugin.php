@@ -568,6 +568,7 @@ final class Plugin
         add_action('template_redirect', [$this->actionTokenEndpoint, 'handleRequest'], 0);
         add_action('init', [$this->eventPostType, 'register'], 5);
         add_action('init', [$this->publicEventListing, 'register'], 10);
+        add_action('rest_api_init', [$this->publicEventListing, 'registerRestRoute']);
         add_action('wp_enqueue_scripts', [$this->publicEventListing, 'styles']);
         add_action('save_post_adct_event', [$this->publicEventListing, 'invalidate'], 30);
         add_action('rest_after_insert_adct_event', [$this->publicEventListing, 'invalidateTerms'], 30);

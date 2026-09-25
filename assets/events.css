@@ -10,6 +10,9 @@
 .adct-events__filters button {
     max-width: 100%;
 }
+.adct-events__filters select[multiple] {
+    min-width: min(100%, 12rem);
+}
 .adct-events__cards {
     list-style: none;
     padding: 0;
