@@ -5,6 +5,11 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Tests\Unit\Architecture;
 
 use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;
+use ADCT\ParishIntake\Core\Ingestion\Imap\ImapMailbox;
+use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxConnectionConfig;
+use ADCT\ParishIntake\Core\Ingestion\Imap\TransportInterface;
+use ADCT\ParishIntake\Core\Ingestion\MailboxSearchCriteria;
+use ADCT\ParishIntake\Core\Ingestion\RawMailMessage;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Ports\ApprovalRouteRepositoryInterface;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
@@ -89,10 +94,15 @@ final class CoreIsolationTest extends TestCase
             AiProviderInterface::class,
             OcrProviderInterface::class,
             HttpClientInterface::class,
+            TransportInterface::class,
         ] as $interface) {
             self::assertTrue(interface_exists($interface), $interface);
         }
 
+        self::assertTrue(class_exists(MailboxConnectionConfig::class));
+        self::assertTrue(class_exists(MailboxSearchCriteria::class));
+        self::assertTrue(class_exists(RawMailMessage::class));
+        self::assertTrue(class_exists(ImapMailbox::class));
         self::assertTrue(class_exists(PipelineFactory::class));
         self::assertTrue(class_exists(ApprovalRouteResolver::class));
     }

@@ -2,16 +2,25 @@
 
 namespace ADCT\ParishIntake\Core\Ports;
 
-use ADCT\ParishIntake\Core\Parsing\Input\Message;
+use ADCT\ParishIntake\Core\Ingestion\MailboxSearchCriteria;
+use ADCT\ParishIntake\Core\Ingestion\RawMailMessage;
 
 interface MailboxInterface
 {
-    /**
-     * Provisional: the signature will be refined by its first consumer, IMAP intake in E2.1 (#35).
-     *
-     * @return Message[]
-     */
-    public function fetchUnseen(int $limit): array;
+    /** @return list<string> */
+    public function listFolders(): array;
 
-    public function markProcessed(Message $message): void;
+    public function ensureFolder(string $folder): void;
+
+    /** @return list<int> */
+    public function search(MailboxSearchCriteria $criteria): array;
+
+    /** @throws \ADCT\ParishIntake\Core\Ingestion\Imap\MessageTooLarge */
+    public function fetch(int $uid): RawMailMessage;
+
+    public function move(int $uid, string $folder): void;
+
+    public function markSeen(int $uid): void;
+
+    public function close(): void;
 }

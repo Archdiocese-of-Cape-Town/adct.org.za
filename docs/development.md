@@ -43,6 +43,21 @@ This creates `dist/adct-parish-intake.zip`. The script installs production depen
 
 Inbound RFC 822 parsing uses the pre-approved pure-PHP `zbateson/mail-mime-parser` 3.x package (PHP 8.1+, BSD-2-Clause; see [ADR 0012](decisions/0012-pure-php-mime-parser.md)). It and its runtime dependencies are included in the Strauss-prefixed release; no `ext-imap` or `ext-dom` is needed.
 
+Mailbox access uses the built-in PHP-stream client behind `Core\Ports\MailboxInterface` (see [ADR 0013](decisions/0013-built-in-pure-php-imap-client.md)). It adds no Composer dependency or `ext-imap` requirement. TLS peer verification is enabled by default; plain IMAP and disabled peer verification require an explicit test-only configuration. Messages larger than the configurable 30 MiB default are rejected before their bodies are fetched.
+
+The IMAP protocol tests use a scripted transport and run with PHPUnit's regular unit suite. The separate GreenMail integration test is in the `greenmail` group and is not part of `composer test`:
+
+```powershell
+docker network create adct-imap-test
+docker run -d --name adct-imap-greenmail --network adct-imap-test --network-alias greenmail -p 3025:3025 -p 3143:3143 greenmail/standalone:2.1.13
+docker run --rm --network adct-imap-test -e IMAP_TEST_HOST=greenmail -v "${PWD}:/app" -w /app php:8.2-cli vendor/bin/phpunit --group greenmail tests/Integration/Imap
+docker stop adct-imap-greenmail
+docker rm adct-imap-greenmail
+docker network rm adct-imap-test
+```
+
+GreenMail's standalone image provides a throwaway local IMAP/SMTP server. The test sends only invented `example.test` mail and opts into unencrypted IMAP solely in its test configuration. The CI job pins `greenmail/standalone:2.1.13` and runs this group independently of the existing PHP matrix and WordPress integration job.
+
 The build pins Strauss 0.30.0 and verifies the official [release asset](https://github.com/BrianHenryIE/strauss/releases/download/0.30.0/strauss.phar) against SHA-256 `08c1a8e553594745c22294e158129005fd11ed09ed452d7d4f48566f38c66c96` before running it. To upgrade Strauss, calculate the SHA-256 of the chosen official release asset and update both `STRAUSS_VERSION` and `STRAUSS_SHA256` in `scripts/build-release.sh`, then rebuild the zip locally.
 
 The build validates the zip by unpacking it, checking its contents, linting every packaged PHP file, and loading the plugin bootstrap and Core autoloader under plain PHP. The zip's small `WordPress\Autoloader` loads the plugin's `src/` classes; Composer's generated PSR-4 autoloader is used in development and tests. CI runs this same build on every PR and `v*` tag; PRs receive an `adct-parish-intake.zip` artifact.
