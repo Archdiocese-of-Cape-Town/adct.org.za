@@ -59,16 +59,31 @@ final class ContactService
         string $email,
         string $displayName = '',
         string $roleLabel = '',
-        bool $receivesReminders = true
+        bool $receivesReminders = false
     ): SenderLookupResult {
-        return $this->linkWithInitialTrust(
+        $email = EmailAddress::normalize($email);
+        $firstLookup = SenderLookup::fromRows($email, $this->contacts->findByEmail($email));
+
+        if ($firstLookup->trust !== SenderTrust::UNKNOWN || $firstLookup->parishIds !== []) {
+            return $firstLookup;
+        }
+
+        $rows = $this->contacts->findByEmail($email);
+        $secondLookup = SenderLookup::fromRows($email, $rows);
+
+        if ($secondLookup->trust !== SenderTrust::UNKNOWN || $secondLookup->parishIds !== []) {
+            return $secondLookup;
+        }
+
+        return $this->linkWithInitialTrustFromRows(
             $parishId,
             $email,
             $displayName,
             $roleLabel,
             $receivesReminders,
             SenderTrust::PENDING,
-            true
+            true,
+            $rows
         );
     }
 
@@ -235,15 +250,41 @@ final class ContactService
         string $initialTrust,
         bool $updateExistingLink
     ): SenderLookupResult {
+        $email = EmailAddress::normalize($email);
+        $rows = $this->contacts->findByEmail($email);
+
+        return $this->linkWithInitialTrustFromRows(
+            $parishId,
+            $email,
+            $displayName,
+            $roleLabel,
+            $receivesReminders,
+            $initialTrust,
+            $updateExistingLink,
+            $rows
+        );
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $rows
+     */
+    private function linkWithInitialTrustFromRows(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $initialTrust,
+        bool $updateExistingLink,
+        array $rows
+    ): SenderLookupResult {
         if ($parishId < 1) {
             throw new InvalidArgumentException('A parish must be selected for this contact.');
         }
 
-        $email = EmailAddress::normalize($email);
         $displayName = $this->normalizeLabel($displayName);
         $roleLabel = $this->normalizeLabel($roleLabel);
         $timestamp = $this->timestamp();
-        $rows = $this->contacts->findByEmail($email);
         $trust = $rows === [] ? $initialTrust : $this->trustOf($rows);
         $verifiedAt = $this->verifiedAt($rows, $trust, $timestamp);
         $existingParishLink = $this->findParishLink($rows, $parishId);

@@ -29,6 +29,7 @@ final class SenderLearningServiceTest extends TestCase
         self::assertSame(SenderTrust::PENDING, $result->trust);
         self::assertSame([11], $result->parishIds);
         self::assertSame(SenderTrust::PENDING, $store->rows[1]['trust']);
+        self::assertSame(0, $store->rows[1]['receives_reminders']);
     }
 
     public function testUniqueParserParishCreatesPendingSenderWhenNoSourceParishIsAvailable(): void

@@ -3720,7 +3720,7 @@ $contactService->link($firstParishId, $sharedSenderEmail, 'Sample Sender', 'Secr
 $contactService->link($secondParishId, $sharedSenderEmail, 'Sample Sender', 'Secretary', true);
 $contactService->block($sharedSenderEmail);
 $pendingSenderEmail = 'pending@example.test';
-$contactService->linkPending($firstParishId, $pendingSenderEmail, 'Sample Sender', 'Secretary', true);
+$contactService->linkPending($firstParishId, $pendingSenderEmail, 'Sample Sender', 'Secretary');
 $sharedSenderLinks = $wpdb->get_results($wpdb->prepare(
     "SELECT parish_id, trust FROM {$contactTable} WHERE email = %s ORDER BY parish_id ASC",
     $sharedSenderEmail
@@ -3741,7 +3741,7 @@ if (
 }
 
 $pendingSenderRow = $wpdb->get_row($wpdb->prepare(
-    "SELECT parish_id, trust, verified_at FROM {$contactTable} WHERE email = %s LIMIT 1",
+    "SELECT parish_id, trust, verified_at, receives_reminders FROM {$contactTable} WHERE email = %s LIMIT 1",
     $pendingSenderEmail
 ), ARRAY_A);
 
@@ -3750,6 +3750,7 @@ if (
     || (int) ($pendingSenderRow['parish_id'] ?? 0) !== $firstParishId
     || ($pendingSenderRow['trust'] ?? '') !== 'pending'
     || $pendingSenderRow['verified_at'] !== null
+    || (int) ($pendingSenderRow['receives_reminders'] ?? 1) !== 0
 ) {
     $fail('A pending sender contact was not created with a conservative parish guess.');
 }

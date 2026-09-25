@@ -150,11 +150,23 @@ final class ContactServiceTest extends TestCase
         $store = new FakeParishContactStore();
         $service = new ContactService($store, new FixedContactClock());
 
-        $service->linkPending(11, 'sender@example.test', 'Office', 'Secretary', false);
+        $service->linkPending(11, 'sender@example.test', 'Office', 'Secretary');
 
         self::assertSame(SenderTrust::PENDING, $service->lookup('sender@example.test')->trust);
-        self::assertSame(false, (bool) $store->rows[1]['receives_reminders']);
+        self::assertSame(0, $store->rows[1]['receives_reminders']);
         self::assertNull($store->rows[1]['verified_at']);
+    }
+
+    public function testPendingLinksRefuseToCreateIfTheAddressBecomesKnownDuringTheSecondRead(): void
+    {
+        $store = new ChangingParishContactStore();
+        $service = new ContactService($store, new FixedContactClock());
+
+        $result = $service->linkPending(11, 'sender@example.test', 'Office', 'Secretary');
+
+        self::assertSame(SenderTrust::VERIFIED, $result->trust);
+        self::assertSame([], $store->rows);
+        self::assertSame(2, $store->findByEmailCalls);
     }
 
     public function testChangingALinkEmailUsesExistingAddressTrustAndDeduplicatesParishLinks(): void
@@ -347,6 +359,98 @@ final class FakeParishContactStore implements ParishContactStoreInterface
         }
 
         return $updated;
+    }
+}
+
+final class ChangingParishContactStore implements ParishContactStoreInterface
+{
+    /**
+     * @var array<int, array<string, mixed>>
+     */
+    public array $rows = [];
+
+    public int $findByEmailCalls = 0;
+
+    public function findByEmail(string $email): array
+    {
+        ++$this->findByEmailCalls;
+
+        if ($this->findByEmailCalls === 1) {
+            return [];
+        }
+
+        return [[
+            'id' => 99,
+            'parish_id' => 12,
+            'email' => $email,
+            'display_name' => 'Office',
+            'role_label' => 'Secretary',
+            'trust' => SenderTrust::VERIFIED,
+            'verified_at' => '2026-09-24 22:00:00',
+            'receives_reminders' => 1,
+            'created_at' => '2026-09-24 22:00:00',
+            'updated_at' => '2026-09-24 22:00:00',
+        ]];
+    }
+
+    public function findLink(int $contactId, int $parishId): ?array
+    {
+        return null;
+    }
+
+    public function findForParish(int $parishId): array
+    {
+        return [];
+    }
+
+    public function saveLink(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $trust,
+        ?string $verifiedAt,
+        string $timestamp
+    ): void {
+        $this->rows[] = compact(
+            'parishId',
+            'email',
+            'displayName',
+            'roleLabel',
+            'receivesReminders',
+            'trust',
+            'verifiedAt',
+            'timestamp'
+        );
+    }
+
+    public function updateLink(
+        int $contactId,
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $trust,
+        ?string $verifiedAt,
+        string $timestamp
+    ): int {
+        return 0;
+    }
+
+    public function deleteLink(int $contactId, int $parishId): int
+    {
+        return 0;
+    }
+
+    public function setTrustForEmail(
+        string $email,
+        string $trust,
+        ?string $verifiedAt,
+        string $timestamp
+    ): int {
+        return 0;
     }
 }
 
