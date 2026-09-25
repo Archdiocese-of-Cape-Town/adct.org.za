@@ -105,6 +105,45 @@ try {
     ) {
         $fail('The public date-range listing omitted required cards or exposed private contact details.');
     }
+    if (! str_contains($html, 'adct-events__card--featured')
+        || ! str_contains($html, 'adct-events__card--recurring')
+        || ! str_contains($html, 'Every month')) {
+        $fail('Featured and recurring events were not visually distinguished or summarized.');
+    }
+    $_GET = ['adct_period' => 'upcoming', 'adct_parish' => (string) $parishIds[0]];
+    $expandedSeries = do_shortcode('[adct_events]');
+    $_GET['adct_collapse'] = '1';
+    $collapsedSeries = do_shortcode('[adct_events]');
+    if (
+        substr_count($expandedSeries, 'Fictional listing event 0</a>') < 2
+        || substr_count($collapsedSeries, 'Fictional listing event 0</a>') !== 1
+        || ! str_contains($collapsedSeries, 'Every month - next:')
+        || ! str_contains($collapsedSeries, 'name="adct_collapse" value="1" checked=')
+    ) {
+        $fail('Collapsing a recurring series did not keep only its next occurrence.');
+    }
+    update_post_meta($seedIds[9], 'featured', '1');
+    wp_set_object_terms($seedIds[1], (int) $occurrenceType->term_id, EventPostType::TAXONOMY);
+    wp_set_object_terms($seedIds[9], (int) $occurrenceType->term_id, EventPostType::TAXONOMY);
+    $_GET = [
+        'adct_period' => 'range',
+        'adct_from' => $listingStart->format('Y-m-d'),
+        'adct_to' => $listingStart->modify('+4 days')->format('Y-m-d'),
+        'adct_types' => [(string) $occurrenceType->term_id],
+    ];
+    $chronological = do_shortcode('[adct_events]');
+    $_GET['adct_pin'] = '1';
+    $pinned = do_shortcode('[adct_events]');
+    if (
+        strpos($chronological, 'Fictional listing event 1</a>')
+            >= strpos($chronological, 'Fictional listing event 9</a>')
+        || strpos($pinned, 'Fictional listing event 9</a>')
+            >= strpos($pinned, 'Fictional listing event 1</a>')
+        || ! str_contains($pinned, 'name="adct_pin" value="1" checked=')
+    ) {
+        $fail('Optional featured pinning did not preserve chronological default and put featured first.');
+    }
+    $_GET = $listingPeriod;
 
     $spiritual = get_term_by('slug', 'spiritual', EventPostType::TAXONOMY);
     if (! $spiritual instanceof WP_Term) {
@@ -185,6 +224,31 @@ try {
         $request->set_query_params($params + ['page_url' => home_url('/events/')]);
         return rest_do_request($request);
     };
+    $collapsedRest = $restListing([
+        'adct_period' => 'upcoming',
+        'adct_parish' => (string) $parishIds[0],
+        'adct_collapse' => '1',
+    ]);
+    if ($collapsedRest->get_status() !== 200
+        || substr_count((string) ($collapsedRest->get_data()['html'] ?? ''), 'Fictional listing event 0</a>') !== 1
+        || str_contains((string) ($collapsedRest->get_data()['html'] ?? ''), 'private-contact@example.test')) {
+        $fail('The public REST collapse mode failed or exposed private event data.');
+    }
+    $pinnedRest = $restListing([
+        'adct_period' => 'range',
+        'adct_from' => $listingStart->format('Y-m-d'),
+        'adct_to' => $listingStart->modify('+4 days')->format('Y-m-d'),
+        'adct_types' => [(string) $occurrenceType->term_id],
+        'adct_pin' => '1',
+    ]);
+    $pinnedRestHtml = (string) ($pinnedRest->get_data()['html'] ?? '');
+    if ($pinnedRest->get_status() !== 200
+        || strpos($pinnedRestHtml, 'Fictional listing event 9</a>') === false
+        || strpos($pinnedRestHtml, 'Fictional listing event 1</a>') === false
+        || strpos($pinnedRestHtml, 'Fictional listing event 9</a>')
+            >= strpos($pinnedRestHtml, 'Fictional listing event 1</a>')) {
+        $fail('The public REST listing did not preserve featured pinning.');
+    }
     $restParams = $listingPeriod + [
         'adct_types' => [(string) $spiritual->term_id],
         'adct_parish' => (string) $parishIds[5],

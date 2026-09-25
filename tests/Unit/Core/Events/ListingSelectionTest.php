@@ -50,6 +50,8 @@ final class ListingSelectionTest extends TestCase
             ['adct_deanery' => '-1'],
             ['adct_page' => '101'],
             ['adct_period' => str_repeat('x', 100)],
+            ['adct_collapse' => ['1']],
+            ['adct_pin' => 'true'],
         ] as $input) {
             try {
                 new ListingSelection($input);
@@ -58,5 +60,17 @@ final class ListingSelectionTest extends TestCase
                 self::assertTrue(true);
             }
         }
+    }
+
+    public function testOptionalPresentationModesSurvivePagination(): void
+    {
+        $selection = new ListingSelection(['adct_collapse' => '1', 'adct_pin' => '1']);
+
+        self::assertTrue($selection->collapse);
+        self::assertTrue($selection->pin);
+        self::assertSame('1', $selection->query(2)['adct_collapse']);
+        self::assertSame('1', $selection->query(2)['adct_pin']);
+        self::assertFalse((new ListingSelection([]))->collapse);
+        self::assertFalse((new ListingSelection([]))->pin);
     }
 }

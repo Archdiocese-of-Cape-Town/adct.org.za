@@ -261,7 +261,8 @@ final class Plugin
             $venues,
             new EventValidator($timezone, $rruleValidator),
             new RRulePresetMapper($rruleValidator),
-            $timezone
+            $timezone,
+            $clock
         );
         $occurrenceMaintenance = new WordPressEventOccurrenceMaintenance(
             new OccurrenceRepository($database),
@@ -645,7 +646,11 @@ final class Plugin
         add_action('admin_notices', [$this->eventOccurrenceHooks, 'renderFailureNotice']);
         add_filter('manage_adct_event_posts_columns', [$this->eventEditor, 'filterColumns']);
         add_action('manage_adct_event_posts_custom_column', [$this->eventEditor, 'renderColumn'], 10, 2);
+        add_action('restrict_manage_posts', [$this->eventEditor, 'renderListFilters']);
+        add_action('pre_get_posts', [$this->eventEditor, 'filterListQuery']);
+        add_filter('posts_where', [$this->eventEditor, 'filterNextDateWhere'], 10, 2);
         add_filter('rest_pre_insert_adct_event', [$this->eventEditor, 'validateRestRequest'], 10, 2);
+        add_action('rest_after_insert_adct_event', [$this->eventEditor, 'markRestFeaturedChoice'], 10, 2);
         add_filter('show_admin_bar', [$this, 'hideAdminBarForPortalRoles']);
         add_action('admin_menu', [$this->parserPage, 'registerMenu']);
         add_action('admin_menu', [$this->deaneriesPage, 'registerMenu']);

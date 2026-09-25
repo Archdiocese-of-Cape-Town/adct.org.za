@@ -8,6 +8,7 @@ use ADCT\ParishIntake\Core\Events\EventDetails;
 use ADCT\ParishIntake\Core\Events\EventValidationResult;
 use ADCT\ParishIntake\Core\Events\EventValidator;
 use ADCT\ParishIntake\Core\Events\RRulePresetMapper;
+use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Directory\Venue;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
@@ -20,6 +21,7 @@ final class EventEditor
     public const FORM_KEY = 'adct_event';
     public const NONCE_FIELD = 'adct_event_meta_nonce';
     public const NONCE_ACTION_PREFIX = 'adct_pi_save_event_meta_';
+    public const FEATURED_OVERRIDE_META = '_adct_pi_featured_override';
     private const VALIDATION_TRANSIENT_PREFIX = 'adct_pi_event_validation_';
     private const VALIDATION_TTL_SECONDS = 900;
     private const MAX_INPUT_LENGTH = 32768;
@@ -46,7 +48,8 @@ final class EventEditor
         private VenueRepository $venues,
         private EventValidator $validator,
         private RRulePresetMapper $presetMapper,
-        private DateTimeZone $timezone
+        private DateTimeZone $timezone,
+        private ClockInterface $clock
     ) {
     }
 
@@ -415,7 +418,17 @@ final class EventEditor
         }
 
         $this->persistMeta($postId, $validation);
+        update_post_meta($postId, self::FEATURED_OVERRIDE_META, '1');
         delete_transient($this->validationTransientKey($postId));
+    }
+
+    public function markRestFeaturedChoice(\WP_Post $post, \WP_REST_Request $request): void
+    {
+        $meta = $request->get_param('meta');
+        if ($post->post_type === EventPostType::POST_TYPE && current_user_can('edit_post', $post->ID)
+            && is_array($meta) && array_key_exists('featured', $meta)) {
+            update_post_meta($post->ID, self::FEATURED_OVERRIDE_META, '1');
+        }
     }
 
     /**
@@ -512,8 +525,10 @@ final class EventEditor
             'cb' => $columns['cb'] ?? '',
             'title' => $columns['title'] ?? 'Title',
             'event_start' => 'Start',
+            'event_next' => 'Next date',
             'event_parish' => 'Parish',
             'event_type' => 'Type',
+            'event_recurring' => 'Recurring',
             'event_status' => 'Status',
             'event_featured' => 'Featured',
             'date' => $columns['date'] ?? 'Date',
@@ -553,6 +568,24 @@ final class EventEditor
                 echo esc_html($parishId > 0 ? ($this->parishLabel($parishId) ?? 'Unknown parish') : 'Archdiocese-wide');
                 return;
 
+            case 'event_next':
+                $next = $this->nextOccurrence($postId);
+                if ($next === null) {
+                    echo '&mdash;';
+                    return;
+                }
+                $date = new DateTimeImmutable($next, new DateTimeZone('UTC'));
+                echo esc_html(wp_date(
+                    (string) get_option('date_format') . ' ' . (string) get_option('time_format'),
+                    $date->getTimestamp(),
+                    $this->timezone
+                ));
+                return;
+
+            case 'event_recurring':
+                echo esc_html(get_post_meta($postId, 'rrule', true) !== '' ? 'Yes' : 'No');
+                return;
+
             case 'event_type':
                 $terms = get_the_terms($postId, EventPostType::TAXONOMY);
 
@@ -582,6 +615,162 @@ final class EventEditor
                 echo esc_html($featured ? 'Yes' : 'No');
                 return;
         }
+    }
+
+    public function renderListFilters(string $postType): void
+    {
+        if ($postType !== EventPostType::POST_TYPE || ! current_user_can('edit_adct_events')) {
+            return;
+        }
+        $choices = [
+            'adct_pi_parish' => ['All parishes', 'Archdiocese-wide'],
+            'adct_pi_recurring' => ['All recurrence', 'Recurring', 'Once-off'],
+            'adct_pi_featured' => ['All featured', 'Featured', 'Not featured'],
+            'adct_pi_status' => ['All event statuses', 'Scheduled', 'Cancelled', 'Postponed'],
+        ];
+        $parishes = $this->parishes->findForEventEditor();
+        foreach ($choices as $key => $labels) {
+            $selectedValue = isset($_GET[$key]) && is_string($_GET[$key])
+                ? sanitize_text_field(wp_unslash($_GET[$key])) : '';
+            echo '<label class="screen-reader-text" for="' . esc_attr($key) . '">'
+                . esc_html($labels[0]) . '</label>';
+            echo '<select id="' . esc_attr($key) . '" name="' . esc_attr($key) . '">';
+            echo '<option value="">' . esc_html($labels[0]) . '</option>';
+            if ($key === 'adct_pi_parish') {
+                echo '<option value="none"' . selected($selectedValue, 'none', false) . '>'
+                    . esc_html($labels[1]) . '</option>';
+                foreach ($parishes as $parish) {
+                    echo '<option value="' . esc_attr((string) $parish['id']) . '"'
+                        . selected($selectedValue, (string) $parish['id'], false) . '>'
+                        . esc_html((string) $parish['name']) . '</option>';
+                }
+            } else {
+                foreach (array_slice($labels, 1) as $index => $label) {
+                    $value = $key === 'adct_pi_status'
+                        ? ['scheduled', 'cancelled', 'postponed'][$index]
+                        : ($index === 0 ? 'yes' : 'no');
+                    echo '<option value="' . esc_attr($value) . '"'
+                        . selected($selectedValue, $value, false) . '>' . esc_html($label) . '</option>';
+                }
+            }
+            echo '</select>';
+        }
+        $date = isset($_GET['adct_pi_next']) && is_string($_GET['adct_pi_next'])
+            ? sanitize_text_field(wp_unslash($_GET['adct_pi_next'])) : '';
+        echo '<label for="adct_pi_next">Next date</label> '
+            . '<input id="adct_pi_next" type="date" name="adct_pi_next" value="'
+            . esc_attr($date) . '">';
+    }
+
+    public function filterListQuery(\WP_Query $query): void
+    {
+        if (! is_admin() || ! $query->is_main_query()
+            || $query->get('post_type') !== EventPostType::POST_TYPE
+            || ! current_user_can('edit_adct_events')) {
+            return;
+        }
+        $filters = [];
+        foreach (['adct_pi_parish', 'adct_pi_recurring', 'adct_pi_featured', 'adct_pi_status', 'adct_pi_next'] as $key) {
+            $raw = $_GET[$key] ?? '';
+            if (! is_string($raw)) {
+                wp_die('Invalid event filter.', '', ['response' => 400]);
+            }
+            $filters[$key] = sanitize_text_field(wp_unslash($raw));
+        }
+        $meta = $query->get('meta_query');
+        $meta = is_array($meta) ? $meta : [];
+        $parish = $filters['adct_pi_parish'];
+        if ($parish !== '') {
+            if ($parish === 'none') {
+                $meta[] = ['relation' => 'OR',
+                    ['key' => 'parish_id', 'compare' => 'NOT EXISTS'],
+                    ['key' => 'parish_id', 'value' => '0', 'compare' => '='],
+                    ['key' => 'parish_id', 'value' => '', 'compare' => '='],
+                ];
+            } elseif (ctype_digit($parish) && (int) $parish > 0) {
+                $meta[] = ['key' => 'parish_id', 'value' => (int) $parish];
+            } else {
+                wp_die('Invalid parish filter.', '', ['response' => 400]);
+            }
+        }
+        foreach (['adct_pi_recurring' => 'rrule', 'adct_pi_featured' => 'featured'] as $filter => $key) {
+            $value = $filters[$filter];
+            if ($value !== '' && ! in_array($value, ['yes', 'no'], true)) {
+                wp_die('Invalid event filter.', '', ['response' => 400]);
+            }
+            if ($value === 'yes') {
+                $meta[] = ['key' => $key, 'value' => $key === 'featured' ? '1' : '', 'compare' => $key === 'featured' ? '=' : '!='];
+            } elseif ($value === 'no') {
+                $notSet = ['relation' => 'OR',
+                    ['key' => $key, 'compare' => 'NOT EXISTS'],
+                    ['key' => $key, 'value' => '', 'compare' => '='],
+                ];
+                if ($key === 'featured') {
+                    $notSet[] = ['key' => $key, 'value' => '0', 'compare' => '='];
+                }
+                $meta[] = $notSet;
+            }
+        }
+        $status = $filters['adct_pi_status'];
+        if ($status !== '') {
+            if (! in_array($status, ['scheduled', 'cancelled', 'postponed'], true)) {
+                wp_die('Invalid event status filter.', '', ['response' => 400]);
+            }
+            $meta[] = $status === 'scheduled'
+                ? ['relation' => 'OR',
+                    ['key' => 'status_flag', 'value' => $status],
+                    ['key' => 'status_flag', 'compare' => 'NOT EXISTS'],
+                ]
+                : ['key' => 'status_flag', 'value' => $status];
+        }
+        if ($meta !== []) {
+            $query->set('meta_query', $meta);
+        }
+        if ($filters['adct_pi_next'] !== '') {
+            $date = DateTimeImmutable::createFromFormat('!Y-m-d', $filters['adct_pi_next'], $this->timezone);
+            if ($date === false || $date->format('Y-m-d') !== $filters['adct_pi_next']) {
+                wp_die('Invalid next date filter.', '', ['response' => 400]);
+            }
+            $query->set('adct_pi_next_date', $filters['adct_pi_next']);
+        }
+    }
+
+    public function filterNextDateWhere(string $where, \WP_Query $query): string
+    {
+        $date = $query->get('adct_pi_next_date');
+        if (! is_admin() || ! $query->is_main_query() || ! is_string($date) || $date === ''
+            || $query->get('post_type') !== EventPostType::POST_TYPE) {
+            return $where;
+        }
+        global $wpdb;
+        $table = $wpdb->prefix . 'adct_pi_occurrences';
+        $now = $this->clock->now()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        return $where . $wpdb->prepare(
+            " AND EXISTS (SELECT 1 FROM {$table} next_o WHERE next_o.event_id = {$wpdb->posts}.ID "
+            . "AND next_o.start_local_date = %s AND next_o.start_utc = "
+            . "(SELECT MIN(future_o.start_utc) FROM {$table} future_o "
+            . "WHERE future_o.event_id = {$wpdb->posts}.ID AND future_o.start_utc >= %s))",
+            $date,
+            $now
+        );
+    }
+
+    private function nextOccurrence(int $postId): ?string
+    {
+        global $wpdb;
+        $table = $wpdb->prefix . 'adct_pi_occurrences';
+        $now = $this->clock->now()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        $wpdb->last_error = '';
+        $next = $wpdb->get_var($wpdb->prepare(
+            "SELECT start_utc FROM {$table} WHERE event_id = %d AND start_utc >= %s "
+            . 'ORDER BY start_utc ASC LIMIT 1',
+            $postId,
+            $now
+        ));
+        if ($wpdb->last_error !== '') {
+            throw new \RuntimeException('Could not load the next event occurrence: ' . $wpdb->last_error);
+        }
+        return is_string($next) ? $next : null;
     }
 
     public function renderValidationNotice(): void

@@ -26,6 +26,15 @@
     padding: 1rem;
 }
 .adct-events__card h3 { margin-top: 0; }
+.adct-events__card--featured {
+    border-width: 3px;
+    background-color: #fff8de;
+    color: #282018;
+}
+.adct-events__card--recurring:not(.adct-events__card--featured) {
+    border-style: dashed;
+}
+.adct-events__recurrence { font-weight: 600; }
 .adct-events__badge {
     display: inline-block;
     border: 1px solid currentColor;
