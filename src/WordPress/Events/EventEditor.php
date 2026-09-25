@@ -723,7 +723,8 @@ final class EventEditor
             'source candidate',
             $errors
         );
-        $contact = $this->metaContact($meta['contact'] ?? get_post_meta($postId, 'contact', true), $errors);
+        $contactValue = $meta['contact'] ?? ($postId > 0 ? get_post_meta($postId, 'contact', true) : []);
+        $contact = $this->metaContact($contactValue, $errors);
 
         return new EventDetails(
             $parishId,

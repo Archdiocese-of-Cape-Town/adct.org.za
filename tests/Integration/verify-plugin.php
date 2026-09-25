@@ -1535,6 +1535,140 @@ if (
     $fail('A REST event write did not refresh its occurrence rows.');
 }
 
+$failedCreateEventId = 0;
+$forceMissingOccurrenceVenue = static function (
+    mixed $value,
+    int $objectId,
+    string $metaKey,
+    bool $single
+) use (&$failedCreateEventId): mixed {
+    if ($objectId === $failedCreateEventId && $metaKey === 'venue_id') {
+        return $single ? (string) PHP_INT_MAX : [(string) PHP_INT_MAX];
+    }
+
+    return $value;
+};
+$installMissingOccurrenceVenue = static function (
+    WP_Post $post,
+    WP_REST_Request $_request,
+    bool $_creating
+) use (&$failedCreateEventId, $forceMissingOccurrenceVenue): void {
+    if ($post->post_status !== 'publish') {
+        return;
+    }
+
+    $failedCreateEventId = (int) $post->ID;
+    add_filter('get_post_metadata', $forceMissingOccurrenceVenue, 10, 4);
+};
+$removeMissingOccurrenceVenue = static function (
+    WP_Post $post,
+    WP_REST_Request $_request,
+    bool $_creating
+) use (&$failedCreateEventId, $forceMissingOccurrenceVenue): void {
+    if ((int) $post->ID === $failedCreateEventId) {
+        remove_filter('get_post_metadata', $forceMissingOccurrenceVenue, 10);
+    }
+};
+$failedCreateStart = $occurrenceStart->modify('+6 weeks');
+$failedCreateRequest = new WP_REST_Request('POST', '/wp/v2/adct_event');
+$failedCreateRequest->set_param('title', ['raw' => 'Fictional occurrence rebuild failure event']);
+$failedCreateRequest->set_param('status', 'publish');
+$failedCreateRequest->set_param('meta', [
+    'parish_id' => $firstParishId,
+    'venue_id' => $occurrenceVenue->id,
+    'start_local' => $failedCreateStart->format('Y-m-d\TH:i'),
+    'end_local' => $failedCreateStart->modify('+1 hour')->format('Y-m-d\TH:i'),
+    'all_day' => false,
+    'rrule' => $occurrenceRule,
+    'exdates' => [],
+    'rdates' => [],
+    'featured' => false,
+    'status_flag' => 'scheduled',
+]);
+add_action('rest_after_insert_adct_event', $installMissingOccurrenceVenue, 5, 3);
+add_action('rest_after_insert_adct_event', $removeMissingOccurrenceVenue, 15, 3);
+
+try {
+    $failedCreateResponse = rest_do_request($failedCreateRequest);
+    // rest_do_request() bypasses the REST server's response-pipeline filter.
+    $failedCreateResponse = apply_filters(
+        'rest_post_dispatch',
+        rest_ensure_response($failedCreateResponse),
+        rest_get_server(),
+        $failedCreateRequest
+    );
+} finally {
+    remove_action('rest_after_insert_adct_event', $installMissingOccurrenceVenue, 5);
+    remove_action('rest_after_insert_adct_event', $removeMissingOccurrenceVenue, 15);
+    remove_filter('get_post_metadata', $forceMissingOccurrenceVenue, 10);
+}
+
+$failedCreateCode = '';
+$failedCreateMessage = '';
+$failedCreateDetails = [];
+$failedCreateStatus = 0;
+$failedCreateResponsePayload = null;
+
+if ($failedCreateResponse instanceof WP_REST_Response) {
+    $failedCreateResponsePayload = $failedCreateResponse->get_data();
+    $failedCreateStatus = $failedCreateResponse->get_status();
+
+    if (is_array($failedCreateResponsePayload)) {
+        $failedCreateCode = is_string($failedCreateResponsePayload['code'] ?? null)
+            ? $failedCreateResponsePayload['code']
+            : '';
+        $failedCreateMessage = is_string($failedCreateResponsePayload['message'] ?? null)
+            ? $failedCreateResponsePayload['message']
+            : '';
+        $failedCreateDetails = is_array($failedCreateResponsePayload['data'] ?? null)
+            ? $failedCreateResponsePayload['data']
+            : [];
+    }
+} elseif (is_wp_error($failedCreateResponse)) {
+    $failedCreateCode = $failedCreateResponse->get_error_code();
+    $failedCreateMessage = $failedCreateResponse->get_error_message();
+    $failedCreateDetails = $failedCreateResponse->get_error_data($failedCreateCode);
+    $failedCreateDetails = is_array($failedCreateDetails) ? $failedCreateDetails : [];
+    $failedCreateStatus = (int) ($failedCreateDetails['status'] ?? 0);
+}
+
+$savedFailureEventId = absint($failedCreateDetails['event_id'] ?? 0);
+$savedFailureEvent = get_post($savedFailureEventId);
+
+if (
+    $failedCreateStatus !== 500
+    || $failedCreateCode !== 'adct_event_occurrence_rebuild_failed'
+    || $savedFailureEventId < 1
+    || $failedCreateEventId !== $savedFailureEventId
+    || ! str_contains(
+        $failedCreateMessage,
+        'Update the saved event at ID ' . $savedFailureEventId . ' instead of retrying the create request'
+    )
+    || ! $savedFailureEvent instanceof WP_Post
+    || $savedFailureEvent->post_status !== 'publish'
+    || $fetchOccurrenceRows($savedFailureEventId) !== []
+) {
+    $fail(sprintf(
+        'A failed REST create did not report its saved event ID and instruct clients to update it '
+        . '(status: %d, code: %s, request event ID: %d, error event ID: %d, post status: %s, '
+        . 'message: %s, details: %s, route: %s, method: %s, response: %s).',
+        $failedCreateStatus,
+        $failedCreateCode,
+        $failedCreateEventId,
+        $savedFailureEventId,
+        $savedFailureEvent instanceof WP_Post ? $savedFailureEvent->post_status : 'missing',
+        $failedCreateMessage,
+        wp_json_encode($failedCreateDetails),
+        $failedCreateRequest->get_route(),
+        $failedCreateRequest->get_method(),
+        wp_json_encode($failedCreateResponsePayload)
+    ));
+}
+
+if (wp_delete_post($savedFailureEventId, true) === false) {
+    $fail('The failed REST-create occurrence fixture could not be removed.');
+}
+
 foreach ([
     'cancelled' => 1,
     'postponed' => 0,

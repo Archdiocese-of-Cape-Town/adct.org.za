@@ -110,8 +110,10 @@ final class EventOccurrenceHooks
         \WP_REST_Server $server,
         \WP_REST_Request $request
     ) {
+        $method = strtoupper($request->get_method());
+
         if (
-            ! in_array(strtoupper($request->get_method()), ['POST', 'PUT', 'PATCH', 'DELETE'], true)
+            ! in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)
             || preg_match('#^/wp/v2/adct_event(?:/\d+)?$#', $request->get_route()) !== 1
         ) {
             return $response;
@@ -130,11 +132,34 @@ final class EventOccurrenceHooks
 
         unset($this->restFailures[$postId]);
 
-        return new \WP_Error(
+        $message = match ($method) {
+            'POST' => sprintf(
+                'The event was saved with ID %1$d, but its occurrence dates could not be refreshed. '
+                . 'Update the saved event at ID %1$d instead of retrying the create request; '
+                . 'previous occurrence rows were kept. Contact an administrator if the update fails again.',
+                $postId
+            ),
+            'DELETE' => sprintf(
+                'Event ID %1$d was deleted, but its occurrence rows could not be removed. '
+                . 'Contact an administrator to clean up the orphaned rows.',
+                $postId
+            ),
+            default => sprintf(
+                'Event ID %1$d was saved, but its occurrence dates could not be refreshed. '
+                . 'Previous occurrence rows were kept. Correct and update event ID %1$d, '
+                . 'or contact an administrator.',
+                $postId
+            ),
+        };
+
+        return rest_convert_error_to_response(new \WP_Error(
             'adct_event_occurrence_rebuild_failed',
-            'The event was saved, but its occurrence dates could not be refreshed. The previous occurrences were kept; retry the save or contact an administrator.',
-            ['status' => 500]
-        );
+            $message,
+            [
+                'status' => 500,
+                'event_id' => $postId,
+            ]
+        ));
     }
 
     public function renderFailureNotice(): void
