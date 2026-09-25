@@ -234,6 +234,21 @@ try {
         || str_contains((string) ($collapsedRest->get_data()['html'] ?? ''), 'private-contact@example.test')) {
         $fail('The public REST collapse mode failed or exposed private event data.');
     }
+    $pinnedRest = $restListing([
+        'adct_period' => 'range',
+        'adct_from' => $listingStart->format('Y-m-d'),
+        'adct_to' => $listingStart->modify('+4 days')->format('Y-m-d'),
+        'adct_types' => [(string) $occurrenceType->term_id],
+        'adct_pin' => '1',
+    ]);
+    $pinnedRestHtml = (string) ($pinnedRest->get_data()['html'] ?? '');
+    if ($pinnedRest->get_status() !== 200
+        || strpos($pinnedRestHtml, 'Fictional listing event 9</a>') === false
+        || strpos($pinnedRestHtml, 'Fictional listing event 1</a>') === false
+        || strpos($pinnedRestHtml, 'Fictional listing event 9</a>')
+            >= strpos($pinnedRestHtml, 'Fictional listing event 1</a>')) {
+        $fail('The public REST listing did not preserve featured pinning.');
+    }
     $restParams = $listingPeriod + [
         'adct_types' => [(string) $spiritual->term_id],
         'adct_parish' => (string) $parishIds[5],
