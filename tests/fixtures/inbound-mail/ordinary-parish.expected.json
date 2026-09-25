@@ -1,0 +1,11 @@
+{
+  "classification": "none",
+  "signals": [],
+  "blocks_confirmation": false,
+  "auth_results": {
+    "version": 1,
+    "spf": [],
+    "dkim": [],
+    "dmarc": []
+  }
+}

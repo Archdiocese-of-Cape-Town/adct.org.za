@@ -55,8 +55,10 @@ final class WordPressInboundMessageStore implements InboundMessageStoreInterface
                 'received_at' => $receivedAt->format('Y-m-d H:i:s'),
                 'raw_path' => $message->rawPath,
                 'body_text' => null,
-                'auth_results' => null,
-                'is_auto_reply' => 0,
+                'auth_results' => $message->authResults === null || $message->authResults->isEmpty()
+                    ? null
+                    : $message->authResults->toJson(),
+                'is_auto_reply' => $message->isAutoReply ? 1 : 0,
                 'status' => $message->status,
                 'error' => $message->error,
                 'retention_until' => $receivedAt->modify('+12 months')->format('Y-m-d H:i:s'),

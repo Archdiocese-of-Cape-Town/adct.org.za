@@ -1,0 +1,13 @@
+From: Example Parish Notices <notices@example.test>
+To: intake@example.test
+Date: Fri, 25 Sep 2026 04:00:00 +0000
+Message-ID: <list-message@example.test>
+Subject: Weekly parish notices
+Precedence: list
+List-Id: Example Parish notices <notices.example.test>
+List-Post: <mailto:notices@example.test>
+List-Unsubscribe: <mailto:unsubscribe@example.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+
+A synthetic list message containing parish notices.

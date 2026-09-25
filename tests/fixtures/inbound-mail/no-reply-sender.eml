@@ -1,0 +1,9 @@
+From: Example Parish Updates <no-reply@example.test>
+To: intake@example.test
+Date: Fri, 25 Sep 2026 04:00:00 +0000
+Message-ID: <no-reply-message@example.test>
+Subject: Parish notice
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+
+A synthetic notice from an address that should not receive a confirmation.
