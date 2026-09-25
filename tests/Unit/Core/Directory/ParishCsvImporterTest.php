@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Tests\Unit\Core\Directory;
 
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
+use ADCT\ParishIntake\Core\Directory\CsvFormulaGuard;
 use ADCT\ParishIntake\Core\Directory\ImportRow;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
 use PHPUnit\Framework\TestCase;
@@ -146,6 +147,60 @@ final class ParishCsvImporterTest extends TestCase
 
         self::assertFalse($missingRequired->canImport());
         self::assertNotEmpty($missingRequired->fileErrors);
+    }
+
+    public function testFormulaEscapedParishExportValuesRoundTripThroughImporter(): void
+    {
+        $row = $this->parishRow('sample-parish', [
+            'name' => '=Sample Parish',
+            'area' => '+North',
+            'church' => '-Hill',
+            'address' => '@not-a-formula',
+            'phone' => '+27 00 000 0000',
+            'notes' => '=SUM(A1:A2)',
+        ]);
+        $escapedRow = [];
+
+        foreach (ParishCsvImporter::HEADERS as $header) {
+            $escapedRow[$header] = CsvFormulaGuard::protect(
+                $row[$header],
+                $header === 'phone'
+            );
+        }
+
+        $plan = (new ParishCsvImporter())->preview(
+            $this->csv([$escapedRow]),
+            [['slug' => 'central']]
+        );
+
+        self::assertTrue($plan->canImport(), implode('; ', $this->allErrors($plan)));
+        self::assertSame('=Sample Parish', $plan->rows[0]->values['name']);
+        self::assertSame('+North', $plan->rows[0]->values['area']);
+        self::assertSame('-Hill', $plan->rows[0]->values['church']);
+        self::assertSame('@not-a-formula', $plan->rows[0]->values['address']);
+        self::assertSame('+27 00 000 0000', $plan->rows[0]->values['phone']);
+        self::assertSame('=SUM(A1:A2)', $plan->rows[0]->values['notes']);
+    }
+
+    public function testOfficeEmailMustFitTheNormalisedContactAddressLimit(): void
+    {
+        $longDomain = str_repeat('a', 63)
+            . '.'
+            . str_repeat('b', 63)
+            . '.'
+            . str_repeat('c', 50)
+            . '.test';
+        $longEmail = 'parish123@' . $longDomain;
+        self::assertGreaterThan(191, strlen($longEmail));
+        self::assertNotFalse(filter_var($longEmail, FILTER_VALIDATE_EMAIL));
+
+        $plan = (new ParishCsvImporter())->preview(
+            $this->csv([$this->parishRow('long-email', ['office_email' => $longEmail])]),
+            [['slug' => 'central']]
+        );
+
+        self::assertFalse($plan->canImport());
+        self::assertStringContainsString('office email', implode('; ', $plan->rows[0]->errors));
     }
 
     public function testCsvRowLimitIsEnforcedAtTwoThousandDataRows(): void

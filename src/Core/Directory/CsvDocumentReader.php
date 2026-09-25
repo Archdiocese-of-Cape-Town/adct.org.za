@@ -96,7 +96,9 @@ final class CsvDocumentReader
 
             foreach ($headers as $index => $header) {
                 if ($header !== '') {
-                    $normalizedValues[$header] = trim((string) ($values[$index] ?? ''));
+                    $normalizedValues[$header] = trim(CsvFormulaGuard::unprotect(
+                        (string) ($values[$index] ?? '')
+                    ));
                 }
             }
 

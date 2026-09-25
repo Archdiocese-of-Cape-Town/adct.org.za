@@ -79,7 +79,7 @@ Named places for a parish (church, hall, outstation), each with its own address 
 |---|---|
 | id | PK |
 | parish_id | FK (a contact can be linked to several parishes via repeated rows) |
-| email | lower-cased, unique per parish |
+| email | normalised to lower-case, unique per parish |
 | display_name, role_label | e.g. "Fr John", "Secretary", "Office" |
 | trust | `unknown`, `pending`, `verified`, `blocked` |
 | verified_at | set when the contact confirms via token or an admin links them |
@@ -87,7 +87,9 @@ Named places for a parish (church, hall, outstation), each with its own address 
 | last_seen_at | last message received from this address |
 | receives_reminders | bool |
 
-Learning rule: when an unknown address submits, a `pending` row is created with a best-guess parish (from the parser/gazetteer). An approver or admin confirms the link, and the contact becomes `verified`. Being verified fills in parish/venue automatically and lets the contact change published events instantly. It does **not** skip approval for new events ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md)).
+Trust belongs to the **normalised email address**, not an individual parish link. The schema represents an address linked to several parishes as one row per `(parish_id, email)`; the Core contact service keeps `trust` and `verified_at` consistent across every row for that address. Blocking an address therefore blocks it at every linked parish, and verifying it verifies every link.
+
+Learning rule: when an unknown address submits, a `pending` row is created with a best-guess parish (from the parser/gazetteer). An approver or admin confirms the link, and the contact becomes `verified`. Being verified fills in parish/venue automatically and lets the contact change published events instantly. It does **not** skip approval for new events ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md)). A blocked address can return only to `unknown` through an explicit admin unblock; it must be verified again before it becomes trusted.
 
 ### `adct_pi_sources`
 | Column | Notes |

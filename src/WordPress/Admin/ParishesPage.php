@@ -5,15 +5,22 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Admin;
 
 use ADCT\ParishIntake\Core\Auth\Capabilities;
+use ADCT\ParishIntake\Core\Directory\ContactService;
+use ADCT\ParishIntake\Core\Directory\CsvFormulaGuard;
+use ADCT\ParishIntake\Core\Directory\EmailAddress;
 use ADCT\ParishIntake\Core\Directory\ImportPlan;
 use ADCT\ParishIntake\Core\Directory\ImportRow;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
 use ADCT\ParishIntake\Core\Directory\ParishDataValidator;
+use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
 use DateTimeZone;
+use DomainException;
+use InvalidArgumentException;
 
 final class ParishesPage
 {
@@ -26,6 +33,8 @@ final class ParishesPage
     public function __construct(
         private ParishRepository $parishes,
         private DeaneryRepository $deaneries,
+        private ParishContactRepository $contacts,
+        private ContactService $contactService,
         private DirectoryImportService $importService,
         private ClockInterface $clock
     ) {
@@ -289,6 +298,87 @@ final class ParishesPage
         }
 
         wp_safe_redirect($this->pageUrl(['saved' => 1]));
+        exit;
+    }
+
+    public function handleContactAction(): void
+    {
+        $this->requireDirectoryCapability();
+        $parishId = absint($this->postText('parish_id'));
+        $contactId = absint($this->postText('contact_id'));
+        $action = sanitize_key($this->postText('contact_action'));
+
+        if (! in_array($action, ['save', 'remove', 'verify', 'block', 'unblock'], true)) {
+            wp_die(esc_html__('Choose a valid contact action.', 'adct-parish-intake'), '', [
+                'response' => 400,
+            ]);
+        }
+
+        check_admin_referer($this->contactNonceAction($action, $parishId, $contactId));
+
+        if ($parishId < 1 || $this->parishes->findWithRelations($parishId) === null) {
+            wp_die(esc_html__('The parish could not be found.', 'adct-parish-intake'), '', [
+                'response' => 404,
+            ]);
+        }
+
+        try {
+            if ($action === 'save') {
+                $email = $this->postText('email');
+                $displayName = sanitize_text_field($this->postText('display_name'));
+                $roleLabel = sanitize_text_field($this->postText('role_label'));
+                $receivesReminders = $this->postText('receives_reminders') === '1';
+
+                if ($contactId > 0) {
+                    $this->contactService->updateLink(
+                        $contactId,
+                        $parishId,
+                        $email,
+                        $displayName,
+                        $roleLabel,
+                        $receivesReminders
+                    );
+                } else {
+                    $this->contactService->link(
+                        $parishId,
+                        $email,
+                        $displayName,
+                        $roleLabel,
+                        $receivesReminders
+                    );
+                }
+            } elseif ($action === 'remove') {
+                $this->contactService->removeLink($contactId, $parishId);
+            } else {
+                $contact = $this->contacts->findLink($contactId, $parishId);
+
+                if ($contact === null) {
+                    wp_die(esc_html__('The parish contact link could not be found.', 'adct-parish-intake'), '', [
+                        'response' => 404,
+                    ]);
+                }
+
+                $email = EmailAddress::normalize((string) ($contact['email'] ?? ''));
+
+                if ($action === 'verify') {
+                    $this->contactService->verify($email);
+                } elseif ($action === 'block') {
+                    $this->contactService->block($email);
+                } else {
+                    $this->contactService->unblock($email);
+                }
+            }
+        } catch (DomainException | InvalidArgumentException $failure) {
+            wp_die(esc_html($failure->getMessage()), esc_html__('Contact update failed', 'adct-parish-intake'), [
+                'response' => 400,
+            ]);
+        }
+
+        wp_safe_redirect($this->pageUrl([
+            'action' => 'edit',
+            'id' => $parishId,
+            'contact_saved' => 1,
+        ]));
         exit;
     }
 
@@ -594,7 +684,128 @@ final class ParishesPage
                 </table>
                 <?php submit_button($isNew ? 'Add parish' : 'Save parish'); ?>
             </form>
+
+            <?php if (! $isNew) : ?>
+                <?php $this->renderContacts($id); ?>
+            <?php endif; ?>
         </div>
+        <?php
+    }
+
+    private function renderContacts(int $parishId): void
+    {
+        $contacts = $this->contacts->findForParish($parishId);
+        ?>
+        <hr />
+        <h2>Contacts</h2>
+        <p>Sender trust applies to the email address across every parish link. A verified sender still needs a dean or archdiocese reviewer to approve each new event.</p>
+
+        <?php if (isset($_GET['contact_saved'])) : ?>
+            <div class="notice notice-success is-dismissible"><p>Parish contact updated.</p></div>
+        <?php endif; ?>
+
+        <?php if ($contacts === []) : ?>
+            <p>No contacts are linked to this parish yet.</p>
+        <?php else : ?>
+            <table class="widefat striped">
+                <thead>
+                    <tr>
+                        <th scope="col">Email and details</th>
+                        <th scope="col">Trust</th>
+                        <th scope="col">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($contacts as $contact) : ?>
+                        <?php
+                        $contactId = (int) ($contact['id'] ?? 0);
+                        $trust = (string) ($contact['trust'] ?? SenderTrust::UNKNOWN);
+                        $emailFieldId = 'contact-email-' . $contactId;
+                        ?>
+                        <tr>
+                            <td>
+                                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                                    <input type="hidden" name="action" value="adct_pi_parish_contact" />
+                                    <input type="hidden" name="contact_action" value="save" />
+                                    <input type="hidden" name="parish_id" value="<?php echo esc_attr((string) $parishId); ?>" />
+                                    <input type="hidden" name="contact_id" value="<?php echo esc_attr((string) $contactId); ?>" />
+                                    <?php wp_nonce_field($this->contactNonceAction('save', $parishId, $contactId)); ?>
+                                    <label class="screen-reader-text" for="<?php echo esc_attr($emailFieldId); ?>">Email address</label>
+                                    <input id="<?php echo esc_attr($emailFieldId); ?>" class="regular-text" name="email" type="email" maxlength="191" required value="<?php echo esc_attr((string) ($contact['email'] ?? '')); ?>" />
+                                    <p>
+                                        <label>Display name
+                                            <input class="regular-text" name="display_name" type="text" maxlength="191" value="<?php echo esc_attr((string) ($contact['display_name'] ?? '')); ?>" />
+                                        </label>
+                                        <label>Role
+                                            <input class="regular-text" name="role_label" type="text" maxlength="191" value="<?php echo esc_attr((string) ($contact['role_label'] ?? '')); ?>" />
+                                        </label>
+                                    </p>
+                                    <label>
+                                        <input name="receives_reminders" type="checkbox" value="1" <?php checked((int) ($contact['receives_reminders'] ?? 0), 1); ?> />
+                                        Receives reminders
+                                    </label>
+                                    <p><button class="button button-secondary" type="submit">Save contact</button></p>
+                                </form>
+                            </td>
+                            <td><?php echo esc_html($this->label($trust)); ?></td>
+                            <td>
+                                <?php if ($trust === SenderTrust::BLOCKED) : ?>
+                                    <?php $this->renderContactActionForm('unblock', $parishId, $contactId, 'Unblock address'); ?>
+                                <?php else : ?>
+                                    <?php if ($trust !== SenderTrust::VERIFIED) : ?>
+                                        <?php $this->renderContactActionForm('verify', $parishId, $contactId, 'Verify address'); ?>
+                                    <?php endif; ?>
+                                    <?php $this->renderContactActionForm('block', $parishId, $contactId, 'Block address', 'secondary'); ?>
+                                <?php endif; ?>
+                                <?php $this->renderContactActionForm('remove', $parishId, $contactId, 'Remove parish link', 'delete'); ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        <?php endif; ?>
+
+        <h3>Add a contact</h3>
+        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+            <input type="hidden" name="action" value="adct_pi_parish_contact" />
+            <input type="hidden" name="contact_action" value="save" />
+            <input type="hidden" name="parish_id" value="<?php echo esc_attr((string) $parishId); ?>" />
+            <input type="hidden" name="contact_id" value="0" />
+            <?php wp_nonce_field($this->contactNonceAction('save', $parishId, 0)); ?>
+            <p>
+                <label for="new-contact-email">Email address</label><br />
+                <input id="new-contact-email" class="regular-text" name="email" type="email" maxlength="191" required />
+            </p>
+            <p>
+                <label for="new-contact-name">Display name</label><br />
+                <input id="new-contact-name" class="regular-text" name="display_name" type="text" maxlength="191" />
+            </p>
+            <p>
+                <label for="new-contact-role">Role</label><br />
+                <input id="new-contact-role" class="regular-text" name="role_label" type="text" maxlength="191" />
+            </p>
+            <p><label><input name="receives_reminders" type="checkbox" value="1" checked /> Receives reminders</label></p>
+            <?php submit_button('Add contact', 'secondary'); ?>
+        </form>
+        <?php
+    }
+
+    private function renderContactActionForm(
+        string $action,
+        int $parishId,
+        int $contactId,
+        string $buttonLabel,
+        string $buttonClass = 'secondary'
+    ): void {
+        ?>
+        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+            <input type="hidden" name="action" value="adct_pi_parish_contact" />
+            <input type="hidden" name="contact_action" value="<?php echo esc_attr($action); ?>" />
+            <input type="hidden" name="parish_id" value="<?php echo esc_attr((string) $parishId); ?>" />
+            <input type="hidden" name="contact_id" value="<?php echo esc_attr((string) $contactId); ?>" />
+            <?php wp_nonce_field($this->contactNonceAction($action, $parishId, $contactId)); ?>
+            <button class="button button-<?php echo esc_attr($buttonClass); ?>" type="submit"><?php echo esc_html($buttonLabel); ?></button>
+        </form>
         <?php
     }
 
@@ -927,10 +1138,18 @@ final class ParishesPage
         $orderedValues = [];
 
         foreach (ParishCsvImporter::HEADERS as $header) {
-            $orderedValues[] = (string) ($values[$header] ?? '');
+            $orderedValues[] = CsvFormulaGuard::protect(
+                (string) ($values[$header] ?? ''),
+                $header === 'phone'
+            );
         }
 
         return $orderedValues;
+    }
+
+    private function contactNonceAction(string $action, int $parishId, int $contactId): string
+    {
+        return 'adct_pi_parish_contact_' . $action . '_' . $parishId . '_' . $contactId;
     }
 
     private function requireDirectoryCapability(): void
