@@ -14,7 +14,7 @@ use Throwable;
 final class PublicEventListing
 {
     private const PAGE_SIZE = 20;
-    private const MAX_PAGE = 50;
+    private const MAX_PAGE = 100;
     private const CACHE_VERSION = 'adct_pi_event_listing_generation';
 
     public function __construct(
@@ -106,12 +106,12 @@ final class PublicEventListing
             $through = $this->input('adct_to', '');
             $page = $this->input('adct_page', '1');
 
-            if (preg_match('/\A(?:[1-9]|[1-4][0-9]|50)\z/D', $page) !== 1) {
-                throw new InvalidArgumentException('Choose a page between 1 and 50.');
+            if (preg_match('/\A(?:[1-9]|[1-9][0-9]|100)\z/D', $page) !== 1) {
+                throw new InvalidArgumentException('Choose a page between 1 and 100.');
             }
 
             $range = new ListingRange($period, $from, $through, $this->clock->now(), $this->timezone);
-            $result = $this->rows($range, (int) $page);
+            $result = $this->rows($range, (int) $page, $period);
         } catch (InvalidArgumentException $error) {
             return '<p role="alert">' . esc_html($error->getMessage()) . '</p>';
         } catch (Throwable $error) {
@@ -259,6 +259,8 @@ final class PublicEventListing
         if ($result['more'] && (int) $page < self::MAX_PAGE) {
             $html .= '<a href="' . esc_url(add_query_arg($query + ['adct_page' => (int) $page + 1], $base))
                 . '">More events</a>';
+        } elseif ($result['more']) {
+            $html .= '<p>Narrow the date range to see more events.</p>';
         }
 
         return $html . '</nav></section>';
@@ -277,7 +279,7 @@ final class PublicEventListing
     /**
      * @return array{rows: array<int, array<string, mixed>>, more: bool}
      */
-    private function rows(ListingRange $range, int $page): array
+    private function rows(ListingRange $range, int $page, string $period): array
     {
         global $wpdb;
 
@@ -285,14 +287,21 @@ final class PublicEventListing
         $from = $range->from->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $end = $range->through->modify('+1 day')->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $from = max($from, $now);
-        $generation = (string) get_option(self::CACHE_VERSION, '0');
-        $key = 'adct_pi_list_' . md5(implode('|', [
-            $generation,
-            $from, $end, (string) $page,
-        ]));
-        $cached = get_transient($key);
-        if (is_array($cached) && isset($cached['rows'], $cached['more'])) {
-            return $cached;
+        $cacheable = $period !== 'range';
+        $generation = '';
+        $key = 'adct_pi_list_' . $period . '_' . $page;
+        if ($cacheable) {
+            $generation = (string) get_option(self::CACHE_VERSION, '0');
+            $cached = get_transient($key);
+            if (
+                is_array($cached)
+                && ($cached['generation'] ?? null) === $generation
+                && ($cached['from'] ?? null) === $from
+                && ($cached['end'] ?? null) === $end
+                && isset($cached['rows'], $cached['more'])
+            ) {
+                return ['rows' => $cached['rows'], 'more' => $cached['more']];
+            }
         }
 
         $table = $wpdb->prefix . 'adct_pi_occurrences';
@@ -320,8 +329,12 @@ final class PublicEventListing
         $more = count($rows) > self::PAGE_SIZE;
         $rows = array_slice($rows, 0, self::PAGE_SIZE);
         $result = ['rows' => $rows, 'more' => $more];
-        if ((string) get_option(self::CACHE_VERSION, '0') === $generation) {
-            if (! set_transient($key, $result, 60)) {
+        if ($cacheable && (string) get_option(self::CACHE_VERSION, '0') === $generation) {
+            if (! set_transient($key, $result + [
+                'generation' => $generation,
+                'from' => $from,
+                'end' => $end,
+            ], 60)) {
                 error_log('[ADCT Parish Intake] Public event listing cache could not be written.');
             }
         }

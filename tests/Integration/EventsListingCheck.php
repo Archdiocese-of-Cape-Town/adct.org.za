@@ -79,14 +79,18 @@ try {
 
     $_GET = $listingPeriod;
     wp_cache_flush();
-    $coldStart = microtime(true);
-    $queryStart = $wpdb->num_queries;
+    $transientCount = static function () use ($wpdb): int {
+        return (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE %s",
+            $wpdb->esc_like('_transient_adct_pi_list_') . '%'
+        ));
+    };
+    $beforeRangeCache = $transientCount();
     $html = do_shortcode('[adct_events]');
-    $coldSeconds = microtime(true) - $coldStart;
-    $coldQueries = $wpdb->num_queries - $queryStart;
-    $warmStart = microtime(true);
-    $cached = do_shortcode('[adct_events]');
-    $warmSeconds = microtime(true) - $warmStart;
+    $rangeRepeat = do_shortcode('[adct_events]');
+    if ($transientCount() !== $beforeRangeCache || $rangeRepeat !== $html) {
+        $fail('Custom date ranges wrote listing transients or changed between reads.');
+    }
     if (
         ! str_contains($html, 'Fictional listing event 0')
         || ! str_contains($html, 'Fictional listing parish 5')
@@ -96,7 +100,23 @@ try {
         || ! str_contains($html, 'Social')
         || ! str_contains($html, 'Occurrence integration hall')
         || str_contains($html, 'private-contact@example.test')
-        || $cached !== $html
+    ) {
+        $fail('The public date-range listing omitted required cards or exposed private contact details.');
+    }
+
+    $_GET = ['adct_period' => 'upcoming'];
+    wp_cache_flush();
+    $coldStart = microtime(true);
+    $queryStart = $wpdb->num_queries;
+    $upcoming = do_shortcode('[adct_events]');
+    $coldSeconds = microtime(true) - $coldStart;
+    $coldQueries = $wpdb->num_queries - $queryStart;
+    $warmStart = microtime(true);
+    $cached = do_shortcode('[adct_events]');
+    $warmSeconds = microtime(true) - $warmStart;
+    if (
+        ! str_contains($upcoming, 'More events')
+        || $cached !== $upcoming
         || $coldSeconds > 5.0
         || $warmSeconds > 2.0
         || $coldQueries > 100
@@ -106,10 +126,19 @@ try {
             $coldSeconds,
             $coldQueries,
             $warmSeconds,
-            substr($html, 0, 700)
+            substr($upcoming, 0, 700)
         ));
     }
+    $_GET['adct_page'] = '90';
+    if (! str_contains(do_shortcode('[adct_events]'), 'More events')) {
+        $fail('The yearly listing cannot navigate past the 1,000th occurrence.');
+    }
+    $_GET['adct_page'] = '91';
+    if (! str_contains(do_shortcode('[adct_events]'), 'Fictional listing event')) {
+        $fail('The yearly listing did not reach the last seeded occurrences.');
+    }
 
+    $_GET = $listingPeriod;
     $block = do_blocks('<!-- wp:adct/events /-->');
     if (! str_contains($block, 'Fictional listing event 0')) {
         $fail('The server-rendered event block did not show the same public occurrences.');
@@ -130,7 +159,7 @@ try {
     if (! str_contains(do_shortcode('[adct_events]'), 'Previous page')) {
         $fail('The non-JavaScript listing did not provide a second page.');
     }
-    $_GET['adct_page'] = '51';
+    $_GET['adct_page'] = '101';
     if (! str_contains(do_shortcode('[adct_events]'), 'role="alert"')) {
         $fail('The listing accepted a page past its cost limit.');
     }
