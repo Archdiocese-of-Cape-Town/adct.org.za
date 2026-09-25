@@ -17,8 +17,5 @@
     }
   },
   "match_kind": "cancellation",
-  "event_status": "cancelled",
-  "known_failures": {
-    "match_kind": "#46"
-  }
+  "event_status": "cancelled"
 }
