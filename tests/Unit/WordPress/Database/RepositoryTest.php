@@ -16,6 +16,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
+use ADCT\ParishIntake\WordPress\Directory\DirectoryVersionStoreInterface;
 use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use ADCT\ParishIntake\Core\Directory\Venue;
 use ADCT\ParishIntake\Core\Sources\Source;
@@ -52,6 +53,38 @@ final class RepositoryTest extends TestCase
         self::assertSame([12], $database->preparedQueries[1]['arguments']);
         self::assertStringContainsString('UPDATE wp_adct_pi_parishes', $database->preparedQueries[2]['query']);
         self::assertStringContainsString('DELETE FROM wp_adct_pi_parishes', $database->preparedQueries[3]['query']);
+    }
+
+    public function testParishVenueAndContactWritesBumpTheDirectoryVersion(): void
+    {
+        $versions = new FakeDirectoryVersionStore();
+
+        $parishDatabase = new FakeDatabaseConnection();
+        $parishDatabase->nextInsertId = 12;
+        $parishes = new ParishRepository($parishDatabase, $versions);
+        $parishes->insert(['name' => 'Sample Parish']);
+        $parishes->update(12, ['name' => 'Updated Sample Parish']);
+        $parishes->delete(12);
+
+        $venueDatabase = new FakeDatabaseConnection();
+        $venueDatabase->nextInsertId = 22;
+        $venues = new VenueRepository($venueDatabase, $versions);
+        $venues->insert(['name' => 'Sample Hall']);
+        $venues->update(22, ['name' => 'Updated Sample Hall']);
+        $venues->delete(22);
+
+        $contactDatabase = new FakeDatabaseConnection();
+        $contacts = new ParishContactRepository($contactDatabase, $versions);
+        $contacts->saveLink(12, 'sender@example.test', '', '', true, SenderTrust::UNKNOWN, null, '2026-09-25 00:00:00');
+        $contacts->setTrustForEmail(
+            'sender@example.test',
+            SenderTrust::VERIFIED,
+            '2026-09-25 00:00:00',
+            '2026-09-25 00:00:00'
+        );
+        $contacts->deleteLink(22, 12);
+
+        self::assertSame(9, $versions->bumps);
     }
 
     public function testAllRequiredRepositoriesUseTheirVersionedTableNames(): void
@@ -695,5 +728,20 @@ final class FakeDatabaseConnection implements DatabaseConnectionInterface
     public function lastError(): string
     {
         return '';
+    }
+}
+
+final class FakeDirectoryVersionStore implements DirectoryVersionStoreInterface
+{
+    public int $bumps = 0;
+
+    public function current(): int
+    {
+        return $this->bumps;
+    }
+
+    public function bump(): int
+    {
+        return ++$this->bumps;
     }
 }

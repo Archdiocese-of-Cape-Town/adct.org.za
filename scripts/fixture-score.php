@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
+use ADCT\ParishIntake\Tests\Support\FixtureDirectorySnapshotLoader;
 use ADCT\ParishIntake\Tests\Support\EmailFixtureLoader;
 use ADCT\ParishIntake\Tests\Support\FixtureComparator;
 
@@ -20,7 +21,7 @@ if ($paths === []) {
 }
 
 $loader = new EmailFixtureLoader();
-$pipeline = (new PipelineFactory())->create();
+$directorySnapshotLoader = new FixtureDirectorySnapshotLoader();
 $totalCorrect = 0;
 $totalChecks = 0;
 
@@ -41,7 +42,10 @@ foreach ($paths as $path) {
         throw new RuntimeException('Expected JSON must be an object: ' . basename($expectedPath));
     }
 
-    $outcome = $pipeline->parseAll($loader->load($path));
+    $directorySnapshots = $directorySnapshotLoader->providerFor($expected, $path);
+    $outcome = (new PipelineFactory(null, $directorySnapshots))
+        ->create()
+        ->parseAll($loader->load($path));
     $actual = array_merge(
         $outcome->getPrimaryResult()->toArray(),
         $outcome->toArray()

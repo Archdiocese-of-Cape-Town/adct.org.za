@@ -15,7 +15,7 @@ final class FixtureComparator
      */
     public static function compare(array $expected, array $actual): array
     {
-        unset($expected['known_failures']);
+        unset($expected['known_failures'], $expected['directory_snapshot']);
 
         $checks = [];
 

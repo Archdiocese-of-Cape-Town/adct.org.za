@@ -1,0 +1,18 @@
+{
+  "directory_snapshot": "directory.json",
+  "candidate_count": 1,
+  "candidates": [
+    {
+      "fields": {
+        "title": "Community gathering",
+        "parish_name": "Example District: St Mary's",
+        "parish_id": 101,
+        "parish_match": {
+          "source": "context",
+          "confidence": 0.95,
+          "parish_id": 101
+        }
+      }
+    }
+  ]
+}

@@ -44,10 +44,14 @@ use ADCT\ParishIntake\WordPress\Database\Schema;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationLogger;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationVersionStore;
+use ADCT\ParishIntake\WordPress\Directory\CachedDirectorySnapshotProvider;
 use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
 use ADCT\ParishIntake\WordPress\Http\WordPressHttpClient;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
 use ADCT\ParishIntake\WordPress\Directory\DeaneryApproverAssignmentService;
+use ADCT\ParishIntake\WordPress\Directory\WordPressDirectorySnapshotCache;
+use ADCT\ParishIntake\WordPress\Directory\WordPressDirectorySnapshotLoader;
+use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
@@ -72,23 +76,28 @@ final class Plugin
     {
         $this->pluginFile = $pluginFile;
         $this->schema = new Schema();
-        $this->pipelineFactory = new PipelineFactory();
         $this->httpClient = new WordPressHttpClient();
+        $clock = new SystemClock();
+        $database = new WordPressDatabaseConnection();
+        $directoryVersions = new WordPressDirectoryVersionStore($database);
+        $parishes = new ParishRepository($database, $directoryVersions);
+        $deaneries = new DeaneryRepository($database);
+        $approvers = new DeaneryApproverRepository($database);
+        $contacts = new ParishContactRepository($database, $directoryVersions);
+        $venues = new VenueRepository($database, $directoryVersions);
+        $sources = new SourceRepository($database);
+        $directorySnapshots = new CachedDirectorySnapshotProvider(
+            $directoryVersions,
+            new WordPressDirectorySnapshotCache(),
+            new WordPressDirectorySnapshotLoader($parishes, $venues, $contacts)
+        );
+        $this->pipelineFactory = new PipelineFactory($clock, $directorySnapshots);
         $this->parserPage = new ParserPage(
             $this->schema,
             $this->pipelineFactory,
             new StaticReportGenerator($this->schema),
             $this->httpClient
         );
-
-        $clock = new SystemClock();
-        $database = new WordPressDatabaseConnection();
-        $parishes = new ParishRepository($database);
-        $deaneries = new DeaneryRepository($database);
-        $approvers = new DeaneryApproverRepository($database);
-        $contacts = new ParishContactRepository($database);
-        $venues = new VenueRepository($database);
-        $sources = new SourceRepository($database);
         $sourceRegistryService = new SourceRegistryService($sources, $clock);
         $contactService = new ContactService($contacts, $clock);
         $venueAdministrationService = new VenueAdministrationService($venues, $clock);

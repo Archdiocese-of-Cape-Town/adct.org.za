@@ -7,12 +7,15 @@ namespace ADCT\ParishIntake\WordPress\Database\Repository;
 use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use ADCT\ParishIntake\Core\Ports\ParishContactStoreInterface;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
+use ADCT\ParishIntake\WordPress\Directory\DirectoryVersionStoreInterface;
 use RuntimeException;
 
 final class ParishContactRepository implements ParishContactStoreInterface
 {
-    public function __construct(private DatabaseConnectionInterface $database)
-    {
+    public function __construct(
+        private DatabaseConnectionInterface $database,
+        private ?DirectoryVersionStoreInterface $directoryVersions = null
+    ) {
     }
 
     public function insertVerifiedIfMissing(int $parishId, string $email, string $verifiedAt): bool
@@ -42,6 +45,8 @@ final class ParishContactRepository implements ParishContactStoreInterface
                 'The parish office contact could not be saved: ' . $this->database->lastError()
             );
         }
+
+        $this->markDirectoryChanged($result);
 
         return $result > 0;
     }
@@ -94,6 +99,17 @@ final class ParishContactRepository implements ParishContactStoreInterface
         return $this->fetchRows($query);
     }
 
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function findAllForDirectory(): array
+    {
+        $table = $this->tableName();
+        $query = "SELECT id, parish_id, email, trust FROM {$table} ORDER BY email ASC, parish_id ASC, id ASC";
+
+        return $this->fetchRows($query);
+    }
+
     public function saveLink(
         int $parishId,
         string $email,
@@ -129,7 +145,8 @@ final class ParishContactRepository implements ParishContactStoreInterface
         $arguments[] = $receivesReminders ? 1 : 0;
         $arguments[] = $timestamp;
         $arguments[] = $timestamp;
-        $this->execute($this->database->prepare($query, ...$arguments), 'save parish contact');
+        $result = $this->execute($this->database->prepare($query, ...$arguments), 'save parish contact');
+        $this->markDirectoryChanged($result);
     }
 
     public function updateLink(
@@ -161,7 +178,10 @@ final class ParishContactRepository implements ParishContactStoreInterface
 
         array_push($arguments, $receivesReminders ? 1 : 0, $timestamp, $contactId, $parishId);
 
-        return $this->execute($this->database->prepare($query, ...$arguments), 'update parish contact');
+        $result = $this->execute($this->database->prepare($query, ...$arguments), 'update parish contact');
+        $this->markDirectoryChanged($result);
+
+        return $result;
     }
 
     public function deleteLink(int $contactId, int $parishId): int
@@ -177,7 +197,10 @@ final class ParishContactRepository implements ParishContactStoreInterface
             $parishId
         );
 
-        return $this->execute($query, 'remove parish contact');
+        $result = $this->execute($query, 'remove parish contact');
+        $this->markDirectoryChanged($result);
+
+        return $result;
     }
 
     public function setTrustForEmail(
@@ -202,7 +225,10 @@ final class ParishContactRepository implements ParishContactStoreInterface
 
         array_push($arguments, $timestamp, $email);
 
-        return $this->execute($this->database->prepare($query, ...$arguments), 'update sender trust');
+        $result = $this->execute($this->database->prepare($query, ...$arguments), 'update sender trust');
+        $this->markDirectoryChanged($result);
+
+        return $result;
     }
 
     /**
@@ -351,5 +377,12 @@ final class ParishContactRepository implements ParishContactStoreInterface
         }
 
         return $result;
+    }
+
+    private function markDirectoryChanged(int $affectedRows): void
+    {
+        if ($affectedRows > 0) {
+            $this->directoryVersions?->bump();
+        }
     }
 }

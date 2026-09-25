@@ -152,7 +152,7 @@ message_id, filename, mime_type, size_bytes, storage_path, content_hash, `extrac
 | message_id | FK (nullable for manual/portal entries) |
 | block_index | zero-based position of the source block in the message (a bulletin can yield several candidates) |
 | parish_id | best guess or known |
-| fields | JSON: title, description, start, end, all_day, venue_id / venue_text, contact, event_type, featured, image attachment id, and the trimmed source snippet (maximum 2,000 characters) |
+| fields | JSON: title, description, start, end, all_day, parish_id, venue_id / venue_text, venue coordinates, contact, event_type, featured, image attachment id, and the trimmed source snippet (maximum 2,000 characters) |
 | recurrence | JSON: RRULE parts + human text + `ambiguous` flag |
 | confidence | 0–1 |
 | parser_version, strategies, notes | provenance |
@@ -165,6 +165,8 @@ message_id, filename, mime_type, size_bytes, storage_path, content_hash, `extrac
 | decided_by, decided_at, decision_note | audit (reject/other decisions) |
 
 The rule parser represents the start as `event_date` / `event_time` and only adds `event_end_date` / `event_end_time` when it finds a date or time range. Single dates and times omit the end fields. If a range's end is before its start, the parser adds a note and lowers confidence rather than silently reordering it. An ambiguous "next <weekday>" also produces a note and a small confidence reduction.
+
+Directory lookup adds `parish_id` and, when a venue resolves, `venue_id`, `venue_latitude` / `venue_longitude` (when available), and `venue_address` / `venue_suburb`. The `parish_match` and `venue_match` field objects record the match source and confidence; they are additional JSON keys and require no schema migration. Parish source is `sender`, `text` or `context`; venue source is `label`, `text` or `default`.
 
 The parser's `ParseOutcome` returns every event candidate and block metadata. The compatibility `parse()` API and the legacy prototype table use only the first candidate; the Manual parser shows all candidates. The source snippet is candidate provenance, not the full message body, which remains in `inbound_messages.body_text` under the retention policy.
 

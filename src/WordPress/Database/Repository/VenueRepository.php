@@ -6,6 +6,8 @@ namespace ADCT\ParishIntake\WordPress\Database\Repository;
 
 use ADCT\ParishIntake\Core\Directory\Venue;
 use ADCT\ParishIntake\Core\Ports\VenueStoreInterface;
+use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
+use ADCT\ParishIntake\WordPress\Directory\DirectoryVersionStoreInterface;
 use DomainException;
 use InvalidArgumentException;
 use RuntimeException;
@@ -29,6 +31,49 @@ final class VenueRepository extends AbstractRepository implements VenueStoreInte
         'created_at' => '%s',
         'updated_at' => '%s',
     ];
+
+    public function __construct(
+        DatabaseConnectionInterface $database,
+        private ?DirectoryVersionStoreInterface $directoryVersions = null
+    ) {
+        parent::__construct($database);
+    }
+
+    /**
+     * @param array<string, scalar|null> $values
+     */
+    public function insert(array $values): int
+    {
+        $id = parent::insert($values);
+        $this->directoryVersions?->bump();
+
+        return $id;
+    }
+
+    /**
+     * @param array<string, scalar|null> $values
+     */
+    public function update(int $id, array $values): int
+    {
+        $affectedRows = parent::update($id, $values);
+
+        if ($affectedRows > 0) {
+            $this->directoryVersions?->bump();
+        }
+
+        return $affectedRows;
+    }
+
+    public function delete(int $id): int
+    {
+        $affectedRows = parent::delete($id);
+
+        if ($affectedRows > 0) {
+            $this->directoryVersions?->bump();
+        }
+
+        return $affectedRows;
+    }
 
     public function findActiveVenues(): array
     {
@@ -97,11 +142,11 @@ final class VenueRepository extends AbstractRepository implements VenueStoreInte
             $values = $this->values($venue, $timestamp);
 
             if ($venue->id > 0) {
-                $this->update($venue->id, $values);
+                parent::update($venue->id, $values);
                 $venueId = $venue->id;
             } else {
                 $values['created_at'] = $timestamp;
-                $venueId = $this->insert($values);
+                $venueId = parent::insert($values);
             }
 
             if ($venue->status === Venue::ACTIVE && $venue->isDefault) {
@@ -117,12 +162,14 @@ final class VenueRepository extends AbstractRepository implements VenueStoreInte
             }
 
             $this->commitTransaction();
-
-            return $saved;
         } catch (Throwable $failure) {
             $this->rollbackTransaction();
             throw $failure;
         }
+
+        $this->directoryVersions?->bump();
+
+        return $saved;
     }
 
     public function setDefaultForParish(int $parishId, int $venueId, string $timestamp): void
@@ -153,6 +200,8 @@ final class VenueRepository extends AbstractRepository implements VenueStoreInte
             $this->rollbackTransaction();
             throw $failure;
         }
+
+        $this->directoryVersions?->bump();
     }
 
     public function deactivateVenue(
@@ -181,7 +230,7 @@ final class VenueRepository extends AbstractRepository implements VenueStoreInte
                 $this->assertActiveVenueForParish($parishId, $replacementDefaultVenueId);
             }
 
-            $this->update($venueId, [
+            parent::update($venueId, [
                 'status' => Venue::INACTIVE,
                 'is_default' => 0,
                 'updated_at' => $timestamp,
@@ -198,6 +247,8 @@ final class VenueRepository extends AbstractRepository implements VenueStoreInte
             $this->rollbackTransaction();
             throw $failure;
         }
+
+        $this->directoryVersions?->bump();
     }
 
     public function reactivateVenue(
@@ -218,7 +269,7 @@ final class VenueRepository extends AbstractRepository implements VenueStoreInte
                 throw new DomainException('The parish venue could not be found.');
             }
 
-            $this->update($venueId, [
+            parent::update($venueId, [
                 'status' => Venue::ACTIVE,
                 'is_default' => 0,
                 'updated_at' => $timestamp,
@@ -235,6 +286,8 @@ final class VenueRepository extends AbstractRepository implements VenueStoreInte
             $this->rollbackTransaction();
             throw $failure;
         }
+
+        $this->directoryVersions?->bump();
     }
 
     public function ensureDefaultVenue(Venue $venue, string $timestamp): bool
@@ -251,7 +304,7 @@ final class VenueRepository extends AbstractRepository implements VenueStoreInte
             if ($existing === []) {
                 $values = $this->values($this->withDefault($venue), $timestamp);
                 $values['created_at'] = $timestamp;
-                $venueId = $this->insert($values);
+                $venueId = parent::insert($values);
                 $this->setDefaultWithoutTransaction($venue->parishId, $venueId, $timestamp);
                 $changed = true;
             } else {
@@ -275,12 +328,16 @@ final class VenueRepository extends AbstractRepository implements VenueStoreInte
             }
 
             $this->commitTransaction();
-
-            return $changed;
         } catch (Throwable $failure) {
             $this->rollbackTransaction();
             throw $failure;
         }
+
+        if ($changed) {
+            $this->directoryVersions?->bump();
+        }
+
+        return $changed;
     }
 
     public function insertImportedVenue(Venue $venue, string $timestamp): bool
@@ -331,6 +388,8 @@ final class VenueRepository extends AbstractRepository implements VenueStoreInte
                 'The imported outstation venue could not be saved: ' . $this->database->lastError()
             );
         }
+
+        $this->markDirectoryChanged($result);
 
         return $result > 0;
     }
@@ -580,6 +639,13 @@ final class VenueRepository extends AbstractRepository implements VenueStoreInte
             throw new RuntimeException(
                 'Could not ' . $operation . ': ' . $this->database->lastError()
             );
+        }
+    }
+
+    private function markDirectoryChanged(int $affectedRows): void
+    {
+        if ($affectedRows > 0) {
+            $this->directoryVersions?->bump();
         }
     }
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Tests\Unit\Parsing;
 
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
+use ADCT\ParishIntake\Tests\Support\FixtureDirectorySnapshotLoader;
 use ADCT\ParishIntake\Tests\Support\EmailFixtureLoader;
 use ADCT\ParishIntake\Tests\Support\FixtureComparator;
 use DateTimeImmutable;
@@ -83,7 +84,8 @@ final class EmailFixtureCorpusTest extends TestCase
 
         self::assertInstanceOf(DateTimeImmutable::class, $message->getReceivedAt());
 
-        $outcome = (new PipelineFactory())->create()->parseAll($message);
+        $directorySnapshots = (new FixtureDirectorySnapshotLoader())->providerFor($expected, $emailPath);
+        $outcome = (new PipelineFactory(null, $directorySnapshots))->create()->parseAll($message);
         $actual = array_merge(
             $outcome->getPrimaryResult()->toArray(),
             $outcome->toArray()
