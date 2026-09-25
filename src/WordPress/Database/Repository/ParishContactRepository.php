@@ -55,13 +55,32 @@ final class ParishContactRepository implements ParishContactStoreInterface
     {
         $table = $this->tableName();
         $query = $this->database->prepare(
-            "SELECT id, parish_id, email, display_name, role_label, trust, verified_at, "
+            "SELECT id, parish_id, email, display_name, role_label, trust, verified_at, suggested_parish_id, suggestion_source, "
             . "receives_reminders, created_at, updated_at FROM {$table} "
             . 'WHERE email = %s ORDER BY parish_id ASC, id ASC',
             $email
         );
 
         return $this->fetchRows($query);
+    }
+
+    public function savePendingSender(string $email, ?int $suggestedParishId, ?string $source, string $timestamp): void
+    {
+        $table = $this->tableName();
+        $query = $this->database->prepare(
+            "INSERT INTO {$table} (parish_id, email, trust, suggested_parish_id, suggestion_source, "
+            . "receives_reminders, created_at, updated_at) VALUES (0, %s, 'pending', "
+            . ($suggestedParishId === null ? 'NULL' : '%d') . ', '
+            . ($source === null ? 'NULL' : '%s') . ', 0, %s, %s) '
+            . 'ON DUPLICATE KEY UPDATE id = id',
+            ...array_merge(
+                [$email],
+                $suggestedParishId === null ? [] : [$suggestedParishId],
+                $source === null ? [] : [$source],
+                [$timestamp, $timestamp]
+            )
+        );
+        $this->markDirectoryChanged($this->execute($query, 'learn pending sender'));
     }
 
     public function findLink(int $contactId, int $parishId): ?array
@@ -72,7 +91,7 @@ final class ParishContactRepository implements ParishContactStoreInterface
 
         $table = $this->tableName();
         $query = $this->database->prepare(
-            "SELECT id, parish_id, email, display_name, role_label, trust, verified_at, "
+            "SELECT id, parish_id, email, display_name, role_label, trust, verified_at, suggested_parish_id, suggestion_source, "
             . "receives_reminders, created_at, updated_at FROM {$table} "
             . 'WHERE id = %d AND parish_id = %d LIMIT 1',
             $contactId,
@@ -90,7 +109,7 @@ final class ParishContactRepository implements ParishContactStoreInterface
 
         $table = $this->tableName();
         $query = $this->database->prepare(
-            "SELECT id, parish_id, email, display_name, role_label, trust, verified_at, "
+            "SELECT id, parish_id, email, display_name, role_label, trust, verified_at, suggested_parish_id, suggestion_source, "
             . "receives_reminders, created_at, updated_at FROM {$table} "
             . 'WHERE parish_id = %d ORDER BY email ASC, id ASC',
             $parishId
@@ -186,7 +205,7 @@ final class ParishContactRepository implements ParishContactStoreInterface
 
     public function deleteLink(int $contactId, int $parishId): int
     {
-        if ($contactId < 1 || $parishId < 1) {
+        if ($contactId < 1 || $parishId < 0) {
             return 0;
         }
 
@@ -279,8 +298,10 @@ final class ParishContactRepository implements ParishContactStoreInterface
         $parishes = $this->database->prefix() . 'adct_pi_parishes';
         $placeholders = implode(', ', array_fill(0, count($emails), '%s'));
         $query = "SELECT c.id, c.parish_id, c.email, c.display_name, c.role_label, c.trust, "
-            . "c.verified_at, c.receives_reminders, p.name AS parish_name "
+            . "c.verified_at, c.receives_reminders, c.suggested_parish_id, c.suggestion_source, "
+            . "sp.name AS suggested_parish_name, p.name AS parish_name "
             . "FROM {$table} c LEFT JOIN {$parishes} p ON p.id = c.parish_id "
+            . "LEFT JOIN {$parishes} sp ON sp.id = c.suggested_parish_id "
             . "WHERE c.email IN ({$placeholders}) ORDER BY c.email ASC, p.name ASC, c.id ASC";
 
         return $this->fetchRows($this->database->prepare($query, ...$emails));

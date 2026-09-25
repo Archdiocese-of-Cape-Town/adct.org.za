@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Core\Jobs;
 
 use ADCT\ParishIntake\Core\Directory\DirectoryLookup;
+use ADCT\ParishIntake\Core\Directory\EmailAddress;
+use ADCT\ParishIntake\Core\Directory\SenderParishSuggester;
+use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingFailure;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingRecord;
@@ -32,6 +35,7 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
     private Closure $pipelineFactory;
 
     private DirectoryLookup $directoryLookup;
+    private SenderParishSuggester $senderSuggester;
 
     /** @var list<int> */
     private array $prioritizedMessageIds = [];
@@ -49,7 +53,8 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
         private EventCandidateStoreInterface $candidates,
         private InboundMessageProcessingFailureLoggerInterface $failureLogger,
         DirectorySnapshotProviderInterface $directorySnapshots,
-        private ClockInterface $clock
+        private ClockInterface $clock,
+        private ?ContactService $contacts = null
     ) {
         parent::__construct(
             'process_inbound_messages',
@@ -58,6 +63,7 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
         );
         $this->pipelineFactory = Closure::fromCallable($pipelineFactory);
         $this->directoryLookup = new DirectoryLookup($directorySnapshots);
+        $this->senderSuggester = new SenderParishSuggester($directorySnapshots);
     }
 
     /**
@@ -176,6 +182,24 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
             }
 
             $parsedMessage = $parsedMessage->withReceivedAt($message->receivedAt);
+            $senderEmail = null;
+
+            if ($this->contacts !== null && ! $message->isAutoReply) {
+                try {
+                    $senderEmail = EmailAddress::normalize((string) $message->senderEmail);
+                    $parsedEmail = EmailAddress::normalize($parsedMessage->getSenderEmail());
+                    if ($senderEmail !== $parsedEmail) {
+                        throw new RuntimeException('The stored sender and decoded From address do not agree.');
+                    }
+                } catch (Throwable $failure) {
+                    throw new InboundMessageProcessingFailure(
+                        'The sender could not be learned safely. Reprocess the message after checking its sender.',
+                        InboundMessageProcessingFailure::CONTEXT_SENDER_LOOKUP,
+                        $failure
+                    );
+                }
+            }
+
             $pipeline = ($this->pipelineFactory)();
 
             if (! $pipeline instanceof Pipeline) {
@@ -204,6 +228,19 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
                     InboundMessageProcessingFailure::CONTEXT_CANDIDATE_STORAGE,
                     $failure
                 );
+            }
+
+            if ($senderEmail !== null) {
+                try {
+                    [$parishId, $source] = $this->senderSuggester->suggest($parsedMessage, $outcome);
+                    $this->contacts->learnPending($senderEmail, $parishId, $source);
+                } catch (Throwable $failure) {
+                    throw new InboundMessageProcessingFailure(
+                        'The sender could not be learned safely. Reprocess the message after checking its sender.',
+                        InboundMessageProcessingFailure::CONTEXT_SENDER_LOOKUP,
+                        $failure
+                    );
+                }
             }
 
             if ($message->isAutoReply && $outcome->getCandidates() === []) {

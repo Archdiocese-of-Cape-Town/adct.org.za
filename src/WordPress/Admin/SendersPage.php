@@ -77,6 +77,7 @@ final class SendersPage
             <?php endif; ?>
 
             <p>A sender address can be linked to several parishes. Trust changes apply to every parish link for that address.</p>
+            <p><a href="<?php echo esc_url($this->pageUrl(['trust' => SenderTrust::PENDING])); ?>">Unknown senders (pending confirmation)</a> — parish guesses are suggestions only; check the address and parish before confirming. New events still require dean or reviewer approval.</p>
 
             <form method="get">
                 <input type="hidden" name="page" value="<?php echo esc_attr(self::PAGE_SLUG); ?>" />
@@ -146,7 +147,18 @@ final class SendersPage
                                                 ], static fn (string $detail): bool => $detail !== '');
                                                 ?>
                                                 <li>
-                                                    <strong><?php echo esc_html((string) ($link['parish_name'] ?? 'Unknown parish')); ?></strong>
+                                                    <?php if ((int) ($link['parish_id'] ?? 0) === 0) : ?>
+                                                        <strong>Unlinked sender</strong>
+                                                        <?php if ((int) ($link['suggested_parish_id'] ?? 0) > 0) : ?>
+                                                            — Suggested parish (not verified):
+                                                            <?php echo esc_html((string) $link['suggested_parish_name']); ?>
+                                                            (<?php echo esc_html((string) $link['suggestion_source']); ?>)
+                                                        <?php else : ?>
+                                                            — No unambiguous parish suggestion
+                                                        <?php endif; ?>
+                                                    <?php else : ?>
+                                                        <strong><?php echo esc_html((string) ($link['parish_name'] ?? 'Unknown parish')); ?></strong>
+                                                    <?php endif; ?>
                                                     <?php if ($details !== []) : ?>
                                                         — <?php echo esc_html(implode(' / ', $details)); ?>
                                                     <?php endif; ?>
@@ -159,7 +171,26 @@ final class SendersPage
                                     <?php if ($trust === SenderTrust::BLOCKED) : ?>
                                         <?php $this->renderStateActionForm('unblock', $email, 'Unblock address'); ?>
                                     <?php else : ?>
-                                        <?php if ($trust !== SenderTrust::VERIFIED) : ?>
+                                        <?php if ($trust === SenderTrust::PENDING) : ?>
+                                            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                                                <input type="hidden" name="action" value="<?php echo esc_attr(self::ACTION); ?>" />
+                                                <input type="hidden" name="sender_action" value="confirm" />
+                                                <input type="hidden" name="email" value="<?php echo esc_attr($email); ?>" />
+                                                <?php wp_nonce_field($this->nonceAction('confirm', $email), 'sender_nonce'); ?>
+                                                <label>
+                                                    Confirm link to parish
+                                                    <select name="parish_id" required>
+                                                        <option value="">Choose a parish</option>
+                                                        <?php foreach ($this->parishes->findAllForImport() as $parish) : ?>
+                                                            <option value="<?php echo esc_attr((string) $parish['id']); ?>">
+                                                                <?php echo esc_html((string) $parish['name']); ?>
+                                                            </option>
+                                                        <?php endforeach; ?>
+                                                    </select>
+                                                </label>
+                                                <button type="submit" class="button button-primary">Confirm sender</button>
+                                            </form>
+                                        <?php elseif ($trust !== SenderTrust::VERIFIED && ! in_array(0, array_map(static fn (array $link): int => (int) $link['parish_id'], $links), true)) : ?>
                                             <?php $this->renderStateActionForm('verify', $email, 'Verify address'); ?>
                                         <?php endif; ?>
                                         <?php $this->renderStateActionForm('block', $email, 'Block address', 'secondary'); ?>
@@ -215,7 +246,7 @@ final class SendersPage
         $this->requireDirectoryCapability();
         $action = sanitize_key($this->postText('sender_action'));
 
-        if (! in_array($action, ['link', 'verify', 'block', 'unblock'], true)) {
+        if (! in_array($action, ['link', 'confirm', 'verify', 'block', 'unblock'], true)) {
             wp_die(esc_html__('Choose a valid sender action.', 'adct-parish-intake'), '', [
                 'response' => 400,
             ]);
@@ -244,13 +275,19 @@ final class SendersPage
                 check_admin_referer($this->nonceAction($action, $email), 'sender_nonce');
                 $lookup = $this->contactService->lookup($email);
 
-                if ($lookup->parishIds === []) {
+                if ($lookup->parishIds === [] && $action !== 'confirm' && $action !== 'block' && $action !== 'unblock') {
                     wp_die(esc_html__('The sender address has no parish links.', 'adct-parish-intake'), '', [
                         'response' => 404,
                     ]);
                 }
 
-                if ($action === 'verify') {
+                if ($action === 'confirm') {
+                    $parishId = absint($this->postText('parish_id'));
+                    if ($parishId < 1 || $this->parishes->findWithRelations($parishId) === null) {
+                        wp_die(esc_html__('Choose a parish from the list.', 'adct-parish-intake'), '', ['response' => 400]);
+                    }
+                    $this->contactService->confirmPending($parishId, $email);
+                } elseif ($action === 'verify') {
                     $this->contactService->verify($email);
                 } elseif ($action === 'block') {
                     $this->contactService->block($email);

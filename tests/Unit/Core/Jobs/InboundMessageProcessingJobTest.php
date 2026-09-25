@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Tests\Unit\Core\Jobs;
 
+use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\DirectorySnapshot;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingFailure;
 use ADCT\ParishIntake\Core\Jobs\InboundMessageProcessingJob;
@@ -19,6 +20,7 @@ use ADCT\ParishIntake\Core\Ports\EventCandidateStoreInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingFailureLoggerInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingStoreInterface;
+use ADCT\ParishIntake\Core\Ports\ParishContactStoreInterface;
 use DateTimeImmutable;
 use DateTimeZone;
 use PHPUnit\Framework\TestCase;
@@ -106,6 +108,35 @@ final class InboundMessageProcessingJobTest extends TestCase
         self::assertStringNotContainsString(
             'Private sender detail',
             json_encode($fixture['failureLogger']->failures, JSON_THROW_ON_ERROR)
+        );
+    }
+
+    public function testMismatchedStoredAndDecodedFromFailsBeforeCandidatesOrContactLearning(): void
+    {
+        $contactStore = $this->createMock(ParishContactStoreInterface::class);
+        $contactStore->expects($this->never())->method('findByEmail');
+        $contactStore->expects($this->never())->method('savePendingSender');
+        $contacts = new ContactService($contactStore, new ProcessingClock());
+        $fixture = $this->fixture(new DirectorySnapshot([], [], []), contacts: $contacts);
+        $fixture['messages']->add($this->message(senderEmail: 'stored@example.test'));
+        $fixture['storage']->files['private-message.eml'] = $this->validEmail();
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame('failed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        self::assertSame(
+            'The sender could not be learned safely. Reprocess the message after checking its sender.',
+            $fixture['messages']->errors[self::MESSAGE_ID]
+        );
+        self::assertSame([], $fixture['candidates']->candidates[self::MESSAGE_ID] ?? []);
+        self::assertSame(0, $fixture['candidates']->replaceCalls);
+        self::assertSame(
+            [[
+                'message_id' => self::MESSAGE_ID,
+                'context' => InboundMessageProcessingFailure::CONTEXT_SENDER_LOOKUP,
+                'failure_class' => RuntimeException::class,
+            ]],
+            $fixture['failureLogger']->failures
         );
     }
 
@@ -256,7 +287,11 @@ final class InboundMessageProcessingJobTest extends TestCase
      *     failureLogger: ProcessingFailureLogger
      * }
      */
-    private function fixture(DirectorySnapshot $snapshot, bool $pipelineFactoryThrows = false): array
+    private function fixture(
+        DirectorySnapshot $snapshot,
+        bool $pipelineFactoryThrows = false,
+        ?ContactService $contacts = null
+    ): array
     {
         $clock = new ProcessingClock();
         $directory = new ProcessingDirectorySnapshotProvider($snapshot);
@@ -280,7 +315,8 @@ final class InboundMessageProcessingJobTest extends TestCase
             $candidates,
             $failureLogger,
             $directory,
-            $clock
+            $clock,
+            $contacts
         );
 
         return [

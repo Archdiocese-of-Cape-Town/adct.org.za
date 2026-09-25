@@ -133,8 +133,8 @@ if (
     $fail('Fresh plugin activation did not default outbound test mode to off with an empty allow-list.');
 }
 
-if ((int) get_option('adct_pi_db_version', 0) !== 6) {
-    $fail('Activation did not set the parish intake schema version to 6.');
+if ((int) get_option('adct_pi_db_version', 0) !== 7) {
+    $fail('Activation did not set the parish intake schema version to 7.');
 }
 
 if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CURRENT_VERSION) {
@@ -346,7 +346,7 @@ $occurrenceParishColumn = $wpdb->get_row(
 );
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 6
+    (int) get_option('adct_pi_db_version', 0) !== 7
     || ! is_array($occurrenceParishColumn)
     || strtoupper((string) ($occurrenceParishColumn['Null'] ?? '')) !== 'YES'
 ) {
@@ -470,7 +470,7 @@ $preservedQueueRowCount = (int) $wpdb->get_var($wpdb->prepare(
 ));
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 6
+    (int) get_option('adct_pi_db_version', 0) !== 7
     || ! $upgradedMailQueueIndexIsUnique
     || array_values($upgradedMailQueueIndexColumns) !== ['recipient', 'group_key']
     || $preservedQueueRowCount !== 1
@@ -526,7 +526,7 @@ foreach ($rateLimitIndexes as $index) {
 }
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 6
+    (int) get_option('adct_pi_db_version', 0) !== 7
     || $recreatedRateLimitTable !== $rateLimitTable
     || ! in_array('scope_hash', $rateLimitColumns, true)
     || ! in_array('window_started_at', $rateLimitColumns, true)
@@ -537,6 +537,63 @@ if (
     || ! $windowStartedAtIsIndexed
 ) {
     $fail('The v5-to-v6 migration did not create the primary-keyed hashed rate-limit table.');
+}
+
+$parishContactsTable = $wpdb->prefix . 'adct_pi_parish_contacts';
+$legacyV6Email = 'legacy-v6@example.test';
+$legacyV6Timestamp = '2026-09-25 04:00:00';
+$legacyV6Insert = $wpdb->insert(
+    $parishContactsTable,
+    [
+        'parish_id' => 1,
+        'email' => $legacyV6Email,
+        'display_name' => 'Fictional Legacy Contact',
+        'role_label' => 'Event notices',
+        'trust' => 'verified',
+        'verified_at' => $legacyV6Timestamp,
+        'receives_reminders' => 1,
+        'created_at' => $legacyV6Timestamp,
+        'updated_at' => $legacyV6Timestamp,
+    ],
+    ['%d', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s']
+);
+
+if ($legacyV6Insert !== 1) {
+    $fail('The v6-to-v7 migration fixture could not insert its legacy contact.');
+}
+
+if (
+    $wpdb->query("ALTER TABLE {$parishContactsTable} DROP COLUMN suggested_parish_id") === false
+    || $wpdb->query("ALTER TABLE {$parishContactsTable} DROP COLUMN suggestion_source") === false
+) {
+    $fail('The v6-to-v7 migration fixture could not restore the legacy contacts schema.');
+}
+
+update_option('adct_pi_db_version', 6, false);
+do_action('admin_init');
+$legacyV7Row = $wpdb->get_row($wpdb->prepare(
+    "SELECT parish_id, email, display_name, role_label, trust, verified_at, receives_reminders, "
+    . "suggested_parish_id, suggestion_source FROM {$parishContactsTable} WHERE email = %s LIMIT 1",
+    $legacyV6Email
+), ARRAY_A);
+$v7ContactColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$parishContactsTable}", 0);
+
+if (
+    (int) get_option('adct_pi_db_version', 0) !== 7
+    || ! is_array($legacyV7Row)
+    || (int) $legacyV7Row['parish_id'] !== 1
+    || $legacyV7Row['email'] !== $legacyV6Email
+    || $legacyV7Row['display_name'] !== 'Fictional Legacy Contact'
+    || $legacyV7Row['role_label'] !== 'Event notices'
+    || $legacyV7Row['trust'] !== 'verified'
+    || $legacyV7Row['verified_at'] !== $legacyV6Timestamp
+    || (int) $legacyV7Row['receives_reminders'] !== 1
+    || $legacyV7Row['suggested_parish_id'] !== null
+    || $legacyV7Row['suggestion_source'] !== null
+    || ! in_array('suggested_parish_id', $v7ContactColumns, true)
+    || ! in_array('suggestion_source', $v7ContactColumns, true)
+) {
+    $fail('The v6-to-v7 migration did not add nullable suggestions while preserving legacy contact trust and details.');
 }
 
 require_once __DIR__ . '/ActionTokenEndpointCheck.php';
@@ -3176,15 +3233,16 @@ $processingJob = new InboundMessageProcessingJob(
     new WordPressEventCandidateStore(new EventCandidateRepository($mailboxDatabase)),
     new WordPressInboundMessageProcessingFailureLogger(),
     $processingDirectory,
-    $processingClock
+    $processingClock,
+    $contactService
 );
 $processingRunner = new JobRunner(
     new WordPressJobLock(),
     $jobStateStore,
     $processingClock
 );
-$runPrioritizedMessage = static function () use ($processingJob, $processingRunner, $reprocessMessageId) {
-    $processingJob->prioritizeMessageIds([$reprocessMessageId]);
+$runPrioritizedMessage = static function (?int $messageId = null) use ($processingJob, $processingRunner, $reprocessMessageId) {
+    $processingJob->prioritizeMessageIds([$messageId ?? $reprocessMessageId]);
 
     try {
         return $processingRunner->run($processingJob, true);
@@ -3267,6 +3325,15 @@ $candidateRowsAfterParse = (array) $wpdb->get_results($wpdb->prepare(
     $reprocessMessageId
 ), ARRAY_A);
 $candidateCountAfterParse = count($candidateRowsAfterParse);
+$learnedInboundSender = $contactRepository->findByEmail('reprocess-notices@example.test');
+if (
+    count($learnedInboundSender) !== 1
+    || (int) $learnedInboundSender[0]['parish_id'] !== 0
+    || $learnedInboundSender[0]['trust'] !== 'pending'
+    || $learnedInboundSender[0]['verified_at'] !== null
+) {
+    $fail('An unknown From address was not learned as one unlinked pending contact.');
+}
 
 if (
     $parsedRun->status->value !== 'completed'
@@ -3313,6 +3380,9 @@ $candidateRowsAfterResume = (array) $wpdb->get_results($wpdb->prepare(
     "SELECT id, block_index, status FROM {$candidateTable} WHERE message_id = %d ORDER BY block_index ASC",
     $reprocessMessageId
 ), ARRAY_A);
+if (count($contactRepository->findByEmail('reprocess-notices@example.test')) !== 1) {
+    $fail('An interrupted intake retry duplicated the pending sender contact.');
+}
 $attachmentAfterProcessing = $wpdb->get_row($wpdb->prepare(
     "SELECT id, status, storage_path, content_hash FROM {$attachmentsTable} WHERE message_id = %d LIMIT 1",
     $reprocessMessageId
@@ -3330,6 +3400,63 @@ if (
     || $mailQueueCountBeforeProcessing !== $mailQueueCountAfterProcessing
 ) {
     $fail('Resuming a stored message duplicated candidates or changed attachments, mailbox checkpoints or queued mail.');
+}
+
+$mismatchStoredEmail = 'stored-from@example.test';
+$mismatchDecodedEmail = 'decoded-from@example.test';
+$mismatchExternalId = '<sender-mismatch-' . bin2hex(random_bytes(8)) . '@example.test>';
+$mismatchRawMessage = implode("\r\n", [
+    'From: Fictional Decoded Sender <' . $mismatchDecodedEmail . '>',
+    'To: events@example.test',
+    'Date: Fri, 25 Sep 2026 04:00:00 +0000',
+    'Message-ID: ' . $mismatchExternalId,
+    'Subject: Fictional sender mismatch community supper',
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=UTF-8',
+    '',
+    'Parish: Example Parish',
+    'Please join us for a community supper on 13 October 2026 at 18:30 at Example Parish Hall.',
+    '',
+]);
+$mismatchRawPath = $processingStorage->storeRawMessage($mismatchRawMessage);
+$mismatchStoreResult = $inboundMessageStore->store(
+    new InboundMessageRecord(
+        $mailboxSource->id,
+        $mismatchExternalId,
+        hash('sha256', $mismatchRawMessage),
+        $mismatchStoredEmail,
+        'Fictional Stored Sender',
+        'Fictional sender mismatch community supper',
+        new DateTimeImmutable('2026-09-25 04:00:00 UTC'),
+        $mismatchRawPath
+    ),
+    $integrationTimestamp
+);
+
+if ($mismatchStoreResult->messageId < 1) {
+    $fail('The sender mismatch integration fixture could not be stored.');
+}
+
+$mismatchRun = $runPrioritizedMessage($mismatchStoreResult->messageId);
+$mismatchRow = $wpdb->get_row($wpdb->prepare(
+    "SELECT id, status, error FROM {$inboundTable} WHERE id = %d LIMIT 1",
+    $mismatchStoreResult->messageId
+), ARRAY_A);
+$mismatchCandidateCount = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT COUNT(*) FROM {$candidateTable} WHERE message_id = %d",
+    $mismatchStoreResult->messageId
+));
+
+if (
+    $mismatchRun->status->value !== 'completed'
+    || ! is_array($mismatchRow)
+    || $mismatchRow['status'] !== InboundMessageRecord::STATUS_FAILED
+    || $mismatchRow['error'] !== 'The sender could not be learned safely. Reprocess the message after checking its sender.'
+    || $mismatchCandidateCount !== 0
+    || $contactRepository->findByEmail($mismatchStoredEmail) !== []
+    || $contactRepository->findByEmail($mismatchDecodedEmail) !== []
+) {
+    $fail('A stored/decoded From mismatch was not failed before candidate persistence or contact learning.');
 }
 
 $originalGet = $_GET;
@@ -3351,9 +3478,12 @@ if (
 }
 
 $processingStorage->delete($reprocessRawPath);
+$processingStorage->delete($mismatchRawPath);
 $wpdb->delete($candidateTable, ['message_id' => $reprocessMessageId], ['%d']);
+$wpdb->delete($candidateTable, ['message_id' => $mismatchStoreResult->messageId], ['%d']);
 $wpdb->delete($attachmentsTable, ['message_id' => $reprocessMessageId], ['%d']);
 $wpdb->delete($inboundTable, ['id' => $reprocessMessageId], ['%d']);
+$wpdb->delete($inboundTable, ['id' => $mismatchStoreResult->messageId], ['%d']);
 delete_option('adct_pi_job_state_process_inbound_messages');
 
 if ($wpdb->query($wpdb->prepare(
@@ -3898,6 +4028,26 @@ if (strpos($noDeaneryParishHtml, '<strong>Reviewers only.</strong>') === false) 
 }
 
 $sendersSlug = 'adct-parish-intake-senders';
+$pendingSenderEmail = 'unlinked-sender@example.test';
+$contactService->learnPending(' UNLINKED-SENDER@example.test ', $firstParishId, 'signature');
+$contactService->learnPending($pendingSenderEmail, $secondParishId, 'body');
+$pendingSenderRows = $contactRepository->findByEmail($pendingSenderEmail);
+if (
+    count($pendingSenderRows) !== 1
+    || (int) $pendingSenderRows[0]['parish_id'] !== 0
+    || (int) $pendingSenderRows[0]['suggested_parish_id'] !== $firstParishId
+    || $pendingSenderRows[0]['trust'] !== 'pending'
+) {
+    $fail('The pending sender lost its original suggestion or gained an unconfirmed parish link.');
+}
+$pendingSenderDisplay = $contactRepository->findSenderLinksByEmails([$pendingSenderEmail]);
+if (
+    count($pendingSenderDisplay) !== 1
+    || (int) $pendingSenderDisplay[0]['suggested_parish_id'] !== $firstParishId
+    || $pendingSenderDisplay[0]['suggestion_source'] !== 'signature'
+) {
+    $fail('The sender registry did not expose the pending suggestion separately from verified links.');
+}
 $sendersItems = array_values(array_filter(
     $GLOBALS['submenu'][$parentSlug] ?? [],
     static fn ($item): bool => is_array($item) && ($item[2] ?? null) === $sendersSlug
@@ -3938,6 +4088,61 @@ foreach ([
 if ($missingSendersContent !== []) {
     $fail('The Senders page did not render the shared blocked sender and actions (missing: '
         . implode(', ', $missingSendersContent) . ').');
+}
+
+$previousGet = $_GET;
+$_GET = ['page' => $sendersSlug, 'trust' => 'pending', 'search' => $pendingSenderEmail];
+ob_start();
+try {
+    do_action($sendersPageHook);
+} finally {
+    $pendingSendersHtml = (string) ob_get_clean();
+    $_GET = $previousGet;
+}
+if (
+    strpos($pendingSendersHtml, 'Suggested parish (not verified)') === false
+    || strpos($pendingSendersHtml, 'Confirm sender') === false
+    || strpos($pendingSendersHtml, 'Block address') === false
+    || strpos($pendingSendersHtml, 'name="sender_nonce"') === false
+    || strpos($pendingSendersHtml, $pendingSenderEmail) === false
+) {
+    $fail('Unknown Senders did not show its suggested parish and nonce-protected confirmation/block actions.');
+}
+
+$confirmationNonce = wp_create_nonce('adct_pi_sender_confirm_' . $pendingSenderEmail);
+if (
+    strpos($pendingSendersHtml, 'value="' . esc_attr($confirmationNonce) . '"') === false
+    || has_action('admin_post_adct_pi_sender_action') === false
+) {
+    $fail('The sender confirmation form did not render its email-bound nonce or register its admin-post handler.');
+}
+
+$previousUserId = get_current_user_id();
+wp_set_current_user($approverUserIds[0]);
+if (current_user_can(Capabilities::MANAGE_DIRECTORY)) {
+    $fail('A deanery approver unexpectedly gained directory-management privileges.');
+}
+wp_set_current_user($previousUserId);
+
+$contactService->confirmPending($secondParishId, $pendingSenderEmail);
+$contactService->confirmPending($secondParishId, strtoupper($pendingSenderEmail));
+$confirmedRows = $contactRepository->findByEmail($pendingSenderEmail);
+if (
+    count($confirmedRows) !== 1
+    || (int) $confirmedRows[0]['parish_id'] !== $secondParishId
+    || $confirmedRows[0]['trust'] !== 'verified'
+    || $confirmedRows[0]['verified_at'] === null
+) {
+    $fail('Admin confirmation did not reconcile the unlinked row into the chosen verified parish.');
+}
+$contactService->link($firstParishId, $pendingSenderEmail);
+$contactService->block($pendingSenderEmail);
+$contactService->learnPending($pendingSenderEmail, $firstParishId, 'parser');
+if (
+    count($contactRepository->findByEmail($pendingSenderEmail)) !== 2
+    || $contactService->lookup($pendingSenderEmail)->trust !== 'blocked'
+) {
+    $fail('A repeated or spoofed From address changed a blocked multi-parish contact.');
 }
 
 update_option(
@@ -4272,4 +4477,4 @@ foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
     }
 }
 
-WP_CLI::success('Release ZIP activation, schema v6/v3-to-v6/v4-to-v5/v5-to-v6 migrations, hashed action-token storage and renewal limits, GET preview and nonce-protected single-use POST behavior, fresh and upgraded mail queue unique indexes with duplicate preservation, occurrence expansion/save/REST/job behavior, mailbox settings and safe password rendering, polling, inbound processing and Inbox reprocessing without candidate, attachment, checkpoint, email or privacy regressions, outbound-mail job registration, inbound-message de-duplication/skip notices, login-priority delivery ahead of 200 queued digests through intercepted wp_mail, mail group idempotency and atomic hourly-cap claims, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
+WP_CLI::success('Release ZIP activation, schema v7/v3-to-v7/v4-to-v5/v5-to-v6/v6-to-v7 migrations, hashed action-token storage and renewal limits, GET preview and nonce-protected single-use POST behavior, fresh and upgraded mail queue unique indexes with duplicate preservation, occurrence expansion/save/REST/job behavior, mailbox settings and safe password rendering, polling, inbound processing and Inbox reprocessing without candidate, attachment, checkpoint, email or privacy regressions, outbound-mail job registration, inbound-message de-duplication/skip notices, login-priority delivery ahead of 200 queued digests through intercepted wp_mail, mail group idempotency and atomic hourly-cap claims, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');

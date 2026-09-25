@@ -36,6 +36,53 @@ final class ContactService
         return $this->lookup($email)->trust === SenderTrust::BLOCKED;
     }
 
+    public function learnPending(string $email, ?int $suggestedParishId = null, ?string $source = null): SenderLookupResult
+    {
+        $email = EmailAddress::normalize($email);
+        if ($suggestedParishId !== null && $suggestedParishId < 1) {
+            throw new InvalidArgumentException('A suggested parish ID must be positive.');
+        }
+        if (! in_array($source, [null, 'signature', 'parser', 'body', 'domain'], true)) {
+            throw new InvalidArgumentException('The parish suggestion source is invalid.');
+        }
+        if (($source === null) !== ($suggestedParishId === null)) {
+            throw new InvalidArgumentException('A suggestion requires both a parish and a source.');
+        }
+
+        $existing = $this->contacts->findByEmail($email);
+        if ($existing === []) {
+            $this->contacts->savePendingSender($email, $suggestedParishId, $source, $this->timestamp());
+        } elseif ($this->trustOf($existing) === SenderTrust::UNKNOWN && $this->findParishLink($existing, 0) !== null) {
+            $this->markPending($email);
+        }
+
+        return $this->lookup($email);
+    }
+
+    public function confirmPending(int $parishId, string $email): SenderLookupResult
+    {
+        if ($parishId < 1) {
+            throw new InvalidArgumentException('Choose a parish to confirm the sender.');
+        }
+        $email = EmailAddress::normalize($email);
+        $rows = $this->requireLinks($email);
+        $trust = $this->trustOf($rows);
+        if ($trust === SenderTrust::VERIFIED && $this->findParishLink($rows, $parishId) !== null) {
+            return $this->lookup($email);
+        }
+        if ($trust !== SenderTrust::PENDING) {
+            throw new DomainException('Only pending senders can be confirmed here.');
+        }
+
+        $placeholder = $this->findParishLink($rows, 0);
+        $this->link($parishId, $email);
+        if ($placeholder !== null && $this->contacts->deleteLink((int) $placeholder['id'], 0) !== 1) {
+            throw new RuntimeException('The unlinked sender record could not be reconciled.');
+        }
+
+        return $this->verify($email);
+    }
+
     public function link(
         int $parishId,
         string $email,

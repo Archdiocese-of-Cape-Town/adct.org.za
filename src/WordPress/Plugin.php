@@ -71,6 +71,7 @@ use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRenewalDelivery;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleCapabilityStore;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleVersionStore;
 use ADCT\ParishIntake\WordPress\Database\ActionTokenRateLimitSchemaMigration;
+use ADCT\ParishIntake\WordPress\Database\SenderSuggestionMigration;
 use ADCT\ParishIntake\WordPress\Database\DbDeltaSchemaInstaller;
 use ADCT\ParishIntake\WordPress\Database\MailQueueGroupKeyMigration;
 use ADCT\ParishIntake\WordPress\Database\OccurrenceParishNullableMigration;
@@ -368,7 +369,8 @@ final class Plugin
             new WordPressEventCandidateStore(new EventCandidateRepository($database)),
             new WordPressInboundMessageProcessingFailureLogger(),
             $directorySnapshots,
-            $clock
+            $clock,
+            $contactService
         );
         $this->inboundMessagesPage = new InboundMessagesPage(
             $inboundMessages,
@@ -688,6 +690,7 @@ final class Plugin
                 new OccurrenceParishNullableMigration($database),
                 new MailQueueGroupKeyMigration($database),
                 new ActionTokenRateLimitSchemaMigration(new DbDeltaSchemaInstaller($database)),
+                new SenderSuggestionMigration(new DbDeltaSchemaInstaller($database)),
             ],
             new WordPressMigrationVersionStore(),
             new WordPressMigrationLogger()
