@@ -18,7 +18,9 @@ final readonly class InspectedInboundMail
         public string $subject,
         public string $body,
         public DateTimeImmutable $receivedAt,
-        public array $attachments
+        public array $attachments,
+        public AutomatedMailAssessment $automationAssessment,
+        public AuthenticationResults $authenticationResults
     ) {
     }
 }

@@ -6,6 +6,8 @@ namespace ADCT\ParishIntake\WordPress\Admin;
 
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
+use ADCT\ParishIntake\Core\Ingestion\AuthenticationResult;
+use ADCT\ParishIntake\Core\Ingestion\AuthenticationResults;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxEncryption;
 use ADCT\ParishIntake\Core\Ingestion\MailboxConnectionTestResult;
 use ADCT\ParishIntake\Core\Ingestion\MailboxConnectionTestStatus;
@@ -26,6 +28,7 @@ use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
 use DateTimeZone;
 use DomainException;
 use InvalidArgumentException;
+use JsonException;
 use RuntimeException;
 
 final class MailboxesPage
@@ -210,6 +213,10 @@ final class MailboxesPage
             $settings->sourceId,
             5
         );
+        $screeningMessages = $this->inboundMessages->findRecentScreeningMessagesBySourceId(
+            $settings->sourceId,
+            5
+        );
         ?>
         <tr>
             <td>
@@ -272,6 +279,7 @@ final class MailboxesPage
                         </ul>
                     </div>
                 <?php endif; ?>
+                <?php $this->renderRecentScreeningMessages($screeningMessages); ?>
             </td>
             <td>
                 <a class="button button-secondary" href="<?php echo esc_url($this->pageUrl([
@@ -283,6 +291,75 @@ final class MailboxesPage
             </td>
         </tr>
         <?php
+    }
+
+    /**
+     * @param list<array{received_at: string, auth_results: string|null, is_auto_reply: int|string}> $messages
+     */
+    private function renderRecentScreeningMessages(array $messages): void
+    {
+        if ($messages === []) {
+            return;
+        }
+        ?>
+        <div class="notice notice-info inline">
+            <p><strong>Recent message screening</strong></p>
+            <ul>
+                <?php foreach ($messages as $message) : ?>
+                    <?php $authentication = $this->authenticationSummary($message['auth_results'] ?? null); ?>
+                    <li>
+                        <?php echo esc_html((string) ($message['received_at'] ?? '')); ?> UTC:
+                        <?php if ((int) ($message['is_auto_reply'] ?? 0) === 1) : ?>
+                            <strong>No confirmation: automated or list mail detected.</strong>
+                        <?php endif; ?>
+                        <?php echo esc_html($authentication['summary']); ?>
+                        <?php if ($authentication['reported_dmarc_failure']) : ?>
+                            <strong>Review flag: reported DMARC fail; do not apply a verified contact's change instantly.</strong>
+                        <?php endif; ?>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        </div>
+        <?php
+    }
+
+    /**
+     * @return array{summary: string, reported_dmarc_failure: bool}
+     */
+    private function authenticationSummary(mixed $json): array
+    {
+        if (! is_string($json) || trim($json) === '') {
+            return [
+                'summary' => 'No SPF/DKIM/DMARC verdicts recorded.',
+                'reported_dmarc_failure' => false,
+            ];
+        }
+
+        try {
+            $results = AuthenticationResults::fromJson($json);
+        } catch (InvalidArgumentException | JsonException) {
+            return [
+                'summary' => 'Authentication summary unavailable: stored results are invalid.',
+                'reported_dmarc_failure' => false,
+            ];
+        }
+
+        $summaries = [];
+
+        foreach (AuthenticationResult::METHODS as $method) {
+            $verdicts = array_map(
+                static fn (AuthenticationResult $result): string => strtoupper($result->result)
+                    . ($result->trusted ? ' (trusted gateway claim)' : ' (unverified claim)'),
+                $results->checksFor($method)
+            );
+            $summaries[] = strtoupper($method) . ': '
+                . ($verdicts === [] ? 'not reported' : implode(', ', $verdicts));
+        }
+
+        return [
+            'summary' => implode('; ', $summaries),
+            'reported_dmarc_failure' => $results->hasReportedDmarcFailure(),
+        ];
     }
 
     private function renderTestForm(MailboxSettings $settings): void

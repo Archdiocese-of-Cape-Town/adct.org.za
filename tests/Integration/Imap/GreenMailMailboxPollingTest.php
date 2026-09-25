@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Tests\Integration\Imap;
 
 use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
+use ADCT\ParishIntake\Core\Ingestion\AuthenticationResults;
 use ADCT\ParishIntake\Core\Ingestion\Imap\ConnectionFailed;
 use ADCT\ParishIntake\Core\Ingestion\Imap\ImapMailbox;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxConnectionConfig;
@@ -120,6 +121,35 @@ final class GreenMailMailboxPollingTest extends TestCase
         } finally {
             $tooLarge->close();
         }
+    }
+
+    public function testPollingStoresAutomationFlagsAndUntrustedAuthenticationVerdicts(): void
+    {
+        $this->waitForGreenMail();
+        $this->prepareMailbox();
+        $processedFolder = 'Processed-Screening-' . bin2hex(random_bytes(4));
+        $this->deliverMessage($this->screeningMessage('screening-' . bin2hex(random_bytes(4)) . '@example.test'));
+        $messages = new GreenMailPollingMessageStore();
+        $checkpoints = new GreenMailPollingCheckpointStore();
+        $health = new GreenMailPollingHealthStore();
+        $files = new GreenMailPollingFileStorage();
+        $job = $this->job($this->settings($processedFolder), $messages, $checkpoints, $health, $files);
+        $runner = new JobRunner(
+            new GreenMailPollingJobLock(),
+            new GreenMailPollingJobStateStore(),
+            new SystemClock()
+        );
+
+        $result = $runner->run($job, true, 60, 100);
+
+        self::assertSame(JobRunStatus::COMPLETED, $result->status);
+        self::assertCount(1, $messages->records);
+        self::assertTrue($messages->records[0]->isAutoReply);
+        self::assertInstanceOf(AuthenticationResults::class, $messages->records[0]->authResults);
+        self::assertSame('pass', $messages->records[0]->authResults?->checksFor('spf')[0]->result);
+        self::assertSame('fail', $messages->records[0]->authResults?->checksFor('dmarc')[0]->result);
+        self::assertFalse($messages->records[0]->authResults?->hasTrustedPass());
+        self::assertFalse($messages->records[0]->authResults?->checksFor('dmarc')[0]->trusted);
     }
 
     private function prepareMailbox(): void
@@ -357,6 +387,25 @@ final class GreenMailMailboxPollingTest extends TestCase
             'Content-Type: text/plain; charset=UTF-8',
             '',
             $body,
+            '',
+        ]);
+    }
+
+    private function screeningMessage(string $messageId): string
+    {
+        return implode("\r\n", [
+            'From: Example Parish Office <no-reply@example.test>',
+            'To: ' . $this->username(),
+            'Date: Fri, 25 Sep 2026 04:00:00 +0000',
+            'Message-ID: <' . $messageId . '>',
+            'Subject: Synthetic automated message',
+            'Auto-Submitted: auto-replied',
+            'X-Autoreply: yes',
+            'Authentication-Results: external.example.test; spf=pass; dkim=pass; dmarc=fail',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=UTF-8',
+            '',
+            'A synthetic automated message used only by GreenMail.',
             '',
         ]);
     }

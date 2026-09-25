@@ -1,0 +1,16 @@
+{
+  "classification": "declared",
+  "signals": [
+    "auto_submitted",
+    "empty_return_path",
+    "delivery_status",
+    "no_reply_sender"
+  ],
+  "blocks_confirmation": true,
+  "auth_results": {
+    "version": 1,
+    "spf": [],
+    "dkim": [],
+    "dmarc": []
+  }
+}

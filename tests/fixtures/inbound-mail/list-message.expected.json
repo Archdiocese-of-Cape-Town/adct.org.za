@@ -1,0 +1,15 @@
+{
+  "classification": "likely",
+  "signals": [
+    "precedence_list",
+    "list_id",
+    "list_header"
+  ],
+  "blocks_confirmation": true,
+  "auth_results": {
+    "version": 1,
+    "spf": [],
+    "dkim": [],
+    "dmarc": []
+  }
+}

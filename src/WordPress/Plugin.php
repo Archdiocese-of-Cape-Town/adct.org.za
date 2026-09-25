@@ -23,6 +23,7 @@ use ADCT\ParishIntake\Core\Jobs\JobRunner;
 use ADCT\ParishIntake\Core\Ingestion\Imap\ImapMailbox;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxConnectionConfig;
 use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
+use ADCT\ParishIntake\Core\Ingestion\AuthenticationResultsParser;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettings;
 use ADCT\ParishIntake\Core\Ingestion\MailboxConnectionTestService;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
@@ -195,6 +196,16 @@ final class Plugin
             $timezone
         );
         $stateStore = new WordPressJobStateStore();
+        $trustedAuthservIds = defined('ADCT_PI_TRUSTED_AUTHSERV_IDS')
+            ? constant('ADCT_PI_TRUSTED_AUTHSERV_IDS')
+            : [];
+
+        if (! is_array($trustedAuthservIds)) {
+            throw new \InvalidArgumentException(
+                'ADCT_PI_TRUSTED_AUTHSERV_IDS must be a list of authentication server IDs.'
+            );
+        }
+
         $jobRunner = new JobRunner(
             new WordPressJobLock(),
             $stateStore,
@@ -209,7 +220,7 @@ final class Plugin
             $inboundMessageStore,
             new ProtectedInboundMailStorage(),
             new SourceHealthRecorder($sources, $clock),
-            new RawMessageInspector(),
+            new RawMessageInspector(new AuthenticationResultsParser($trustedAuthservIds)),
             new AttachmentStoragePolicy(),
             new MessageContentHasher(),
             $clock,

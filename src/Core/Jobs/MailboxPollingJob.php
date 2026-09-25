@@ -488,7 +488,9 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
                 $inspected->subject,
                 $inspected->receivedAt,
                 $rawPath,
-                $attachments
+                $attachments,
+                isAutoReply: $inspected->automationAssessment->blocksConfirmation(),
+                authResults: $inspected->authenticationResults
             );
             $stored = $this->messages->store($record, $this->timestamp());
 
