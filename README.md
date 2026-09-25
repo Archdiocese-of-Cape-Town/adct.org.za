@@ -14,7 +14,7 @@ This repository now contains a lightweight WordPress plugin prototype for parish
 
 ### AI support
 
-AI is disabled by default. If enabled in the admin screen, OpenRouter can be used as a low-confidence fallback only.
+AI is disabled by default. The background inbox job can optionally enrich low-confidence candidates through an OpenAI-compatible endpoint (OpenRouter, Groq or local Ollama). The Manual parser remains offline even when AI is enabled. OpenRouter defaults to `qwen/qwen3.8-27b:free`; check current provider quotas and pricing before enabling AI.
 
 ### Inbox parsing status
 

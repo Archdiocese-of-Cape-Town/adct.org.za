@@ -66,7 +66,8 @@ use ADCT\ParishIntake\WordPress\Admin\ParserPage;
 use ADCT\ParishIntake\WordPress\Admin\ParishesPage;
 use ADCT\ParishIntake\WordPress\Admin\SendersPage;
 use ADCT\ParishIntake\WordPress\Admin\SourcesPage;
-use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
+use ADCT\ParishIntake\WordPress\Ai\OpenAiCompatibleProvider;
+use ADCT\ParishIntake\WordPress\Ai\WordPressAiCallGate;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRateLimitKeyProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRenewalDelivery;
@@ -194,7 +195,11 @@ final class Plugin
             $this->schema,
             $this->pipelineFactory,
             new StaticReportGenerator($this->schema),
-            $this->httpClient
+            $this->httpClient,
+            new WordPressAiCallGate(
+                new WordPressActionTokenRateLimitStore($database),
+                $clock
+            )
         );
         $sourceRegistryService = new SourceRegistryService($sources, $clock);
         $this->mailboxesPage = new MailboxesPage(
@@ -372,7 +377,9 @@ final class Plugin
             $inboundMessageStore,
             $protectedInboundMailStorage,
             new MimeMessageParser(),
-            fn () => $this->parserPage->createConfiguredPipeline(),
+            fn () => $this->parserPage->createConfiguredPipeline(
+                function_exists('wp_doing_cron') && wp_doing_cron()
+            ),
             new WordPressEventCandidateStore(new EventCandidateRepository($database)),
             new WordPressInboundMessageProcessingFailureLogger(),
             $directorySnapshots,
@@ -485,7 +492,8 @@ final class Plugin
 
         add_option('adct_parish_intake_ai_enabled', '0');
         add_option('adct_parish_intake_ai_provider', 'none');
-        add_option('adct_parish_intake_openrouter_model', 'openrouter/auto');
+        add_option('adct_parish_intake_openrouter_model', OpenAiCompatibleProvider::FREE_MODEL);
+        add_option('adct_parish_intake_ai_base_url', OpenAiCompatibleProvider::DEFAULT_URL);
         add_option('adct_parish_intake_ai_threshold', '0.55');
         add_option('adct_parish_intake_section_keywords', SectionSkipper::defaultKeywordLists());
         add_option(
@@ -780,20 +788,6 @@ final class Plugin
             return new NullAiProvider();
         }
 
-        $enabled = get_option('adct_parish_intake_ai_enabled', '0') === '1';
-        $provider = get_option('adct_parish_intake_ai_provider', 'none');
-
-        if (! $enabled || $provider !== 'openrouter') {
-            return new NullAiProvider();
-        }
-
-        $apiKey = (new WordPressSecretResolver())->resolve(SecretRegistry::AI_API_KEY);
-        $model = trim((string) get_option('adct_parish_intake_openrouter_model', 'openrouter/auto'));
-
-        if ($apiKey === '') {
-            return new NullAiProvider();
-        }
-
-        return new OpenRouterProvider($apiKey, $model, $this->httpClient);
+        return $this->parserPage->buildAiProvider();
     }
 }
