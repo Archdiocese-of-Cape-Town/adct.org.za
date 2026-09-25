@@ -348,9 +348,21 @@ final class ConfirmationDecisionHandler implements AtomicActionTokenHandlerInter
         }
         $messages = $this->table('adct_pi_inbound_messages');
         $message = $this->row($this->database->prepare(
-            "SELECT sender_email FROM {$messages} WHERE id = %d", (int) $row['message_id']
+            "SELECT sender_email, auth_results FROM {$messages} WHERE id = %d", (int) $row['message_id']
         ));
         if (strcasecmp((string) ($message['sender_email'] ?? ''), $binding->email) !== 0) {
+            return false;
+        }
+        $auth = $message['auth_results'] ?? null;
+        if (is_string($auth) && $auth !== ''
+            && AuthenticationResults::fromJson($auth)->hasReportedDmarcFailure()) {
+            return false;
+        }
+        $contacts = $this->table('adct_pi_parish_contacts');
+        if ($this->row($this->database->prepare(
+            "SELECT id FROM {$contacts} WHERE email = %s AND trust = %s LIMIT 1",
+            $binding->email, 'blocked'
+        )) !== null) {
             return false;
         }
         $user = get_user_by('email', $binding->email);

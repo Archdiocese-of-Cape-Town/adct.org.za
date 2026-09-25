@@ -9,6 +9,8 @@ use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 use ADCT\ParishIntake\Core\Auth\ActionTokenRenewalService;
 use ADCT\ParishIntake\Core\Auth\ActionTokenRateLimiter;
 use ADCT\ParishIntake\Core\Auth\ActionTokenService;
+use ADCT\ParishIntake\Core\Ingestion\AuthenticationResult;
+use ADCT\ParishIntake\Core\Ingestion\AuthenticationResults;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
 use ADCT\ParishIntake\WordPress\Auth\ConfirmationDecisionHandler;
@@ -236,6 +238,18 @@ final class ConfirmationDecisionCheck
                 $check($queueStatus === 'suppressed' ? $response->statusCode === 409 : $response->statusCode === 200,
                     $label . ' action response must match its eligibility.');
             }
+            $dmarcFail = (new AuthenticationResults([
+                new AuthenticationResult('dmarc', 'fail', 'mx.example.test', true),
+            ]))->toJson();
+            [, $candidate] = $case('dmarc-fail', $deanEmail, $deanEmail, $parish, 1, 'new', 'sent', $dmarcFail);
+            [, , $post] = $act(ActionTokenPurpose::CONFIRM, 'event_candidate', $candidate[0], $deanEmail);
+            $check($post()->statusCode === 200, 'DMARC-failed confirmation should enter review.');
+            $row = $wpdb->get_row($wpdb->prepare(
+                "SELECT status, notes, approved_via FROM {$prefix}event_candidates WHERE id = %d", $candidate[0]
+            ), ARRAY_A);
+            $check($row['status'] === 'awaiting_approval' && $row['approved_via'] === null
+                && in_array('dmarc_fail', json_decode($row['notes'], true), true),
+                'reported DMARC failure must be flagged and prevent self-approval.');
             [, $candidate] = $case('match-review', $deanEmail, $deanEmail, $parish);
             $wpdb->update(
                 $prefix . 'event_candidates',
