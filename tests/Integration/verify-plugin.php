@@ -19,6 +19,10 @@ use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
 use ADCT\ParishIntake\Core\Ingestion\InboundAttachmentRecord;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
+use ADCT\ParishIntake\Core\Mail\MailPriority;
+use ADCT\ParishIntake\Core\Mail\MailQueueClaimStatus;
+use ADCT\ParishIntake\Core\Mail\MailQueueStatus;
+use ADCT\ParishIntake\Core\Mail\OutboundEmail;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\Source;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
@@ -39,6 +43,8 @@ use ADCT\ParishIntake\WordPress\Database\Repository\MailboxRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
+use ADCT\ParishIntake\WordPress\Database\WordPressMailQueueRepository;
+use ADCT\ParishIntake\WordPress\Plugin;
 use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
 use ADCT\ParishIntake\WordPress\Directory\DeaneryApproverAssignmentService;
@@ -97,8 +103,8 @@ if (! is_plugin_active($pluginBasename)) {
     $fail('The release plugin was not active after activation.');
 }
 
-if ((int) get_option('adct_pi_db_version', 0) !== 4) {
-    $fail('Activation did not set the parish intake schema version to 4.');
+if ((int) get_option('adct_pi_db_version', 0) !== 5) {
+    $fail('Activation did not set the parish intake schema version to 5.');
 }
 
 if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CURRENT_VERSION) {
@@ -244,7 +250,7 @@ if ($actualTables !== $expectedTables) {
     $missingTables = array_diff($expectedTables, $actualTables);
     $unexpectedTables = array_diff($actualTables, $expectedTables);
     $fail(sprintf(
-        'Schema v4 tables differ. Missing: [%s]; unexpected: [%s].',
+        'Schema v5 tables differ. Missing: [%s]; unexpected: [%s].',
         implode(', ', $missingTables),
         implode(', ', $unexpectedTables)
     ));
@@ -263,6 +269,29 @@ if (
     $fail('A fresh install did not create a nullable occurrence parish_id column.');
 }
 
+$mailQueueTable = $wpdb->prefix . 'adct_pi_mail_queue';
+$freshMailQueueIndexRows = (array) $wpdb->get_results(
+    $wpdb->prepare("SHOW INDEX FROM {$mailQueueTable} WHERE Key_name = %s", 'recipient_group'),
+    ARRAY_A
+);
+$freshMailQueueIndexColumns = [];
+$freshMailQueueIndexIsUnique = count($freshMailQueueIndexRows) === 2;
+
+foreach ($freshMailQueueIndexRows as $index) {
+    $freshMailQueueIndexIsUnique = $freshMailQueueIndexIsUnique
+        && (int) ($index['Non_unique'] ?? 1) === 0;
+    $freshMailQueueIndexColumns[(int) ($index['Seq_in_index'] ?? 0)] = (string) ($index['Column_name'] ?? '');
+}
+
+ksort($freshMailQueueIndexColumns, SORT_NUMERIC);
+
+if (
+    ! $freshMailQueueIndexIsUnique
+    || array_values($freshMailQueueIndexColumns) !== ['recipient', 'group_key']
+) {
+    $fail('A fresh install did not create the unique recipient/group_key mail queue index.');
+}
+
 $forcedNotNull = $wpdb->query(
     "ALTER TABLE {$occurrencesTable} MODIFY COLUMN parish_id bigint(20) unsigned NOT NULL"
 );
@@ -279,11 +308,149 @@ $occurrenceParishColumn = $wpdb->get_row(
 );
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 4
+    (int) get_option('adct_pi_db_version', 0) !== 5
     || ! is_array($occurrenceParishColumn)
     || strtoupper((string) ($occurrenceParishColumn['Null'] ?? '')) !== 'YES'
 ) {
-    $fail('The v3-to-v4 migration did not make occurrences.parish_id nullable.');
+    $fail('The v3 upgrade did not preserve the nullable occurrences.parish_id column.');
+}
+
+$dropMailQueueIndex = $wpdb->query(
+    "ALTER TABLE {$mailQueueTable} DROP INDEX `recipient_group`"
+);
+
+if ($dropMailQueueIndex === false) {
+    $fail('The v4-to-v5 migration test could not prepare the pre-v5 mail queue schema.');
+}
+
+$queueMigrationPrefix = 'integration:mail-queue:v5:' . bin2hex(random_bytes(8));
+$preservedQueueGroupKey = $queueMigrationPrefix . ':preserved';
+$duplicateQueueGroupKey = $queueMigrationPrefix . ':duplicate';
+$queueMigrationTimestamp = (new SystemClock())->now()
+    ->setTimezone(new DateTimeZone('UTC'))
+    ->format('Y-m-d H:i:s');
+$queueMigrationFields = [
+    'subject' => 'Synthetic migration fixture',
+    'body_html' => '<p>Fictional migration fixture.</p>',
+    'body_text' => 'Fictional migration fixture.',
+    'priority' => MailPriority::REMINDER_OR_DIGEST->value,
+    'status' => MailQueueStatus::QUEUED->value,
+    'attempts' => 0,
+    'next_attempt_at' => null,
+    'sent_at' => null,
+    'error' => null,
+    'created_at' => $queueMigrationTimestamp,
+    'updated_at' => $queueMigrationTimestamp,
+];
+$insertQueueMigrationFixture = static function (string $recipient, string $groupKey) use (
+    $wpdb,
+    $mailQueueTable,
+    $queueMigrationFields
+): int|false {
+    return $wpdb->insert(
+        $mailQueueTable,
+        array_merge($queueMigrationFields, [
+            'recipient' => $recipient,
+            'group_key' => $groupKey,
+        ])
+    );
+};
+$preservedQueueRowResult = $insertQueueMigrationFixture(
+    'migration-preserved@example.test',
+    $preservedQueueGroupKey
+);
+$duplicateQueueRowOneResult = $insertQueueMigrationFixture(
+    'migration-duplicate@example.test',
+    $duplicateQueueGroupKey
+);
+$duplicateQueueRowTwoResult = $insertQueueMigrationFixture(
+    'migration-duplicate@example.test',
+    $duplicateQueueGroupKey
+);
+
+if (
+    $preservedQueueRowResult !== 1
+    || $duplicateQueueRowOneResult !== 1
+    || $duplicateQueueRowTwoResult !== 1
+) {
+    $fail('The synthetic v4 mail queue migration fixtures could not be created.');
+}
+
+update_option('adct_pi_db_version', 4, false);
+do_action('admin_init');
+$queueRowsAfterDuplicateCheck = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT COUNT(*) FROM {$mailQueueTable} WHERE group_key LIKE %s",
+    $queueMigrationPrefix . ':%'
+));
+$indexAfterDuplicateCheck = (array) $wpdb->get_results(
+    $wpdb->prepare("SHOW INDEX FROM {$mailQueueTable} WHERE Key_name = %s", 'recipient_group'),
+    ARRAY_A
+);
+$migrationError = get_option('adct_pi_db_migration_error', '');
+
+if (
+    (int) get_option('adct_pi_db_version', 0) !== 4
+    || $queueRowsAfterDuplicateCheck !== 3
+    || $indexAfterDuplicateCheck !== []
+    || ! is_string($migrationError)
+    || strpos($migrationError, 'schema version 5') === false
+) {
+    $fail('The v5 migration did not report duplicate legacy keys while preserving all queue rows.');
+}
+
+$removedDuplicateQueueRows = $wpdb->delete(
+    $mailQueueTable,
+    [
+        'recipient' => 'migration-duplicate@example.test',
+        'group_key' => $duplicateQueueGroupKey,
+    ]
+);
+
+if ($removedDuplicateQueueRows !== 2) {
+    $fail('The duplicate mail queue migration fixtures could not be removed for upgrade retry.');
+}
+
+do_action('admin_init');
+$upgradedMailQueueIndexRows = (array) $wpdb->get_results(
+    $wpdb->prepare("SHOW INDEX FROM {$mailQueueTable} WHERE Key_name = %s", 'recipient_group'),
+    ARRAY_A
+);
+$upgradedMailQueueIndexColumns = [];
+$upgradedMailQueueIndexIsUnique = count($upgradedMailQueueIndexRows) === 2;
+
+foreach ($upgradedMailQueueIndexRows as $index) {
+    $upgradedMailQueueIndexIsUnique = $upgradedMailQueueIndexIsUnique
+        && (int) ($index['Non_unique'] ?? 1) === 0;
+    $upgradedMailQueueIndexColumns[(int) ($index['Seq_in_index'] ?? 0)] = (string) ($index['Column_name'] ?? '');
+}
+
+ksort($upgradedMailQueueIndexColumns, SORT_NUMERIC);
+$preservedQueueRowCount = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT COUNT(*) FROM {$mailQueueTable} WHERE recipient = %s AND group_key = %s",
+    'migration-preserved@example.test',
+    $preservedQueueGroupKey
+));
+
+if (
+    (int) get_option('adct_pi_db_version', 0) !== 5
+    || ! $upgradedMailQueueIndexIsUnique
+    || array_values($upgradedMailQueueIndexColumns) !== ['recipient', 'group_key']
+    || $preservedQueueRowCount !== 1
+    || get_option('adct_pi_db_migration_error', '') !== ''
+) {
+    $fail('The v4-to-v5 migration did not add the unique key while preserving the existing queue row.');
+}
+
+$deletedPreservedQueueRows = $wpdb->delete(
+    $mailQueueTable,
+    [
+        'recipient' => 'migration-preserved@example.test',
+        'group_key' => $preservedQueueGroupKey,
+    ]
+);
+
+if ($deletedPreservedQueueRows !== 1) {
+    $fail('The preserved v4-to-v5 mail queue fixture could not be removed.');
 }
 
 $venueTable = $wpdb->prefix . 'adct_pi_venues';
@@ -2137,6 +2304,10 @@ if (has_action('adct_pi_job_poll_mailboxes') === false) {
     $fail('The mailbox polling job was not registered with the scheduled-job framework.');
 }
 
+if (has_action('adct_pi_job_send_mail') === false) {
+    $fail('The outbound mail sender was not registered with the scheduled-job framework.');
+}
+
 $inboundMessageRepository = new InboundMessageRepository($mailboxDatabase);
 $attachmentRepository = new AttachmentRepository($mailboxDatabase);
 $inboundMessageStore = new WordPressInboundMessageStore(
@@ -2933,6 +3104,182 @@ if ($missingSendersContent !== []) {
         . implode(', ', $missingSendersContent) . ').');
 }
 
+$mailQueueTestSuffix = bin2hex(random_bytes(8));
+$mailQueueRecipient = 'queue-login-' . $mailQueueTestSuffix . '@example.test';
+$mailQueueGroupKey = 'integration:mail-queue:login:' . $mailQueueTestSuffix;
+$digestRecipientPrefix = 'queue-digest-' . $mailQueueTestSuffix;
+$mailQueueEmail = new OutboundEmail(
+    $mailQueueRecipient,
+    'A fictional queue integration notice',
+    '<p>Queue integration fixture.</p>',
+    'Queue integration fixture.',
+    MailPriority::LOGIN_OR_CONFIRMATION,
+    $mailQueueGroupKey
+);
+$mailQueueAttempts = [];
+$mailQueueIntercept = static function ($pre, $arguments) use (&$mailQueueAttempts) {
+    $recipients = is_array($arguments['to'] ?? null)
+        ? $arguments['to']
+        : [$arguments['to'] ?? null];
+
+    foreach ($recipients as $recipient) {
+        if (! is_string($recipient) || ! str_ends_with(strtolower(trim($recipient)), '@example.test')) {
+            return false;
+        }
+    }
+
+    $mailQueueAttempts[] = $arguments;
+
+    return true;
+};
+add_filter('pre_wp_mail', $mailQueueIntercept, 10, 2);
+
+try {
+    for ($index = 1; $index <= 200; ++$index) {
+        $digestResult = Plugin::mailer()->enqueue(new OutboundEmail(
+            sprintf('%s-%03d@example.test', $digestRecipientPrefix, $index),
+            'A fictional digest fixture',
+            '<p>Priority integration digest.</p>',
+            'Priority integration digest.',
+            MailPriority::REMINDER_OR_DIGEST
+        ));
+
+        if ($digestResult->status !== MailQueueStatus::QUEUED) {
+            $fail('A synthetic digest did not remain queued ahead of the login priority test.');
+        }
+    }
+
+    $mailQueueResult = Plugin::mailer()->enqueue($mailQueueEmail);
+    $mailQueueDuplicate = Plugin::mailer()->enqueue($mailQueueEmail);
+} finally {
+    remove_filter('pre_wp_mail', $mailQueueIntercept, 10);
+}
+
+if (
+    $mailQueueResult->status !== MailQueueStatus::QUEUED
+    || $mailQueueDuplicate->status !== MailQueueStatus::SENT
+    || ! $mailQueueDuplicate->duplicate
+    || count($mailQueueAttempts) !== 1
+) {
+    $fail('The mail queue did not send the login notice first from behind 200 digests and de-duplicate it.');
+}
+
+$mailQueueAttempt = $mailQueueAttempts[0];
+if (
+    ($mailQueueAttempt['to'] ?? null) !== $mailQueueRecipient
+    || ($mailQueueAttempt['subject'] ?? null) !== $mailQueueEmail->subject
+    || ($mailQueueAttempt['message'] ?? null) !== $mailQueueEmail->htmlBody
+    || ($mailQueueAttempt['attachments'] ?? null) !== []
+) {
+    $fail('The WordPress mail adapter did not call wp_mail with one fake recipient and no attachments.');
+}
+
+$pendingDigestCount = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT COUNT(*) FROM {$mailQueueTable} WHERE recipient LIKE %s AND status = %s",
+    $digestRecipientPrefix . '-%@example.test',
+    MailQueueStatus::QUEUED->value
+));
+
+if ($pendingDigestCount !== 200) {
+    $fail('The priority-one login was not sent before all 200 queued digest messages.');
+}
+
+$deletedDigestCount = $wpdb->query($wpdb->prepare(
+    "DELETE FROM {$mailQueueTable} WHERE recipient LIKE %s AND status = %s",
+    $digestRecipientPrefix . '-%@example.test',
+    MailQueueStatus::QUEUED->value
+));
+
+if ($deletedDigestCount !== 200) {
+    $fail('The 200 synthetic digest fixtures could not be removed after the priority test.');
+}
+
+$changedMailQueueEmail = new OutboundEmail(
+    $mailQueueEmail->recipient,
+    $mailQueueEmail->subject,
+    '<p>Different composed content.</p>',
+    'Different composed content.',
+    $mailQueueEmail->priority,
+    $mailQueueEmail->groupKey
+);
+$changedPayloadRejected = false;
+
+try {
+    Plugin::mailer()->enqueue($changedMailQueueEmail);
+} catch (DomainException) {
+    $changedPayloadRejected = true;
+}
+
+if (! $changedPayloadRejected) {
+    $fail('The database-backed mail queue accepted changed content under an existing group key.');
+}
+
+$mailQueueRow = $wpdb->get_row($wpdb->prepare(
+    "SELECT status, attempts, sent_at FROM {$mailQueueTable} WHERE recipient = %s AND group_key = %s LIMIT 1",
+    $mailQueueRecipient,
+    $mailQueueGroupKey
+), ARRAY_A);
+
+if (
+    ! is_array($mailQueueRow)
+    || ($mailQueueRow['status'] ?? '') !== MailQueueStatus::SENT->value
+    || (int) ($mailQueueRow['attempts'] ?? 0) !== 1
+    || ! is_string($mailQueueRow['sent_at'] ?? null)
+) {
+    $fail('The immediate mail sender did not persist its successful attempt in the mail queue.');
+}
+
+$mailQueueStats = Plugin::mailQueueStats();
+
+if ($mailQueueStats->sentInLastHour < 1) {
+    $fail('The mail queue status API did not count the safely intercepted test delivery.');
+}
+
+$mailQueueRepository = new WordPressMailQueueRepository(new WordPressDatabaseConnection());
+$queueNow = (new SystemClock())->now();
+$claimOne = $mailQueueRepository->enqueue(
+    new OutboundEmail(
+        'claim-one@example.test',
+        'Fictional claim one',
+        '<p>Claim fixture.</p>',
+        'Claim fixture.',
+        MailPriority::APPROVER_OR_CHANGE
+    ),
+    MailQueueStatus::QUEUED,
+    $queueNow
+);
+$claimTwo = $mailQueueRepository->enqueue(
+    new OutboundEmail(
+        'claim-two@example.test',
+        'Fictional claim two',
+        '<p>Claim fixture.</p>',
+        'Claim fixture.',
+        MailPriority::APPROVER_OR_CHANGE
+    ),
+    MailQueueStatus::QUEUED,
+    $queueNow
+);
+$oneRemainingSlot = $mailQueueStats->sentInLastHour + 1;
+$firstDatabaseClaim = $mailQueueRepository->claim($claimOne->id, $queueNow, $oneRemainingSlot, 3600);
+$secondDatabaseClaim = $mailQueueRepository->claim($claimTwo->id, $queueNow, $oneRemainingSlot, 3600);
+
+if (
+    $firstDatabaseClaim->status !== MailQueueClaimStatus::CLAIMED
+    || $secondDatabaseClaim->status !== MailQueueClaimStatus::CAP_REACHED
+) {
+    $fail('Database-backed mail claims did not reserve the final hourly slot atomically.');
+}
+
+$deletedClaimFixtures = $wpdb->query($wpdb->prepare(
+    "DELETE FROM {$mailQueueTable} WHERE id IN (%d, %d)",
+    $claimOne->id,
+    $claimTwo->id
+));
+
+if ($deletedClaimFixtures !== 2) {
+    $fail('The temporary fake-recipient claim fixtures could not be removed.');
+}
+
 $assignmentService->deactivateAssignment(
     $approverAssignmentIds[1],
     $centralDeaneryId,
@@ -2986,4 +3333,4 @@ foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
     }
 }
 
-WP_CLI::success('Release ZIP activation, schema v4 and v3-to-v4 migration, occurrence expansion/save/REST/job behavior, mailbox settings and safe password rendering, polling-job registration and inbound-message de-duplication/skip notices, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
+WP_CLI::success('Release ZIP activation, schema v5/v3-to-v5 and v4-to-v5 migrations, fresh and upgraded mail queue unique indexes with duplicate preservation, occurrence expansion/save/REST/job behavior, mailbox settings and safe password rendering, polling and outbound-mail job registration, inbound-message de-duplication/skip notices, login-priority delivery ahead of 200 queued digests through intercepted wp_mail, mail group idempotency and atomic hourly-cap claims, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');

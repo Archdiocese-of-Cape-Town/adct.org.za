@@ -79,6 +79,18 @@ final class SchemaDefinitionsTest extends TestCase
         self::assertStringContainsString('parish_id bigint(20) unsigned NULL,', $occurrences);
     }
 
+    public function testFreshMailQueueDefinitionHasNullableCompositeIdempotencyKey(): void
+    {
+        $mailQueue = SchemaDefinitions::statements()['adct_pi_mail_queue'];
+
+        self::assertStringContainsString('recipient varchar(191) NOT NULL,', $mailQueue);
+        self::assertStringContainsString('group_key varchar(191) NULL,', $mailQueue);
+        self::assertStringContainsString(
+            'UNIQUE KEY recipient_group (recipient,group_key)',
+            $mailQueue
+        );
+    }
+
     public function testCreateSchemaMigrationInstallsEveryStatement(): void
     {
         $installer = new RecordingSchemaInstaller();

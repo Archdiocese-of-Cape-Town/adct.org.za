@@ -328,6 +328,7 @@ CREATE TABLE {table_prefix}adct_pi_mail_queue (
     PRIMARY KEY  (id),
     KEY queue_order (status,priority,next_attempt_at),
     KEY group_key (group_key),
+    UNIQUE KEY recipient_group (recipient,group_key),
     KEY sent_at (sent_at)
 ) {charset_collate};
 SQL,
