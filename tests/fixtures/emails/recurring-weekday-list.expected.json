@@ -1,0 +1,16 @@
+{
+  "classification": "recurring_event",
+  "fields": {
+    "title": "Weekday prayer meetings",
+    "parish_name": "Example Parish",
+    "event_date": "2026-09-29",
+    "event_time": "18:00"
+  },
+  "recurrence": {
+    "frequency": "weekly",
+    "interval": 1,
+    "by_day": "TU,TH",
+    "text": "every Tuesday and Thursday",
+    "rrule": "FREQ=WEEKLY;BYDAY=TU,TH"
+  }
+}

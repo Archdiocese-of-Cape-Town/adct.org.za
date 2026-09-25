@@ -1,0 +1,16 @@
+{
+  "classification": "recurring_event",
+  "fields": {
+    "title": "Novena for peace",
+    "parish_name": "Example Parish",
+    "event_date": "2026-11-02",
+    "event_time": "18:00"
+  },
+  "recurrence": {
+    "frequency": "daily",
+    "interval": 1,
+    "count": 9,
+    "text": "Novena begins on 2 November 2026 at 18:00 and is held for 9 days",
+    "rrule": "FREQ=DAILY;COUNT=9"
+  }
+}

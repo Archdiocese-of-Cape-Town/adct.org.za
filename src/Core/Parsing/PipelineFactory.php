@@ -55,7 +55,7 @@ final class PipelineFactory
             $stages[] = new DirectoryLookupStage(new DirectoryLookup($this->directorySnapshots));
         }
 
-        $stages[] = new RecurrenceDetectionStage();
+        $stages[] = new RecurrenceDetectionStage($this->clock);
         $stages[] = new ConfidenceScoringStage();
         $stages[] = new AiEnrichmentStage($provider);
 
