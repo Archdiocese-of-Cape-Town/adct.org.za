@@ -574,6 +574,13 @@ final class PollingMailbox implements MailboxInterface
         return $this->server->uidValidity;
     }
 
+    public function uidNext(string $folder): int
+    {
+        $uids = array_map('intval', array_keys($this->server->inbox));
+
+        return $uids === [] ? 1 : max($uids) + 1;
+    }
+
     public function search(MailboxSearchCriteria $criteria): array
     {
         ++$this->server->searchCount;

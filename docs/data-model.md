@@ -152,12 +152,12 @@ Mailbox connection settings are kept separately from source identity and health.
 | sender_email, sender_name, subject | |
 | received_at | |
 | raw_path | Relative path to the protected, unguessably named raw `.eml` under the private uploads directory |
-| body_text | Extracted plain text; the poller leaves this `NULL`, and the bounded processing job fills it after parsing the stored raw message |
+| body_text | Extracted plain text; the poller leaves this `NULL`, and the bounded processing job fills it after parsing the stored raw message. The retention job clears it together with `raw_path` for terminal, no-review-needed rows once raw data is eligible for deletion; rows still awaiting review or retry keep it. |
 | auth_results | Nullable version-1 JSON: `version`, plus `spf`, `dkim` and `dmarc` lists of `{authserv_id, result, trusted}` verdicts. Only recognized values are stored; raw header text is not. `trusted` is true only for an explicitly allowlisted authserv-id (the default allowlist is empty). |
 | is_auto_reply | bool; set for declared or likely auto-reply/list signals and blocks confirmations, including to mailing lists |
 | status | `received`, `extracting`, `parsed`, `failed`, `ignored`, or `skipped`; see state machine |
 | error | Safe operator-facing processing, screening or size-limit reason; never a copy of raw message content |
-| retention_until | raw data deleted after this date by the daily retention job; this is the per-message floor written at ingest, so shorter later settings do not shorten existing rows; metadata stays until review, retry and health workflows no longer need it |
+| retention_until | raw data deleted after this date by the daily retention job; this is the per-message floor written at ingest, so shorter later settings do not shorten existing rows; metadata stays until review, retry and health workflows no longer need it. When a terminal row is cleaned up, the job removes the raw file, attachment files and normalized body text together; attachment and candidate metadata stay in place. |
 
 ### `adct_pi_attachments`
 `message_id`, filename, declared `mime_type`, `size_bytes`, private `storage_path`, SHA-256 `content_hash`, `extracted_text`, `extraction_method` (`pdf_text`, `ocr_external`, `ai_vision`, `manual`, `none`), status.

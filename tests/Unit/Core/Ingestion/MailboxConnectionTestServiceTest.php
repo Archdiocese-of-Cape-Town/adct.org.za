@@ -244,6 +244,11 @@ final class FakeMailboxConnection implements MailboxInterface
         return 17;
     }
 
+    public function uidNext(string $folder): int
+    {
+        return 1;
+    }
+
     public function search(MailboxSearchCriteria $criteria): array
     {
         $this->searchCriteria[] = $criteria;

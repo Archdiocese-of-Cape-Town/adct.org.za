@@ -334,7 +334,6 @@ final class ImapMailboxTest extends TestCase
         $transport = new ScriptedTransport(
             $this->successfulHandshake()
             . "A0003 OK SELECT completed\r\n"
-            . "A0004 OK STORE completed\r\n"
         );
         $mailbox = new ImapMailbox($this->config(), $transport);
 
@@ -345,8 +344,22 @@ final class ImapMailboxTest extends TestCase
             self::assertStringContainsString('UIDPLUS', $exception->getMessage());
         }
 
-        self::assertSame("A0004 UID STORE 77 +FLAGS.SILENT (\\Deleted)\r\n", $transport->writes[3]);
+        self::assertCount(2, $transport->writes);
         self::assertStringNotContainsString('EXPUNGE', implode('', $transport->writes));
+        self::assertStringNotContainsString('UID STORE', implode('', $transport->writes));
+    }
+
+    public function testUidNextReadsTheFolderHighWatermark(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake()
+            . "* STATUS \"Processed\" (UIDNEXT 901)\r\n"
+            . "A0003 OK STATUS completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        self::assertSame(901, $mailbox->uidNext('Processed'));
+        self::assertSame("A0003 STATUS \"Processed\" (UIDNEXT)\r\n", $transport->writes[2]);
     }
 
     public function testMarksMessageSeen(): void

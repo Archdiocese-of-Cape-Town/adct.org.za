@@ -49,9 +49,9 @@ final class RetentionCleanupJobTest extends TestCase
         $retentionAtNow = '2026-09-24 23:00:00';
         $receivedAtCutoff = '2025-09-24 23:00:00';
         $deps->database->messages = [
-            1 => $deps->message(1, 'parsed', $rawOne, $retentionAtNow, $receivedAtCutoff),
-            2 => $deps->message(2, 'parsed', $rawTwo, $retentionAtNow, $receivedAtCutoff),
-            3 => $deps->message(3, 'parsed', $rawThree, $retentionAtNow, $receivedAtCutoff),
+            1 => $deps->message(1, 'parsed', $rawOne, 'body one', $retentionAtNow, $receivedAtCutoff),
+            2 => $deps->message(2, 'parsed', $rawTwo, 'body two', $retentionAtNow, $receivedAtCutoff),
+            3 => $deps->message(3, 'parsed', $rawThree, 'body three', $retentionAtNow, $receivedAtCutoff),
         ];
         $deps->database->candidates = [
             2 => ['draft'],
@@ -78,8 +78,11 @@ final class RetentionCleanupJobTest extends TestCase
         self::assertFalse($first->isComplete());
         self::assertSame(3, $deps->database->messages[3]['id']);
         self::assertNull($deps->database->messages[1]['raw_path']);
+        self::assertNull($deps->database->messages[1]['body_text']);
         self::assertNull($deps->database->messages[3]['raw_path']);
+        self::assertNull($deps->database->messages[3]['body_text']);
         self::assertSame($rawTwo, $deps->database->messages[2]['raw_path']);
+        self::assertSame('body two', $deps->database->messages[2]['body_text']);
         self::assertSame([$rawOne, $attOne, $rawThree, $attThree], $deps->storage->deleted);
     }
 
@@ -92,9 +95,9 @@ final class RetentionCleanupJobTest extends TestCase
         $retentionAtNow = '2026-09-24 23:00:00';
         $receivedAtCutoff = '2025-09-24 23:00:00';
         $deps->database->messages = [
-            1 => $deps->message(1, 'parsed', $rawOne, $retentionAtNow, $receivedAtCutoff),
-            2 => $deps->message(2, 'parsed', $rawTwo, $retentionAtNow, $receivedAtCutoff),
-            3 => $deps->message(3, 'parsed', $rawThree, $retentionAtNow, $receivedAtCutoff),
+            1 => $deps->message(1, 'parsed', $rawOne, 'body one', $retentionAtNow, $receivedAtCutoff),
+            2 => $deps->message(2, 'parsed', $rawTwo, 'body two', $retentionAtNow, $receivedAtCutoff),
+            3 => $deps->message(3, 'parsed', $rawThree, 'body three', $retentionAtNow, $receivedAtCutoff),
         ];
         $deps->storage->files = [
             $rawOne => 'message 1',
@@ -110,8 +113,11 @@ final class RetentionCleanupJobTest extends TestCase
         self::assertFalse($first->isComplete());
         self::assertSame([$rawOne, $rawTwo], $deps->storage->deleted);
         self::assertNull($deps->database->messages[1]['raw_path']);
+        self::assertNull($deps->database->messages[1]['body_text']);
         self::assertNull($deps->database->messages[2]['raw_path']);
+        self::assertNull($deps->database->messages[2]['body_text']);
         self::assertSame($rawThree, $deps->database->messages[3]['raw_path']);
+        self::assertSame('body three', $deps->database->messages[3]['body_text']);
 
         $second = $job->processNext($first->checkpoint());
 
@@ -119,6 +125,7 @@ final class RetentionCleanupJobTest extends TestCase
         self::assertTrue($second->isComplete());
         self::assertSame([$rawOne, $rawTwo, $rawThree], $deps->storage->deleted);
         self::assertNull($deps->database->messages[3]['raw_path']);
+        self::assertNull($deps->database->messages[3]['body_text']);
     }
 
     public function testRawCleanupHonoursTheStoredRetentionFloorBeforeConfiguredAgeCutoff(): void
@@ -131,6 +138,7 @@ final class RetentionCleanupJobTest extends TestCase
                 1,
                 'parsed',
                 $flooredRaw,
+                'floored body',
                 '2026-09-25 23:00:00',
                 '2025-09-24 23:00:00'
             ),
@@ -138,6 +146,7 @@ final class RetentionCleanupJobTest extends TestCase
                 2,
                 'parsed',
                 $eligibleRaw,
+                'eligible body',
                 '2026-09-24 23:00:00',
                 '2025-09-24 23:00:00'
             ),
@@ -154,7 +163,9 @@ final class RetentionCleanupJobTest extends TestCase
         self::assertTrue($result->isComplete());
         self::assertSame([$eligibleRaw], $deps->storage->deleted);
         self::assertSame($flooredRaw, $deps->database->messages[1]['raw_path']);
+        self::assertSame('floored body', $deps->database->messages[1]['body_text']);
         self::assertNull($deps->database->messages[2]['raw_path']);
+        self::assertNull($deps->database->messages[2]['body_text']);
     }
 
     public function testTokenAndAuditCleanupStayOptIn(): void
@@ -191,6 +202,7 @@ final class RetentionCleanupJobTest extends TestCase
                 1,
                 'parsed',
                 $rawPath,
+                'retry body',
                 '2026-09-24 23:00:00',
                 '2025-09-24 23:00:00'
             ),
@@ -210,6 +222,7 @@ final class RetentionCleanupJobTest extends TestCase
 
         self::assertSame([$rawPath], $deps->storage->deleted);
         self::assertSame($rawPath, $deps->database->messages[1]['raw_path']);
+        self::assertSame('retry body', $deps->database->messages[1]['body_text']);
 
         $retry = $job->processNext($this->encodeCheckpoint('raw', 0));
 
@@ -217,6 +230,7 @@ final class RetentionCleanupJobTest extends TestCase
         self::assertTrue($retry->isComplete());
         self::assertSame([$rawPath, $rawPath], $deps->storage->deleted);
         self::assertNull($deps->database->messages[1]['raw_path']);
+        self::assertNull($deps->database->messages[1]['body_text']);
     }
 
     public function testProcessedCleanupDeletesBatchesAndResumesWithTheSameMailbox(): void
@@ -256,17 +270,11 @@ final class RetentionCleanupJobTest extends TestCase
         $second = $job->processNext($first->checkpoint());
 
         self::assertInstanceOf(JobStepResult::class, $second);
-        self::assertFalse($second->isComplete());
+        self::assertTrue($second->isComplete());
         self::assertSame([10, 11, 12], $deps->mailbox->deleted['Processed']);
         self::assertCount(2, $deps->mailbox->searchCriteria);
         self::assertSame(11, $deps->mailbox->searchCriteria[1]['criteria']->afterUid);
         self::assertTrue($deps->mailbox->closed);
-
-        $third = $job->processNext($second->checkpoint());
-
-        self::assertInstanceOf(JobStepResult::class, $third);
-        self::assertTrue($third->isComplete());
-        self::assertCount(3, $deps->mailbox->searchCriteria);
     }
 
     public function testProcessedCleanupScansLargeFoldersInBoundedWindows(): void
@@ -299,6 +307,80 @@ final class RetentionCleanupJobTest extends TestCase
         self::assertCount(1, $deps->mailbox->searchCriteria);
         self::assertSame(500, $deps->mailbox->searchCriteria[0]['criteria']->beforeUid);
         self::assertSame(range(1, 25), $deps->mailbox->deleted['Processed']);
+    }
+
+    public function testProcessedCleanupContinuesPastSparseGapsUsingTheFolderHighWatermark(): void
+    {
+        $deps = new RetentionTestDependencies();
+        $deps->mailbox = new RetentionMailbox([
+            'Processed' => [900],
+        ]);
+        $deps->mailboxSettingsStore = new RetentionMailboxSettingsStore([
+            new MailboxSettings(
+                'Processed mailbox',
+                'imap.example.test',
+                993,
+                MailboxEncryption::SSL,
+                'intake@example.test',
+                'INBOX',
+                'Processed',
+                30 * 1024 * 1024,
+                true,
+                1,
+                1
+            ),
+        ]);
+
+        $job = $this->job($deps, RetentionSettings::fromValues('0', '30', '1', '30'), 25);
+
+        $first = $job->processNext($this->encodeProcessedCheckpoint(1, 0));
+
+        self::assertInstanceOf(JobStepResult::class, $first);
+        self::assertFalse($first->isComplete());
+        self::assertSame([], $deps->mailbox->deleted['Processed'] ?? []);
+        self::assertCount(1, $deps->mailbox->searchCriteria);
+        self::assertSame(500, $deps->mailbox->searchCriteria[0]['criteria']->beforeUid);
+
+        $second = $job->processNext($first->checkpoint());
+
+        self::assertInstanceOf(JobStepResult::class, $second);
+        self::assertTrue($second->isComplete());
+        self::assertSame([900], $deps->mailbox->deleted['Processed']);
+        self::assertCount(2, $deps->mailbox->searchCriteria);
+        self::assertSame(500, $deps->mailbox->searchCriteria[1]['criteria']->afterUid);
+        self::assertSame(900, $deps->mailbox->searchCriteria[1]['criteria']->beforeUid);
+    }
+
+    public function testProcessedCleanupStopsAtTheFolderHighWatermarkWithoutExtraWindows(): void
+    {
+        $deps = new RetentionTestDependencies();
+        $deps->mailbox = new RetentionMailbox([
+            'Processed' => [499],
+        ]);
+        $deps->mailboxSettingsStore = new RetentionMailboxSettingsStore([
+            new MailboxSettings(
+                'Processed mailbox',
+                'imap.example.test',
+                993,
+                MailboxEncryption::SSL,
+                'intake@example.test',
+                'INBOX',
+                'Processed',
+                30 * 1024 * 1024,
+                true,
+                1,
+                1
+            ),
+        ]);
+
+        $job = $this->job($deps, RetentionSettings::fromValues('0', '30', '1', '30'), 25);
+        $result = $job->processNext($this->encodeProcessedCheckpoint(1, 0));
+
+        self::assertInstanceOf(JobStepResult::class, $result);
+        self::assertTrue($result->isComplete());
+        self::assertSame([499], $deps->mailbox->deleted['Processed']);
+        self::assertCount(1, $deps->mailbox->searchCriteria);
+        self::assertSame(499, $deps->mailbox->searchCriteria[0]['criteria']->beforeUid);
     }
 
     private function job(RetentionTestDependencies $deps, RetentionSettings $settings, int $batchSize = 25): RetentionCleanupJob
@@ -362,12 +444,20 @@ final class RetentionTestDependencies
     /**
      * @return array<string, mixed>
      */
-    public function message(int $id, string $status, ?string $rawPath, string $retentionUntil, string $receivedAt): array
+    public function message(
+        int $id,
+        string $status,
+        ?string $rawPath,
+        ?string $bodyText,
+        string $retentionUntil,
+        string $receivedAt
+    ): array
     {
         return [
             'id' => $id,
             'status' => $status,
             'raw_path' => $rawPath,
+            'body_text' => $bodyText,
             'retention_until' => $retentionUntil,
             'received_at' => $receivedAt,
             'updated_at' => '2025-09-24 00:00:00',
@@ -461,7 +551,7 @@ final class RetentionTestDatabase implements DatabaseConnectionInterface
             return $deleted;
         }
 
-        if (str_contains($prepared['query'], 'UPDATE `wp_adct_pi_inbound_messages` SET raw_path = NULL')) {
+        if (str_contains($prepared['query'], 'UPDATE `wp_adct_pi_inbound_messages` SET raw_path = NULL, body_text = NULL')) {
             if ($this->rawUpdateFailuresRemaining > 0) {
                 --$this->rawUpdateFailuresRemaining;
                 $this->lastError = 'Injected raw cleanup update failure.';
@@ -476,6 +566,7 @@ final class RetentionTestDatabase implements DatabaseConnectionInterface
             }
 
             $this->messages[$messageId]['raw_path'] = null;
+            $this->messages[$messageId]['body_text'] = null;
             $this->messages[$messageId]['updated_at'] = (string) ($prepared['arguments'][0] ?? '');
 
             return 1;
@@ -703,6 +794,13 @@ final class RetentionMailbox implements MailboxInterface
     public function uidValidity(): int
     {
         return 17;
+    }
+
+    public function uidNext(string $folder): int
+    {
+        $uids = $this->uidsByFolder[$folder] ?? [];
+
+        return $uids === [] ? 1 : max($uids) + 1;
     }
 
     public function search(MailboxSearchCriteria $criteria): array

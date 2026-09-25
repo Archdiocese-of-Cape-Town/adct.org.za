@@ -230,17 +230,42 @@ final class ImapMailbox implements MailboxInterface
     public function delete(int $uid, string $folder): void
     {
         $this->validateUid($uid);
-        $this->selectFolder($folder);
-        $storeResult = $this->client->execute(sprintf('UID STORE %d +FLAGS.SILENT (\\Deleted)', $uid));
-        $this->client->requireOkay($storeResult, 'The message could not be marked for deletion.');
-
         if (! $this->client->supports('UIDPLUS')) {
             throw new ProtocolError('The mail server must support UIDPLUS to remove messages safely from the processed folder.');
         }
 
+        $this->selectFolder($folder);
+        $storeResult = $this->client->execute(sprintf('UID STORE %d +FLAGS.SILENT (\\Deleted)', $uid));
+        $this->client->requireOkay($storeResult, 'The message could not be marked for deletion.');
+
         $expunge = sprintf('UID EXPUNGE %d', $uid);
         $expungeResult = $this->client->execute($expunge);
         $this->client->requireOkay($expungeResult, 'The message could not be removed from the folder.');
+    }
+
+    public function uidNext(string $folder): int
+    {
+        $quotedFolder = $this->quoteFolder($folder);
+        $result = $this->client->execute(sprintf('STATUS %s (UIDNEXT)', $quotedFolder));
+        $this->client->requireOkay($result, 'The mailbox folder UIDNEXT value could not be read.');
+
+        foreach ($result->responses as $response) {
+            $line = rtrim($response, "\r\n");
+
+            if (preg_match('/\bUIDNEXT\b\s+(\d+)\b/i', $line, $matches) !== 1) {
+                continue;
+            }
+
+            $uidNext = filter_var($matches[1], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+
+            if (! is_int($uidNext)) {
+                break;
+            }
+
+            return $uidNext;
+        }
+
+        throw new ProtocolError('The mail server did not return the folder UIDNEXT value.');
     }
 
     public function markSeen(int $uid): void

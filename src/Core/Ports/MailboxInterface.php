@@ -14,6 +14,8 @@ interface MailboxInterface
 
     public function uidValidity(): int;
 
+    public function uidNext(string $folder): int;
+
     /** @return list<int> */
     public function search(MailboxSearchCriteria $criteria): array;
 

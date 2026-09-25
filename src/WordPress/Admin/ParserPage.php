@@ -113,6 +113,21 @@ final class ParserPage
         $this->settingsSaveSucceeded = false;
         $this->settingsSaveError = null;
 
+        $retentionSettings = RetentionSettings::fromValues(
+            isset($_POST['retention_raw_enabled']) ? '1' : '0',
+            wp_unslash($_POST['retention_raw_days'] ?? null),
+            isset($_POST['retention_processed_enabled']) ? '1' : '0',
+            wp_unslash($_POST['retention_processed_days'] ?? null),
+            isset($_POST['retention_action_tokens_enabled']) ? '1' : '0',
+            isset($_POST['retention_audit_enabled']) ? '1' : '0'
+        );
+
+        if ($retentionSettings->configurationError() !== null) {
+            $this->settingsSaveError = $retentionSettings->configurationError();
+
+            return;
+        }
+
         update_option('adct_parish_intake_ai_enabled', isset($_POST['ai_enabled']) ? '1' : '0');
         update_option('adct_parish_intake_ai_provider', sanitize_text_field(wp_unslash($_POST['ai_provider'] ?? 'none')));
         update_option('adct_parish_intake_openrouter_model', sanitize_text_field(wp_unslash($_POST['openrouter_model'] ?? OpenAiCompatibleProvider::FREE_MODEL)));
@@ -157,21 +172,6 @@ final class ParserPage
             self::SECTION_KEYWORDS_OPTION,
             SectionSkipper::sanitizeKeywordLists($keywordLists)
         );
-
-        $retentionSettings = RetentionSettings::fromValues(
-            isset($_POST['retention_raw_enabled']) ? '1' : '0',
-            wp_unslash($_POST['retention_raw_days'] ?? null),
-            isset($_POST['retention_processed_enabled']) ? '1' : '0',
-            wp_unslash($_POST['retention_processed_days'] ?? null),
-            isset($_POST['retention_action_tokens_enabled']) ? '1' : '0',
-            isset($_POST['retention_audit_enabled']) ? '1' : '0'
-        );
-
-        if ($retentionSettings->configurationError() !== null) {
-            $this->settingsSaveError = $retentionSettings->configurationError();
-
-            return;
-        }
 
         update_option(
             RetentionSettings::RAW_ENABLED_OPTION,

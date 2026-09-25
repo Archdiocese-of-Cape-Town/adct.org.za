@@ -268,7 +268,7 @@ final class RetentionCleanupJob extends AbstractJob
         $messagesTable = $this->tableName('adct_pi_inbound_messages');
         $candidatesTable = $this->tableName('adct_pi_event_candidates');
         $query = $this->database->prepare(
-            'SELECT m.id, m.raw_path FROM ' . $messagesTable . ' m'
+            'SELECT m.id, m.raw_path, m.body_text FROM ' . $messagesTable . ' m'
             . ' WHERE m.retention_until <= %s'
             . ' AND m.received_at <= %s'
             . ' AND m.raw_path IS NOT NULL'
@@ -314,7 +314,7 @@ final class RetentionCleanupJob extends AbstractJob
             $this->storage->delete($rawPath);
             $this->deleteAttachmentFilesForMessage($messageId);
             $updated = $this->database->query($this->database->prepare(
-                'UPDATE ' . $messagesTable . ' SET raw_path = NULL, updated_at = %s WHERE id = %d AND raw_path IS NOT NULL',
+                'UPDATE ' . $messagesTable . ' SET raw_path = NULL, body_text = NULL, updated_at = %s WHERE id = %d AND raw_path IS NOT NULL',
                 $this->utc($this->clock->now()),
                 $messageId
             ));
@@ -384,9 +384,15 @@ final class RetentionCleanupJob extends AbstractJob
         try {
             $cutoff = $this->clock->now()->modify('-' . $settings->processedRetentionDays() . ' days');
             $windowStart = max(0, $lastUid);
-            $windowEnd = min(MailboxCheckpoint::MAX_UID, $windowStart + self::PROCESSED_SEARCH_WINDOW);
+            $uidNext = $mailbox->uidNext($mailboxSettings->processedFolder);
 
-            if ($windowEnd <= $windowStart) {
+            if ($uidNext < 1) {
+                throw new RuntimeException('The mailbox adapter returned an invalid UIDNEXT value.');
+            }
+
+            $folderHighWatermark = min(MailboxCheckpoint::MAX_UID, $uidNext - 1);
+
+            if ($windowStart >= $folderHighWatermark) {
                 return [
                     'cursor' => [
                         'source_id' => $mailboxSettings->sourceId,
@@ -399,6 +405,8 @@ final class RetentionCleanupJob extends AbstractJob
                     'more' => false,
                 ];
             }
+
+            $windowEnd = min($folderHighWatermark, $windowStart + self::PROCESSED_SEARCH_WINDOW);
 
             $uids = $mailbox->searchFolder(
                 new MailboxSearchCriteria(
@@ -420,7 +428,7 @@ final class RetentionCleanupJob extends AbstractJob
                         'source_id' => $this->nextMailboxSourceId($mailboxes, $mailboxSettings->sourceId),
                         'last_uid' => 0,
                     ],
-                    'more' => false,
+                    'more' => $windowEnd < $folderHighWatermark,
                 ];
             }
 
@@ -433,18 +441,19 @@ final class RetentionCleanupJob extends AbstractJob
                 $deletedUid = $uid;
             }
 
-            $processedAllInWindow = count($uids) < $this->batchSize;
+            $processedAllInWindow = count($uids) === $this->batchSize;
+            $moreLaterInFolder = $windowEnd < $folderHighWatermark;
 
             return [
                 'cursor' => [
                     'source_id' => $mailboxSettings->sourceId,
-                    'last_uid' => $processedAllInWindow ? $windowEnd : $deletedUid,
+                    'last_uid' => $processedAllInWindow ? $deletedUid : $windowEnd,
                 ],
                 'next_cursor' => [
                     'source_id' => $this->nextMailboxSourceId($mailboxes, $mailboxSettings->sourceId),
                     'last_uid' => 0,
                 ],
-                'more' => ! $processedAllInWindow || $windowEnd < MailboxCheckpoint::MAX_UID,
+                'more' => $processedAllInWindow || $moreLaterInFolder,
             ];
         } finally {
             $mailbox->close();
