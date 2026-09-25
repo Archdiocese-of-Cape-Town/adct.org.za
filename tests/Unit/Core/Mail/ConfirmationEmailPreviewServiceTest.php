@@ -145,6 +145,44 @@ final class ConfirmationEmailPreviewServiceTest extends TestCase
         self::assertSame($tokenCount, count($tokens->records));
     }
 
+    public function testChangedReplyToTrustAfterAnUncertainMarkerOutcomeCannotQueueAnotherRecipient(): void
+    {
+        $stored = null;
+        $queue = $this->queueMock(static function () use (&$stored): ?MailQueueRecord {
+            return $stored;
+        });
+        $mailer = new RecordingConfirmationMailer();
+        $this->recordEnqueuedMail($mailer, $stored);
+        $tokens = new InMemoryConfirmationActionTokenStore();
+        $service = $this->service($queue, $mailer, $tokens);
+        $candidate = $this->candidate(101, 'Harvest lunch');
+
+        $firstResult = $service->enqueuePreview($this->batch(
+            [$candidate],
+            replyToEmail: 'parish-contact@example.test',
+            replyToTrust: SenderTrust::VERIFIED
+        ));
+        $tokenCount = count($tokens->records);
+
+        self::assertSame(ConfirmationEmailOutcome::QUEUED, $firstResult->outcome);
+        self::assertSame('parish-contact@example.test', $stored?->email->recipient);
+
+        // A failed inbound-marker write can cause this same message to be retried after trust changes.
+        try {
+            $service->enqueuePreview($this->batch(
+                [$candidate],
+                replyToEmail: 'parish-contact@example.test',
+                replyToTrust: SenderTrust::UNKNOWN
+            ));
+            self::fail('A changed recipient was allowed to reuse the confirmation group key.');
+        } catch (ConfirmationEmailQueueConflictException $failure) {
+            self::assertStringContainsString('different recipient', $failure->getMessage());
+        }
+
+        self::assertCount(1, $mailer->emails);
+        self::assertSame($tokenCount, count($tokens->records));
+    }
+
     public function testExistingGroupKeyWithMissingOrChangedFingerprintIsAnExplicitConflict(): void
     {
         $existingEmail = $this->existingEmail(null);
@@ -322,6 +360,13 @@ final class ConfirmationEmailPreviewServiceTest extends TestCase
     {
         $queue = $this->createMock(MailQueueRepositoryInterface::class);
         $queue->method('findByRecipientAndGroupKey')->willReturnCallback($lookup);
+        $queue->method('findAllByGroupKey')->willReturnCallback(
+            static function () use ($lookup): array {
+                $record = $lookup();
+
+                return $record === null ? [] : [$record];
+            }
+        );
 
         return $queue;
     }

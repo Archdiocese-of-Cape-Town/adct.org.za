@@ -12,4 +12,6 @@ enum ConfirmationEmailReason: string
     case NO_CANDIDATES = 'no_candidates';
     case TEST_MODE = 'test_mode_suppressed';
     case DELIVERY_FAILED = 'delivery_failed';
+    case QUEUE_CONFLICT = 'queue_conflict';
+    case RAW_MESSAGE_UNAVAILABLE = 'raw_message_unavailable';
 }

@@ -53,6 +53,32 @@ final class WordPressMailQueueRepository implements MailQueueRepositoryInterface
         return $this->findByRecipientAndGroup($recipient, $groupKey);
     }
 
+    /**
+     * @return list<MailQueueRecord>
+     */
+    public function findAllByGroupKey(string $groupKey): array
+    {
+        if (preg_match('/\A[a-z0-9][a-z0-9._:-]{0,190}\z/D', $groupKey) !== 1) {
+            throw new InvalidArgumentException('The mail queue lookup group key is invalid.');
+        }
+
+        $this->database->clearLastError();
+        $rows = $this->database->getResults($this->database->prepare(
+            'SELECT * FROM ' . $this->tableName()
+            . ' WHERE group_key = %s ORDER BY id ASC',
+            $groupKey
+        ));
+
+        if ($this->database->lastError() !== '') {
+            throw new RuntimeException('A mail queue group key lookup failed.');
+        }
+
+        return array_map(
+            fn (array $row): MailQueueRecord => $this->mapRecord($row),
+            $rows
+        );
+    }
+
     public function enqueue(
         OutboundEmail $email,
         MailQueueStatus $initialStatus,

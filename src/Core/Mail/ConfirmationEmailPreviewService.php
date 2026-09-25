@@ -74,7 +74,7 @@ final class ConfirmationEmailPreviewService
         $threadHeaders = EmailThreadHeaders::fromOriginalMessageId($batch->originalMessageId);
         $groupKey = 'confirmation:' . $batch->messageId;
         $payloadFingerprint = $this->payloadFingerprint($batch, $recipient, $threadHeaders);
-        $existing = $this->queue->findByRecipientAndGroupKey($recipient, $groupKey);
+        $existing = $this->findConfirmationQueueRecord($recipient, $groupKey);
 
         if ($existing !== null) {
             return $this->resultFromExisting($existing, $payloadFingerprint);
@@ -97,7 +97,7 @@ final class ConfirmationEmailPreviewService
             $result = $this->mailer->enqueue($email);
         } catch (Throwable $enqueueFailure) {
             try {
-                $existing = $this->queue->findByRecipientAndGroupKey($recipient, $groupKey);
+                $existing = $this->findConfirmationQueueRecord($recipient, $groupKey);
             } catch (Throwable $lookupFailure) {
                 throw new RuntimeException(
                     'The confirmation email queue outcome could not be recovered; the job will retry.',
@@ -114,7 +114,7 @@ final class ConfirmationEmailPreviewService
         }
 
         if ($result->duplicate) {
-            $existing = $this->queue->findByRecipientAndGroupKey($recipient, $groupKey);
+            $existing = $this->findConfirmationQueueRecord($recipient, $groupKey);
 
             if ($existing === null) {
                 throw new RuntimeException('The duplicate confirmation queue item could not be read.');
@@ -123,13 +123,34 @@ final class ConfirmationEmailPreviewService
             return $this->resultFromExisting($existing, $payloadFingerprint);
         }
 
-        $existing = $this->queue->findByRecipientAndGroupKey($recipient, $groupKey);
+        $existing = $this->findConfirmationQueueRecord($recipient, $groupKey);
 
         if ($existing === null || $existing->id !== $result->id) {
             throw new RuntimeException('The newly queued confirmation email could not be verified.');
         }
 
         return $this->resultFromExisting($existing, $payloadFingerprint);
+    }
+
+    private function findConfirmationQueueRecord(string $recipient, string $groupKey): ?MailQueueRecord
+    {
+        $records = $this->queue->findAllByGroupKey($groupKey);
+
+        if (count($records) > 1) {
+            throw new ConfirmationEmailQueueConflictException(
+                'More than one confirmation queue item uses this inbound message key.'
+            );
+        }
+
+        $existing = $records[0] ?? null;
+
+        if ($existing !== null && $existing->email->recipient !== $recipient) {
+            throw new ConfirmationEmailQueueConflictException(
+                'The confirmation queue key is already bound to a different recipient.'
+            );
+        }
+
+        return $existing;
     }
 
     private function confirmationRecipient(ConfirmationEmailBatch $batch): ?string

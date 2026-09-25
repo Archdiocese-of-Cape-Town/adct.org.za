@@ -22,6 +22,11 @@ interface MailQueueRepositoryInterface
 
     public function findByRecipientAndGroupKey(string $recipient, string $groupKey): ?MailQueueRecord;
 
+    /**
+     * @return list<MailQueueRecord>
+     */
+    public function findAllByGroupKey(string $groupKey): array;
+
     public function findNextDue(DateTimeImmutable $now): ?MailQueueRecord;
 
     public function findExpiredClaim(DateTimeImmutable $cutoff): ?MailQueueRecord;

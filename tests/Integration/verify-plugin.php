@@ -3009,7 +3009,7 @@ $confirmationRecipient = 'confirmation-reply-' . $confirmationSuffix . '@example
 $confirmationSender = 'confirmation-sender-' . $confirmationSuffix . '@example.test';
 $blockedConfirmationSender = 'blocked-confirmation-' . $confirmationSuffix . '@example.test';
 $automatedConfirmationSender = 'list-confirmation-' . $confirmationSuffix . '@example.test';
-$unsafeConfirmationSender = 'noreply-confirmation-' . $confirmationSuffix . '@example.test';
+$unsafeConfirmationSender = 'unsafe-confirmation-' . $confirmationSuffix;
 $confirmationTimestamp = $clock->now()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
 $contactRepository->saveLink(
     $firstParishId,
@@ -3099,29 +3099,61 @@ $confirmationRawMessage = implode("\r\n", [
     'Message-ID: ' . $confirmationMessageId,
     'Subject: Fictional event notice',
 ]) . "\r\n\r\nFictional event notice body.\r\n";
+$confirmationRawMessageFor = static function (
+    string $senderEmail,
+    string $messageId,
+    bool $automated
+): string {
+    $headers = [
+        'From: ' . $senderEmail,
+        'Message-ID: ' . $messageId,
+        'Subject: Fictional event notice',
+    ];
+
+    if ($automated) {
+        $headers[] = 'Auto-Submitted: auto-replied';
+    }
+
+    return implode("\r\n", $headers) . "\r\n\r\nFictional event notice body.\r\n";
+};
 $confirmationMessageRowId = $storeParsedConfirmationMessage(
     $confirmationMessageId,
     $confirmationSender,
     false,
     $confirmationRawMessage
 );
+$blockedExternalMessageId = '<blocked-confirmation-' . $confirmationSuffix . '@example.test>';
 $blockedConfirmationMessageId = $storeParsedConfirmationMessage(
-    '<blocked-confirmation-' . $confirmationSuffix . '@example.test>',
+    $blockedExternalMessageId,
     $blockedConfirmationSender,
     false,
-    null
+    $confirmationRawMessageFor(
+        $blockedConfirmationSender,
+        $blockedExternalMessageId,
+        false
+    )
 );
+$automatedExternalMessageId = '<list-confirmation-' . $confirmationSuffix . '@example.test>';
 $automatedConfirmationMessageId = $storeParsedConfirmationMessage(
-    '<list-confirmation-' . $confirmationSuffix . '@example.test>',
+    $automatedExternalMessageId,
     $automatedConfirmationSender,
     true,
-    null
+    $confirmationRawMessageFor(
+        $automatedConfirmationSender,
+        $automatedExternalMessageId,
+        true
+    )
 );
+$unsafeExternalMessageId = '<noreply-confirmation-' . $confirmationSuffix . '@example.test>';
 $unsafeConfirmationMessageId = $storeParsedConfirmationMessage(
-    '<noreply-confirmation-' . $confirmationSuffix . '@example.test>',
+    $unsafeExternalMessageId,
     $unsafeConfirmationSender,
     false,
-    null
+    $confirmationRawMessageFor(
+        $unsafeConfirmationSender,
+        $unsafeExternalMessageId,
+        false
+    )
 );
 $confirmationCandidateTable = $wpdb->prefix . 'adct_pi_event_candidates';
 $insertConfirmationCandidate = static function (

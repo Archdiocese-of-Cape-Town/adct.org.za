@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Core\Ingestion;
 
-use InvalidArgumentException;
-
 final class InboundHeaderBlockParser
 {
     public const MAX_HEADER_BYTES = 65536;
@@ -41,7 +39,9 @@ final class InboundHeaderBlockParser
             strlen($headerBlock) > self::MAX_HEADER_BYTES
             || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $headerBlock) === 1
         ) {
-            throw new InvalidArgumentException('The inbound email header block is too large or contains invalid controls.');
+            throw new InvalidInboundHeaderBlockException(
+                'The inbound email header block is too large or contains invalid controls.'
+            );
         }
 
         $valuesByName = [];
@@ -54,7 +54,9 @@ final class InboundHeaderBlockParser
 
             if ($line[0] === ' ' || $line[0] === "\t") {
                 if ($currentName === null) {
-                    throw new InvalidArgumentException('The inbound email header block begins with an invalid continuation.');
+                    throw new InvalidInboundHeaderBlockException(
+                        'The inbound email header block begins with an invalid continuation.'
+                    );
                 }
 
                 $lastIndex = count($valuesByName[$currentName]) - 1;
@@ -66,7 +68,9 @@ final class InboundHeaderBlockParser
             $separator = strpos($line, ':');
 
             if ($separator === false || $separator === 0) {
-                throw new InvalidArgumentException('The inbound email header block contains a malformed field.');
+                throw new InvalidInboundHeaderBlockException(
+                    'The inbound email header block contains a malformed field.'
+                );
             }
 
             $name = strtolower(substr($line, 0, $separator));
@@ -76,7 +80,9 @@ final class InboundHeaderBlockParser
                 preg_match('/\A[a-z0-9-]+\z/D', $name) !== 1
                 || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $value) === 1
             ) {
-                throw new InvalidArgumentException('The inbound email header block contains an invalid field.');
+                throw new InvalidInboundHeaderBlockException(
+                    'The inbound email header block contains an invalid field.'
+                );
             }
 
             $valuesByName[$name] ??= [];

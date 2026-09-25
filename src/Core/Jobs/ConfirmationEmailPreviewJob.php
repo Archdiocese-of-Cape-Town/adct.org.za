@@ -5,6 +5,11 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Core\Jobs;
 
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailPreviewService;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailHeaderUnavailableException;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailOutcome;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailQueueConflictException;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailReason;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResult;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\ConfirmationEmailJobSourceInterface;
 
@@ -26,13 +31,34 @@ final class ConfirmationEmailPreviewJob extends AbstractJob
 
     public function processNext(?string $checkpoint): ?JobStepResult
     {
-        $batch = $this->source->nextPending();
+        try {
+            $batch = $this->source->nextPending();
+        } catch (ConfirmationEmailHeaderUnavailableException $failure) {
+            $this->source->recordResult(
+                $failure->messageId,
+                new ConfirmationEmailResult(
+                    ConfirmationEmailOutcome::FAILED,
+                    ConfirmationEmailReason::RAW_MESSAGE_UNAVAILABLE
+                ),
+                $this->clock->now()
+            );
+
+            return JobStepResult::continueAt(null);
+        }
 
         if ($batch === null) {
             return null;
         }
 
-        $result = $this->previews->enqueuePreview($batch);
+        try {
+            $result = $this->previews->enqueuePreview($batch);
+        } catch (ConfirmationEmailQueueConflictException) {
+            $result = new ConfirmationEmailResult(
+                ConfirmationEmailOutcome::FAILED,
+                ConfirmationEmailReason::QUEUE_CONFLICT
+            );
+        }
+
         $this->source->recordResult($batch->messageId, $result, $this->clock->now());
 
         return JobStepResult::continueAt(null);

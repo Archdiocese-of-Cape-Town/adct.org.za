@@ -7,10 +7,12 @@ namespace ADCT\ParishIntake\WordPress\Ingestion;
 use ADCT\ParishIntake\Core\Directory\SenderLookup;
 use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use ADCT\ParishIntake\Core\Ingestion\InboundHeaderBlockParser;
+use ADCT\ParishIntake\Core\Ingestion\InvalidInboundHeaderBlockException;
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailBatch;
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailCandidate;
-use ADCT\ParishIntake\Core\Mail\ConfirmationEmailOutcome;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailHeaderUnavailableException;
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResult;
+use ADCT\ParishIntake\Core\Ingestion\PermanentInboundHeaderReadException;
 use ADCT\ParishIntake\Core\Ports\ConfirmationEmailJobSourceInterface;
 use ADCT\ParishIntake\Core\Ports\InboundHeaderStorageInterface;
 use ADCT\ParishIntake\Core\Ports\ParishContactStoreInterface;
@@ -106,12 +108,22 @@ final class WordPressConfirmationEmailJobSource implements ConfirmationEmailJobS
             );
         }
 
-        $headers = $rawPath === null
-            ? null
-            : $this->headerParser->parse(
+        if ($rawPath === null) {
+            throw new ConfirmationEmailHeaderUnavailableException(
+                $messageId,
+                new PermanentInboundHeaderReadException('The inbound message has no stored raw file path.')
+            );
+        }
+
+        try {
+            $headers = $this->headerParser->parse(
                 $this->headerStorage->readHeaderBlock($rawPath),
                 $senderEmail
             );
+        } catch (PermanentInboundHeaderReadException | InvalidInboundHeaderBlockException $failure) {
+            throw new ConfirmationEmailHeaderUnavailableException($messageId, $failure);
+        }
+
         $replyToEmail = $headers?->replyToEmail;
         $senderTrust = $this->trustFor($senderEmail);
         $replyToTrust = $this->trustFor($replyToEmail);
@@ -144,7 +156,7 @@ final class WordPressConfirmationEmailJobSource implements ConfirmationEmailJobS
         $messagesTable = $this->tableName('adct_pi_inbound_messages');
         $status = $result->outcome->value;
         $reason = $result->reason?->value;
-        $timestamp = $recordedAt->setTimezone($this->timezone)->format('Y-m-d H:i:s');
+        $timestamp = $recordedAt->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $reasonSql = $reason === null ? 'NULL' : '%s';
         $query = "UPDATE {$messagesTable}"
             . ' SET confirmation_status = %s, confirmation_reason = ' . $reasonSql . ', updated_at = %s'

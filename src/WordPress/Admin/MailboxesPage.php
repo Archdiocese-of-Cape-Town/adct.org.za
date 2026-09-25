@@ -359,6 +359,8 @@ final class MailboxesPage
             'no_candidates' => 'no draft event candidates',
             'test_mode' => 'blocked by the test-mode allow-list',
             'delivery_failed' => 'outbound queue reached terminal failure',
+            'queue_conflict' => 'confirmation queue conflict needs review',
+            'raw_message_unavailable' => 'stored message headers are unavailable',
             null => null,
             default => 'reason unavailable',
         };
