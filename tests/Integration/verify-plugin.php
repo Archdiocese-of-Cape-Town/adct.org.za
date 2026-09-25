@@ -372,20 +372,27 @@ if ($centralDeanery === null) {
 }
 
 $centralDeaneryId = (int) $centralDeanery['id'];
-$centralParishes = $parishRepository->findForDirectory([
-    'deanery_id' => $centralDeaneryId,
-    'status' => 'active',
-], 2, 0);
-
-if (count($centralParishes) !== 2) {
-    $fail('Two active central deanery parishes are required for the approval route test.');
-}
-
-$centralParishIds = array_map(
-    static fn (array $parish): int => (int) $parish['id'],
-    $centralParishes
-);
 $routeTimestamp = $clock->now()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+$centralParishIds = [
+    $parishRepository->insert([
+        'name' => 'Sample Central Parish One',
+        'slug' => 'sample-central-parish-one',
+        'kind' => 'parish',
+        'deanery_id' => null,
+        'status' => 'active',
+        'created_at' => $routeTimestamp,
+        'updated_at' => $routeTimestamp,
+    ]),
+    $parishRepository->insert([
+        'name' => 'Sample Central Parish Two',
+        'slug' => 'sample-central-parish-two',
+        'kind' => 'parish',
+        'deanery_id' => null,
+        'status' => 'active',
+        'created_at' => $routeTimestamp,
+        'updated_at' => $routeTimestamp,
+    ]),
+];
 
 if ($parishRepository->updateDeaneryForParishes(
     $centralParishIds,
