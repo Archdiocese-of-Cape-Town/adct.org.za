@@ -26,8 +26,10 @@ A burst could reach the limit, for example a weekly reminder run to about 150 pa
 6. Failed sends are retried with backoff. After 5 failures the message is marked failed and shown on the health dashboard.
 7. Reminders are staggered and send only when there is something to act on (no empty digests).
 8. **Delivery goes through the site-wide SMTP plugin** (FluentSMTP, set up with xneelo's authenticated SMTP), so mail is SPF- and DKIM-aligned. The plugin doesn't store SMTP credentials itself. The health dashboard warns when no SMTP plugin is active, because PHP `mail()` often isn't DKIM-signed.
+9. **Test mode is an operator setting for the Parish Intake queue only.** It is off by default. When enabled, only exact allow-listed email addresses and exact domains (written as `@example.test`) can be delivered; non-matching messages are persisted as `suppressed` and never passed to `wp_mail()`. The recipient policy is checked both when a message is queued and again before a queued message is sent, so a setting change applies to existing queued rows. An empty or invalid configuration blocks all Parish Intake queue delivery. This does not change mail sent by other WordPress plugins.
 
 ## Consequences
 - A busy hour delays low-priority mail, but login links and confirmations still go out.
 - The health dashboard shows how many messages are waiting and the oldest one's age.
 - Tests cover cap enforcement, priority order, grouping and retries without sending real mail.
+- Authorized settings managers can inspect escaped previews of recent suppressed messages on Parish Intake → Outbound email; suppressed rows are not automatically requeued if the allow-list changes later.

@@ -19,6 +19,8 @@ The unit-test CI matrix runs PHP **8.2** (production), **8.3** and **8.4**. The 
 
 For an isolated local WordPress integration run, set `WP_ENV_HOME` to a new unique directory and choose free `WP_ENV_PORT` / `WP_ENV_TESTS_PORT` values. The harness creates a temporary `.wp-env.json` with absolute repository mappings so `wp-env` hashes a distinct config path and uses separate containers and volumes; it calls `wp-env stop` only for that project and removes only the temporary config after a successful stop. It never deletes Docker volumes. Without a `WP_ENV_HOME` override, the existing shared temporary default and repository config path are preserved.
 
+Issue #48 coverage includes option-backed test mode defaulting off, exact address/domain matching, fail-closed empty and malformed configuration, admin banner and preview authorization/escaping, no mail-preview REST route, and suppression of a row queued before settings change. The integration test's `pre_wp_mail` callback exists only around synthetic queue delivery and rejects anything outside `example.test`; production code does not install a global mail filter.
+
 E4.7 unit tests cover the outbound queue's rolling cap across runs, atomic in-flight reservations, priority ordering (including a login link ahead of 200 digests), per-recipient group-key idempotency, exponential retries and terminal failure, retry after an interrupted claim, unknown delivery exceptions retaining reservations, and allowlist suppression without delivery or cap usage. WordPress integration tests verify the sender job wiring and database-backed queue state, including a login link queued behind 200 digests; a `pre_wp_mail` interception accepts only fake `example.test` recipients so the test never sends real mail.
 
 See [ADR 0009](decisions/0009-preview-and-test-environments.md) for why previews and test sites are set up this way.
@@ -83,7 +85,7 @@ All of these use the **same zip that CI builds**. The plugin bundles prefixed Co
   - The blueprint `.github/playground/blueprint.json` installs and activates the release zip, logs in as `admin`, and opens the Manual parser page. **TODO (follow-up now that #22 has landed):** add anonymised parish and event records through a fixture/seed mechanism; the current blueprint intentionally does not load application data until that mechanism exists.
   - Limitation: no raw socket connections, so IMAP polling can't be tested there.
 - **InstaWP / TasteWP**: free temporary WordPress sites on real servers.
-  - Install the CI-built zip by URL. They can reach external IMAP/SMTP, but the Test mode allow-list UI is not available until #48; do not use real SMTP delivery for testing before then.
+  - Install the CI-built zip by URL and enable **Parish Intake → Outbound email → Test mode** before testing delivery. Use a test mailbox and allow-list only its exact address/domain; verify the admin banner and suppressed-mail log. The safeguard affects Parish Intake queue mail only, not other plugins.
   - InstaWP can also deploy from a GitHub branch and has a per-PR GitHub Action. Its Composer step is a paid feature, so the zip is simpler.
   - Sites expire, so don't keep anything important there, and use only a **test** mailbox with a throwaway password.
 - **Local**: `wp-env` (needs Docker) or Local (by WP Engine) for developers.
@@ -92,7 +94,7 @@ All of these use the **same zip that CI builds**. The plugin bundles prefixed Co
 
 There is no permanent staging site. Before the first launch (and optionally before big releases):
 - Create a temporary xneelo instance (e.g. a subdomain with its own database) with the release zip and a separate test mailbox (e.g. `events-test@adct.org.za`).
-- Do not send real mail until #48 provides the Test mode allow-list setting and banner. The current queue's recipient-policy seam defaults to production allow-all and is not an operator setting.
+- Before connecting SMTP or testing confirmations, enable **Parish Intake → Outbound email → Test mode**, add only the test mailbox address/domain to the allow-list, and confirm the conspicuous admin banner appears. Verify a non-allow-listed fixture is shown as suppressed and is not delivered; test mode restricts Parish Intake queue mail only.
 - Release checklist: install zip → run migrations → send test emails (single event, bulletin, poster PDF, recurring event) → confirm via the emailed links → approve as a dean and as a reviewer → make a change as a verified contact and revert it → check the events page and ICS feed → check the health dashboard, that the 2-hourly xneelo cron and the external pinger both trigger jobs within the time budget, and that the mail queue respects the hourly cap.
 - Remove the instance afterwards. Launch starts with a few pilot parishes.
 

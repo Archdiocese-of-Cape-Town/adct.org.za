@@ -37,7 +37,6 @@ use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
 use ADCT\ParishIntake\Core\Ingestion\MessageContentHasher;
 use ADCT\ParishIntake\Core\Ingestion\RawMessageInspector;
 use ADCT\ParishIntake\Core\Jobs\MailboxPollingJob;
-use ADCT\ParishIntake\Core\Mail\AllowAllRecipientPolicy;
 use ADCT\ParishIntake\Core\Mail\MailQueueConfiguration;
 use ADCT\ParishIntake\Core\Mail\MailQueueDispatcher;
 use ADCT\ParishIntake\Core\Mail\MailQueueService;
@@ -56,6 +55,7 @@ use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
 use ADCT\ParishIntake\WordPress\Admin\DeaneriesPage;
 use ADCT\ParishIntake\WordPress\Admin\MailboxesPage;
+use ADCT\ParishIntake\WordPress\Admin\OutboundMailPage;
 use ADCT\ParishIntake\WordPress\Admin\ParserPage;
 use ADCT\ParishIntake\WordPress\Admin\ParishesPage;
 use ADCT\ParishIntake\WordPress\Admin\SendersPage;
@@ -102,6 +102,8 @@ use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailQueueImmediateDispatch;
+use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeRecipientPolicy;
+use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeSettings;
 use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
@@ -125,6 +127,7 @@ final class Plugin
     private WordPressJobScheduler $jobScheduler;
     private ScheduledJobsPage $scheduledJobsPage;
     private MailQueueService $mailQueue;
+    private OutboundMailPage $outboundMailPage;
     private DeaneriesPage $deaneriesPage;
     private ParishesPage $parishesPage;
     private SendersPage $sendersPage;
@@ -257,8 +260,9 @@ final class Plugin
             JobRunner::DEFAULT_LOCK_TTL_SECONDS
         );
         $mailQueueConfiguration = self::mailQueueConfiguration();
-        $mailRecipientPolicy = new AllowAllRecipientPolicy();
+        $mailRecipientPolicy = new WordPressTestModeRecipientPolicy();
         $mailQueueRepository = new WordPressMailQueueRepository($database);
+        $this->outboundMailPage = new OutboundMailPage($mailQueueRepository);
         $mailQueueDispatcher = new MailQueueDispatcher(
             $mailQueueRepository,
             new WordPressMailDeliveryAdapter(),
@@ -396,6 +400,13 @@ final class Plugin
         add_option('adct_parish_intake_openrouter_model', 'openrouter/auto');
         add_option('adct_parish_intake_ai_threshold', '0.55');
         add_option('adct_parish_intake_section_keywords', SectionSkipper::defaultKeywordLists());
+        add_option(
+            WordPressTestModeSettings::TEST_MODE_OPTION,
+            WordPressTestModeSettings::MODE_DISABLED,
+            '',
+            false
+        );
+        add_option(WordPressTestModeSettings::ALLOWLIST_OPTION, [], '', false);
 
         self::createRoleInstaller()->install();
         (new Schema())->install();
@@ -534,11 +545,13 @@ final class Plugin
         add_action('admin_menu', [$this->sendersPage, 'registerMenu']);
         add_action('admin_menu', [$this->sourcesPage, 'registerMenu']);
         add_action('admin_menu', [$this->mailboxesPage, 'registerMenu']);
+        add_action('admin_menu', [$this->outboundMailPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
         add_action('admin_init', [$this, 'maybeUpgradeRoles'], 1);
         add_action('admin_init', [$this, 'restrictWpAdminForPortalRoles'], 2);
         add_action('admin_init', [$this, 'maybeRunDatabaseMigrations'], 5);
         add_action('admin_init', [$this->parserPage, 'maybeHandleSettings']);
+        add_action('admin_init', [$this->outboundMailPage, 'maybeHandleSettings']);
         add_action('admin_post_adct_pi_save_parish', [$this->parishesPage, 'handleSaveParish']);
         add_action('admin_post_adct_pi_bulk_assign_parishes', [$this->parishesPage, 'handleBulkAssign']);
         add_action('admin_post_adct_pi_venue_action', [$this->parishesPage, 'handleVenueAction']);
@@ -560,6 +573,7 @@ final class Plugin
         add_action('admin_post_adct_pi_sender_action', [$this->sendersPage, 'handleAction']);
         add_action('admin_post_adct_pi_run_job', [$this->scheduledJobsPage, 'handleRunNow']);
         add_action('admin_notices', [$this, 'renderMigrationNotice']);
+        add_action('admin_notices', [$this->outboundMailPage, 'renderAdminNotice']);
         add_action('admin_notices', [$this->scheduledJobsPage, 'renderResultNotice']);
         $this->jobScheduler->registerHooks();
     }
