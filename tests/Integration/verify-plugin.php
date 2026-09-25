@@ -12,6 +12,12 @@ use ADCT\ParishIntake\Core\Directory\Venue;
 use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
 use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\Core\Directory\VenueLookup;
+use ADCT\ParishIntake\Core\Sources\Source;
+use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
+use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
+use ADCT\ParishIntake\Core\Sources\SourceRole;
+use ADCT\ParishIntake\Core\Sources\SourceStatus;
+use ADCT\ParishIntake\Core\Sources\SourceType;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
@@ -19,6 +25,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
@@ -140,6 +147,7 @@ if ($actualTables !== $expectedTables) {
 }
 
 $venueTable = $wpdb->prefix . 'adct_pi_venues';
+$sourceTable = $wpdb->prefix . 'adct_pi_sources';
 $venueColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$venueTable}", 0);
 $venueIndexes = (array) $wpdb->get_results("SHOW INDEX FROM {$venueTable}", ARRAY_A);
 $sourceParishIsUnique = false;
@@ -163,6 +171,25 @@ foreach (['aliases', 'latitude', 'longitude', 'is_default', 'status', 'source_pa
 
 if (! $sourceParishIsUnique) {
     $fail('The v2 venues table is missing the unique source-parish index.');
+}
+
+$sourceColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$sourceTable}", 0);
+
+foreach ([
+    'type',
+    'identifier',
+    'role',
+    'status',
+    'poll_interval_minutes',
+    'last_checked_at',
+    'last_success_at',
+    'last_item_at',
+    'consecutive_failures',
+    'last_error',
+] as $column) {
+    if (! in_array($column, $sourceColumns, true)) {
+        $fail('The source registry table is missing the ' . $column . ' column.');
+    }
 }
 
 $legacyTable = $wpdb->prefix . 'adct_parish_intake_items';
@@ -298,8 +325,11 @@ $parishRepository = new ParishRepository($database);
 $deaneryRepository = new DeaneryRepository($database);
 $contactRepository = new ParishContactRepository($database);
 $venueRepository = new VenueRepository($database);
+$sourceRepository = new SourceRepository($database);
 $clock = new SystemClock();
 $contactService = new ContactService($contactRepository, $clock);
+$sourceRegistry = new SourceRegistryService($sourceRepository, $clock);
+$sourceHealthRecorder = new SourceHealthRecorder($sourceRepository, $clock);
 $venueImporter = new VenueDirectoryImporter($venueRepository, $clock);
 $importService = new DirectoryImportService(
     new ParishCsvImporter(),
@@ -308,6 +338,7 @@ $importService = new DirectoryImportService(
     $deaneryRepository,
     $contactService,
     $clock,
+    $sourceRegistry,
     $venueImporter
 );
 $contactTable = $wpdb->prefix . 'adct_pi_parish_contacts';
@@ -315,7 +346,7 @@ $parishTable = $wpdb->prefix . 'adct_pi_parishes';
 $deaneryTable = $wpdb->prefix . 'adct_pi_deaneries';
 $approverTable = $wpdb->prefix . 'adct_pi_deanery_approvers';
 
-foreach ([$approverTable, $contactTable, $venueTable, $parishTable, $deaneryTable] as $table) {
+foreach ([$approverTable, $contactTable, $venueTable, $sourceTable, $parishTable, $deaneryTable] as $table) {
     if ($wpdb->query("DELETE FROM {$table}") === false) {
         $fail('The integration directory tables could not be reset.');
     }
@@ -411,6 +442,10 @@ if ($contactsAfterFirstImport !== $officeEmailCount || $verifiedAfterFirstImport
     $fail('Imported office emails were not all created as verified parish contacts.');
 }
 
+if ((int) $wpdb->get_var("SELECT COUNT(*) FROM {$sourceTable} WHERE role = 'official'") !== $officeEmailCount) {
+    $fail('Imported office emails were not registered as one official email source per parish.');
+}
+
 if ($firstOfficeEmail === null || $firstOfficeParishSlug === null) {
     $fail('The parish seed CSV does not contain an office email for the trust-preservation check.');
 }
@@ -427,6 +462,103 @@ $firstContactId = (int) $wpdb->get_var($wpdb->prepare(
 
 if ($firstParishId < 1 || $firstContactId < 1) {
     $fail('An imported parish office contact could not be found.');
+}
+
+$officialSources = array_values(array_filter(
+    $sourceRepository->findForParish($firstParishId),
+    static fn (Source $source): bool => $source->role === SourceRole::OFFICIAL
+));
+
+if (count($officialSources) !== 1 || $officialSources[0]->type !== SourceType::EMAIL) {
+    $fail('The imported parish did not have exactly one official email source.');
+}
+
+$icsSource = $sourceRegistry->save(new Source(
+    0,
+    $firstParishId,
+    SourceType::ICS,
+    'https://example.test/calendar.ics',
+    SourceRole::MONITORED
+));
+$icsSource = $sourceRegistry->save(new Source(
+    $icsSource->id,
+    $firstParishId,
+    SourceType::ICS,
+    'https://example.test/calendar.ics',
+    SourceRole::OFFICIAL
+));
+$parishSources = $sourceRepository->findForParish($firstParishId);
+$officialSourcesAfterSwitch = array_values(array_filter(
+    $parishSources,
+    static fn (Source $source): bool => $source->role === SourceRole::OFFICIAL
+));
+$demotedEmailSource = array_values(array_filter(
+    $parishSources,
+    static fn (Source $source): bool => $source->type === SourceType::EMAIL
+));
+$parishAfterSourceSwitch = $parishRepository->findById($firstParishId);
+
+if (
+    count($officialSourcesAfterSwitch) !== 1
+    || $officialSourcesAfterSwitch[0]->id !== $icsSource->id
+    || count($demotedEmailSource) !== 1
+    || $demotedEmailSource[0]->role !== SourceRole::MONITORED
+    || (int) ($parishAfterSourceSwitch['official_source_id'] ?? 0) !== $icsSource->id
+) {
+    $fail('Selecting a new official source did not demote the previous source and update the parish pointer.');
+}
+
+$sourceHealthRecorder->recordFailure($icsSource->id, 'HTTP check failed');
+$sourceHealthRecorder->recordFailure($icsSource->id, 'HTTP check failed again');
+$sourceHealthRecorder->recordFailure($icsSource->id, 'HTTP check failed again');
+$sourceHealthRecorder->recordFailure($icsSource->id, 'HTTP check failed again');
+$sourceHealthRecorder->recordFailure($icsSource->id, 'HTTP check failed again');
+$unreliableSource = $sourceRepository->findSource($icsSource->id);
+
+if (
+    $unreliableSource === null
+    || $unreliableSource->status !== SourceStatus::UNRELIABLE
+    || $unreliableSource->consecutiveFailures !== SourceHealthRecorder::UNRELIABLE_FAILURE_THRESHOLD
+    || $unreliableSource->lastCheckedAt === null
+    || $unreliableSource->lastError !== 'HTTP check failed again'
+) {
+    $fail('Recording five source failures did not update health and mark the source unreliable.');
+}
+
+$sourceHealthRecorder->recordSuccess($icsSource->id, $clock->now()->modify('-1 hour'));
+$recoveredSource = $sourceRepository->findSource($icsSource->id);
+
+if (
+    $recoveredSource === null
+    || $recoveredSource->status !== SourceStatus::UNRELIABLE
+    || $recoveredSource->consecutiveFailures !== 0
+    || $recoveredSource->lastSuccessAt === null
+    || $recoveredSource->lastItemAt === null
+    || $recoveredSource->lastError !== null
+) {
+    $fail('A successful source check did not reset health while retaining the operator-controlled unreliable status.');
+}
+
+$archdioceseSourceOne = $sourceRegistry->save(new Source(
+    0,
+    null,
+    SourceType::MANUAL,
+    'Archdiocese event desk',
+    SourceRole::OFFICIAL
+));
+$archdioceseSourceTwo = $sourceRegistry->save(new Source(
+    0,
+    null,
+    SourceType::MANUAL,
+    'Archdiocese calendar notes',
+    SourceRole::OFFICIAL
+));
+
+if (
+    $archdioceseSourceOne->role !== SourceRole::OFFICIAL
+    || $archdioceseSourceTwo->role !== SourceRole::OFFICIAL
+) {
+    $fail('Archdiocese-wide official sources were incorrectly constrained to one per type.');
 }
 
 $venueAdministration = new VenueAdministrationService($venueRepository, $clock);
@@ -523,6 +655,86 @@ if (
     $fail('The parish Venues tab did not render its venue management controls.');
 }
 
+$originalGet = $_GET;
+$_GET = [
+    'action' => 'edit',
+    'id' => (string) $firstParishId,
+    'tab' => 'sources',
+];
+ob_start();
+try {
+    do_action($parishesPageHook);
+} finally {
+    $sourceTabHtml = (string) ob_get_clean();
+    $_GET = $originalGet;
+}
+
+if (
+    strpos($sourceTabHtml, 'Sources for ') === false
+    || strpos($sourceTabHtml, 'calendar.ics') === false
+    || strpos($sourceTabHtml, 'name="poll_interval_minutes"') === false
+    || strpos($sourceTabHtml, 'Last checked') === false
+    || strpos($sourceTabHtml, 'name="source_nonce"') === false
+) {
+    $fail('The parish Sources tab did not render source controls and read-only health.');
+}
+
+$sourcesPageSlug = 'adct-parish-intake-sources';
+$sourcesPageItems = array_values(array_filter(
+    $GLOBALS['submenu'][$parentSlug] ?? [],
+    static fn ($item): bool => is_array($item) && ($item[2] ?? null) === $sourcesPageSlug
+));
+
+if (count($sourcesPageItems) !== 1 || $sourcesPageItems[0][0] !== 'Sources') {
+    $fail('The Sources admin submenu was not registered for a directory manager.');
+}
+
+$sourcesPageHook = get_plugin_page_hookname($sourcesPageSlug, $parentSlug);
+
+if (has_action($sourcesPageHook) === false) {
+    $fail('The Sources page callback was not registered.');
+}
+
+$originalGet = $_GET;
+$_GET = ['type' => SourceType::ICS];
+ob_start();
+try {
+    do_action($sourcesPageHook);
+} finally {
+    $sourcesListHtml = (string) ob_get_clean();
+    $_GET = $originalGet;
+}
+
+if (
+    strpos($sourcesListHtml, '<h1 class="wp-heading-inline">Sources</h1>') === false
+    || strpos($sourcesListHtml, 'calendar.ics') === false
+    || strpos($sourcesListHtml, 'Last checked') === false
+    || strpos($sourcesListHtml, 'name="parish_id"') === false
+    || strpos($sourcesListHtml, 'name="role"') === false
+    || strpos($sourcesListHtml, 'name="status"') === false
+) {
+    $fail('The Sources page did not render its filters, source list and health fields.');
+}
+
+$originalGet = $_GET;
+$_GET = ['action' => 'add'];
+ob_start();
+try {
+    do_action($sourcesPageHook);
+} finally {
+    $newGlobalSourceHtml = (string) ob_get_clean();
+    $_GET = $originalGet;
+}
+
+if (
+    strpos($newGlobalSourceHtml, 'Add archdiocese-wide source') === false
+    || strpos($newGlobalSourceHtml, 'name="type"') === false
+    || strpos($newGlobalSourceHtml, 'name="identifier"') === false
+    || strpos($newGlobalSourceHtml, 'name="source_nonce"') === false
+) {
+    $fail('The archdiocese-wide Add source form is missing required registry fields.');
+}
+
 if ($wpdb->query($wpdb->prepare(
     "UPDATE {$contactTable} SET trust = %s, verified_at = NULL WHERE id = %d",
     'blocked',
@@ -532,6 +744,7 @@ if ($wpdb->query($wpdb->prepare(
 }
 
 $venueCountBeforeRepeatImport = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$venueTable}");
+$sourceCountBeforeRepeatImport = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$sourceTable}");
 $lastVenueIdBeforeRepeatImport = (int) $wpdb->get_var("SELECT MAX(id) FROM {$venueTable}");
 $secondDeaneryImport = $importService->importDeaneries($seedDeaneriesCsv);
 $secondParishImport = $importService->importParishes($seedParishesCsv);
@@ -553,17 +766,23 @@ if (
 }
 
 $venueCountAfterSecondImport = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$venueTable}");
+$sourceCountAfterRepeatImport = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$sourceTable}");
 
-if ($venueCountAfterSecondImport !== $venueCountBeforeRepeatImport) {
+if (
+    $venueCountAfterSecondImport !== $venueCountBeforeRepeatImport
+    || $sourceCountAfterRepeatImport !== $sourceCountBeforeRepeatImport
+) {
     $venuesAddedOnRepeat = (array) $wpdb->get_results($wpdb->prepare(
         "SELECT id, parish_id, source_parish_id, name, is_default "
         . "FROM {$venueTable} WHERE id > %d ORDER BY id ASC",
         $lastVenueIdBeforeRepeatImport
     ), ARRAY_A);
     $fail(sprintf(
-        'A repeated parish import changed the venue count (%d before, %d after); added rows: %s.',
+        'A repeated parish import changed the venue or source count (venues %d before, %d after; sources %d before, %d after); added venue rows: %s.',
         $venueCountBeforeRepeatImport,
         $venueCountAfterSecondImport,
+        $sourceCountBeforeRepeatImport,
+        $sourceCountAfterRepeatImport,
         wp_json_encode($venuesAddedOnRepeat)
     ));
 }
@@ -1111,4 +1330,4 @@ if ($secondApproverUser instanceof WP_User && in_array('deanery_approver', $seco
     $fail('The final sample approver role was not removed during integration cleanup.');
 }
 
-WP_CLI::success('Release ZIP activation, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser checks passed.');
+WP_CLI::success('Release ZIP activation, venue and source registry/import/health checks, official-source switching, parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, admin screens, and Manual parser checks passed.');

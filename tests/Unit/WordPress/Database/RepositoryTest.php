@@ -18,6 +18,11 @@ use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use ADCT\ParishIntake\Core\Directory\Venue;
+use ADCT\ParishIntake\Core\Sources\Source;
+use ADCT\ParishIntake\Core\Sources\SourceHealthState;
+use ADCT\ParishIntake\Core\Sources\SourceRole;
+use ADCT\ParishIntake\Core\Sources\SourceStatus;
+use ADCT\ParishIntake\Core\Sources\SourceType;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
@@ -399,6 +404,152 @@ final class RepositoryTest extends TestCase
         self::assertSame(18, $database->preparedQueries[0]['arguments'][1]);
     }
 
+    public function testSettingAnOfficialParishSourceDemotesThePreviousOneAndUpdatesTheParishPointer(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $database->nextInsertId = 22;
+        $database->rowResults = [
+            ['id' => '7'],
+            null,
+            [
+                'id' => '22',
+                'parish_id' => '7',
+                'type' => SourceType::ICS,
+                'identifier' => 'https://example.test/calendar.ics',
+                'role' => SourceRole::OFFICIAL,
+                'status' => SourceStatus::ACTIVE,
+                'poll_interval_minutes' => '1440',
+                'last_checked_at' => null,
+                'last_success_at' => null,
+                'last_item_at' => null,
+                'consecutive_failures' => '0',
+                'last_error' => null,
+            ],
+        ];
+        $repository = new SourceRepository($database);
+        $source = new Source(
+            0,
+            7,
+            SourceType::ICS,
+            'https://example.test/calendar.ics',
+            SourceRole::OFFICIAL
+        );
+
+        $saved = $repository->saveSource($source, '2026-09-25 00:00:00');
+
+        self::assertSame(22, $saved->id);
+        self::assertSame(SourceRole::OFFICIAL, $saved->role);
+        self::assertCount(6, $database->preparedQueries);
+        self::assertStringContainsString(
+            'SELECT id FROM wp_adct_pi_parishes WHERE id = %d LIMIT 1 FOR UPDATE',
+            $database->preparedQueries[0]['query']
+        );
+        self::assertStringContainsString(
+            'INSERT INTO wp_adct_pi_sources',
+            $database->preparedQueries[2]['query']
+        );
+        self::assertStringContainsString(
+            'UPDATE wp_adct_pi_sources SET role = %s',
+            $database->preparedQueries[3]['query']
+        );
+        self::assertSame([
+            SourceRole::MONITORED,
+            '2026-09-25 00:00:00',
+            7,
+            SourceRole::OFFICIAL,
+            22,
+        ], $database->preparedQueries[3]['arguments']);
+        self::assertStringContainsString(
+            'UPDATE wp_adct_pi_parishes SET official_source_id = %d',
+            $database->preparedQueries[4]['query']
+        );
+        self::assertSame([22, '2026-09-25 00:00:00', 7], $database->preparedQueries[4]['arguments']);
+        self::assertSame('START TRANSACTION', $database->executedQueries[0]);
+        self::assertSame('COMMIT', $database->executedQueries[count($database->executedQueries) - 1]);
+    }
+
+    public function testSourceHealthWritesUsePreparedOptimisticUpdates(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $repository = new SourceRepository($database);
+        $expected = new SourceHealthState(
+            SourceStatus::ACTIVE,
+            '2026-09-24 00:00:00',
+            '2026-09-24 00:00:00',
+            null,
+            1,
+            'temporary failure'
+        );
+        $replacement = new SourceHealthState(
+            SourceStatus::UNRELIABLE,
+            '2026-09-25 00:00:00',
+            '2026-09-24 00:00:00',
+            null,
+            5,
+            'latest failure'
+        );
+
+        self::assertTrue($repository->saveHealthIfUnchanged(
+            42,
+            $expected,
+            $replacement,
+            '2026-09-25 00:00:00'
+        ));
+
+        self::assertCount(1, $database->preparedQueries);
+        self::assertStringContainsString(
+            'UPDATE wp_adct_pi_sources SET status = %s, last_checked_at = %s, last_success_at = %s, '
+            . 'last_item_at = NULL, consecutive_failures = %d, last_error = %s, updated_at = %s '
+            . 'WHERE id = %d AND status = %s AND consecutive_failures = %d '
+            . 'AND last_checked_at = %s AND last_success_at = %s AND last_item_at IS NULL AND last_error = %s',
+            $database->preparedQueries[0]['query']
+        );
+        self::assertSame([
+            SourceStatus::UNRELIABLE,
+            '2026-09-25 00:00:00',
+            '2026-09-24 00:00:00',
+            5,
+            'latest failure',
+            '2026-09-25 00:00:00',
+            42,
+            SourceStatus::ACTIVE,
+            1,
+            '2026-09-24 00:00:00',
+            '2026-09-24 00:00:00',
+            'temporary failure',
+        ], $database->preparedQueries[0]['arguments']);
+    }
+
+    public function testSourceAdminQueriesFilterWithPreparedValuesAndStablePagination(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $repository = new SourceRepository($database);
+
+        $repository->findForAdmin([
+            'search' => '100%_source',
+            'parish_id' => 7,
+            'type' => SourceType::ICS,
+            'role' => SourceRole::OFFICIAL,
+            'status' => SourceStatus::ACTIVE,
+        ], 20, 40);
+
+        self::assertCount(1, $database->preparedQueries);
+        self::assertStringContainsString('s.identifier LIKE %s OR p.name LIKE %s', $database->preparedQueries[0]['query']);
+        self::assertStringContainsString('s.parish_id = %d', $database->preparedQueries[0]['query']);
+        self::assertStringContainsString('ORDER BY (s.parish_id IS NULL) DESC', $database->preparedQueries[0]['query']);
+        self::assertStringContainsString('LIMIT %d OFFSET %d', $database->preparedQueries[0]['query']);
+        self::assertSame([
+            '%100\\%\\_source%',
+            '%100\\%\\_source%',
+            7,
+            SourceType::ICS,
+            SourceRole::OFFICIAL,
+            SourceStatus::ACTIVE,
+            20,
+            40,
+        ], $database->preparedQueries[0]['arguments']);
+    }
+
     public function testActiveVenueReadMapsAliasesAndCoordinates(): void
     {
         $database = new FakeDatabaseConnection();
@@ -476,6 +627,11 @@ final class FakeDatabaseConnection implements DatabaseConnectionInterface
      */
     public array $resultRows = [];
 
+    /**
+     * @var array<int, array<string, mixed>|null>
+     */
+    public array $rowResults = [];
+
     public ?array $rowResult = ['id' => 1];
 
     public int $nextInsertId = 1;
@@ -502,6 +658,10 @@ final class FakeDatabaseConnection implements DatabaseConnectionInterface
     public function getRow(string $query): ?array
     {
         $this->selectedQueries[] = $query;
+
+        if ($this->rowResults !== []) {
+            return array_shift($this->rowResults);
+        }
 
         return $this->rowResult;
     }

@@ -44,7 +44,8 @@ final class ParishesPage
         private ApprovalRouteResolver $approvalRouteResolver,
         private VenueRepository $venues,
         private VenueAdministrationService $venueService,
-        private ClockInterface $clock
+        private ClockInterface $clock,
+        private SourcesPage $sourcesPage
     ) {
     }
 
@@ -84,8 +85,16 @@ final class ParishesPage
                 ]);
             }
 
-            if (sanitize_key($this->getText('tab')) === 'venues') {
+            $tab = sanitize_key($this->getText('tab'));
+
+            if ($tab === 'venues') {
                 $this->renderVenueTab($parish);
+
+                return;
+            }
+
+            if ($tab === 'sources') {
+                $this->renderSourcesTab($parish);
 
                 return;
             }
@@ -934,6 +943,25 @@ final class ParishesPage
         <?php
     }
 
+    /**
+     * @param array<string, mixed> $parish
+     */
+    private function renderSourcesTab(array $parish): void
+    {
+        $parishId = (int) ($parish['id'] ?? 0);
+        ?>
+        <div class="wrap">
+            <h1>Sources for <?php echo esc_html((string) ($parish['name'] ?? '')); ?></h1>
+            <p><a href="<?php echo esc_url($this->pageUrl([
+                'action' => 'edit',
+                'id' => $parishId,
+            ])); ?>">&larr; Back to parish details</a></p>
+            <?php $this->renderEditTabs($parishId, 'sources'); ?>
+            <?php $this->sourcesPage->renderParishTab($parishId); ?>
+        </div>
+        <?php
+    }
+
     private function renderEditTabs(int $parishId, string $activeTab): void
     {
         ?>
@@ -947,6 +975,11 @@ final class ParishesPage
                 'id' => $parishId,
                 'tab' => 'venues',
             ])); ?>">Venues</a>
+            <a class="nav-tab <?php echo $activeTab === 'sources' ? 'nav-tab-active' : ''; ?>" href="<?php echo esc_url($this->pageUrl([
+                'action' => 'edit',
+                'id' => $parishId,
+                'tab' => 'sources',
+            ])); ?>">Sources</a>
         </nav>
         <?php
     }
