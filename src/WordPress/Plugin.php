@@ -84,7 +84,6 @@ use ADCT\ParishIntake\WordPress\Database\Repository\MailboxRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\OccurrenceRepository;
-use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\Schema;
