@@ -72,6 +72,13 @@ final class SchemaDefinitionsTest extends TestCase
         }
     }
 
+    public function testFreshOccurrenceDefinitionAllowsEventsWithoutAParish(): void
+    {
+        $occurrences = SchemaDefinitions::statements()['adct_pi_occurrences'];
+
+        self::assertStringContainsString('parish_id bigint(20) unsigned NULL,', $occurrences);
+    }
+
     public function testCreateSchemaMigrationInstallsEveryStatement(): void
     {
         $installer = new RecordingSchemaInstaller();

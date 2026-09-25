@@ -11,6 +11,7 @@ use ADCT\ParishIntake\Core\Database\MailboxSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MigrationRunner;
 use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
 use ADCT\ParishIntake\Core\Events\EventValidator;
+use ADCT\ParishIntake\Core\Events\OccurrenceExpander;
 use ADCT\ParishIntake\Core\Events\RRulePresetMapper;
 use ADCT\ParishIntake\Core\Events\RRuleValidator;
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
@@ -20,6 +21,7 @@ use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
 use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\Core\Jobs\FrameworkHeartbeatJob;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
+use ADCT\ParishIntake\Core\Jobs\OccurrenceExpansionJob;
 use ADCT\ParishIntake\Core\Ingestion\Imap\ImapMailbox;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxConnectionConfig;
 use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
@@ -50,6 +52,7 @@ use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleCapabilityStore;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleVersionStore;
 use ADCT\ParishIntake\WordPress\Database\DbDeltaSchemaInstaller;
+use ADCT\ParishIntake\WordPress\Database\OccurrenceParishNullableMigration;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
@@ -58,6 +61,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\MailboxRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\OccurrenceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\Schema;
@@ -77,8 +81,10 @@ use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
 use ADCT\ParishIntake\WordPress\Events\EventEditor;
+use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
+use ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
 use DateTimeZone;
 
@@ -99,6 +105,7 @@ final class Plugin
     private SourcesPage $sourcesPage;
     private EventPostType $eventPostType;
     private EventEditor $eventEditor;
+    private EventOccurrenceHooks $eventOccurrenceHooks;
     private MailboxesPage $mailboxesPage;
 
     private function __construct(string $pluginFile)
@@ -194,6 +201,16 @@ final class Plugin
             new RRulePresetMapper($rruleValidator),
             $timezone
         );
+        $occurrenceMaintenance = new WordPressEventOccurrenceMaintenance(
+            new OccurrenceRepository($database),
+            new OccurrenceExpander($timezone, $rruleValidator),
+            $clock
+        );
+        $this->eventOccurrenceHooks = new EventOccurrenceHooks(
+            $occurrenceMaintenance,
+            $clock,
+            $timezone
+        );
         $stateStore = new WordPressJobStateStore();
         $jobRunner = new JobRunner(
             new WordPressJobLock(),
@@ -233,7 +250,11 @@ final class Plugin
             }
         );
         $this->jobScheduler = new WordPressJobScheduler(
-            [new FrameworkHeartbeatJob(), $mailboxPollingJob],
+            [
+                new FrameworkHeartbeatJob(),
+                $mailboxPollingJob,
+                new OccurrenceExpansionJob($occurrenceMaintenance, $clock, $timezone),
+            ],
             $jobRunner,
             $stateStore,
             $clock
@@ -364,8 +385,34 @@ final class Plugin
         add_action('init', [$this->eventPostType, 'register'], 5);
         add_action('add_meta_boxes_adct_event', [$this->eventEditor, 'registerMetaBox']);
         add_action('save_post_adct_event', [$this->eventEditor, 'handleSavePost'], 10, 3);
+        add_action('save_post_adct_event', [$this->eventOccurrenceHooks, 'handleSavePost'], 20, 3);
+        add_action(
+            'rest_after_insert_adct_event',
+            [$this->eventOccurrenceHooks, 'handleRestAfterInsert'],
+            10,
+            3
+        );
+        add_action(
+            'transition_post_status',
+            [$this->eventOccurrenceHooks, 'handleStatusTransition'],
+            10,
+            3
+        );
+        add_action(
+            'before_delete_post',
+            [$this->eventOccurrenceHooks, 'handleBeforeDeletePost'],
+            10,
+            2
+        );
+        add_filter(
+            'rest_post_dispatch',
+            [$this->eventOccurrenceHooks, 'filterRestResponse'],
+            10,
+            3
+        );
         add_action('admin_notices', [$this->eventPostType, 'renderSetupNotice']);
         add_action('admin_notices', [$this->eventEditor, 'renderValidationNotice']);
+        add_action('admin_notices', [$this->eventOccurrenceHooks, 'renderFailureNotice']);
         add_filter('manage_adct_event_posts_columns', [$this->eventEditor, 'filterColumns']);
         add_action('manage_adct_event_posts_custom_column', [$this->eventEditor, 'renderColumn'], 10, 2);
         add_filter('rest_pre_insert_adct_event', [$this->eventEditor, 'validateRestRequest'], 10, 2);
@@ -436,6 +483,7 @@ final class Plugin
                 new CreateSchemaMigration(new DbDeltaSchemaInstaller($database)),
                 new VenueSchemaMigration(new DbDeltaSchemaInstaller($database)),
                 new MailboxSchemaMigration(new DbDeltaSchemaInstaller($database)),
+                new OccurrenceParishNullableMigration($database),
             ],
             new WordPressMigrationVersionStore(),
             new WordPressMigrationLogger()
