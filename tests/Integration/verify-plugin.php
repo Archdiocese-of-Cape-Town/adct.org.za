@@ -1,6 +1,7 @@
 <?php
 
 use ADCT\ParishIntake\Core\Auth\Capabilities;
+use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
 use ADCT\ParishIntake\Core\Directory\ImportRow;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
@@ -214,13 +215,16 @@ if (! is_string($seedDeaneriesCsv) || ! is_string($seedParishesCsv)) {
 $database = new WordPressDatabaseConnection($wpdb);
 $parishRepository = new ParishRepository($database);
 $deaneryRepository = new DeaneryRepository($database);
+$contactRepository = new ParishContactRepository($database);
+$clock = new SystemClock();
+$contactService = new ContactService($contactRepository, $clock);
 $importService = new DirectoryImportService(
     new ParishCsvImporter(),
     new DeaneryCsvImporter(),
     $parishRepository,
     $deaneryRepository,
-    new ParishContactRepository($database),
-    new SystemClock()
+    $contactService,
+    $clock
 );
 $contactTable = $wpdb->prefix . 'adct_pi_parish_contacts';
 $parishTable = $wpdb->prefix . 'adct_pi_parishes';
@@ -354,6 +358,54 @@ if (
     $fail('A repeated import changed an existing parish contact trust value.');
 }
 
+$secondParishId = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT id FROM {$parishTable} WHERE id <> %d ORDER BY id ASC LIMIT 1",
+    $firstParishId
+));
+
+if ($secondParishId < 1) {
+    $fail('A second parish could not be found for the shared sender test.');
+}
+
+$sharedSenderEmail = 'sender@example.test';
+$contactService->link($firstParishId, $sharedSenderEmail, 'Sample Sender', 'Secretary', true);
+$contactService->link($secondParishId, $sharedSenderEmail, 'Sample Sender', 'Secretary', true);
+$contactService->block($sharedSenderEmail);
+$sharedSenderLinks = $wpdb->get_results($wpdb->prepare(
+    "SELECT parish_id, trust FROM {$contactTable} WHERE email = %s ORDER BY parish_id ASC",
+    $sharedSenderEmail
+), ARRAY_A);
+$sharedSenderParishIds = is_array($sharedSenderLinks)
+    ? array_map(static fn (array $row): int => (int) $row['parish_id'], $sharedSenderLinks)
+    : [];
+$expectedSharedSenderParishIds = [$firstParishId, $secondParishId];
+sort($expectedSharedSenderParishIds, SORT_NUMERIC);
+
+if (
+    ! is_array($sharedSenderLinks)
+    || count($sharedSenderLinks) !== 2
+    || array_column($sharedSenderLinks, 'trust') !== ['blocked', 'blocked']
+    || $sharedSenderParishIds !== $expectedSharedSenderParishIds
+) {
+    $fail('Blocking a shared sender did not update both parish contact links.');
+}
+
+$senderAddressRows = $contactRepository->findSenderAddresses(['search' => $sharedSenderEmail], 20, 0);
+$senderAddressEmails = array_map(
+    static fn (array $sender): string => (string) ($sender['email'] ?? ''),
+    $senderAddressRows
+);
+
+if (! in_array($sharedSenderEmail, $senderAddressEmails, true)) {
+    $fail('The Senders repository query did not return the linked sample address.');
+}
+
+$senderLinkRows = $contactRepository->findSenderLinksByEmails([$sharedSenderEmail]);
+
+if (count($senderLinkRows) !== 2) {
+    $fail('The Senders repository query did not return both parish links.');
+}
+
 $parentSlug = 'adct-parish-intake';
 $parishesSlug = 'adct-parish-intake-parishes';
 $parishItems = array_values(array_filter(
@@ -417,4 +469,64 @@ foreach ([
     }
 }
 
-WP_CLI::success('Release ZIP activation, directory CSV imports, Parishes admin screen and Manual parser integration checks passed.');
+$previousGet = $_GET;
+$_GET = ['action' => 'edit', 'id' => (string) $firstParishId];
+ob_start();
+try {
+    do_action($parishesPageHook);
+} finally {
+    $contactFormHtml = (string) ob_get_clean();
+    $_GET = $previousGet;
+}
+
+if (
+    strpos($contactFormHtml, '<h2>Contacts</h2>') === false
+    || strpos($contactFormHtml, $sharedSenderEmail) === false
+) {
+    $fail('The parish edit screen did not render its linked contacts section.');
+}
+
+$sendersSlug = 'adct-parish-intake-senders';
+$sendersItems = array_values(array_filter(
+    $GLOBALS['submenu'][$parentSlug] ?? [],
+    static fn ($item): bool => is_array($item) && ($item[2] ?? null) === $sendersSlug
+));
+
+if (count($sendersItems) !== 1 || $sendersItems[0][0] !== 'Senders') {
+    $fail('The Senders admin submenu was not registered.');
+}
+
+$sendersPageHook = get_plugin_page_hookname($sendersSlug, $parentSlug);
+if (has_action($sendersPageHook) === false) {
+    $fail('The Senders page callback was not registered.');
+}
+
+$previousGet = $_GET;
+$_GET = ['page' => $sendersSlug];
+$_GET['search'] = $sharedSenderEmail;
+ob_start();
+try {
+    do_action($sendersPageHook);
+} finally {
+    $sendersHtml = (string) ob_get_clean();
+    $_GET = $previousGet;
+}
+
+$missingSendersContent = [];
+
+foreach ([
+    'heading' => '<h1 class="wp-heading-inline">Senders</h1>',
+    'email' => $sharedSenderEmail,
+    'unblock action' => 'Unblock address',
+] as $label => $needle) {
+    if (strpos($sendersHtml, $needle) === false) {
+        $missingSendersContent[] = $label;
+    }
+}
+
+if ($missingSendersContent !== []) {
+    $fail('The Senders page did not render the shared blocked sender and actions (missing: '
+        . implode(', ', $missingSendersContent) . ').');
+}
+
+WP_CLI::success('Release ZIP activation, directory CSV imports, parish contacts, Senders admin screen and Manual parser integration checks passed.');

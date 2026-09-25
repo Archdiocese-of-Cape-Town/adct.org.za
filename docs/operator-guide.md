@@ -59,9 +59,16 @@ The map helper opens OpenStreetMap at saved coordinates, or searches the saved a
 
 The v1 schema stores known parent relationships through `parent_slug`/`parent_parish_id`; it does not store the seed's separate `is_mother_parish` flag. That column is accepted for seed-file compatibility, but an export leaves it blank when no parent relationship is recorded.
 
-An `office_email` in the CSV is added as a verified parish contact with a verification timestamp if that parish/email pair does not already exist. Existing contact rows and their trust status are left untouched. Use the import to add new official office addresses; contact management is a separate screen.
+An `office_email` in the CSV is added as a verified parish contact with a verification timestamp if the address has no existing links. If that address is already linked, its current trust is retained and shared with the new parish link. Existing contact details are left untouched. Use the import to add new official office addresses; contact management is available on each parish's edit screen and on the Senders screen.
 
-**Export parishes CSV** downloads the current directory using the template's columns. **Download CSV template** provides the same header with no data rows. The export includes a verified office email when one is available; it does not include unknown, pending or blocked contacts. Keep private contact details out of the public repository.
+**Export parishes CSV** downloads the current directory using the template's columns. **Download CSV template** provides the same header with no data rows. The export includes a verified office email when one is available; it does not include unknown, pending or blocked contacts. To protect spreadsheet users, cells beginning with `=`, `+`, `-`, `@`, a tab or a carriage return are prefixed with a single quote, except a value in the phone column that matches a phone-number pattern (for example, `+27 00 000 0000`). The importer removes that export-added prefix so an exported file can be imported again. Keep private contact details out of the public repository.
+
+### Manage parish contacts and senders
+
+1. Open **Parish Intake → Parishes**, select a parish, and use the **Contacts** section on its edit screen to add, edit or remove an email link. Each parish link can have its own display name, role label and reminder setting. Adding the same address to the same parish again updates that link rather than creating a duplicate.
+2. Open **Parish Intake → Senders** to search by email address or contact name, filter by trust, see all linked parishes, and link an address to another parish. Trust is shared by the address across all of its parish links.
+3. Use **Verify address** only after checking the contact with the parish. Verification fills in the sender's linked parish information and permits immediate changes to already-published events; every new event still needs approval by a dean or archdiocese reviewer.
+4. **Block address** stops intake for that email address across every linked parish. An administrator can use **Unblock address** to return it to `unknown`; verify it again before treating it as trusted. A blocked address cannot lose its final parish link until an administrator explicitly unblocks it, so removing one of several links does not change trust for the remaining links.
 
 ## Check database installation and upgrade (staging)
 

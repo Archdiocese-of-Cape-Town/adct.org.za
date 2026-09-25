@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Core\Directory;
 
+use InvalidArgumentException;
+
 final class ParishDataValidator
 {
     public const KINDS = [
@@ -69,8 +71,12 @@ final class ParishDataValidator
 
         $officeEmail = strtolower(trim((string) ($input['office_email'] ?? '')));
 
-        if ($officeEmail !== '' && filter_var($officeEmail, FILTER_VALIDATE_EMAIL) === false) {
-            $errors[] = 'The office email address is not valid.';
+        if ($officeEmail !== '') {
+            try {
+                $officeEmail = EmailAddress::normalize($officeEmail);
+            } catch (InvalidArgumentException) {
+                $errors[] = 'The office email address is not valid.';
+            }
         }
 
         $motherParish = strtolower(trim((string) ($input['is_mother_parish'] ?? '')));

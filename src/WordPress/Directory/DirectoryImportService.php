@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Directory;
 
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
+use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\ImportPlan;
 use ADCT\ParishIntake\Core\Directory\ImportRow;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
-use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use DateTimeZone;
 use InvalidArgumentException;
@@ -23,7 +23,7 @@ final class DirectoryImportService
         private DeaneryCsvImporter $deaneryImporter,
         private ParishRepository $parishes,
         private DeaneryRepository $deaneries,
-        private ParishContactRepository $contacts,
+        private ContactService $contacts,
         private ClockInterface $clock
     ) {
     }
@@ -121,7 +121,7 @@ final class DirectoryImportService
             $officeEmail = $row->values['office_email'];
 
             if ($officeEmail !== null) {
-                $this->contacts->insertVerifiedIfMissing($id, (string) $officeEmail, $timestamp);
+                $this->contacts->linkOfficial($id, (string) $officeEmail);
             }
         }
 

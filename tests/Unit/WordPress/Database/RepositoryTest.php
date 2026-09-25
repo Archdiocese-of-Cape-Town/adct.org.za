@@ -11,6 +11,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
+use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
@@ -139,6 +140,80 @@ final class RepositoryTest extends TestCase
             '2026-09-25 00:00:00',
             '2026-09-25 00:00:00',
         ], $database->preparedQueries[0]['arguments']);
+    }
+
+    public function testParishContactAddressReadsAndTrustWritesUsePreparedQueries(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $repository = new ParishContactRepository($database);
+
+        $repository->findByEmail('sender@example.test');
+        $repository->saveLink(
+            7,
+            'sender@example.test',
+            'Sample Sender',
+            'Secretary',
+            true,
+            SenderTrust::UNKNOWN,
+            null,
+            '2026-09-25 00:00:00'
+        );
+        $repository->setTrustForEmail(
+            'sender@example.test',
+            SenderTrust::BLOCKED,
+            null,
+            '2026-09-25 00:00:00'
+        );
+
+        self::assertCount(3, $database->preparedQueries);
+        self::assertStringContainsString('WHERE email = %s', $database->preparedQueries[0]['query']);
+        self::assertSame(['sender@example.test'], $database->preparedQueries[0]['arguments']);
+        self::assertStringContainsString('ON DUPLICATE KEY UPDATE', $database->preparedQueries[1]['query']);
+        self::assertSame([
+            7,
+            'sender@example.test',
+            'Sample Sender',
+            'Secretary',
+            SenderTrust::UNKNOWN,
+            1,
+            '2026-09-25 00:00:00',
+            '2026-09-25 00:00:00',
+        ], $database->preparedQueries[1]['arguments']);
+        self::assertStringContainsString(
+            'UPDATE wp_adct_pi_parish_contacts SET trust = %s, verified_at = NULL',
+            $database->preparedQueries[2]['query']
+        );
+        self::assertSame([
+            SenderTrust::BLOCKED,
+            '2026-09-25 00:00:00',
+            'sender@example.test',
+        ], $database->preparedQueries[2]['arguments']);
+    }
+
+    public function testSenderDirectorySearchAndLinkedParishReadsArePrepared(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $repository = new ParishContactRepository($database);
+
+        $repository->findSenderAddresses([
+            'search' => 'a%_',
+            'trust' => SenderTrust::PENDING,
+        ], 20, 0);
+        $repository->findSenderLinksByEmails(['sender@example.test']);
+
+        self::assertCount(2, $database->preparedQueries);
+        self::assertStringContainsString('c.email LIKE %s OR c.display_name LIKE %s', $database->preparedQueries[0]['query']);
+        self::assertStringContainsString('GROUP BY c.email ORDER BY c.email ASC LIMIT %d OFFSET %d', $database->preparedQueries[0]['query']);
+        self::assertSame([
+            '%a\\%\\_%',
+            '%a\\%\\_%',
+            '%a\\%\\_%',
+            SenderTrust::PENDING,
+            20,
+            0,
+        ], $database->preparedQueries[0]['arguments']);
+        self::assertStringContainsString('WHERE c.email IN (%s)', $database->preparedQueries[1]['query']);
+        self::assertSame(['sender@example.test'], $database->preparedQueries[1]['arguments']);
     }
 }
 
