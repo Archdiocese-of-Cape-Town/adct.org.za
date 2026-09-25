@@ -138,8 +138,8 @@ if (
     $fail('Fresh plugin activation did not default outbound test mode to off with an empty allow-list.');
 }
 
-if ((int) get_option('adct_pi_db_version', 0) !== 7) {
-    $fail('Activation did not set the parish intake schema version to 7.');
+if ((int) get_option('adct_pi_db_version', 0) !== 8) {
+    $fail('Activation did not set the parish intake schema version to 8.');
 }
 
 if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CURRENT_VERSION) {
@@ -256,6 +256,7 @@ foreach (['administrator', 'editor', 'adct_pi_intake_manager', 'adct_pi_intake_r
 global $wpdb;
 $installedTables = (array) $wpdb->get_col('SHOW TABLES');
 $expectedTableSuffixes = [
+    'adct_pi_approval_notices',
     'adct_pi_action_tokens',
     'adct_pi_action_token_rate_limits',
     'adct_pi_attachments',
@@ -289,7 +290,7 @@ if ($actualTables !== $expectedTables) {
     $missingTables = array_diff($expectedTables, $actualTables);
     $unexpectedTables = array_diff($actualTables, $expectedTables);
     $fail(sprintf(
-        'Schema v7 tables differ. Missing: [%s]; unexpected: [%s].',
+        'Schema v8 tables differ. Missing: [%s]; unexpected: [%s].',
         implode(', ', $missingTables),
         implode(', ', $unexpectedTables)
     ));
@@ -366,7 +367,7 @@ $rateLimitTable = $wpdb->prefix . 'adct_pi_action_token_rate_limits';
 $dropRateLimitTableForV3Upgrade = $wpdb->query("DROP TABLE {$rateLimitTable}");
 
 if ($dropRateLimitTableForV3Upgrade === false) {
-    $fail('The v3-to-v7 migration test could not restore the pre-v6 schema.');
+    $fail('The v3-to-v8 migration test could not restore the pre-v6 schema.');
 }
 
 update_option('adct_pi_db_version', 3, false);
@@ -377,7 +378,7 @@ $occurrenceParishColumn = $wpdb->get_row(
 );
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 7
+    (int) get_option('adct_pi_db_version', 0) !== 8
     || ! is_array($occurrenceParishColumn)
     || strtoupper((string) ($occurrenceParishColumn['Null'] ?? '')) !== 'YES'
 ) {
@@ -501,7 +502,7 @@ $preservedQueueRowCount = (int) $wpdb->get_var($wpdb->prepare(
 ));
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 7
+    (int) get_option('adct_pi_db_version', 0) !== 8
     || ! $upgradedMailQueueIndexIsUnique
     || array_values($upgradedMailQueueIndexColumns) !== ['recipient', 'group_key']
     || $preservedQueueRowCount !== 1
@@ -557,7 +558,7 @@ foreach ($rateLimitIndexes as $index) {
 }
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 7
+    (int) get_option('adct_pi_db_version', 0) !== 8
     || $recreatedRateLimitTable !== $rateLimitTable
     || ! in_array('scope_hash', $rateLimitColumns, true)
     || ! in_array('window_started_at', $rateLimitColumns, true)
@@ -572,15 +573,15 @@ if (
 
 foreach ($confirmationSchemaColumns as [$table, $columnName]) {
     if ($wpdb->query("ALTER TABLE {$table} DROP COLUMN `{$columnName}`") === false) {
-        $fail('The v6-to-v7 migration test could not prepare the legacy confirmation-preview schema.');
+        $fail('The v6-to-v8 migration test could not prepare the legacy confirmation-preview schema.');
     }
 }
 
 update_option('adct_pi_db_version', 6, false);
 do_action('admin_init');
 
-if ((int) get_option('adct_pi_db_version', 0) !== 7) {
-    $fail('The v6-to-v7 migration did not advance the schema version.');
+if ((int) get_option('adct_pi_db_version', 0) !== 8) {
+    $fail('The v6-to-v8 migrations did not advance the schema version.');
 }
 
 foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
@@ -594,7 +595,7 @@ foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
         || strtolower((string) ($column['Type'] ?? '')) !== $expectedType
         || strtoupper((string) ($column['Null'] ?? '')) !== 'YES'
     ) {
-        $fail('The v6-to-v7 migration did not restore the nullable ' . $columnName . ' column.');
+        $fail('The v6-to-v8 migrations did not restore the nullable ' . $columnName . ' column.');
     }
 }
 
@@ -4978,6 +4979,8 @@ require_once __DIR__ . '/RepeatMatchingCheck.php';
 RepeatMatchingCheck::run($fail, $icsSource->id, $firstParishId);
 require_once __DIR__ . '/ConfirmationDecisionCheck.php';
 ConfirmationDecisionCheck::run($fail);
+require_once __DIR__ . '/ApprovalDecisionCheck.php';
+ApprovalDecisionCheck::run($fail);
 
 foreach (['administrator', 'editor'] as $roleName) {
     $role = get_role($roleName);
@@ -5024,4 +5027,4 @@ foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
     }
 }
 
-WP_CLI::success('Release ZIP activation, schema v7 and v3-to-v7 migrations, action-token and outbound-queue checks, multi-candidate confirmation previews with safe recipient suppression and threaded headers, bounded inbound parsing and Inbox reprocessing without candidate, attachment, checkpoint, email or privacy regressions, public event listing, occurrence expansion/save/REST/job behavior, mail idempotency and hourly-cap claims, event metadata and REST authorization, directory and venue imports, mailbox and sender administration, and Manual parser integration checks passed.');
+WP_CLI::success('Release ZIP activation, schema v8 and v3-to-v8 migrations, action-token, approver decisions and outbound-queue checks, multi-candidate confirmation previews with safe recipient suppression and threaded headers, bounded inbound parsing and Inbox reprocessing without candidate, attachment, checkpoint, email or privacy regressions, public event listing, occurrence expansion/save/REST/job behavior, mail idempotency and hourly-cap claims, event metadata and REST authorization, directory and venue imports, mailbox and sender administration, and Manual parser integration checks passed.');

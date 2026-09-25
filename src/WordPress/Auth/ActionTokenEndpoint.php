@@ -58,6 +58,10 @@ final class ActionTokenEndpoint
         $postAction = $this->stringInput($_POST[self::ACTION_FIELD] ?? null);
         $nonce = $this->stringInput($_POST[self::NONCE_FIELD] ?? null);
         $reason = $this->stringInput($_POST[self::REASON_FIELD] ?? null);
+        $edits = [];
+        foreach (['title', 'event_date', 'event_time', 'description'] as $field) {
+            $edits[$field] = $this->stringInput($_POST['adct_edit_' . $field] ?? null);
+        }
         $remoteAddress = $this->stringInput($_SERVER['REMOTE_ADDR'] ?? null);
 
         $response = $this->respond(
@@ -67,7 +71,8 @@ final class ActionTokenEndpoint
             $postAction,
             $nonce,
             $remoteAddress,
-            $reason
+            $reason,
+            $edits
         );
 
         $this->send($response);
@@ -80,7 +85,8 @@ final class ActionTokenEndpoint
         string $postAction,
         string $nonce,
         string $remoteAddress,
-        string $reason = ''
+        string $reason = '',
+        array $edits = []
     ): ActionTokenHttpResponse {
         $method = strtoupper($method);
 
@@ -123,7 +129,7 @@ final class ActionTokenEndpoint
             return $this->respondToRenewal($postToken, $remoteAddress);
         }
 
-        return $this->respondToAction($postToken, $reason);
+        return $this->respondToAction($postToken, $reason, $edits);
     }
 
     public static function urlForToken(string $token): string
@@ -139,6 +145,19 @@ final class ActionTokenEndpoint
     {
         $inspection = $this->tokens->inspect($token);
 
+        if ($inspection->status === ActionTokenStatus::USED
+            && $inspection->binding !== null
+            && in_array($inspection->binding->purpose, [
+                ActionTokenPurpose::APPROVE_EVENT, ActionTokenPurpose::REJECT_EVENT,
+            ], true)) {
+            $preview = $this->handlers->forPurpose($inspection->binding->purpose)
+                ?->preview($inspection->binding);
+            if ($preview !== null) {
+                return new ActionTokenHttpResponse(200, $this->renderPreview(
+                    $preview, $token, $inspection->binding->purpose
+                ));
+            }
+        }
         if ($inspection->status !== ActionTokenStatus::VALID || $inspection->binding === null) {
             return $this->statusResponse($inspection, $token);
         }
@@ -158,7 +177,7 @@ final class ActionTokenEndpoint
         return new ActionTokenHttpResponse(200, $this->renderPreview($preview, $token, $inspection->binding->purpose));
     }
 
-    private function respondToAction(string $token, string $reason): ActionTokenHttpResponse
+    private function respondToAction(string $token, string $reason, array $edits): ActionTokenHttpResponse
     {
         $inspection = $this->tokens->inspect($token);
 
@@ -178,6 +197,27 @@ final class ActionTokenEndpoint
         if ($inspection->status === ActionTokenStatus::VALID && $handler->preview($inspection->binding) === null) {
             return $this->invalidResponse();
         }
+        if ($inspection->binding->purpose === ActionTokenPurpose::EDIT && $handler instanceof ApprovalEditHandler) {
+            if ($inspection->status !== ActionTokenStatus::VALID) {
+                return $this->statusResponse($inspection, $token);
+            }
+            try {
+                $outcome = $handler->save($inspection->binding, $token, $this->tokens, $edits);
+            } catch (DomainException $failure) {
+                return new ActionTokenHttpResponse(409, $this->renderPage(
+                    __('Edit unavailable', 'adct-parish-intake'), $failure->getMessage()
+                ));
+            } catch (RuntimeException $failure) {
+                error_log('[ADCT Parish Intake] Approval edit failed (' . get_class($failure) . ').');
+                return new ActionTokenHttpResponse(503, $this->renderPage(
+                    __('Edit could not be saved', 'adct-parish-intake'),
+                    __('Please try again later.', 'adct-parish-intake')
+                ));
+            }
+            return new ActionTokenHttpResponse(200, $this->renderPage(
+                __('Correction saved', 'adct-parish-intake'), $outcome->message
+            ));
+        }
 
         if ($handler instanceof AtomicActionTokenHandlerInterface) {
             if (strlen($reason) > 1000 || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $reason)) {
@@ -190,13 +230,17 @@ final class ActionTokenEndpoint
                 $outcome = $inspection->status === ActionTokenStatus::USED
                     ? $handler->recover($inspection->binding)
                     : $handler->performAtomic($inspection->binding, $token, $this->tokens, trim($reason));
-            } catch (DomainException) {
+            } catch (DomainException $failure) {
                 return new ActionTokenHttpResponse(409, $this->renderPage(
                     __('Already decided or unavailable', 'adct-parish-intake'),
-                    __('This event cannot be changed using this link.', 'adct-parish-intake')
+                    in_array($inspection->binding->purpose, [
+                        ActionTokenPurpose::APPROVE_EVENT, ActionTokenPurpose::REJECT_EVENT,
+                    ], true) && str_starts_with($failure->getMessage(), 'Already ')
+                        ? $failure->getMessage()
+                        : __('This event cannot be changed using this link.', 'adct-parish-intake')
                 ));
             } catch (RuntimeException $failure) {
-                error_log('[ADCT Parish Intake] Confirmation action failed (' . get_class($failure) . ').');
+                error_log('[ADCT Parish Intake] Action token decision failed (' . get_class($failure) . ').');
                 return new ActionTokenHttpResponse(503, $this->renderPage(
                     __('The event could not be completed', 'adct-parish-intake'),
                     __('This decision may already be recorded. Please try this button again later; retrying is safe.', 'adct-parish-intake')
@@ -304,11 +348,12 @@ final class ActionTokenEndpoint
             $details .= '</ul>';
         }
 
-        $form = '<form method="post" action="' . esc_url($this->endpointUrl()) . '">'
+        $form = ! $preview->actionable ? '' : '<form method="post" action="' . esc_url($this->endpointUrl()) . '">'
             . $this->hiddenField(self::TOKEN_PARAM, $token)
             . $this->hiddenField(self::ACTION_FIELD, 'perform')
             . $this->nonceField('perform', $token)
-            . ($purpose === ActionTokenPurpose::DENY
+            . $this->editFields($preview)
+            . (in_array($purpose, [ActionTokenPurpose::DENY, ActionTokenPurpose::REJECT_EVENT], true)
                 ? '<label>' . esc_html__('Reason (optional)', 'adct-parish-intake')
                     . ' <textarea name="' . esc_attr(self::REASON_FIELD) . '" maxlength="1000"></textarea></label>'
                 : '')
@@ -320,6 +365,30 @@ final class ActionTokenEndpoint
             $preview->summary,
             $details . $form
         );
+    }
+
+    private function editFields(ActionTokenPreview $preview): string
+    {
+        $html = '';
+        foreach ($preview->formFields as $field => $value) {
+            if (! in_array($field, ['title', 'event_date', 'event_time', 'description'], true)) {
+                continue;
+            }
+            $label = [
+                'title' => 'Event title', 'event_date' => 'Date (DD/MM/YYYY)',
+                'event_time' => 'Time (HH:MM)', 'description' => 'Description',
+            ][$field];
+            $html .= '<p><label>' . esc_html($label) . ' ';
+            if ($field === 'description') {
+                $html .= '<textarea name="adct_edit_description" maxlength="2000">'
+                    . esc_textarea((string) $value) . '</textarea>';
+            } else {
+                $html .= '<input name="adct_edit_' . esc_attr($field) . '" value="'
+                    . esc_attr((string) $value) . '" required>';
+            }
+            $html .= '</label></p>';
+        }
+        return $html;
     }
 
     private function renderRenewalForm(string $token, ?ActionTokenBinding $binding): string
