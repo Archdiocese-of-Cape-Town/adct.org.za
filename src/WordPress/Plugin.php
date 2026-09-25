@@ -110,6 +110,8 @@ use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
 use ADCT\ParishIntake\WordPress\Jobs\HealthAlerts;
+use ADCT\ParishIntake\WordPress\Jobs\RetentionCleanupJob;
+use ADCT\ParishIntake\WordPress\Jobs\RetentionSettings;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailQueueImmediateDispatch;
@@ -385,6 +387,31 @@ final class Plugin
             $directorySnapshots,
             $clock
         );
+        $retentionCleanupJob = new RetentionCleanupJob(
+            $database,
+            $protectedInboundMailStorage,
+            $mailboxes,
+            static fn (): RetentionSettings => RetentionSettings::current(),
+            static fn (MailboxSettings $settings): string => $secrets->resolve(
+                SecretRegistry::IMAP_PASSWORD,
+                $settings->secretScope()
+            ),
+            static function (MailboxSettings $settings, string $password): MailboxInterface {
+                return new ImapMailbox(new MailboxConnectionConfig(
+                    host: $settings->host,
+                    port: $settings->port,
+                    encryption: $settings->encryption,
+                    username: $settings->username,
+                    password: $password,
+                    folders: [
+                        'inbox' => $settings->inboxFolder,
+                        'processed' => $settings->processedFolder,
+                    ],
+                    maxMessageSizeBytes: $settings->maxMessageSizeBytes
+                ));
+            },
+            $clock
+        );
         $this->inboundMessagesPage = new InboundMessagesPage(
             $inboundMessages,
             $inboundMessageStore,
@@ -397,6 +424,7 @@ final class Plugin
                 new FrameworkHeartbeatJob(),
                 $mailboxPollingJob,
                 $inboundMessageProcessingJob,
+                $retentionCleanupJob,
                 new OccurrenceExpansionJob($occurrenceMaintenance, $clock, $timezone),
                 $mailQueueSenderJob,
             ],

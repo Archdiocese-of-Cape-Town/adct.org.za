@@ -157,7 +157,7 @@ Mailbox connection settings are kept separately from source identity and health.
 | is_auto_reply | bool; set for declared or likely auto-reply/list signals and blocks confirmations, including to mailing lists |
 | status | `received`, `extracting`, `parsed`, `failed`, `ignored`, or `skipped`; see state machine |
 | error | Safe operator-facing processing, screening or size-limit reason; never a copy of raw message content |
-| retention_until | raw data deleted after this date |
+| retention_until | raw data deleted after this date by the daily retention job; metadata stays until review, retry and health workflows no longer need it |
 
 ### `adct_pi_attachments`
 `message_id`, filename, declared `mime_type`, `size_bytes`, private `storage_path`, SHA-256 `content_hash`, `extracted_text`, `extraction_method` (`pdf_text`, `ocr_external`, `ai_vision`, `manual`, `none`), status.

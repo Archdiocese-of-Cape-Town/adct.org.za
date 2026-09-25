@@ -51,6 +51,7 @@ The route-resolution subset is covered by #68: unit tests exercise two active ap
 
 From [ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md) and [ADR 0011](decisions/0011-outbound-email-queue-with-hourly-cap.md):
 - Unit tests cover the time and item budgets, a checkpoint saved after every item, resumption from incomplete mailbox scans, per-source polling intervals, immediate polling for never-checked sources, failed-poll retry backoff, the bounded inbound-message processing job, due checks, overlapping-run prevention, expired-lock recovery, stale-token release protection, and per-run lifecycle reset for stateful jobs. Occurrence-job tests also verify that an incomplete batch keeps a fixed window and resumes at the next published event.
+- Retention tests cover opt-in validation, safe selection of raw files and Processed-folder messages, bounded batch cleanup, and checkpoint-based resumption after partial deletion work.
 - Unit tests verify that exceptions release the lock and record the last error, and that `last_success_at` advances only after a successful batch.
 - The WordPress adapters are checked for non-autoloaded state, option-backed lock creation, expiry and malformed-lock recovery, token-guarded release, action-token hash-only persistence and atomic consumption, and fail-closed rate-limit decisions independent of affected-row semantics.
 - WP-Cron scheduling and cleanup failures are logged without escaping the scheduler; unexpected cron callback failures are logged and recorded when job state can still be saved.

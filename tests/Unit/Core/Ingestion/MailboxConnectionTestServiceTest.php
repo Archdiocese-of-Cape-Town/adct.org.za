@@ -251,6 +251,11 @@ final class FakeMailboxConnection implements MailboxInterface
         return $this->unseen;
     }
 
+    public function searchFolder(MailboxSearchCriteria $criteria, string $folder): array
+    {
+        return $this->search($criteria);
+    }
+
     public function fetch(int $uid): \ADCT\ParishIntake\Core\Ingestion\RawMailMessage
     {
         throw new \LogicException('The connection test must not fetch message bodies.');
@@ -259,6 +264,11 @@ final class FakeMailboxConnection implements MailboxInterface
     public function move(int $uid, string $folder): void
     {
         throw new \LogicException('The connection test must not move messages.');
+    }
+
+    public function delete(int $uid, string $folder): void
+    {
+        throw new \LogicException('The connection test must not delete messages.');
     }
 
     public function markSeen(int $uid): void
