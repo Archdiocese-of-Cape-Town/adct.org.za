@@ -100,6 +100,18 @@ final class Pipeline
             $primaryResult = $candidates[0];
         }
 
+        foreach ($notes as $note) {
+            if (str_starts_with($note, 'possible_missed_event_after_skipped_section: ')) {
+                $primaryResult->addNote($note);
+
+                foreach ($candidates as $candidate) {
+                    if ($candidate !== $primaryResult) {
+                        $candidate->addNote($note);
+                    }
+                }
+            }
+        }
+
         $blockMetadata = $split->getBlockMetadata();
 
         if ($candidateLimitExceeded) {
