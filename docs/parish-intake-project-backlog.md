@@ -218,7 +218,7 @@ Phase 0, in this order:
      - Can a temporary staging instance be set up later?
    - Done: FluentSMTP is set up, `wp_mail` works and the WP-Cron loopback check passes. Optionally send a test email and check its headers show SPF and DKIM `pass`.
    - Create a free cron-job.org account (or agree to use GitHub Actions) for the external pinger ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
-   - Real samples: 13 are in and reviewed ([parser findings](parser-samples.md)). Keep collecting, especially one-line email notices, forwarded emails and changes/cancellations ([#19](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/19)).
+   - Real samples: 13 attachments were reviewed privately ([parser findings](parser-samples.md)); the originals are not in this public repository. Anonymised fixtures derived from real examples are still needed for [#19](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/19). Keep collecting one-line email notices, forwarded emails and changes/cancellations.
    - Deaneries and parishes are seeded ([`data/seed`](../data/seed/README.md)). When you are ready, give the deans' email addresses to set them up as approvers. Until then, reviewers approve everything ([#68](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/68)).
 2. **Build** (see the [development guide](development.md#first-build-session) for the order and rules):
    - [#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17) CI and PHPUnit
