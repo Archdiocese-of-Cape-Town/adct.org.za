@@ -1,0 +1,15 @@
+{
+  "classification": "recurring_event",
+  "fields": {
+    "title": "Advent prayer gathering",
+    "parish_name": "Example Parish",
+    "event_time": "18:00"
+  },
+  "recurrence": {
+    "frequency": "daily",
+    "interval": 1,
+    "text": "daily during Advent",
+    "ambiguous": true
+  },
+  "reprocess_needed": true
+}

@@ -62,6 +62,11 @@ final class ConfidenceScoringStage implements StageInterface
         }
 
         $score = max(0.0, min(1.0, $score));
+
+        if (! empty($result->getRecurrence()['anchor_inferred'])) {
+            $score = max(0.0, $score - 0.05);
+        }
+
         $result->setConfidence($score);
         $result->setNeedsReprocess($result->needsReprocess() || $score < 0.45);
         $result->addStrategy('confidence_scoring');

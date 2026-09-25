@@ -54,12 +54,14 @@ final class RuleBasedExtractionStage implements StageInterface
         }
 
         $referenceDate = $bulletinRange['date'] ?? $this->referenceDate($message);
+        $context->setRuntimeValue('reference_date', $referenceDate);
         $monthContext = isset($blockContext['month']) && is_string($blockContext['month'])
             ? $blockContext['month']
             : null;
         $yearContext = isset($blockContext['year']) && is_numeric($blockContext['year'])
             ? (int) $blockContext['year']
             : null;
+        $dateText = $this->removeUntilDate($dateText);
         $date = $this->extractDate($dateText, $referenceDate, $monthContext, $yearContext);
         $times = $this->extractTimes($text);
 
@@ -140,10 +142,6 @@ final class RuleBasedExtractionStage implements StageInterface
 
     private function classify(string $lower, bool $hasDate, bool $hasTime): string
     {
-        if ($this->containsRecurringHint($lower)) {
-            return 'recurring_event';
-        }
-
         foreach (self::EVENT_KEYWORDS as $keyword) {
             if (strpos($lower, $keyword) !== false) {
                 return 'event';
@@ -163,9 +161,15 @@ final class RuleBasedExtractionStage implements StageInterface
         return 'low_confidence';
     }
 
-    private function containsRecurringHint(string $lower): bool
+    private function removeUntilDate(string $text): string
     {
-        return (bool) preg_match('/\b(?:every|weekly|monthly|fortnightly|first\s+friday|last\s+sunday)\b/i', $lower);
+        $weekday = '(?:(?:' . self::WEEKDAY_PATTERN . ')\.?\s+)?';
+        $year = '(?:,?\s+\d{4}|\s+\d{2})?';
+        $dayMonth = '\d{1,2}(?:st|nd|rd|th)?\s+' . self::MONTH_PATTERN . '\.?' . $year;
+        $monthDay = self::MONTH_PATTERN . '\.?\s+\d{1,2}(?:st|nd|rd|th)?' . $year;
+        $pattern = '~\buntil\s+' . $weekday . '(?:' . $dayMonth . '|' . $monthDay . ')\b~iu';
+
+        return preg_replace($pattern, ' ', $text) ?? $text;
     }
 
     private function extractTitle(Message $message, string $text): ?string

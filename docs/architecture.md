@@ -84,6 +84,8 @@ The `DirectoryLookupStage` runs after deterministic extraction and before confid
 
 The existing `Pipeline::parse(Message): ParseResult` API remains compatible and returns the first candidate (or a notice result when none were found); optional AI enrichment remains a later, separate pipeline stage.
 
+`RecurrenceDetectionStage` converts recognized deterministic phrases into a supported RFC 5545 RRULE, keeps the source phrase as human-readable text, and validates every emitted rule with `RRuleValidator` (using `RRulePresetMapper` for the matching presets). When a recurring candidate has no explicit `event_date`, its anchor is the first matching occurrence on or after the date parser's reference date: a bulletin date range when present, otherwise the received date or injected clock. This adds the `recurrence_anchor_inferred` note and reduces confidence by 0.05. A yearless recurrence end date is resolved to its next calendar occurrence on or after the anchor and noted. Seasonal wording such as "daily during Lent/Advent" remains ambiguous: no liturgical date, anchor or RRULE is guessed; the candidate is flagged for confirmation with `recurrence_ambiguous_season` and the ambiguity confidence penalty. RRULE occurrence expansion remains out of scope until E5.2 (#51).
+
 The Manual parser displays the full `ParseOutcome` and uses the same cached directory lookup as the parser pipeline, so admins can enter a sender email to test verified-sender resolution. Until the event-candidate repository is implemented, its legacy prototype table continues to store one row per input message using the first candidate, or the notice result if there are no candidates.
 
 ### 2. WordPress adapters (`src/WordPress/…`)

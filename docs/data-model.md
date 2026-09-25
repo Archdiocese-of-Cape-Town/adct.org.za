@@ -166,7 +166,7 @@ message_id, filename, mime_type, size_bytes, storage_path, content_hash, `extrac
 | block_index | zero-based position of the source block in the message (a bulletin can yield several candidates) |
 | parish_id | best guess or known |
 | fields | JSON: title, description, start, end, all_day, parish_id, venue_id / venue_text, venue coordinates, contact, event_type, featured, image attachment id, and the trimmed source snippet (maximum 2,000 characters) |
-| recurrence | JSON: RRULE parts + human text + `ambiguous` flag |
+| recurrence | JSON: normalized supported RRULE, human-readable source phrase, RRULE parts, and optional `ambiguous` / `anchor_inferred` flags |
 | confidence | 0–1 |
 | parser_version, strategies, notes | provenance |
 | ai_used, ai_provider, ai_model | provenance |
@@ -180,6 +180,8 @@ message_id, filename, mime_type, size_bytes, storage_path, content_hash, `extrac
 The rule parser represents the start as `event_date` / `event_time` and only adds `event_end_date` / `event_end_time` when it finds a date or time range. Single dates and times omit the end fields. If a range's end is before its start, the parser adds a note and lowers confidence rather than silently reordering it. An ambiguous "next <weekday>" also produces a note and a small confidence reduction.
 
 Directory lookup adds `parish_id` and, when a venue resolves, `venue_id`, `venue_latitude` / `venue_longitude` (when available), and `venue_address` / `venue_suburb`. The `parish_match` and `venue_match` field objects record the match source and confidence; they are additional JSON keys and require no schema migration. Parish source is `sender`, `text` or `context`; venue source is `label`, `text` or `default`.
+
+The parser stores a validator-approved RFC 5545 subset rule at `recurrence.rrule` and the matching source phrase at `recurrence.text`; its legacy frequency/day fields remain available for compatibility. The recurring series' start is `fields.event_date`. If the notice has no explicit start date, deterministic rules anchor to the first matching occurrence on or after the same reference date used by date parsing (bulletin range when available, otherwise received date or injected clock), add the `recurrence_anchor_inferred` note, and reduce confidence by 0.05. A yearless `UNTIL` date resolves to the next such month/day on or after that anchor and adds a note. For "daily during Lent/Advent", the parser does not guess a season date or start anchor and emits no RRULE; it adds `recurrence_ambiguous_season`, sets the confirmation/reprocess flag and applies the ambiguity confidence penalty. These are candidate JSON changes only and require no schema migration.
 
 The parser's `ParseOutcome` returns every event candidate and block metadata. The compatibility `parse()` API and the legacy prototype table use only the first candidate; the Manual parser shows all candidates. The source snippet is candidate provenance, not the full message body, which remains in `inbound_messages.body_text` under the retention policy.
 

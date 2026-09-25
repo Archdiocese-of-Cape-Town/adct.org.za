@@ -3,6 +3,7 @@
   "fields": {
     "title": "First Friday healing Mass",
     "parish_name": "Example Parish",
+    "event_date": "2026-10-02",
     "event_time": "18:00",
     "venue": "Example Parish Hall"
   },
@@ -10,6 +11,9 @@
     "frequency": "monthly",
     "interval": 1,
     "by_day": "FR",
-    "by_set_position": 1
+    "by_set_position": 1,
+    "text": "every first Friday",
+    "rrule": "FREQ=MONTHLY;BYDAY=1FR",
+    "anchor_inferred": true
   }
 }
