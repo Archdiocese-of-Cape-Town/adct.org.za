@@ -45,9 +45,19 @@ final class EventPresentationTest extends TestCase
             true,
             null
         );
+        $multiDayAllDay = EventPresentation::googleCalendarUrl(
+            'Multi day event',
+            'Public details',
+            '',
+            new DateTimeImmutable('2026-10-02T00:00:00+02:00'),
+            new DateTimeImmutable('2026-10-03T00:00:00+02:00'),
+            true,
+            null
+        );
 
         parse_str((string) parse_url($timed, PHP_URL_QUERY), $timedQuery);
         parse_str((string) parse_url($allDay, PHP_URL_QUERY), $allDayQuery);
+        parse_str((string) parse_url($multiDayAllDay, PHP_URL_QUERY), $multiDayQuery);
 
         self::assertSame('TEMPLATE', $timedQuery['action'] ?? null);
         self::assertSame('Fictional event', $timedQuery['text'] ?? null);
@@ -56,6 +66,7 @@ final class EventPresentationTest extends TestCase
         self::assertSame('20261002T160000Z/20261002T170000Z', $timedQuery['dates'] ?? null);
         self::assertSame('RRULE:FREQ=WEEKLY;COUNT=5', $timedQuery['recur'] ?? null);
         self::assertSame('20261002/20261003', $allDayQuery['dates'] ?? null);
+        self::assertSame('20261002/20261004', $multiDayQuery['dates'] ?? null);
         self::assertArrayNotHasKey('recur', $allDayQuery);
     }
 

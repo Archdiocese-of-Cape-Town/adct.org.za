@@ -143,11 +143,7 @@ final class EventPresentation
 
         if ($allDay) {
             $startDate = $startLocal->setTimezone($johannesburg)->setTime(0, 0);
-            $endDate = $end->setTimezone($johannesburg)->setTime(0, 0);
-
-            if ($endDate <= $startDate) {
-                $endDate = $startDate->modify('+1 day');
-            }
+            $endDate = $end->setTimezone($johannesburg)->setTime(0, 0)->modify('+1 day');
 
             $query['dates'] = $startDate->format('Ymd')
                 . '/'

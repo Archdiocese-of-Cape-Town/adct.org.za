@@ -39,6 +39,12 @@ update_post_meta($feedId, 'contact', ['email' => 'hidden@example.test']);
 wp_set_object_terms($feedId, (int) $occurrenceType->term_id, EventPostType::TAXONOMY);
 wp_update_post(['ID' => $feedId, 'post_title' => 'Fictional feed gathering']);
 $feed = new PublicIcsFeed(new SystemClock(), new EventListingGeneration(), new IcsCalendar());
+delete_transient('adct_pi_ics_all');
+$unfilteredCold = $feed->response();
+if (! str_contains($unfilteredCold['body'], 'Fictional feed gathering')
+    || str_contains($unfilteredCold['body'], 'hidden@example.test')) {
+    $fail('The unfiltered cold-cache calendar feed omitted public events or exposed private contact details.');
+}
 $feedQueryStart = $wpdb->num_queries;
 $filtered = $feed->response((string) $feedParishId, 'social');
 $feedQueries = $wpdb->num_queries - $feedQueryStart;

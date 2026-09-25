@@ -219,6 +219,15 @@ final class PublicIcsFeed
                 throw new RuntimeException('Calendar feed exceeds its 500-event limit; use a filtered feed.');
             }
             $ids = array_map(static fn (array $row): int => (int) $row['event_id'], $rows);
+            $posts = get_posts([
+                'post_type' => EventPostType::POST_TYPE,
+                'post_status' => 'publish',
+                'post__in' => $ids,
+                'posts_per_page' => count($ids),
+                'orderby' => 'post__in',
+                'order' => 'ASC',
+                'suppress_filters' => true,
+            ]);
         }
         $events = [];
         foreach ($posts as $post) {

@@ -4267,7 +4267,7 @@ require_once __DIR__ . '/PublicationCheck.php';
 PublicationCheck::run($fail);
 
 require_once __DIR__ . '/SingleEventPageCheck.php';
-SingleEventPageCheck::run($fail);
+SingleEventPageCheck::run($fail, $firstParishId, $occurrenceType, $occurrenceVenue);
 
 require WP_CONTENT_DIR . '/test-harness/IcsFeedCheck.php';
 

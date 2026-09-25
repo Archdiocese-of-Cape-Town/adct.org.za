@@ -98,7 +98,7 @@ final class PublicEventPage
      *     contact: array{name: string, email: string, phone: string},
      *     poster: array{url: string, width: int, height: int, alt: string}|null,
      *     calendar_url: string,
-     *     google_calendar_url: string,
+     *     google_calendar_url: string|null,
      *     json_ld: array<string, mixed>,
      *     status_banner: string,
      *     status_class: string
@@ -115,6 +115,8 @@ final class PublicEventPage
         $endLocal = $endLocalRaw === '' ? null : $this->localDateTime($endLocalRaw);
         $allDay = $this->metaBoolean($post->ID, 'all_day');
         $rrule = $this->metaText($post->ID, 'rrule');
+        $exdates = $this->metaList($post->ID, 'exdates');
+        $rdates = $this->metaList($post->ID, 'rdates');
         $statusFlag = $this->metaText($post->ID, 'status_flag');
         $description = (string) ($post->post_content ?? '');
         if (trim($description) === '') {
@@ -125,21 +127,22 @@ final class PublicEventPage
         $venueId = $this->metaId($post->ID, 'venue_id');
         $parish = $this->parishData($parishId);
         $venue = $this->venueData($venueId);
-        $coordinates = $this->occurrences->locationForEvent($parishId, $venueId);
-        $address = $venue['address'] !== '' ? $venue['address'] : $parish['address'];
-        $mapUrl = EventPresentation::mapUrl($coordinates['latitude'], $coordinates['longitude'], $address);
+        $mapUrl = $this->mapUrlForLocation($parish, $venue, $parishId, $venueId);
         $contact = $this->contactData($post->ID);
         $nextDates = $this->nextDates($post->ID, $allDay, $rrule !== '');
         $recurrencePhrase = EventPresentation::recurrencePhrase($rrule === '' ? null : $rrule);
         $calendarUrl = PublicIcsFeed::url(null, null, $post->ID);
-        $googleCalendarUrl = EventPresentation::googleCalendarUrl(
-            wp_strip_all_tags((string) $post->post_title),
-            wp_strip_all_tags($description),
+        $address = $venue['address'] !== '' ? $venue['address'] : $parish['address'];
+        $googleCalendarUrl = $this->googleCalendarUrl(
+            (string) $post->post_title,
+            $description,
             $address,
             $startLocal,
             $endLocal,
             $allDay,
-            $rrule === '' ? null : $rrule
+            $rrule,
+            $exdates,
+            $rdates
         );
         $poster = $this->poster($post);
 
@@ -231,6 +234,8 @@ final class PublicEventPage
                 'name' => '',
                 'address' => '',
                 'suburb' => '',
+                'latitude' => null,
+                'longitude' => null,
             ];
         }
 
@@ -240,6 +245,8 @@ final class PublicEventPage
                 'name' => '',
                 'address' => '',
                 'suburb' => '',
+                'latitude' => null,
+                'longitude' => null,
             ];
         }
 
@@ -247,6 +254,8 @@ final class PublicEventPage
             'name' => trim($venue->name),
             'address' => trim($venue->address),
             'suburb' => trim($venue->suburb),
+            'latitude' => $venue->latitude,
+            'longitude' => $venue->longitude,
         ];
     }
 
@@ -269,6 +278,72 @@ final class PublicEventPage
             'email' => trim(sanitize_email((string) ($contact['email'] ?? ''))),
             'phone' => trim(sanitize_text_field((string) ($contact['phone'] ?? ''))),
         ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function metaList(int $postId, string $metaKey): array
+    {
+        $value = get_post_meta($postId, $metaKey, true);
+        if (! is_array($value)) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            array_map(static fn (mixed $item): string => trim((string) $item), $value),
+            static fn (string $item): bool => $item !== ''
+        ));
+    }
+
+    /**
+     * @param array{name: string, address: string, website: string, phone: string} $parish
+     * @param array{name: string, address: string, suburb: string, latitude: float|null, longitude: float|null} $venue
+     */
+    private function mapUrlForLocation(array $parish, array $venue, ?int $parishId, ?int $venueId): ?string
+    {
+        if ($venue['latitude'] !== null && $venue['longitude'] !== null) {
+            return EventPresentation::mapUrl($venue['latitude'], $venue['longitude'], $venue['address']);
+        }
+
+        if ($venue['address'] !== '') {
+            return EventPresentation::mapUrl(null, null, $venue['address']);
+        }
+
+        $coordinates = $this->occurrences->locationForEvent($parishId, $venueId);
+        $address = $parish['address'];
+
+        return EventPresentation::mapUrl($coordinates['latitude'], $coordinates['longitude'], $address);
+    }
+
+    /**
+     * @param list<string> $exdates
+     * @param list<string> $rdates
+     */
+    private function googleCalendarUrl(
+        string $title,
+        string $description,
+        string $location,
+        DateTimeImmutable $startLocal,
+        ?DateTimeImmutable $endLocal,
+        bool $allDay,
+        string $rrule,
+        array $exdates,
+        array $rdates
+    ): ?string {
+        if ($rrule !== '' && ($exdates !== [] || $rdates !== [])) {
+            return null;
+        }
+
+        return EventPresentation::googleCalendarUrl(
+            wp_strip_all_tags($title),
+            wp_strip_all_tags($description),
+            $location,
+            $startLocal,
+            $endLocal,
+            $allDay,
+            $rrule === '' ? null : $rrule
+        );
     }
 
     /**
@@ -330,7 +405,7 @@ final class PublicEventPage
         $json = [
             '@context' => 'https://schema.org',
             '@type' => 'Event',
-            'name' => wp_strip_all_tags((string) $post->post_title),
+            'name' => trim((string) $post->post_title),
             'description' => trim(wp_strip_all_tags($description)),
             'url' => get_permalink($post),
             'startDate' => $start,

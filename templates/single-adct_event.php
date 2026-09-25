@@ -49,9 +49,11 @@ $venue = $event['venue'];
 
         <section class="adct-event__actions" aria-label="Calendar options">
             <a class="button" href="<?php echo esc_url($event['calendar_url']); ?>">Download ICS</a>
-            <a class="button button-primary" href="<?php echo esc_url($event['google_calendar_url']); ?>" target="_blank" rel="noopener noreferrer">
-                Add to Google Calendar
-            </a>
+            <?php if ($event['google_calendar_url'] !== null) : ?>
+                <a class="button button-primary" href="<?php echo esc_url($event['google_calendar_url']); ?>" target="_blank" rel="noopener noreferrer">
+                    Add to Google Calendar
+                </a>
+            <?php endif; ?>
         </section>
 
         <section class="adct-event__details" aria-label="Event details">
@@ -120,7 +122,7 @@ $venue = $event['venue'];
         </section>
 
         <script type="application/ld+json">
-            <?php echo wp_json_encode($event['json_ld'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>
+            <?php echo wp_json_encode($event['json_ld'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_QUOT | JSON_HEX_APOS); ?>
         </script>
     </article>
 </main>
