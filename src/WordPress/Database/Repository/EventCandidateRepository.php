@@ -129,6 +129,7 @@ final class EventCandidateRepository extends AbstractRepository
                 $values = array_merge(
                     $candidatesByBlock[$blockIndex],
                     [
+                        'match_event_id' => null,
                         'match_kind' => 'new',
                         'updated_at' => $timestamp,
                     ]

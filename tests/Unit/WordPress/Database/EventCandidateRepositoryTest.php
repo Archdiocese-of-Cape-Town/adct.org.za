@@ -32,6 +32,7 @@ final class EventCandidateRepositoryTest extends TestCase
         self::assertCount(4, $database->queries);
         self::assertSame('START TRANSACTION', $database->queries[0]);
         self::assertStringContainsString('UPDATE wp_adct_pi_event_candidates', $database->queries[1]);
+        self::assertStringContainsString('`match_event_id` = NULL', $database->prepared[1]['query']);
         self::assertStringContainsString('INSERT INTO wp_adct_pi_event_candidates', $database->queries[2]);
         self::assertSame('COMMIT', $database->queries[3]);
         self::assertStringContainsString('FOR UPDATE', $database->prepared[0]['query']);
@@ -46,6 +47,8 @@ final class EventCandidateRepositoryTest extends TestCase
             'id' => '12',
             'block_index' => '0',
             'status' => 'awaiting_approval',
+            'match_event_id' => '573',
+            'match_kind' => 'exact',
         ]];
         $repository = new EventCandidateRepository($database);
 
