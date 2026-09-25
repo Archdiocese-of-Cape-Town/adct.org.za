@@ -4812,6 +4812,8 @@ if ($secondApproverUser instanceof WP_User && in_array('deanery_approver', $seco
 
 require_once __DIR__ . '/PublicationCheck.php';
 PublicationCheck::run($fail);
+require_once __DIR__ . '/RepeatMatchingCheck.php';
+RepeatMatchingCheck::run($fail, $icsSource->id, $firstParishId);
 
 foreach (['administrator', 'editor'] as $roleName) {
     $role = get_role($roleName);

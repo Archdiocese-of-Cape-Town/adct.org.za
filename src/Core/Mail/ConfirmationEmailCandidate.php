@@ -18,7 +18,9 @@ final readonly class ConfirmationEmailCandidate
         public array $fields,
         public array $recurrence,
         public float $confidence,
-        public array $notes
+        public array $notes,
+        public string $matchKind = 'new',
+        public ?string $matchTitle = null
     ) {
         if ($id < 1 || ! is_finite($confidence) || $confidence < 0 || $confidence > 1) {
             throw new InvalidArgumentException('A confirmation preview candidate has invalid identifiers or confidence.');

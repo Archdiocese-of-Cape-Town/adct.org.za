@@ -31,6 +31,19 @@ use PHPUnit\Framework\TestCase;
 
 final class ConfirmationEmailPreviewServiceTest extends TestCase
 {
+    public function testRepeatOnlyBatchDoesNotIssueTokensOrEnqueueEmail(): void
+    {
+        $queue = $this->createMock(MailQueueRepositoryInterface::class);
+        $queue->expects(self::never())->method('findAllByGroupKey');
+        $mailer = new RecordingConfirmationMailer();
+        $tokens = new InMemoryConfirmationActionTokenStore();
+        $result = $this->service($queue, $mailer, $tokens)->enqueuePreview($this->batch([]));
+        self::assertSame(ConfirmationEmailOutcome::SUPPRESSED, $result->outcome);
+        self::assertSame(ConfirmationEmailReason::DUPLICATE, $result->reason);
+        self::assertSame([], $mailer->emails);
+        self::assertSame([], $tokens->records);
+    }
+
     public function testQueuesOneEmailWithEveryCandidateAndDistinctBoundActionTokens(): void
     {
         $stored = null;

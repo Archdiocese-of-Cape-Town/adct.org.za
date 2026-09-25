@@ -179,7 +179,7 @@ The Inbox shows received, extracting, parsed, failed and ignored messages to use
 | confidence | 0–1 |
 | parser_version, strategies, notes | provenance |
 | ai_used, ai_provider, ai_model | provenance |
-| match_event_id, match_kind | `new`, `update`, `duplicate`, `cancellation` |
+| match_event_id, match_kind | `new`, `update`, `duplicate`, `cancellation`, `postponement`; an unpublished duplicate has no event ID and records `fields.matched_candidate_id` instead |
 | status | see state machine |
 | confirmed_by, confirmed_at | submitter confirmation (email or user) |
 | approved_by, approved_at | approver (user id or email) |
@@ -195,6 +195,10 @@ The parser stores a validator-approved RFC 5545 subset rule at `recurrence.rrule
 The parser's `ParseOutcome` returns every event candidate and block metadata. The compatibility `parse()` API and the legacy prototype table use only the first candidate; the Manual parser shows all candidates. The source snippet is candidate provenance, not the full message body, which remains in `inbound_messages.body_text` under the retention policy.
 
 Reprocessing replaces or removes only `draft` candidate rows for the same `message_id` and `block_index` inside a transaction. The unique message/block key prevents duplicate candidates after a retry; candidates that have moved beyond draft are left unchanged. Inbound parsing only creates draft candidates: event publishing and confirmation/approval messages belong to later workflow stages.
+
+Candidate matching locks the inbound source row and compares at most 200 recent candidates from the **same source and parish**, so simultaneous bulletins cannot both create reviewable copies. Matching uses normalized titles (60% of the score) and identical dates or RRULEs (40%). A changed date only qualifies with an explicit change/cancellation/postponement phrase, nearly identical title and a 60-day bound. Matches need a score of at least 0.88 and a lead of 0.08 over the runner-up; otherwise the candidate remains `draft` with `fields.match_review_required` and a review note. Published targets must still be the current published `adct_event` with matching parish, source candidate, title, description, start and recurrence metadata. Unchanged notices are retained as audited `status = duplicate`, `match_kind = duplicate` candidates rather than removed; repeated unpublished candidates link via `fields.matched_candidate_id`. Changes to unpublished candidates remain drafts for manual review, never publishable updates without an event ID. Explicit changes to published events remain drafts with `match_event_id` and must pass the normal confirmation and approval workflow. Original inbound raw mail remains governed by its existing retention policy.
+
+A parsed message with only duplicate candidates gets `confirmation_status = suppressed`, `confirmation_reason = duplicate`; it queues no action tokens or mail. Mixed messages preview only their new or changed `draft` candidates. This is a narrow exception for verified unchanged repeats, not a change to the confirmation rule for new candidates in ADR 0004.
 
 ### `adct_event` (WordPress custom post type)
 The public `adct_event` post type has an `/events` archive and REST representation; its title, content, excerpt and featured image hold the public text. The hierarchical `adct_event_type` taxonomy is REST-enabled and seeded idempotently with Social, Spiritual, Formation, Liturgy/Mass, Youth, Outreach, Fundraising, Meeting and Other. This initial list is **provisional** and can be edited by users who manage event types.

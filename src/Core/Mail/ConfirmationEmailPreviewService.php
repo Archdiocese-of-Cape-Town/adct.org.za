@@ -50,7 +50,7 @@ final class ConfirmationEmailPreviewService
         if ($batch->candidates === []) {
             return new ConfirmationEmailResult(
                 ConfirmationEmailOutcome::SUPPRESSED,
-                ConfirmationEmailReason::NO_CANDIDATES
+                ConfirmationEmailReason::DUPLICATE
             );
         }
 
@@ -343,6 +343,8 @@ final class ConfirmationEmailPreviewService
                 'recurrence' => $this->canonicalize($candidate->recurrence),
                 'confidence' => number_format($candidate->confidence, 3, '.', ''),
                 'notes' => $candidate->notes,
+                'match_kind' => $candidate->matchKind,
+                'match_title' => $candidate->matchTitle,
             ];
         }
 

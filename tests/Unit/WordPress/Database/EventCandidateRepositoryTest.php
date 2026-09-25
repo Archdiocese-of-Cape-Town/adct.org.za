@@ -90,12 +90,12 @@ final class EventCandidateRepositoryTest extends TestCase
 
         $store->replaceDraftCandidatesForMessage(41, $outcome, '2026-09-25 04:10:00');
 
-        $fieldsJson = $database->prepared[1]['arguments'][1];
+        $fieldsJson = $database->prepared[4]['arguments'][1];
         $fields = json_decode($fieldsJson, true, 512, JSON_THROW_ON_ERROR);
 
         self::assertSame('A short, fictional source excerpt.', $fields['source_snippet']);
         self::assertSame(true, $fields['reprocess_needed']);
-        self::assertSame(7, $database->prepared[1]['arguments'][0]);
+        self::assertSame(7, $database->prepared[4]['arguments'][0]);
     }
 
     public function testDuplicateBlockIndexesAreRejectedBeforeOpeningATransaction(): void
@@ -112,6 +112,41 @@ final class EventCandidateRepositoryTest extends TestCase
             ],
             '2026-09-25 04:10:00'
         );
+    }
+
+    public function testASecondBulletinLinksToPendingCandidateWithoutCreatingAnotherDraft(): void
+    {
+        $database = new EventCandidateRepositoryDatabase();
+        $database->matchRows = [[
+            'id' => '12',
+            'parish_id' => '7',
+            'fields' => '{"title":"First Friday healing Mass","event_date":"2026-10-02","event_time":"18:00","description":"Healing Mass every first Friday."}',
+            'recurrence' => '{"rrule":"FREQ=MONTHLY;BYDAY=1FR"}',
+            'match_event_id' => null,
+            'status' => 'awaiting_approval',
+        ]];
+        $repository = new EventCandidateRepository($database);
+        $fields = [
+            'title' => 'First Friday healing Mass',
+            'event_date' => '2026-11-06',
+            'event_time' => '18:00',
+            'description' => 'Healing Mass every first Friday.',
+        ];
+        $candidate = $this->candidate(0, $fields['title']);
+        $candidate['parish_id'] = 7;
+        $candidate['fields'] = json_encode($fields, JSON_THROW_ON_ERROR);
+        $candidate['recurrence'] = '{"rrule":"FREQ=MONTHLY;BYDAY=1FR"}';
+
+        $repository->replaceDraftCandidatesForMessage(42, [$candidate], '2026-11-01 10:00:00');
+        $insert = array_values(array_filter(
+            $database->prepared,
+            static fn (array $call): bool => str_contains($call['query'], 'INSERT INTO wp_adct_pi_event_candidates')
+        ))[0];
+        self::assertContains('duplicate', $insert['arguments']);
+        self::assertSame(12, json_decode($insert['arguments'][1], true)['matched_candidate_id']);
+        self::assertStringContainsString('FOR UPDATE', $database->prepared[0]['query']);
+        self::assertStringContainsString('LIMIT 201', $database->prepared[2]['query']);
+        self::assertSame('COMMIT', end($database->queries));
     }
 
     /**
@@ -160,6 +195,9 @@ final class EventCandidateRepositoryDatabase implements DatabaseConnectionInterf
     /** @var list<array<string, mixed>> */
     public array $resultRows = [];
 
+    /** @var list<array<string, mixed>> */
+    public array $matchRows = [];
+
     public function prefix(): string
     {
         return 'wp_';
@@ -181,11 +219,20 @@ final class EventCandidateRepositoryDatabase implements DatabaseConnectionInterf
 
     public function getRow(string $query): ?array
     {
+        if (str_contains($query, 'SELECT source_id')) {
+            return ['source_id' => '4'];
+        }
+        if (str_contains($query, 'SELECT id FROM wp_adct_pi_sources')) {
+            return ['id' => '4'];
+        }
         return null;
     }
 
     public function getResults(string $query): array
     {
+        if (str_contains($query, 'JOIN wp_adct_pi_inbound_messages')) {
+            return $this->matchRows;
+        }
         return $this->resultRows;
     }
 

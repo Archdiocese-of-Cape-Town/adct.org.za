@@ -74,6 +74,13 @@ final class ConfirmationEmailRenderer
                     : '')
                 . '</h2></td></tr>';
             $html[] = '<tr><td style="padding:16px 18px 4px;">';
+            if ($candidate->matchTitle !== null && in_array($candidate->matchKind, ['update', 'cancellation', 'postponement'], true)) {
+                $label = $candidate->matchKind === 'cancellation' ? 'This will cancel: '
+                    : ($candidate->matchKind === 'postponement' ? 'This will postpone: ' : 'This will update: ');
+                $html[] = '<p style="padding:10px;background-color:#fff4d6;">'
+                    . $this->escape($label . $candidate->matchTitle) . '</p>';
+                $text[] = $label . $candidate->matchTitle;
+            }
             $html[] = $this->renderFieldRow('Date', $card['date'], $card['date_uncertain']);
             $html[] = $this->renderFieldRow('Time', $card['time'], $card['time_uncertain']);
             $html[] = $this->renderFieldRow('Location', $card['location'], $card['location_uncertain']);

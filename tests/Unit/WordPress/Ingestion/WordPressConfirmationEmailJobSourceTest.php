@@ -22,6 +22,24 @@ use RuntimeException;
 
 final class WordPressConfirmationEmailJobSourceTest extends TestCase
 {
+    public function testDuplicateOnlyMessageReturnsEmptyBatchWithoutReadingPrivateHeaders(): void
+    {
+        $database = $this->createMock(DatabaseConnectionInterface::class);
+        $database->method('prefix')->willReturn('wp_');
+        $database->method('prepare')->willReturnCallback(static fn (string $sql): string => $sql);
+        $database->method('lastError')->willReturn('');
+        $database->method('getRow')->willReturn($this->pendingMessage(null));
+        $database->method('getResults')->willReturnOnConsecutiveCalls([], [['id' => '99']]);
+        $storage = $this->createMock(InboundHeaderStorageInterface::class);
+        $storage->expects(self::never())->method('readHeaderBlock');
+        $contacts = $this->createMock(ParishContactStoreInterface::class);
+        $contacts->expects(self::never())->method('findByEmail');
+
+        $batch = (new WordPressConfirmationEmailJobSource($database, $contacts, $storage))->nextPending();
+        self::assertNotNull($batch);
+        self::assertSame([], $batch->candidates);
+    }
+
     public function testLoadsEveryDraftCandidateAndResolvesTrustedReplyToFromBoundedHeaders(): void
     {
         $database = $this->createMock(DatabaseConnectionInterface::class);
