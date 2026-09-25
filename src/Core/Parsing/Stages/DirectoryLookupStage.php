@@ -72,6 +72,38 @@ final class DirectoryLookupStage implements StageInterface
             }
         }
 
+        if (
+            $parishMatch !== null
+            && $parishSource === 'text'
+            && $parishMatch->churchNameOnly
+        ) {
+            $fullTextMatch = $this->directory
+                ->matchParish($result->getNormalizedText(), $eligibleParishIds)
+                ->match;
+
+            if (
+                $fullTextMatch !== null
+                && $fullTextMatch->parishId === $parishMatch->parishId
+                && ! $fullTextMatch->churchNameOnly
+            ) {
+                $parishMatch = $fullTextMatch;
+                $parishConfidence = $fullTextMatch->confidence;
+            }
+        }
+
+        if (
+            $parishMatch !== null
+            && $parishSource === 'text'
+            && $parishMatch->churchNameOnly
+            && ! (
+                $sender !== null
+                && $sender->trust === SenderTrust::VERIFIED
+                && in_array($parishMatch->parishId, $sender->parishIds, true)
+            )
+        ) {
+            $parishConfidence = 0.6;
+        }
+
         if ($parishMatch !== null && $parishSource !== null && $parishConfidence !== null) {
             $this->applyParishMatch($result, $parishMatch, $parishSource, $parishConfidence);
         } elseif ($parishMatch === null) {

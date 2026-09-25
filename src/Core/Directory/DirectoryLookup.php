@@ -103,6 +103,8 @@ final class DirectoryLookup
             $best = null;
 
             foreach ($this->parishAliases($parish) as $alias) {
+                $churchNameOnly = $this->isChurchNameOnlyAlias($parish, $alias);
+
                 foreach ($this->normalizer->variants($alias) as $aliasVariant) {
                     foreach ($textVariants as $textVariant) {
                         if (! str_contains(' ' . $textVariant . ' ', ' ' . $aliasVariant . ' ')) {
@@ -115,6 +117,7 @@ final class DirectoryLookup
                             $best = [
                                 'score' => $score,
                                 'matched_as' => $alias,
+                                'church_name_only' => $churchNameOnly,
                             ];
                         }
                     }
@@ -126,6 +129,7 @@ final class DirectoryLookup
                     'parish' => $parish,
                     'score' => $best['score'],
                     'matched_as' => $best['matched_as'],
+                    'church_name_only' => $best['church_name_only'],
                 ];
             }
         }
@@ -155,7 +159,8 @@ final class DirectoryLookup
             trim((string) $parish['name']),
             $this->nullableString($parish['suburb'] ?? null),
             $best['matched_as'],
-            0.9
+            0.9,
+            $best['church_name_only']
         ));
     }
 
@@ -255,6 +260,39 @@ final class DirectoryLookup
         }
 
         return array_values($unique);
+    }
+
+    /**
+     * @param array<string, mixed> $parish
+     */
+    private function isChurchNameOnlyAlias(array $parish, string $alias): bool
+    {
+        $church = trim((string) ($parish['church'] ?? ''));
+
+        if ($church === '') {
+            return false;
+        }
+
+        $churchAliases = [$church];
+        $withoutPossessive = preg_replace('/[\'’‘ʼ＇]s\b/iu', '', $church);
+
+        if (is_string($withoutPossessive) && $withoutPossessive !== $church) {
+            $churchAliases[] = $withoutPossessive;
+        }
+
+        $aliasVariants = $this->normalizer->variants($alias);
+        sort($aliasVariants, SORT_STRING);
+
+        foreach ($churchAliases as $churchAlias) {
+            $churchVariants = $this->normalizer->variants($churchAlias);
+            sort($churchVariants, SORT_STRING);
+
+            if ($aliasVariants !== [] && $aliasVariants === $churchVariants) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function nullableString(mixed $value): ?string

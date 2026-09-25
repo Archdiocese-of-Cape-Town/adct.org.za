@@ -11,7 +11,8 @@ final class ParishMatch
         public readonly string $name,
         public readonly ?string $suburb,
         public readonly string $matchedAs,
-        public readonly float $confidence
+        public readonly float $confidence,
+        public readonly bool $churchNameOnly = false
     ) {
     }
 }

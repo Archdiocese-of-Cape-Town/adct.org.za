@@ -73,6 +73,19 @@ final class DirectoryLookupStageTest extends TestCase
         self::assertStringContainsString('parish_match: text', implode("\n", $result->getNotes()));
     }
 
+    public function testVerifiedSenderSupportKeepsChurchNameOnlyTextMatchConfidence(): void
+    {
+        $result = self::parse(
+            self::snapshot(),
+            'john-shared@example.test',
+            'Feast of St John the Baptist is on 11 October 2026 at 16:00.'
+        );
+
+        self::assertSame(105, $result->getField('parish_id'));
+        self::assertSame('text', $result->getField('parish_match')['source'] ?? null);
+        self::assertSame(0.9, $result->getField('parish_match')['confidence'] ?? null);
+    }
+
     public function testVerifiedMultiParishSenderWithoutTextMatchLeavesParishUnresolved(): void
     {
         $result = self::parse(
@@ -126,6 +139,21 @@ final class DirectoryLookupStageTest extends TestCase
 
         self::assertSame($expectedParishId, $result->getField('parish_id'));
         self::assertContains($result->getField('parish_match')['source'] ?? null, ['text', 'context']);
+        self::assertSame(0.9, $result->getField('parish_match')['confidence'] ?? null);
+    }
+
+    public function testChurchNameOnlyTextMatchUsesReducedConfidenceWithoutSenderSupport(): void
+    {
+        $result = self::parse(
+            self::snapshot(),
+            'unknown@example.test',
+            'Feast of St John the Baptist is on 11 October 2026 at 16:00.'
+        );
+
+        self::assertSame(105, $result->getField('parish_id'));
+        self::assertSame('text', $result->getField('parish_match')['source'] ?? null);
+        self::assertSame(0.6, $result->getField('parish_match')['confidence'] ?? null);
+        self::assertStringContainsString('parish_match: text (confidence 0.60', implode("\n", $result->getNotes()));
     }
 
     public static function parishNameVariants(): array
@@ -297,6 +325,16 @@ final class DirectoryLookupStageTest extends TestCase
                     'aliases' => [],
                     'status' => 'active',
                 ],
+                [
+                    'id' => 105,
+                    'name' => 'Example District: St John the Baptist',
+                    'slug' => 'example-district-st-john-the-baptist',
+                    'area' => 'Example District',
+                    'church' => 'St John the Baptist',
+                    'suburb' => 'Baptistville',
+                    'aliases' => [],
+                    'status' => 'active',
+                ],
             ],
             [
                 new Venue(
@@ -340,6 +378,8 @@ final class DirectoryLookupStageTest extends TestCase
                 ['parish_id' => 101, 'email' => 'pending@example.test', 'trust' => SenderTrust::PENDING],
                 ['parish_id' => 101, 'email' => 'blocked@example.test', 'trust' => SenderTrust::BLOCKED],
                 ['parish_id' => 103, 'email' => 'inactive@example.test', 'trust' => SenderTrust::VERIFIED],
+                ['parish_id' => 101, 'email' => 'john-shared@example.test', 'trust' => SenderTrust::VERIFIED],
+                ['parish_id' => 105, 'email' => 'john-shared@example.test', 'trust' => SenderTrust::VERIFIED],
             ]
         );
     }
