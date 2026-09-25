@@ -152,11 +152,11 @@ Mailbox connection settings are kept separately from source identity and health.
 | sender_email, sender_name, subject | |
 | received_at | |
 | raw_path | Relative path to the protected, unguessably named raw `.eml` under the private uploads directory |
-| body_text | Extracted plain text; the polling stage leaves this `NULL` and does not parse events |
+| body_text | Extracted plain text; the poller leaves this `NULL`, and the bounded processing job fills it after parsing the stored raw message |
 | auth_results | Nullable version-1 JSON: `version`, plus `spf`, `dkim` and `dmarc` lists of `{authserv_id, result, trusted}` verdicts. Only recognized values are stored; raw header text is not. `trusted` is true only for an explicitly allowlisted authserv-id (the default allowlist is empty). |
 | is_auto_reply | bool; set for declared or likely auto-reply/list signals and blocks confirmations, including to mailing lists |
-| status | see state machine |
-| error | |
+| status | `received`, `extracting`, `parsed`, `failed`, `ignored`, or `skipped`; see state machine |
+| error | Safe operator-facing processing, screening or size-limit reason; never a copy of raw message content |
 | retention_until | raw data deleted after this date |
 | confirmation_status, confirmation_reason | nullable outcome (`queued`, `sent`, `suppressed`, `failed`) and safe reason code (`no_candidates`, `blocked_sender`, `automated_or_list`, `no_safe_recipient`, `test_mode`, `delivery_failed`, `queue_conflict`, `raw_message_unavailable`); this marker is separate from the inbound processing status |
 
@@ -164,6 +164,8 @@ Mailbox connection settings are kept separately from source identity and health.
 `message_id`, filename, declared `mime_type`, `size_bytes`, private `storage_path`, SHA-256 `content_hash`, `extracted_text`, `extraction_method` (`pdf_text`, `ocr_external`, `ai_vision`, `manual`, `none`), status.
 
 The poller stores an attachment only when its declared MIME type is on the provisional allowlist (PDF, JPEG, PNG, WebP, HEIC and HEIF), its file signature matches, and it is no larger than 15 MiB. Unsupported, oversized and signature-mismatched attachments retain metadata and a skip status but no stored file. The allowlist is centralized in `AttachmentStoragePolicy`; skipped items are shown to administrators on the Mailboxes screen.
+
+The Inbox shows received, extracting, parsed, failed and ignored messages to users with intake review permission. Its Ignored filter also includes oversize messages stored with the legacy `skipped` status. It does not select `body_text`, `raw_path`, raw headers or attachments. A failed message can be requeued only after an authorized, nonce-protected admin action; reprocessing uses the same row and protected raw file, preserves attachments and mailbox checkpoints, and does not publish events or send email.
 
 ### `adct_pi_event_candidates`
 | Column | Notes |
@@ -191,6 +193,8 @@ Directory lookup adds `parish_id` and, when a venue resolves, `venue_id`, `venue
 The parser stores a validator-approved RFC 5545 subset rule at `recurrence.rrule` and the matching source phrase at `recurrence.text`; its legacy frequency/day fields remain available for compatibility. The recurring series' start is `fields.event_date`. If the notice has no explicit start date, deterministic rules anchor to the first matching occurrence on or after the same reference date used by date parsing (bulletin range when available, otherwise received date or injected clock), add the `recurrence_anchor_inferred` note, and reduce confidence by 0.05. A yearless `UNTIL` date resolves to the next such month/day on or after that anchor and adds a note. For "daily during Lent/Advent", the parser does not guess a season date or start anchor and emits no RRULE; it adds `recurrence_ambiguous_season`, sets the confirmation/reprocess flag and applies the ambiguity confidence penalty. These are candidate JSON changes only and require no schema migration.
 
 The parser's `ParseOutcome` returns every event candidate and block metadata. The compatibility `parse()` API and the legacy prototype table use only the first candidate; the Manual parser shows all candidates. The source snippet is candidate provenance, not the full message body, which remains in `inbound_messages.body_text` under the retention policy.
+
+Reprocessing replaces or removes only `draft` candidate rows for the same `message_id` and `block_index` inside a transaction. The unique message/block key prevents duplicate candidates after a retry; candidates that have moved beyond draft are left unchanged. Inbound parsing only creates draft candidates: event publishing and confirmation/approval messages belong to later workflow stages.
 
 ### `adct_event` (WordPress custom post type)
 The public `adct_event` post type has an `/events` archive and REST representation; its title, content, excerpt and featured image hold the public text. The hierarchical `adct_event_type` taxonomy is REST-enabled and seeded idempotently with Social, Spiritual, Formation, Liturgy/Mass, Youth, Outreach, Fundraising, Meeting and Other. This initial list is **provisional** and can be edited by users who manage event types.
@@ -234,13 +238,21 @@ actor (user id / email / `system`), action, subject_type, subject_id, details JS
 ```mermaid
 stateDiagram-v2
     [*] --> received
-    received --> ignored: auto-reply / bounce / blocked sender
+    [*] --> skipped: too large to fetch
     received --> extracting
+    received --> failed: sender check or safe-ignore failure
+    received --> ignored: blocked sender
+    extracting --> extracting: resume after interruption
     extracting --> parsed
     extracting --> failed
-    failed --> extracting: retry / reprocess
+    extracting --> ignored: blocked sender or automated/list mail without candidate
+    failed --> received: authorized reprocess of the same row and file
     parsed --> [*]
+    ignored --> [*]
+    skipped --> [*]
 ```
+
+Automated/list messages with event candidates move to `parsed` and remain draft candidates; they never trigger confirmation email during ingestion. A DMARC failure remains a review flag and does not make a sender trusted. The Inbox's `ignored` filter groups the separate `skipped` status for operator convenience.
 
 ### Event candidate
 ```mermaid

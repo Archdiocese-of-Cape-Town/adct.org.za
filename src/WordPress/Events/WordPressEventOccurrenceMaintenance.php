@@ -17,7 +17,8 @@ final class WordPressEventOccurrenceMaintenance implements OccurrenceMaintenance
     public function __construct(
         private OccurrenceRepository $occurrences,
         private OccurrenceExpander $expander,
-        private ClockInterface $clock
+        private ClockInterface $clock,
+        private ?\Closure $invalidateListing = null
     ) {
     }
 
@@ -73,11 +74,13 @@ final class WordPressEventOccurrenceMaintenance implements OccurrenceMaintenance
             $details->statusFlag === 'cancelled',
             $this->clock->now()
         );
+        ($this->invalidateListing) && ($this->invalidateListing)();
     }
 
     public function deleteEventOccurrences(int $eventId): void
     {
         $this->occurrences->deleteForEvent($eventId);
+        ($this->invalidateListing) && ($this->invalidateListing)();
     }
 
     private function detailsFromPost(int $postId, string $startLocal): EventDetails
