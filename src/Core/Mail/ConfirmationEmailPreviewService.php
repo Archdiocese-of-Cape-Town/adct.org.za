@@ -40,6 +40,13 @@ final class ConfirmationEmailPreviewService
 
     public function enqueuePreview(ConfirmationEmailBatch $batch): ConfirmationEmailResult
     {
+        $groupKey = 'confirmation:' . $batch->messageId;
+        $existing = $this->findConfirmationQueueRecord($groupKey);
+
+        if ($existing !== null) {
+            return $this->resultFromExistingBatch($batch, $existing);
+        }
+
         if ($batch->candidates === []) {
             return new ConfirmationEmailResult(
                 ConfirmationEmailOutcome::SUPPRESSED,
@@ -71,15 +78,14 @@ final class ConfirmationEmailPreviewService
         }
 
         $recipient = ActionTokenBinding::normalizeEmailAddress($recipient);
-        $threadHeaders = EmailThreadHeaders::fromOriginalMessageId($batch->originalMessageId);
-        $groupKey = 'confirmation:' . $batch->messageId;
-        $payloadFingerprint = $this->payloadFingerprint($batch, $recipient, $threadHeaders);
-        $existing = $this->findConfirmationQueueRecord($recipient, $groupKey);
+        $existing = $this->findConfirmationQueueRecord($groupKey);
 
         if ($existing !== null) {
-            return $this->resultFromExisting($existing, $payloadFingerprint);
+            return $this->resultFromExistingBatch($batch, $existing);
         }
 
+        $threadHeaders = EmailThreadHeaders::fromOriginalMessageId($batch->originalMessageId);
+        $payloadFingerprint = $this->payloadFingerprint($batch, $recipient, $threadHeaders);
         $links = $this->createActionLinks($batch, $recipient);
         $content = $this->renderer->render($batch, $links);
         $email = new OutboundEmail(
@@ -97,7 +103,9 @@ final class ConfirmationEmailPreviewService
             $result = $this->mailer->enqueue($email);
         } catch (Throwable $enqueueFailure) {
             try {
-                $existing = $this->findConfirmationQueueRecord($recipient, $groupKey);
+                $existing = $this->findConfirmationQueueRecord($groupKey);
+            } catch (ConfirmationEmailQueueConflictException $lookupConflict) {
+                throw $lookupConflict;
             } catch (Throwable $lookupFailure) {
                 throw new RuntimeException(
                     'The confirmation email queue outcome could not be recovered; the job will retry.',
@@ -110,29 +118,29 @@ final class ConfirmationEmailPreviewService
                 throw $enqueueFailure;
             }
 
-            return $this->resultFromExisting($existing, $payloadFingerprint);
+            return $this->resultFromExistingBatch($batch, $existing);
         }
 
         if ($result->duplicate) {
-            $existing = $this->findConfirmationQueueRecord($recipient, $groupKey);
+            $existing = $this->findConfirmationQueueRecord($groupKey);
 
             if ($existing === null) {
                 throw new RuntimeException('The duplicate confirmation queue item could not be read.');
             }
 
-            return $this->resultFromExisting($existing, $payloadFingerprint);
+            return $this->resultFromExistingBatch($batch, $existing);
         }
 
-        $existing = $this->findConfirmationQueueRecord($recipient, $groupKey);
+        $existing = $this->findConfirmationQueueRecord($groupKey);
 
         if ($existing === null || $existing->id !== $result->id) {
             throw new RuntimeException('The newly queued confirmation email could not be verified.');
         }
 
-        return $this->resultFromExisting($existing, $payloadFingerprint);
+        return $this->resultFromExistingBatch($batch, $existing);
     }
 
-    private function findConfirmationQueueRecord(string $recipient, string $groupKey): ?MailQueueRecord
+    private function findConfirmationQueueRecord(string $groupKey): ?MailQueueRecord
     {
         $records = $this->queue->findAllByGroupKey($groupKey);
 
@@ -142,15 +150,7 @@ final class ConfirmationEmailPreviewService
             );
         }
 
-        $existing = $records[0] ?? null;
-
-        if ($existing !== null && $existing->email->recipient !== $recipient) {
-            throw new ConfirmationEmailQueueConflictException(
-                'The confirmation queue key is already bound to a different recipient.'
-            );
-        }
-
-        return $existing;
+        return $records[0] ?? null;
     }
 
     private function confirmationRecipient(ConfirmationEmailBatch $batch): ?string
@@ -171,6 +171,15 @@ final class ConfirmationEmailPreviewService
             return null;
         }
 
+        return $this->potentialConfirmationRecipient($batch);
+    }
+
+    private function potentialConfirmationRecipient(ConfirmationEmailBatch $batch): ?string
+    {
+        if (! $this->addressSafety->isSafeConfirmationAddress($batch->senderEmail)) {
+            return null;
+        }
+
         $sender = ActionTokenBinding::normalizeEmailAddress((string) $batch->senderEmail);
         $replyTo = $batch->replyToEmail;
 
@@ -184,6 +193,34 @@ final class ConfirmationEmailPreviewService
         }
 
         return $sender;
+    }
+
+    private function resultFromExistingBatch(
+        ConfirmationEmailBatch $batch,
+        MailQueueRecord $existing
+    ): ConfirmationEmailResult {
+        $recipient = $this->potentialConfirmationRecipient($batch);
+
+        if ($recipient === null) {
+            throw new ConfirmationEmailQueueConflictException(
+                'The current safe confirmation recipient cannot be resolved for the existing queue item.'
+            );
+        }
+
+        $recipient = ActionTokenBinding::normalizeEmailAddress($recipient);
+
+        if ($existing->email->recipient !== $recipient) {
+            throw new ConfirmationEmailQueueConflictException(
+                'The confirmation queue key is already bound to a different recipient.'
+            );
+        }
+
+        $threadHeaders = EmailThreadHeaders::fromOriginalMessageId($batch->originalMessageId);
+
+        return $this->resultFromExisting(
+            $existing,
+            $this->payloadFingerprint($batch, $recipient, $threadHeaders)
+        );
     }
 
     private function createActionLinks(

@@ -92,7 +92,7 @@ final class WordPressMailQueueRepositoryTest extends TestCase
         $database->expects(self::once())
             ->method('prepare')
             ->with(
-                self::stringContains('WHERE group_key = %s ORDER BY id ASC'),
+                self::stringContains('WHERE group_key = %s ORDER BY id ASC LIMIT 2'),
                 'confirmation:901'
             )
             ->willReturn($preparedQuery);

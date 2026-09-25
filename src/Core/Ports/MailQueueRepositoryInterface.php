@@ -23,6 +23,8 @@ interface MailQueueRepositoryInterface
     public function findByRecipientAndGroupKey(string $recipient, string $groupKey): ?MailQueueRecord;
 
     /**
+     * Returns at most two rows, which is enough to distinguish no match, one match, or a conflict.
+     *
      * @return list<MailQueueRecord>
      */
     public function findAllByGroupKey(string $groupKey): array;

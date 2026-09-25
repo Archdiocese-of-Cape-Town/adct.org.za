@@ -139,10 +139,10 @@ The Mailboxes screen's **Recent message screening and confirmation** summary sho
 
 - **Queued for delivery** means the outbound queue accepted the message; delivery may still be pending.
 - **Accepted by the mail transport** means WordPress accepted the send request, not that the email reached the recipient's inbox.
-- **Suppressed** includes a safe reason, such as a blocked sender, automated/list message, unsafe address or Test mode. This outcome is terminal for that inbound message and is not retried if the allow-list later changes.
-- A terminal queue failure is recorded on the inbound message. A transient error before the outcome is recorded leaves it eligible for the next bounded job run; the queue reuses a matching message if the job retries after enqueue.
+- **Suppressed** includes a safe reason, such as a blocked sender, automated/list message, unsafe address or Test mode. With no existing confirmation queue row, this outcome is terminal for that inbound message and is not retried if the allow-list later changes.
+- A terminal queue failure is recorded on the inbound message. A transient error before the outcome is recorded leaves it eligible for the next bounded job run. On retry, the job checks the fixed confirmation key before applying current sender-trust, automation or safe-recipient suppression. If one row has the same recipient and payload, it records that row's persisted status without enqueueing again or issuing tokens, even if those flags changed after the first enqueue.
 - A missing, corrupt or oversized stored message header is marked **delivery failed: stored message headers are unavailable**; that message is not sent and the scheduled job continues with later messages. Temporary storage or database errors remain retryable.
-- If the same inbound message's queue key is already bound to a different recipient or payload, it is marked **delivery failed: confirmation queue conflict** rather than sent a second time.
+- If the recipient is no longer safe or has changed, the payload has changed, or multiple rows use the same inbound key, it is marked **delivery failed: confirmation queue conflict** rather than sent a second time.
 
 Do not expect the Approve, Deny, Edit or Approve all links in these preview emails to work yet. They are explicitly marked **not active**; their token preview reports that the action is unavailable and does not consume the token or change an event. Replies are not processed automatically. Until an operator requeue action is available, do not edit the database or assume a suppressed message will be resent; contact the site owner if a confirmation needs recovery.
 

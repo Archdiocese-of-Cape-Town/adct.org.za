@@ -65,7 +65,7 @@ final class WordPressMailQueueRepository implements MailQueueRepositoryInterface
         $this->database->clearLastError();
         $rows = $this->database->getResults($this->database->prepare(
             'SELECT * FROM ' . $this->tableName()
-            . ' WHERE group_key = %s ORDER BY id ASC',
+            . ' WHERE group_key = %s ORDER BY id ASC LIMIT 2',
             $groupKey
         ));
 

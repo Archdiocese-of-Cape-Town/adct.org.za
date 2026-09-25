@@ -601,10 +601,10 @@ final class InMemoryMailQueueRepository implements MailQueueRepositoryInterface
 
     public function findAllByGroupKey(string $groupKey): array
     {
-        return array_values(array_filter(
+        return array_slice(array_values(array_filter(
             $this->records,
             static fn (MailQueueRecord $record): bool => $record->email->groupKey === $groupKey
-        ));
+        )), 0, 2);
     }
 
     public function findNextDue(DateTimeImmutable $now): ?MailQueueRecord

@@ -137,10 +137,27 @@ final class ConfirmationEmailPreviewJobTest extends TestCase
         self::assertSame('parish-contact@example.test', $stored?->email->recipient);
     }
 
+    public function testExistingQueueIsRecoveredBeforeBlockedSenderSuppressionAfterMarkerFailure(): void
+    {
+        $this->assertExistingQueueIsRecoveredAfterPolicyChange(
+            SenderTrust::BLOCKED,
+            false
+        );
+    }
+
+    public function testExistingQueueIsRecoveredBeforeAutomatedMailSuppressionAfterMarkerFailure(): void
+    {
+        $this->assertExistingQueueIsRecoveredAfterPolicyChange(
+            SenderTrust::UNKNOWN,
+            true
+        );
+    }
+
     private function batch(
         int $messageId,
         string $senderTrust,
-        string $replyToTrust = SenderTrust::UNKNOWN
+        string $replyToTrust = SenderTrust::UNKNOWN,
+        bool $automatedOrList = false
     ): ConfirmationEmailBatch {
         return new ConfirmationEmailBatch(
             $messageId,
@@ -152,7 +169,7 @@ final class ConfirmationEmailPreviewJobTest extends TestCase
             'parish-contact@example.test',
             $senderTrust,
             $replyToTrust,
-            false,
+            $automatedOrList,
             '<inbound-' . $messageId . '@example.test>',
             [
                 new ConfirmationEmailCandidate(
@@ -168,6 +185,74 @@ final class ConfirmationEmailPreviewJobTest extends TestCase
                 ),
             ]
         );
+    }
+
+    private function assertExistingQueueIsRecoveredAfterPolicyChange(
+        string $retrySenderTrust,
+        bool $retryAutomatedOrList
+    ): void {
+        $stored = null;
+        $queue = $this->createMock(MailQueueRepositoryInterface::class);
+        $queue->method('findAllByGroupKey')->willReturnCallback(
+            static function (string $groupKey) use (&$stored): array {
+                return $stored !== null && $stored->email->groupKey === $groupKey
+                    ? [$stored]
+                    : [];
+            }
+        );
+        $tokenStore = $this->createMock(ActionTokenStoreInterface::class);
+        $tokenStore->expects(self::exactly(4))->method('create');
+        $mailer = $this->createMock(MailerInterface::class);
+        $now = new DateTimeImmutable('2026-10-01 10:00:00', new DateTimeZone('UTC'));
+        $mailer->expects(self::once())
+            ->method('enqueue')
+            ->willReturnCallback(static function (OutboundEmail $email) use (&$stored, $now): MailQueueEnqueueResult {
+                $stored = new MailQueueRecord(
+                    17,
+                    $email,
+                    MailQueueStatus::QUEUED,
+                    0,
+                    $now,
+                    $now
+                );
+
+                return new MailQueueEnqueueResult(17, MailQueueStatus::QUEUED, false);
+            });
+        $linkProvider = $this->createMock(ConfirmationActionLinkProviderInterface::class);
+        $linkProvider->method('urlForToken')->willReturn('https://adct.example.test/action');
+        $previews = new ConfirmationEmailPreviewService(
+            new ActionTokenService($tokenStore, new SystemClock()),
+            $linkProvider,
+            $mailer,
+            $queue,
+            new ConfirmationEmailRenderer()
+        );
+        $source = new SequenceConfirmationEmailJobSource(
+            [
+                $this->batch(904, SenderTrust::UNKNOWN),
+                $this->batch(
+                    904,
+                    $retrySenderTrust,
+                    automatedOrList: $retryAutomatedOrList
+                ),
+            ],
+            failFirstRecord: true
+        );
+        $job = new ConfirmationEmailPreviewJob($source, $previews, new SystemClock());
+
+        try {
+            $job->processNext(null);
+            self::fail('The first inbound confirmation marker write should be uncertain.');
+        } catch (RuntimeException $failure) {
+            self::assertSame('Simulated inbound marker write failure.', $failure->getMessage());
+        }
+
+        self::assertNotNull($job->processNext(null));
+        self::assertCount(1, $source->recordedResults);
+        self::assertSame(904, $source->recordedResults[0]['messageId']);
+        self::assertSame(ConfirmationEmailOutcome::QUEUED, $source->recordedResults[0]['result']->outcome);
+        self::assertSame(17, $source->recordedResults[0]['result']->queueId);
+        self::assertSame(MailQueueStatus::QUEUED, $stored?->status);
     }
 
     private function previewService(): ConfirmationEmailPreviewService
