@@ -12,7 +12,7 @@ interface MailboxInterface
 
     public function ensureFolder(string $folder): void;
 
-    public function uidValidity(): int;
+    public function uidValidity(?string $folder = null): int;
 
     public function uidNext(string $folder): int;
 

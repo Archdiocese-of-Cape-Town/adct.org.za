@@ -77,7 +77,7 @@ final class RetentionCleanupJob extends AbstractJob
         $phase = $state['phase'];
 
         if ($phase === 'done') {
-            return null;
+            return JobStepResult::completeAt(null);
         }
 
         if ($phase === 'tokens') {
@@ -124,10 +124,14 @@ final class RetentionCleanupJob extends AbstractJob
 
         if ($phase === 'processed') {
             if (! $settings->processedCleanupEnabled()) {
-                return JobStepResult::completeAt($this->encodeCheckpoint('done', null));
+                return JobStepResult::completeAt(null);
             }
 
             $result = $this->pruneProcessedFolder($state['processed'], $settings);
+
+            if ($result['initialized']) {
+                return JobStepResult::completeAt($this->encodeProcessedCheckpoint($result['cursor']));
+            }
 
             if ($result['more']) {
                 return JobStepResult::continueAt($this->encodeProcessedCheckpoint($result['cursor']));
@@ -137,14 +141,14 @@ final class RetentionCleanupJob extends AbstractJob
                 return JobStepResult::continueAt($this->encodeProcessedCheckpoint($result['next_cursor']));
             }
 
-            return JobStepResult::completeAt($this->encodeCheckpoint('done', null));
+            return JobStepResult::completeAt(null);
         }
 
         throw new RuntimeException('The retention cleanup checkpoint is invalid.');
     }
 
     /**
-     * @return array{phase: string, tokens_last_id: int, audit_last_id: int, raw_last_id: int, processed: array{source_id: int, last_uid: int}}
+     * @return array{phase: string, tokens_last_id: int, audit_last_id: int, raw_last_id: int, processed: array{source_id: int, last_uid: int, uid_validity: int, owned_after_uid: int}}
      */
     private function decodeCheckpoint(?string $checkpoint): array
     {
@@ -154,7 +158,12 @@ final class RetentionCleanupJob extends AbstractJob
                 'tokens_last_id' => 0,
                 'audit_last_id' => 0,
                 'raw_last_id' => 0,
-                'processed' => ['source_id' => 0, 'last_uid' => 0],
+                'processed' => [
+                    'source_id' => 0,
+                    'last_uid' => 0,
+                    'uid_validity' => 0,
+                    'owned_after_uid' => 0,
+                ],
             ];
         }
 
@@ -178,6 +187,8 @@ final class RetentionCleanupJob extends AbstractJob
             'processed' => [
                 'source_id' => $this->positiveCheckpointId($value['processed']['source_id'] ?? 0),
                 'last_uid' => $this->positiveCheckpointId($value['processed']['last_uid'] ?? 0),
+                'uid_validity' => $this->positiveCheckpointId($value['processed']['uid_validity'] ?? 0),
+                'owned_after_uid' => $this->positiveCheckpointId($value['processed']['owned_after_uid'] ?? 0),
             ],
         ];
     }
@@ -187,7 +198,7 @@ final class RetentionCleanupJob extends AbstractJob
         $phase = $this->nextEnabledPhase($nextPhase, $settings);
 
         if ($phase === 'done') {
-            return JobStepResult::completeAt($this->encodeCheckpoint('done', null));
+            return JobStepResult::completeAt(null);
         }
 
         return JobStepResult::continueAt($this->encodeCheckpoint($phase, null));
@@ -335,7 +346,7 @@ final class RetentionCleanupJob extends AbstractJob
     }
 
     /**
-     * @return array{cursor: array{source_id: int, last_uid: int}, next_cursor: array{source_id: int, last_uid: int}, more: bool}
+     * @return array{cursor: array{source_id: int, last_uid: int, uid_validity: int, owned_after_uid: int}, next_cursor: array{source_id: int, last_uid: int}, more: bool, initialized: bool}
      */
     private function pruneProcessedFolder(array $cursor, RetentionSettings $settings): array
     {
@@ -359,12 +370,15 @@ final class RetentionCleanupJob extends AbstractJob
                 'cursor' => [
                     'source_id' => 0,
                     'last_uid' => 0,
+                    'uid_validity' => 0,
+                    'owned_after_uid' => 0,
                 ],
                 'next_cursor' => [
                     'source_id' => 0,
                     'last_uid' => 0,
                 ],
                 'more' => false,
+                'initialized' => false,
             ];
         }
 
@@ -384,6 +398,7 @@ final class RetentionCleanupJob extends AbstractJob
         try {
             $cutoff = $this->clock->now()->modify('-' . $settings->processedRetentionDays() . ' days');
             $windowStart = max(0, $lastUid);
+            $currentUidValidity = $mailbox->uidValidity($mailboxSettings->processedFolder);
             $uidNext = $mailbox->uidNext($mailboxSettings->processedFolder);
 
             if ($uidNext < 1) {
@@ -391,18 +406,42 @@ final class RetentionCleanupJob extends AbstractJob
             }
 
             $folderHighWatermark = min(MailboxCheckpoint::MAX_UID, $uidNext - 1);
+            $ownedAfterUid = $this->positiveCheckpointId($cursor['owned_after_uid'] ?? 0);
+            $checkpointUidValidity = $this->positiveCheckpointId($cursor['uid_validity'] ?? 0);
 
-            if ($windowStart >= $folderHighWatermark) {
+            if ($checkpointUidValidity !== $currentUidValidity || $ownedAfterUid === 0) {
                 return [
                     'cursor' => [
                         'source_id' => $mailboxSettings->sourceId,
-                        'last_uid' => $windowStart,
+                        'last_uid' => 0,
+                        'uid_validity' => $currentUidValidity,
+                        'owned_after_uid' => $folderHighWatermark,
                     ],
                     'next_cursor' => [
                         'source_id' => $this->nextMailboxSourceId($mailboxes, $mailboxSettings->sourceId),
                         'last_uid' => 0,
                     ],
                     'more' => false,
+                    'initialized' => true,
+                ];
+            }
+
+            $windowStart = max($windowStart, $ownedAfterUid);
+
+            if ($windowStart >= $folderHighWatermark) {
+                return [
+                    'cursor' => [
+                        'source_id' => $mailboxSettings->sourceId,
+                        'last_uid' => $windowStart,
+                        'uid_validity' => $currentUidValidity,
+                        'owned_after_uid' => $ownedAfterUid,
+                    ],
+                    'next_cursor' => [
+                        'source_id' => $this->nextMailboxSourceId($mailboxes, $mailboxSettings->sourceId),
+                        'last_uid' => 0,
+                    ],
+                    'more' => false,
+                    'initialized' => false,
                 ];
             }
 
@@ -423,12 +462,15 @@ final class RetentionCleanupJob extends AbstractJob
                     'cursor' => [
                         'source_id' => $mailboxSettings->sourceId,
                         'last_uid' => $windowEnd,
+                        'uid_validity' => $currentUidValidity,
+                        'owned_after_uid' => $ownedAfterUid,
                     ],
                     'next_cursor' => [
                         'source_id' => $this->nextMailboxSourceId($mailboxes, $mailboxSettings->sourceId),
                         'last_uid' => 0,
                     ],
                     'more' => $windowEnd < $folderHighWatermark,
+                    'initialized' => false,
                 ];
             }
 
@@ -448,12 +490,15 @@ final class RetentionCleanupJob extends AbstractJob
                 'cursor' => [
                     'source_id' => $mailboxSettings->sourceId,
                     'last_uid' => $processedAllInWindow ? $deletedUid : $windowEnd,
+                    'uid_validity' => $currentUidValidity,
+                    'owned_after_uid' => $ownedAfterUid,
                 ],
                 'next_cursor' => [
                     'source_id' => $this->nextMailboxSourceId($mailboxes, $mailboxSettings->sourceId),
                     'last_uid' => 0,
                 ],
                 'more' => $processedAllInWindow || $moreLaterInFolder,
+                'initialized' => false,
             ];
         } finally {
             $mailbox->close();
@@ -615,6 +660,8 @@ final class RetentionCleanupJob extends AbstractJob
             'processed' => [
                 'source_id' => 0,
                 'last_uid' => 0,
+                'uid_validity' => 0,
+                'owned_after_uid' => 0,
             ],
         ];
 
@@ -624,6 +671,10 @@ final class RetentionCleanupJob extends AbstractJob
             $state['audit_last_id'] = max(0, (int) $cursor);
         } elseif ($phase === 'raw') {
             $state['raw_last_id'] = max(0, (int) $cursor);
+        }
+
+        if ($phase === 'done') {
+            return json_encode($state, JSON_THROW_ON_ERROR);
         }
 
         return json_encode($state, JSON_THROW_ON_ERROR);
@@ -639,6 +690,8 @@ final class RetentionCleanupJob extends AbstractJob
             'processed' => [
                 'source_id' => max(0, (int) ($cursor['source_id'] ?? 0)),
                 'last_uid' => max(0, (int) ($cursor['last_uid'] ?? 0)),
+                'uid_validity' => max(0, (int) ($cursor['uid_validity'] ?? 0)),
+                'owned_after_uid' => max(0, (int) ($cursor['owned_after_uid'] ?? 0)),
             ],
         ];
 

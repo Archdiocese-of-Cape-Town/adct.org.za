@@ -569,7 +569,7 @@ final class PollingMailbox implements MailboxInterface
         }
     }
 
-    public function uidValidity(): int
+    public function uidValidity(?string $folder = null): int
     {
         return $this->server->uidValidity;
     }

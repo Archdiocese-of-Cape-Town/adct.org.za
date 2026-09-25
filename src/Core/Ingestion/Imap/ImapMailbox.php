@@ -64,12 +64,12 @@ final class ImapMailbox implements MailboxInterface
         $this->client->requireOkay($result, 'The requested mailbox folder could not be created.');
     }
 
-    public function uidValidity(): int
+    public function uidValidity(?string $folder = null): int
     {
-        $this->selectFolder($this->inboxFolder());
+        $this->selectFolder($folder ?? $this->inboxFolder());
 
         if ($this->selectedUidValidity === null) {
-            throw new ProtocolError('The mail server did not return the inbox UIDVALIDITY value.');
+            throw new ProtocolError('The mail server did not return the folder UIDVALIDITY value.');
         }
 
         return $this->selectedUidValidity;

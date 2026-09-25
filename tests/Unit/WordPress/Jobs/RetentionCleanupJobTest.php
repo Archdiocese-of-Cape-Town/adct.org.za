@@ -7,7 +7,11 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Jobs;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxEncryption;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSearchCriteria;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettings;
+use ADCT\ParishIntake\Core\Jobs\JobRunner;
+use ADCT\ParishIntake\Core\Jobs\JobState;
 use ADCT\ParishIntake\Core\Jobs\JobStepResult;
+use ADCT\ParishIntake\Core\Ports\JobLockInterface;
+use ADCT\ParishIntake\Core\Ports\JobStateStoreInterface;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
@@ -262,7 +266,7 @@ final class RetentionCleanupJobTest extends TestCase
 
         $job = $this->job($deps, RetentionSettings::fromValues('0', '30', '1', '30'), 2);
 
-        $first = $job->processNext($this->encodeProcessedCheckpoint(1, 0));
+        $first = $job->processNext($this->encodeProcessedCheckpoint(1, 0, 17, 9));
 
         self::assertInstanceOf(JobStepResult::class, $first);
         self::assertFalse($first->isComplete());
@@ -305,13 +309,13 @@ final class RetentionCleanupJobTest extends TestCase
         ]);
 
         $job = $this->job($deps, RetentionSettings::fromValues('0', '30', '1', '30'), 25);
-        $result = $job->processNext($this->encodeProcessedCheckpoint(1, 0));
+        $result = $job->processNext($this->encodeProcessedCheckpoint(1, 0, 17, 1));
 
         self::assertInstanceOf(JobStepResult::class, $result);
         self::assertFalse($result->isComplete());
         self::assertCount(1, $deps->mailbox->searchCriteria);
-        self::assertSame(500, $deps->mailbox->searchCriteria[0]['criteria']->beforeUid);
-        self::assertSame(range(1, 25), $deps->mailbox->deleted['Processed']);
+        self::assertSame(501, $deps->mailbox->searchCriteria[0]['criteria']->beforeUid);
+        self::assertSame(range(2, 26), $deps->mailbox->deleted['Processed']);
     }
 
     public function testProcessedCleanupContinuesPastSparseGapsUsingTheFolderHighWatermark(): void
@@ -338,13 +342,13 @@ final class RetentionCleanupJobTest extends TestCase
 
         $job = $this->job($deps, RetentionSettings::fromValues('0', '30', '1', '30'), 25);
 
-        $first = $job->processNext($this->encodeProcessedCheckpoint(1, 0));
+        $first = $job->processNext($this->encodeProcessedCheckpoint(1, 0, 17, 100));
 
         self::assertInstanceOf(JobStepResult::class, $first);
         self::assertFalse($first->isComplete());
         self::assertSame([], $deps->mailbox->deleted['Processed'] ?? []);
         self::assertCount(1, $deps->mailbox->searchCriteria);
-        self::assertSame(500, $deps->mailbox->searchCriteria[0]['criteria']->beforeUid);
+        self::assertSame(600, $deps->mailbox->searchCriteria[0]['criteria']->beforeUid);
 
         $second = $job->processNext($first->checkpoint());
 
@@ -352,7 +356,7 @@ final class RetentionCleanupJobTest extends TestCase
         self::assertTrue($second->isComplete());
         self::assertSame([900], $deps->mailbox->deleted['Processed']);
         self::assertCount(2, $deps->mailbox->searchCriteria);
-        self::assertSame(500, $deps->mailbox->searchCriteria[1]['criteria']->afterUid);
+        self::assertSame(600, $deps->mailbox->searchCriteria[1]['criteria']->afterUid);
         self::assertSame(900, $deps->mailbox->searchCriteria[1]['criteria']->beforeUid);
     }
 
@@ -379,13 +383,118 @@ final class RetentionCleanupJobTest extends TestCase
         ]);
 
         $job = $this->job($deps, RetentionSettings::fromValues('0', '30', '1', '30'), 25);
-        $result = $job->processNext($this->encodeProcessedCheckpoint(1, 0));
+        $result = $job->processNext($this->encodeProcessedCheckpoint(1, 0, 17, 498));
 
         self::assertInstanceOf(JobStepResult::class, $result);
         self::assertTrue($result->isComplete());
         self::assertSame([499], $deps->mailbox->deleted['Processed']);
         self::assertCount(1, $deps->mailbox->searchCriteria);
         self::assertSame(499, $deps->mailbox->searchCriteria[0]['criteria']->beforeUid);
+    }
+
+    public function testProcessedCleanupLeavesSharedFolderMessagesBelowTheOwnershipFloorUntouched(): void
+    {
+        $deps = new RetentionTestDependencies();
+        $deps->mailbox = new RetentionMailbox([
+            'Processed' => [50, 150],
+        ]);
+        $deps->mailbox->uidValidityByFolder['Processed'] = 17;
+        $deps->mailboxSettingsStore = new RetentionMailboxSettingsStore([
+            new MailboxSettings(
+                'Processed mailbox',
+                'imap.example.test',
+                993,
+                MailboxEncryption::SSL,
+                'intake@example.test',
+                'INBOX',
+                'Processed',
+                30 * 1024 * 1024,
+                true,
+                1,
+                1
+            ),
+        ]);
+
+        $job = $this->job($deps, RetentionSettings::fromValues('0', '30', '1', '30'), 25);
+        $result = $job->processNext($this->encodeProcessedCheckpoint(1, 0, 17, 100));
+
+        self::assertInstanceOf(JobStepResult::class, $result);
+        self::assertTrue($result->isComplete());
+        self::assertSame([150], $deps->mailbox->deleted['Processed']);
+        self::assertSame([50], $deps->mailbox->uidsByFolder['Processed']);
+    }
+
+    public function testProcessedCleanupResetsTheOwnershipFloorWhenUidValidityChanges(): void
+    {
+        $deps = new RetentionTestDependencies();
+        $deps->mailbox = new RetentionMailbox([
+            'Processed' => [150],
+        ]);
+        $deps->mailbox->uidValidityByFolder['Processed'] = 99;
+        $deps->mailboxSettingsStore = new RetentionMailboxSettingsStore([
+            new MailboxSettings(
+                'Processed mailbox',
+                'imap.example.test',
+                993,
+                MailboxEncryption::SSL,
+                'intake@example.test',
+                'INBOX',
+                'Processed',
+                30 * 1024 * 1024,
+                true,
+                1,
+                1
+            ),
+        ]);
+
+        $job = $this->job($deps, RetentionSettings::fromValues('0', '30', '1', '30'), 25);
+        $result = $job->processNext($this->encodeProcessedCheckpoint(1, 0, 17, 100));
+
+        self::assertInstanceOf(JobStepResult::class, $result);
+        self::assertTrue($result->isComplete());
+        self::assertSame([], $deps->mailbox->deleted['Processed'] ?? []);
+        self::assertSame([150], $deps->mailbox->uidsByFolder['Processed']);
+        $cursor = json_decode((string) $result->checkpoint(), true, 512, JSON_THROW_ON_ERROR);
+        self::assertSame(99, $cursor['processed']['uid_validity']);
+        self::assertSame(150, $cursor['processed']['owned_after_uid']);
+    }
+
+    public function testJobRunnerClearsTheCheckpointAfterACompleteRetentionRun(): void
+    {
+        $clock = new RetentionRunnerClock();
+        $stateStore = new RetentionRunnerStateStore();
+        $runner = new JobRunner(new RetentionRunnerLock(), $stateStore, $clock, 60, 10, 180);
+        $deps = new RetentionTestDependencies();
+        $deps->database->messages = [
+            1 => $deps->message(1, 'parsed', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.eml', 'body one', '2026-09-24 23:00:00', '2025-09-24 23:00:00'),
+        ];
+        $deps->storage->files = [
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.eml' => 'message 1',
+        ];
+        $settings = RetentionSettings::fromValues('1', '30', '0', '30');
+        $job = $this->job($deps, $settings);
+
+        $first = $runner->run($job, true);
+
+        self::assertSame(\ADCT\ParishIntake\Core\Jobs\JobRunStatus::COMPLETED, $first->status);
+        self::assertNull($stateStore->load($job->id())->checkpoint);
+        self::assertSame(null, $stateStore->load($job->id())->checkpoint);
+
+        $deps->database->messages[2] = $deps->message(
+            2,
+            'parsed',
+            'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.eml',
+            'body two',
+            '2026-09-24 23:00:00',
+            '2025-09-24 23:00:00'
+        );
+        $deps->storage->files['bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.eml'] = 'message 2';
+
+        $second = $runner->run($job, true);
+
+        self::assertSame(\ADCT\ParishIntake\Core\Jobs\JobRunStatus::COMPLETED, $second->status);
+        self::assertSame([$deps->database->messages[1]['raw_path'] ?? null, $deps->database->messages[2]['raw_path'] ?? null], [null, null]);
+        self::assertNull($stateStore->load($job->id())->checkpoint);
     }
 
     private function job(RetentionTestDependencies $deps, RetentionSettings $settings, int $batchSize = 25): RetentionCleanupJob
@@ -416,7 +525,12 @@ final class RetentionCleanupJobTest extends TestCase
         ], JSON_THROW_ON_ERROR);
     }
 
-    private function encodeProcessedCheckpoint(int $sourceId, int $lastUid): string
+    private function encodeProcessedCheckpoint(
+        int $sourceId,
+        int $lastUid,
+        int $uidValidity = 0,
+        int $ownedAfterUid = 0
+    ): string
     {
         return json_encode([
             'phase' => 'processed',
@@ -426,6 +540,8 @@ final class RetentionCleanupJobTest extends TestCase
             'processed' => [
                 'source_id' => $sourceId,
                 'last_uid' => $lastUid,
+                'uid_validity' => $uidValidity,
+                'owned_after_uid' => $ownedAfterUid,
             ],
         ], JSON_THROW_ON_ERROR);
     }
@@ -788,6 +904,9 @@ final class RetentionMailbox implements MailboxInterface
     /** @var array<string, list<int>> */
     public array $deleted = [];
 
+    /** @var array<string, int> */
+    public array $uidValidityByFolder = [];
+
     public bool $closed = false;
 
     public function listFolders(): array
@@ -800,9 +919,11 @@ final class RetentionMailbox implements MailboxInterface
         $this->uidsByFolder[$folder] ??= [];
     }
 
-    public function uidValidity(): int
+    public function uidValidity(?string $folder = null): int
     {
-        return 17;
+        $folder = $folder ?? 'INBOX';
+
+        return $this->uidValidityByFolder[$folder] ?? 17;
     }
 
     public function uidNext(string $folder): int
@@ -877,5 +998,51 @@ final class RetentionTestClock implements ClockInterface
     public function now(): DateTimeImmutable
     {
         return new DateTimeImmutable('2026-09-25T01:00:00+02:00', new DateTimeZone('Africa/Johannesburg'));
+    }
+}
+
+final class RetentionRunnerClock implements ClockInterface
+{
+    public function now(): DateTimeImmutable
+    {
+        return new DateTimeImmutable('2026-09-25T02:00:00+02:00', new DateTimeZone('Africa/Johannesburg'));
+    }
+}
+
+final class RetentionRunnerLock implements JobLockInterface
+{
+    public function acquire(string $jobId, DateTimeImmutable $now, int $expiresInSeconds): ?string
+    {
+        return 'token-1';
+    }
+
+    public function isHeldBy(string $jobId, string $token, DateTimeImmutable $now): bool
+    {
+        return true;
+    }
+
+    public function release(string $jobId, string $token): bool
+    {
+        return true;
+    }
+}
+
+final class RetentionRunnerStateStore implements JobStateStoreInterface
+{
+    private JobState $state;
+
+    public function __construct()
+    {
+        $this->state = JobState::empty();
+    }
+
+    public function load(string $jobId): JobState
+    {
+        return $this->state;
+    }
+
+    public function save(string $jobId, JobState $state): void
+    {
+        $this->state = $state;
     }
 }
