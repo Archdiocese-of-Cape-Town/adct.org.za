@@ -12,6 +12,7 @@ use ADCT\ParishIntake\Core\Jobs\JobRunLifecycleInterface;
 use ADCT\ParishIntake\Core\Jobs\JobStepResult;
 use ADCT\ParishIntake\Core\Mail\MailPriority;
 use ADCT\ParishIntake\Core\Mail\OutboundEmail;
+use ADCT\ParishIntake\Core\Matching\MatchReviewPolicy;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\MailerInterface;
 use ADCT\ParishIntake\Core\Ports\MailQueueRepositoryInterface;
@@ -75,7 +76,7 @@ final class ApprovalNoticeJob extends AbstractJob implements JobRunLifecycleInte
             if (! is_array($fields)) {
                 throw new RuntimeException('An approval candidate has invalid preview fields.');
             }
-            if (! empty($fields['match_review_required'])
+            if (MatchReviewPolicy::requiresManualReview($fields)
                 || ! empty($candidate['match_review_required'])
                 || (int) ($candidate['matched_candidate_id'] ?? 0) > 0) {
                 $after = $id;

@@ -6,6 +6,7 @@ namespace ADCT\ParishIntake\Core\Publishing;
 
 use ADCT\ParishIntake\Core\Events\EventDetails;
 use ADCT\ParishIntake\Core\Events\EventValidator;
+use ADCT\ParishIntake\Core\Matching\MatchReviewPolicy;
 use ADCT\ParishIntake\Core\Ports\PublicationStoreInterface;
 use DomainException;
 use RuntimeException;
@@ -62,12 +63,7 @@ final class CandidatePublisher
         }
 
         $fields = $this->jsonObject($row['fields'] ?? null, 'fields');
-        if (
-            (array_key_exists('match_review_required', $fields)
-                && ! is_bool($fields['match_review_required']))
-            || ($fields['match_review_required'] ?? false) === true
-            || array_key_exists('matched_candidate_id', $fields)
-        ) {
+        if (MatchReviewPolicy::requiresManualReview($fields)) {
             throw new DomainException('The candidate requires manual review of its match before publication.');
         }
 

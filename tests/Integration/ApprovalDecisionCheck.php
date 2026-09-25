@@ -270,6 +270,83 @@ final class ApprovalDecisionCheck
             )) === 0 && $wpdb->get_var($wpdb->prepare(
                 "SELECT status FROM {$base}event_candidates WHERE id = %d", $ambiguous
             )) === 'awaiting_approval', 'an ambiguous match must stay in manual review without actionable email.');
+            $pendingMatch = $candidate('pending-match-fields', $parish, [], ['matched_candidate_id' => 987]);
+            $job->beginRun();
+            $job->processNext((string) ($pendingMatch - 1));
+            $pendingMatchNotices = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM {$base}approval_notices WHERE candidate_id = %d",
+                $pendingMatch
+            ));
+            $pendingMatchMail = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM {$base}mail_queue WHERE group_key LIKE %s",
+                'approval:' . $pendingMatch . ':%'
+            ));
+            $pendingMatchTokens = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM {$base}action_tokens WHERE subject_type = %s AND subject_id = %d",
+                'event_candidate',
+                $pendingMatch
+            ));
+            $check($pendingMatchNotices === 0 && $pendingMatchMail === 0 && $pendingMatchTokens === 0
+                && $wpdb->get_var($wpdb->prepare(
+                    "SELECT status FROM {$base}event_candidates WHERE id = %d",
+                    $pendingMatch
+                )) === 'awaiting_approval',
+                'a pending candidate ID in fields must not queue approval mail or action tokens.');
+
+            $guardedApproval = $candidate('pending-match-action', $parish, [], ['matched_candidate_id' => 988]);
+            $guardedGroup = 'manual-review-action:' . $guardedApproval;
+            $guardedNoticeId = $insert('approval_notices', [
+                'candidate_id' => $guardedApproval, 'recipient' => $reviewerEmail,
+                'group_key' => $guardedGroup, 'notify_mode' => 'each', 'queued_at' => $now,
+                'created_at' => $now, 'updated_at' => $now,
+            ]);
+            $guardedMailId = $insert('mail_queue', [
+                'recipient' => $reviewerEmail, 'subject' => 'Synthetic approval notice',
+                'body_html' => '<p>Synthetic event.</p>', 'body_text' => 'Synthetic event.',
+                'priority' => 2, 'group_key' => $guardedGroup, 'status' => 'sent',
+                'created_at' => $now, 'updated_at' => $now,
+            ]);
+            $approvalBinding = new ActionTokenBinding(
+                ActionTokenPurpose::APPROVE_EVENT,
+                'event_candidate',
+                $guardedApproval,
+                $reviewerEmail
+            );
+            $approvalToken = $tokens->issue($approvalBinding)->token();
+            [$guardedPreview, $blockedApproval] = $act($approvalToken);
+            $guardedCandidate = $wpdb->get_row($wpdb->prepare(
+                "SELECT status, approved_by, approved_at, approved_via, decided_by, decided_at"
+                . " FROM {$base}event_candidates WHERE id = %d",
+                $guardedApproval
+            ), ARRAY_A);
+            $check($guardedNoticeId > 0 && $guardedMailId > 0
+                && $guardedPreview->statusCode === 200 && $blockedApproval->statusCode === 409
+                && $tokens->inspect($approvalToken, $approvalBinding)->status === ActionTokenStatus::VALID
+                && is_array($guardedCandidate) && $guardedCandidate['status'] === 'awaiting_approval'
+                && $guardedCandidate['approved_by'] === null && $guardedCandidate['approved_at'] === null
+                && $guardedCandidate['approved_via'] === null && $guardedCandidate['decided_by'] === null
+                && $guardedCandidate['decided_at'] === null,
+                'an approval link for a pending matched-candidate field must not consume or record approval.');
+
+            $rejectionBinding = new ActionTokenBinding(
+                ActionTokenPurpose::REJECT_EVENT,
+                'event_candidate',
+                $guardedApproval,
+                $reviewerEmail
+            );
+            $rejectionToken = $tokens->issue($rejectionBinding)->token();
+            [, $rejectionResponse] = $act($rejectionToken, 'Duplicate match confirmed.');
+            $rejectedCandidate = $wpdb->get_row($wpdb->prepare(
+                "SELECT status, approved_by, decision_note FROM {$base}event_candidates WHERE id = %d",
+                $guardedApproval
+            ), ARRAY_A);
+            $check($rejectionResponse->statusCode === 200
+                && $tokens->inspect($rejectionToken, $rejectionBinding)->status === ActionTokenStatus::USED
+                && is_array($rejectedCandidate) && $rejectedCandidate['status'] === 'rejected'
+                && $rejectedCandidate['approved_by'] === null
+                && $rejectedCandidate['decision_note'] === 'Duplicate match confirmed.',
+                'a matched candidate must remain rejectable without authorizing publication.');
+
             $ambiguousGroup = 'manual-review-recovery:' . $ambiguous;
             $noticeId = $insert('approval_notices', [
                 'candidate_id' => $ambiguous, 'recipient' => $reviewerEmail,

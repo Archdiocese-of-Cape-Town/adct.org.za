@@ -10,6 +10,7 @@ use ADCT\ParishIntake\Core\Ports\MigrationStepInterface;
 use ADCT\ParishIntake\Core\Ports\MigrationVersionStoreInterface;
 use Closure;
 use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Throwable;
@@ -64,6 +65,35 @@ final class MigrationRunnerTest extends TestCase
         self::assertSame([3], $firstResult->appliedVersions());
         self::assertSame([], $secondResult->appliedVersions());
         self::assertSame(3, $store->getVersion());
+    }
+
+    #[DataProvider('migrationPathCases')]
+    public function testMigrationPathAppliesExactVersionsAndAdvancesHighWater(
+        int $startingVersion,
+        int $targetVersion,
+        array $expectedAppliedVersions
+    ): void {
+        $steps = [];
+        for ($version = 1; $version <= $targetVersion; ++$version) {
+            $steps[] = new RecordingMigrationStep($version);
+        }
+        $store = new FakeMigrationVersionStore($startingVersion);
+        $runner = new MigrationRunner($steps, $store, new FakeMigrationLogger());
+
+        $result = $runner->run();
+
+        self::assertTrue($result->succeeded());
+        self::assertSame($expectedAppliedVersions, $result->appliedVersions());
+        self::assertSame($expectedAppliedVersions, $store->writtenVersions);
+        self::assertSame($targetVersion, $result->currentVersion());
+        self::assertSame($targetVersion, $store->getVersion());
+        self::assertSame($targetVersion, $runner->latestVersion());
+    }
+
+    public static function migrationPathCases(): iterable
+    {
+        yield 'fresh 0 to v8' => [0, 8, [1, 2, 3, 4, 5, 6, 7, 8]];
+        yield 'upgrade 6 to v8' => [6, 8, [7, 8]];
     }
 
     public function testVersionIsWrittenOnlyAfterItsMigrationSucceeds(): void
@@ -133,6 +163,26 @@ final class MigrationRunnerTest extends TestCase
             new FakeMigrationVersionStore(),
             new FakeMigrationLogger()
         );
+    }
+
+    public function testMigrationVersionGapCannotAdvanceTheStoredHighWater(): void
+    {
+        $steps = [];
+        for ($version = 1; $version <= 6; ++$version) {
+            $steps[] = new RecordingMigrationStep($version);
+        }
+        $steps[] = new RecordingMigrationStep(9);
+        $store = new FakeMigrationVersionStore(6);
+
+        try {
+            new MigrationRunner($steps, $store, new FakeMigrationLogger());
+            self::fail('A later migration must not be registered without its predecessors.');
+        } catch (InvalidArgumentException $failure) {
+            self::assertStringContainsString('contiguous', $failure->getMessage());
+        }
+
+        self::assertSame(6, $store->getVersion());
+        self::assertSame([], $store->writtenVersions);
     }
 }
 

@@ -577,11 +577,39 @@ foreach ($confirmationSchemaColumns as [$table, $columnName]) {
     }
 }
 
+$approvalNoticesTable = $wpdb->prefix . 'adct_pi_approval_notices';
+if ($wpdb->query("DROP TABLE {$approvalNoticesTable}") === false) {
+    $fail('The v6-to-v8 migration test could not prepare the pre-v8 approval-notice schema.');
+}
+
 update_option('adct_pi_db_version', 6, false);
 do_action('admin_init');
 
 if ((int) get_option('adct_pi_db_version', 0) !== 8) {
     $fail('The v6-to-v8 migrations did not advance the schema version.');
+}
+
+$recreatedApprovalNoticesTable = $wpdb->get_var($wpdb->prepare(
+    'SHOW TABLES LIKE %s',
+    $approvalNoticesTable
+));
+$approvalNoticeColumns = $recreatedApprovalNoticesTable === $approvalNoticesTable
+    ? (array) $wpdb->get_col("SHOW COLUMNS FROM {$approvalNoticesTable}", 0)
+    : [];
+if (
+    $recreatedApprovalNoticesTable !== $approvalNoticesTable
+    || $approvalNoticeColumns !== [
+        'id',
+        'candidate_id',
+        'recipient',
+        'group_key',
+        'notify_mode',
+        'queued_at',
+        'created_at',
+        'updated_at',
+    ]
+) {
+    $fail('The v6-to-v8 migration did not recreate the expected approval-notice table.');
 }
 
 foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {

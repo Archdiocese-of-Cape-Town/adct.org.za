@@ -10,6 +10,7 @@ use ADCT\ParishIntake\Core\Auth\ActionTokenPreview;
 use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 use ADCT\ParishIntake\Core\Auth\ActionTokenService;
 use ADCT\ParishIntake\Core\Auth\ActionTokenStatus;
+use ADCT\ParishIntake\Core\Matching\MatchReviewPolicy;
 use ADCT\ParishIntake\Core\Mail\MailPriority;
 use ADCT\ParishIntake\Core\Mail\OutboundEmail;
 use ADCT\ParishIntake\Core\Ports\AtomicActionTokenHandlerInterface;
@@ -122,10 +123,17 @@ final class ApprovalDecisionHandler implements AtomicActionTokenHandlerInterface
             if ($this->decision($row) !== null || $row['status'] !== 'awaiting_approval') {
                 throw new DomainException($this->decision($row) ?? 'This event is not awaiting approval.');
             }
+            $approve = $this->action === ActionTokenPurpose::APPROVE_EVENT;
             $fields = json_decode((string) ($row['fields'] ?? ''), true);
-            if (! is_array($fields) || ! empty($fields['match_review_required'])
-                || ! empty($row['match_review_required']) || (int) ($row['matched_candidate_id'] ?? 0) > 0
-                || ($row['match_kind'] ?? null) !== 'new') {
+            if (! is_array($fields)) {
+                throw new DomainException('A matched or ambiguous event needs manual review.');
+            }
+            if ($approve && (
+                MatchReviewPolicy::requiresManualReview($fields)
+                || ! empty($row['match_review_required'])
+                || (int) ($row['matched_candidate_id'] ?? 0) > 0
+                || ($row['match_kind'] ?? null) !== 'new'
+            )) {
                 throw new DomainException('A matched or ambiguous event needs manual review.');
             }
             if ($tokens->consume($token, $binding)->status !== ActionTokenStatus::CONSUMED) {
@@ -133,7 +141,6 @@ final class ApprovalDecisionHandler implements AtomicActionTokenHandlerInterface
             }
             $now = $this->clock->now()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
             $table = $this->table('adct_pi_event_candidates');
-            $approve = $this->action === ActionTokenPurpose::APPROVE_EVENT;
             $role = $this->role($row, $binding);
             $query = $approve
                 ? $this->database->prepare(
