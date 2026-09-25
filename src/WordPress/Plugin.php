@@ -22,8 +22,13 @@ use ADCT\ParishIntake\Core\Jobs\FrameworkHeartbeatJob;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
 use ADCT\ParishIntake\Core\Ingestion\Imap\ImapMailbox;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxConnectionConfig;
+use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
+use ADCT\ParishIntake\Core\Ingestion\MailboxSettings;
 use ADCT\ParishIntake\Core\Ingestion\MailboxConnectionTestService;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
+use ADCT\ParishIntake\Core\Ingestion\MessageContentHasher;
+use ADCT\ParishIntake\Core\Ingestion\RawMessageInspector;
+use ADCT\ParishIntake\Core\Jobs\MailboxPollingJob;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
@@ -46,15 +51,18 @@ use ADCT\ParishIntake\WordPress\Auth\WordPressRoleCapabilityStore;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleVersionStore;
 use ADCT\ParishIntake\WordPress\Database\DbDeltaSchemaInstaller;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\MailboxRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\Schema;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
+use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationLogger;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationVersionStore;
 use ADCT\ParishIntake\WordPress\Directory\CachedDirectorySnapshotProvider;
@@ -70,6 +78,7 @@ use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
 use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
+use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
 use DateTimeZone;
 
@@ -110,6 +119,15 @@ final class Plugin
             ? wp_timezone()
             : new DateTimeZone('Africa/Johannesburg');
         $rruleValidator = new RRuleValidator();
+        $mailboxes = new MailboxRepository($database);
+        $inboundMessages = new InboundMessageRepository($database);
+        $attachmentRepository = new AttachmentRepository($database);
+        $inboundMessageStore = new WordPressInboundMessageStore(
+            $database,
+            $inboundMessages,
+            $attachmentRepository
+        );
+        $secrets = new WordPressSecretResolver();
         $directorySnapshots = new CachedDirectorySnapshotProvider(
             $directoryVersions,
             new WordPressDirectorySnapshotCache(),
@@ -124,7 +142,8 @@ final class Plugin
         );
         $sourceRegistryService = new SourceRegistryService($sources, $clock);
         $this->mailboxesPage = new MailboxesPage(
-            new MailboxRepository($database),
+            $mailboxes,
+            $inboundMessages,
             $sources,
             $sourceRegistryService,
             new MailboxSettingsValidator(),
@@ -132,7 +151,7 @@ final class Plugin
                 new SourceHealthRecorder($sources, $clock),
                 static fn (MailboxConnectionConfig $config): MailboxInterface => new ImapMailbox($config)
             ),
-            new WordPressSecretResolver(),
+            $secrets,
             $clock
         );
         $contactService = new ContactService($contacts, $clock);
@@ -184,8 +203,37 @@ final class Plugin
             JobRunner::DEFAULT_ITEM_BUDGET,
             JobRunner::DEFAULT_LOCK_TTL_SECONDS
         );
+        $mailboxPollingJob = new MailboxPollingJob(
+            $mailboxes,
+            $sources,
+            $inboundMessageStore,
+            new ProtectedInboundMailStorage(),
+            new SourceHealthRecorder($sources, $clock),
+            new RawMessageInspector(),
+            new AttachmentStoragePolicy(),
+            new MessageContentHasher(),
+            $clock,
+            static fn (MailboxSettings $settings): string => $secrets->resolve(
+                SecretRegistry::IMAP_PASSWORD,
+                $settings->secretScope()
+            ),
+            static function (MailboxSettings $settings, string $password): MailboxInterface {
+                return new ImapMailbox(new MailboxConnectionConfig(
+                    host: $settings->host,
+                    port: $settings->port,
+                    encryption: $settings->encryption,
+                    username: $settings->username,
+                    password: $password,
+                    folders: [
+                        'inbox' => $settings->inboxFolder,
+                        'processed' => $settings->processedFolder,
+                    ],
+                    maxMessageSizeBytes: $settings->maxMessageSizeBytes
+                ));
+            }
+        );
         $this->jobScheduler = new WordPressJobScheduler(
-            [new FrameworkHeartbeatJob()],
+            [new FrameworkHeartbeatJob(), $mailboxPollingJob],
             $jobRunner,
             $stateStore,
             $clock

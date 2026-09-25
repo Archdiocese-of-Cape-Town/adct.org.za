@@ -63,9 +63,10 @@ Pure PHP 8.2, covered by unit tests and loaded through Composer PSR-4:
 - `Approval` – parallel dean/reviewer queues, atomic "first to act wins", self-approval, reminders.
 - `Directory` – parish/contact import and parser-facing parish and venue lookup over active names, aliases and suburb-qualified names, returning parish/venue IDs and venue coordinates.
 - `Sources` – typed source registry and `SourceHealthRecorder`; the WordPress source repository persists registry and health state without putting WordPress dependencies in the core.
-- `Ingestion` – `MimeMessageParser` parses raw RFC 822 mail into `Message` + attachment metadata using the pure-PHP `zbateson/mail-mime-parser` dependency. It decodes multipart/alternative, related and mixed bodies, transfer encodings and charsets; selects useful plain text before HTML; and retains thread/list/automation/authentication headers without interpreting authentication results.
+- `Ingestion` – `MailboxPollingJob` polls active email sources by UIDVALIDITY and UID, within the job runner's time/item budgets. It stores each raw RFC 822 message and eligible attachments before advancing the mailbox checkpoint, de-duplicates by source plus Message-ID or a versioned content hash, and moves completed mail to Processed. Oversized messages are recorded as skipped and moved to Too large; attachment policy failures remain visible in admin. The polling stage inspects MIME only to compute a stable body/attachment hash and does not populate `body_text` or create event candidates. The separate `MimeMessageParser` decodes raw RFC 822 mail into `Message` + attachment metadata using the pure-PHP `zbateson/mail-mime-parser` dependency; it decodes multipart/alternative, related and mixed bodies, transfer encodings and charsets, selects useful plain text before HTML, and retains thread/list/automation/authentication headers without interpreting authentication results.
 - `Ingestion\Imap` – `ImapMailbox` implements `MailboxInterface` with a bounded pure-PHP IMAP client. It searches by UID, fetches raw RFC 822 bytes and metadata, lists/creates folders, marks messages seen, and moves them using MOVE or COPY/STORE/EXPUNGE. It checks message size before fetching the body (30 MiB by default) and uses PHP stream sockets with TLS peer verification enabled by default; unencrypted or unverified connections require an explicit test-only opt-in (ADR 0013).
 - Mailbox settings use a validated Core value object and a connection-test service. The service logs in, counts unseen messages in the inbox, checks the processed folder, closes the connection, and records only safe success/failure health details; it does not fetch message bodies or poll.
+- The poller stores raw `.eml` files and accepted attachments in an unguessable-name `private` uploads subdirectory with deny rules and an `index.php` guard. Attachments are stored only when both their declared MIME type and file signature are allowed; the provisional allowlist is PDF, JPEG, PNG, WebP, HEIC and HEIF, with a 15 MiB per-file cap. Skipped attachment metadata and oversized-message errors are shown on the Mailboxes screen.
 - `Support\EmailTextCleaner` – reusable plain-text cleanup that separates quoted replies and signatures, extracts original forward headers, and removes common newsletter footers. `Support\HtmlToTextConverter` preserves paragraphs, lists and table rows without requiring `ext-dom`.
 - `Tokens` – signed, single-use action tokens.
 - `Jobs` – due checks, bounded item processing, checkpoints, lock/state ports and run results.
@@ -93,7 +94,7 @@ The Manual parser displays the full `ParseOutcome` and uses the same cached dire
 - `WordPress\Ai\OpenRouterProvider` implements the core AI port and receives `HttpClientInterface`; only `WordPress\Http\WordPressHttpClient` calls `wp_remote_post`.
 - Repositories using `$wpdb` (custom tables in the site's existing WordPress MySQL database) and the `adct_event` post type.
 - `WordPressDirectorySnapshotLoader` reads parish, venue and contact repositories; `WordPressDirectorySnapshotCache` stores the snapshot in a transient keyed by the non-autoloaded directory version option. Parish, venue and contact repositories increment that version after successful writes.
-- Admin screens (dashboard, review/approval queue, parishes, deaneries and approvers, sources, mailboxes, settings, health). Mailboxes are linked to archdiocese-wide email sources; the Mailboxes screen supports settings and an explicit test-connection action. Parish sources are editable from each parish's Sources tab; the Sources submenu also lists all sources and manages archdiocese-wide ones.
+- Admin screens (dashboard, review/approval queue, parishes, deaneries and approvers, sources, mailboxes, settings, health). Mailboxes are linked to archdiocese-wide email sources; the Mailboxes screen supports settings, an explicit test-connection action and skipped-message/attachment notices. Parish sources are editable from each parish's Sources tab; the Sources submenu also lists all sources and manages archdiocese-wide ones.
 - Front-end approver queue for deans (magic-link login, no wp-admin).
 - Public views: shortcode/block for the events page, single event template, ICS endpoint, REST endpoints for filtering.
 - Scheduled jobs via WP-Cron hooks, triggered by site traffic, a 2-hourly xneelo cron backstop, an optional external pinger and a "Check now" button ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
@@ -102,7 +103,7 @@ The Manual parser displays the full `ParseOutcome` and uses the same cached dire
 The Composer PSR-4 mappings keep `ADCT\ParishIntake\Core\…` and `ADCT\ParishIntake\WordPress\…` separate. The release zip includes a small source autoloader in `WordPress\Autoloader` alongside the namespace-prefixed Composer dependency loader; development and tests use Composer's generated autoloader.
 
 ### 3. Infrastructure adapters
-- `ImapMailbox` – the Core's PHP-stream IMAP client (no `ext-imap` or additional Composer package); retrieval and folder operations are behind `MailboxInterface`. GreenMail integration tests verify protocol operations and the connection-test service's success, wrong-password and missing-processed-folder results.
+- `ImapMailbox` – the Core's PHP-stream IMAP client (no `ext-imap` or additional Composer package); retrieval and folder operations are behind `MailboxInterface`. GreenMail integration tests verify protocol operations, polling resume and de-duplication, oversized-message handling, and the connection-test service's success, wrong-password and missing-processed-folder results.
 - `IcsSource` – fetches and parses ICS feeds (Google Calendar).
 - `PdfTextExtractor` – pure-PHP text extraction (e.g. `smalot/pdfparser`) that uses text positions to rebuild columns, because most bulletins have 2–3 columns ([parser findings](parser-samples.md)).
 - Optional `OcrProvider`s (OCR.space free tier, OpenAI-compatible vision models) – off by default.
@@ -119,7 +120,7 @@ Each job's state records `last_run_at` (run start), `last_success_at` (updated o
 | Job | Default interval | Work |
 |---|---|---|
 | `framework_heartbeat` | due every 10 min | Currently registered framework check only; no parish data or email work. |
-| `poll_mailboxes` | due every 10 min | Planned: fetch new mail, store raw message + attachments, queue for parsing. |
+| `poll_mailboxes` | due every 10 min | Poll active mailboxes in bounded UID batches, store raw mail and eligible attachments, de-duplicate and file completed messages. Parsing is a later job. |
 | `process_queue` | due every 10 min | Planned: extract text, parse, create candidates, queue confirmation and approver emails. |
 | `send_mail` | every trigger | Planned: send queued email up to the hourly cap, highest priority first. |
 | `poll_sources` | hourly | Planned: poll a few active ICS/PDF/secondary sources per run (oldest `last_checked_at` first) and record checks, successes, failures and item times through `SourceHealthRecorder`. No source polling adapter is registered yet. |
@@ -127,13 +128,13 @@ Each job's state records `last_run_at` (run start), `last_success_at` (updated o
 | `monitoring` | daily | Planned: update source health, create reminder candidates, send inactivity reminders, approval reminders and approver digests (each can be switched off). |
 | `retention` | daily | Planned: delete raw messages/attachments past retention, prune tokens and logs. |
 
-The framework heartbeat is the only job registered until intake work is implemented. It exists to exercise scheduling and the admin screen; it does not poll mail or sources, process events, or send email. A future source job can receive the WordPress-free `SourceHealthRecorder` through constructor injection; no source adapters or source polling job are added in E1.4.
+The framework heartbeat and `poll_mailboxes` are registered jobs. The heartbeat only exercises scheduling; the mailbox poller stores incoming mail but does not parse messages, process events, or send email. A separate source-polling adapter/job is not registered.
 
 xneelo cron jobs can run at most every 2 hours, and there is no WP-CLI, so jobs have several triggers ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)):
 - WP-Cron stays on, so site visits run due jobs.
 - One 2-hourly xneelo cron job calls `https://<site>/wp-cron.php?doing_wp_cron` over HTTP as a backstop.
 - An optional free external pinger (cron-job.org) calls it every 5–10 minutes for timely intake.
-- **Parish Intake → Scheduled jobs** lists each registered job and its last run, last success, last error, and last run's item count. The per-job **Run now** action is a capability- and nonce-protected POST that uses the same lock and budgets while bypassing only the due check. Once mail and queue jobs are registered, their Run now actions provide the corresponding manual checks; the current heartbeat does no intake work.
+- **Parish Intake → Scheduled jobs** lists each registered job and its last run, last success, last error, and last run's item count. The per-job **Run now** action is a capability- and nonce-protected POST that uses the same lock and budgets while bypassing only the due check. Running `poll_mailboxes` manually polls active mailboxes; later queue-processing jobs will provide the parsing and event-work checks.
 
 The intervals above are "due" times: a job runs on the first trigger after it is due, including after a trigger gap of up to 2 hours. The scheduled-jobs page reports run state; the separate health-dashboard warning after 2 h 15 min remains a later dashboard feature.
 

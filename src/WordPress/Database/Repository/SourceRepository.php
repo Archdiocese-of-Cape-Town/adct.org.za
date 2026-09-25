@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Database\Repository;
 
 use ADCT\ParishIntake\Core\Ports\SourceHealthStoreInterface;
+use ADCT\ParishIntake\Core\Ports\MailboxCheckpointStoreInterface;
 use ADCT\ParishIntake\Core\Ports\SourceStoreInterface;
+use ADCT\ParishIntake\Core\Ingestion\MailboxCheckpoint;
 use ADCT\ParishIntake\Core\Sources\Source;
 use ADCT\ParishIntake\Core\Sources\SourceHealthState;
 use ADCT\ParishIntake\Core\Sources\SourceRole;
@@ -16,7 +18,10 @@ use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
 
-final class SourceRepository extends AbstractRepository implements SourceStoreInterface, SourceHealthStoreInterface
+final class SourceRepository extends AbstractRepository implements
+    SourceStoreInterface,
+    SourceHealthStoreInterface,
+    MailboxCheckpointStoreInterface
 {
     protected const TABLE_SUFFIX = 'adct_pi_sources';
 
@@ -218,6 +223,49 @@ final class SourceRepository extends AbstractRepository implements SourceStoreIn
         ));
 
         return $row === null ? null : $this->mapHealth($row);
+    }
+
+    public function findCheckpoint(int $sourceId): ?MailboxCheckpoint
+    {
+        if ($sourceId < 1) {
+            throw new InvalidArgumentException('A source ID must be positive.');
+        }
+
+        $row = $this->fetchRow($this->database->prepare(
+            'SELECT checkpoint FROM ' . $this->tableName() . ' WHERE id = %d LIMIT 1',
+            $sourceId
+        ));
+
+        if ($row === null) {
+            throw new DomainException('The source could not be found for a checkpoint read.');
+        }
+
+        return MailboxCheckpoint::fromJson($this->nullableString($row['checkpoint'] ?? null));
+    }
+
+    public function saveCheckpoint(int $sourceId, MailboxCheckpoint $checkpoint, string $timestamp): void
+    {
+        if ($sourceId < 1) {
+            throw new InvalidArgumentException('A source ID must be positive.');
+        }
+
+        $this->database->clearLastError();
+        $result = $this->database->query($this->database->prepare(
+            'UPDATE ' . $this->tableName() . ' SET checkpoint = %s, updated_at = %s WHERE id = %d',
+            $checkpoint->toJson(),
+            $timestamp,
+            $sourceId
+        ));
+
+        if ($result === false) {
+            throw new RuntimeException(
+                'The mailbox checkpoint could not be saved: ' . $this->database->lastError()
+            );
+        }
+
+        if ($result === 0 && $this->findSource($sourceId) === null) {
+            throw new DomainException('The source could not be found for a checkpoint update.');
+        }
     }
 
     public function saveHealthIfUnchanged(

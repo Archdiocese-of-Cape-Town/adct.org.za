@@ -12,6 +12,8 @@ interface MailboxInterface
 
     public function ensureFolder(string $folder): void;
 
+    public function uidValidity(): int;
+
     /** @return list<int> */
     public function search(MailboxSearchCriteria $criteria): array;
 

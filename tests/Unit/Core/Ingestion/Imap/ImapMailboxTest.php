@@ -44,6 +44,44 @@ final class ImapMailboxTest extends TestCase
         self::assertSame("A0005 UID SEARCH ALL\r\n", $transport->writes[4]);
     }
 
+    public function testSearchAfterUidUsesAnExclusiveLowerBoundAndSortsTheResults(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake()
+            . "* OK [UIDVALIDITY 55771] UIDs valid\r\n"
+            . "A0003 OK SELECT completed\r\n"
+            . "* SEARCH 12 9 10\r\nA0004 OK SEARCH completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        self::assertSame([9, 10, 12], $mailbox->search(MailboxSearchCriteria::afterUid(8)));
+        self::assertSame("A0004 UID SEARCH UID 9:*\r\n", $transport->writes[3]);
+    }
+
+    public function testReturnsUidValidityFromTheSelectedInbox(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake()
+            . "* OK [UIDVALIDITY 55771] UIDs valid\r\n"
+            . "A0003 OK SELECT completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        self::assertSame(55771, $mailbox->uidValidity());
+        self::assertSame("A0003 SELECT \"INBOX\"\r\n", $transport->writes[2]);
+    }
+
+    public function testUidValidityRequiresTheServerSelectResponse(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake() . "A0003 OK SELECT completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        $this->expectException(ProtocolError::class);
+        $mailbox->uidValidity();
+    }
+
     public function testListsFoldersAndCreatesAMissingFolder(): void
     {
         $listTransport = new ScriptedTransport(

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Admin;
 
 use ADCT\ParishIntake\Core\Auth\Capabilities;
+use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxEncryption;
 use ADCT\ParishIntake\Core\Ingestion\MailboxConnectionTestResult;
 use ADCT\ParishIntake\Core\Ingestion\MailboxConnectionTestStatus;
@@ -19,6 +20,7 @@ use ADCT\ParishIntake\Core\Sources\SourceRole;
 use ADCT\ParishIntake\Core\Sources\SourceStatus;
 use ADCT\ParishIntake\Core\Sources\SourceType;
 use ADCT\ParishIntake\WordPress\Database\Repository\MailboxRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
 use DateTimeZone;
@@ -32,6 +34,7 @@ final class MailboxesPage
 
     public function __construct(
         private MailboxRepository $mailboxes,
+        private InboundMessageRepository $inboundMessages,
         private SourceRepository $sources,
         private SourceRegistryService $sourceRegistry,
         private MailboxSettingsValidator $validator,
@@ -89,7 +92,7 @@ final class MailboxesPage
                 <div class="notice notice-success is-dismissible"><p>Mailbox settings saved.</p></div>
             <?php endif; ?>
 
-            <p>Each intake mailbox is linked to an archdiocese-wide email source. Testing a connection does not fetch or process message bodies.</p>
+            <p>Each active mailbox is polled in bounded batches. Successfully stored messages move to the Processed folder; oversized messages move to Too large. Skipped messages and attachments are listed below.</p>
 
             <table class="widefat striped">
                 <thead>
@@ -202,6 +205,11 @@ final class MailboxesPage
     private function renderMailboxRow(MailboxSettings $settings): void
     {
         $source = $this->sources->findSource($settings->sourceId);
+        $skippedMessages = $this->inboundMessages->findRecentSkippedMessagesBySourceId($settings->sourceId, 3);
+        $skippedAttachments = $this->inboundMessages->findRecentSkippedAttachmentsBySourceId(
+            $settings->sourceId,
+            5
+        );
         ?>
         <tr>
             <td>
@@ -219,11 +227,15 @@ final class MailboxesPage
                 <br />Maximum message size: <?php echo esc_html((string) intdiv($settings->maxMessageSizeBytes, 1024 * 1024)); ?> MB
             </td>
             <td>
-                <?php echo $settings->active ? 'Active' : 'Inactive'; ?>
+                <strong>Mailbox setting:</strong> <?php echo $settings->active ? 'Active' : 'Inactive'; ?>
                 <?php if ($source !== null) : ?>
                     <dl class="mailbox-health">
+                        <dt>Source status</dt>
+                        <dd><?php echo esc_html(ucfirst($source->status)); ?></dd>
                         <dt>Last checked</dt>
                         <dd><?php echo esc_html($source->lastCheckedAt === null ? 'Not yet' : $source->lastCheckedAt . ' UTC'); ?></dd>
+                        <dt>Last success</dt>
+                        <dd><?php echo esc_html($source->lastSuccessAt === null ? 'Not yet' : $source->lastSuccessAt . ' UTC'); ?></dd>
                         <dt>Consecutive failures</dt>
                         <dd><?php echo esc_html((string) $source->consecutiveFailures); ?></dd>
                         <dt>Last error</dt>
@@ -231,6 +243,34 @@ final class MailboxesPage
                     </dl>
                 <?php else : ?>
                     <p class="description">The linked email source could not be found.</p>
+                <?php endif; ?>
+                <?php if ($skippedMessages !== []) : ?>
+                    <div class="notice notice-warning inline">
+                        <p><strong>Skipped oversized messages</strong></p>
+                        <ul>
+                            <?php foreach ($skippedMessages as $message) : ?>
+                                <li>
+                                    <?php echo esc_html((string) ($message['received_at'] ?? '')); ?>:
+                                    <?php echo esc_html((string) ($message['error'] ?? 'Message exceeded the configured size limit.')); ?>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </div>
+                <?php endif; ?>
+                <?php if ($skippedAttachments !== []) : ?>
+                    <div class="notice notice-warning inline">
+                        <p><strong>Skipped attachments</strong></p>
+                        <ul>
+                            <?php foreach ($skippedAttachments as $attachment) : ?>
+                                <li>
+                                    <?php echo esc_html((string) ($attachment['filename'] ?? 'Attachment')); ?>
+                                    (<?php echo esc_html((string) ($attachment['mime_type'] ?? 'unknown type')); ?>,
+                                    <?php echo esc_html(number_format_i18n((int) ($attachment['size_bytes'] ?? 0))); ?> bytes):
+                                    <?php echo esc_html($this->attachmentSkipReason((string) ($attachment['status'] ?? ''))); ?>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </div>
                 <?php endif; ?>
             </td>
             <td>
@@ -532,6 +572,16 @@ final class MailboxesPage
             MailboxEncryption::SSL => 'SSL/TLS',
             MailboxEncryption::STARTTLS => 'STARTTLS',
             MailboxEncryption::NONE => 'Unencrypted',
+        };
+    }
+
+    private function attachmentSkipReason(string $status): string
+    {
+        return match ($status) {
+            AttachmentStoragePolicy::STATUS_SKIPPED_SIZE => 'exceeds the 15 MiB attachment limit',
+            AttachmentStoragePolicy::STATUS_SKIPPED_TYPE => 'unsupported MIME type',
+            AttachmentStoragePolicy::STATUS_SKIPPED_SIGNATURE => 'content does not match the declared MIME type',
+            default => 'attachment was not stored',
         };
     }
 
