@@ -21,12 +21,14 @@ use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
+use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
 use ADCT\ParishIntake\WordPress\Admin\DeaneriesPage;
 use ADCT\ParishIntake\WordPress\Admin\ParserPage;
 use ADCT\ParishIntake\WordPress\Admin\ParishesPage;
 use ADCT\ParishIntake\WordPress\Admin\SendersPage;
+use ADCT\ParishIntake\WordPress\Admin\SourcesPage;
 use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleCapabilityStore;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleVersionStore;
@@ -36,6 +38,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use ADCT\ParishIntake\WordPress\Database\Schema;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
@@ -63,6 +66,7 @@ final class Plugin
     private DeaneriesPage $deaneriesPage;
     private ParishesPage $parishesPage;
     private SendersPage $sendersPage;
+    private SourcesPage $sourcesPage;
 
     private function __construct(string $pluginFile)
     {
@@ -84,9 +88,12 @@ final class Plugin
         $approvers = new DeaneryApproverRepository($database);
         $contacts = new ParishContactRepository($database);
         $venues = new VenueRepository($database);
+        $sources = new SourceRepository($database);
+        $sourceRegistryService = new SourceRegistryService($sources, $clock);
         $contactService = new ContactService($contacts, $clock);
         $venueAdministrationService = new VenueAdministrationService($venues, $clock);
         $approvalRouteResolver = new ApprovalRouteResolver(new ApprovalRouteRepository($database));
+        $this->sourcesPage = new SourcesPage($sources, $sourceRegistryService, $parishes);
         $this->deaneriesPage = new DeaneriesPage(
             $deaneries,
             $approvers,
@@ -105,12 +112,14 @@ final class Plugin
                 $deaneries,
                 $contactService,
                 $clock,
+                $sourceRegistryService,
                 new VenueDirectoryImporter($venues, $clock)
             ),
             $approvalRouteResolver,
             $venues,
             $venueAdministrationService,
-            $clock
+            $clock,
+            $this->sourcesPage
         );
         $this->sendersPage = new SendersPage($contacts, $contactService, $parishes);
         $stateStore = new WordPressJobStateStore();
@@ -255,6 +264,7 @@ final class Plugin
         add_action('admin_menu', [$this->deaneriesPage, 'registerMenu']);
         add_action('admin_menu', [$this->parishesPage, 'registerMenu']);
         add_action('admin_menu', [$this->sendersPage, 'registerMenu']);
+        add_action('admin_menu', [$this->sourcesPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
         add_action('admin_init', [$this, 'maybeUpgradeRoles'], 1);
         add_action('admin_init', [$this, 'restrictWpAdminForPortalRoles'], 2);
@@ -265,6 +275,7 @@ final class Plugin
         add_action('admin_post_adct_pi_venue_action', [$this->parishesPage, 'handleVenueAction']);
         add_action('admin_post_adct_pi_venue_backfill', [$this->parishesPage, 'handleVenueBackfill']);
         add_action('admin_post_adct_pi_parish_contact', [$this->parishesPage, 'handleContactAction']);
+        add_action('admin_post_adct_pi_save_source', [$this->sourcesPage, 'handleSaveSource']);
         add_action('admin_post_adct_pi_save_deanery', [$this->deaneriesPage, 'handleSaveDeanery']);
         add_action('admin_post_adct_pi_deactivate_deanery', [$this->deaneriesPage, 'handleDeactivateDeanery']);
         add_action('admin_post_adct_pi_deanery_approver', [$this->deaneriesPage, 'handleApproverAction']);

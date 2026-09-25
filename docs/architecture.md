@@ -62,6 +62,7 @@ Pure PHP 8.2, covered by unit tests and loaded through Composer PSR-4:
 - `Trust` – decides the next step for a candidate: send for confirmation, route to the approval queues, publish (self-approval or a verified contact's change to a published event), or ignore.
 - `Approval` – parallel dean/reviewer queues, atomic "first to act wins", self-approval, reminders.
 - `Directory` – parish/contact import and a parser-facing venue lookup over active names and aliases, returning venue and parish IDs with address coordinates.
+- `Sources` – typed source registry and `SourceHealthRecorder`; the WordPress source repository persists registry and health state without putting WordPress dependencies in the core.
 - `Ingestion` – `MimeMessageParser` parses raw RFC 822 mail into `Message` + attachment metadata using the pure-PHP `zbateson/mail-mime-parser` dependency. It decodes multipart/alternative, related and mixed bodies, transfer encodings and charsets; selects useful plain text before HTML; and retains thread/list/automation/authentication headers without interpreting authentication results.
 - `Support\EmailTextCleaner` – reusable plain-text cleanup that separates quoted replies and signatures, extracts original forward headers, and removes common newsletter footers. `Support\HtmlToTextConverter` preserves paragraphs, lists and table rows without requiring `ext-dom`.
 - `Tokens` – signed, single-use action tokens.
@@ -81,7 +82,7 @@ The Manual parser displays the full `ParseOutcome`. Until the event-candidate re
 - Plugin bootstrap and hook wiring, the manual parser/admin UI, database schema/repository access, static reports, and the WordPress HTTP client.
 - `WordPress\Ai\OpenRouterProvider` implements the core AI port and receives `HttpClientInterface`; only `WordPress\Http\WordPressHttpClient` calls `wp_remote_post`.
 - Repositories using `$wpdb` (custom tables in the site's existing WordPress MySQL database) and the `adct_event` post type.
-- Admin screens (dashboard, review/approval queue, parishes, deaneries and approvers, sources, settings, health).
+- Admin screens (dashboard, review/approval queue, parishes, deaneries and approvers, sources, settings, health). Parish sources are editable from each parish's Sources tab; the Sources submenu also lists all sources and manages archdiocese-wide ones.
 - Front-end approver queue for deans (magic-link login, no wp-admin).
 - Public views: shortcode/block for the events page, single event template, ICS endpoint, REST endpoints for filtering.
 - Scheduled jobs via WP-Cron hooks, triggered by site traffic, a 2-hourly xneelo cron backstop, an optional external pinger and a "Check now" button ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
@@ -110,12 +111,12 @@ Each job's state records `last_run_at` (run start), `last_success_at` (updated o
 | `poll_mailboxes` | due every 10 min | Planned: fetch new mail, store raw message + attachments, queue for parsing. |
 | `process_queue` | due every 10 min | Planned: extract text, parse, create candidates, queue confirmation and approver emails. |
 | `send_mail` | every trigger | Planned: send queued email up to the hourly cap, highest priority first. |
-| `poll_sources` | hourly | Planned: ICS/PDF/secondary sources, a few sources per run (oldest `last_checked_at` first). |
+| `poll_sources` | hourly | Planned: poll a few active ICS/PDF/secondary sources per run (oldest `last_checked_at` first) and record checks, successes, failures and item times through `SourceHealthRecorder`. No source polling adapter is registered yet. |
 | `expand_occurrences` | daily | Planned: refresh the occurrence table for the next 12 months. |
 | `monitoring` | daily | Planned: update source health, create reminder candidates, send inactivity reminders, approval reminders and approver digests (each can be switched off). |
 | `retention` | daily | Planned: delete raw messages/attachments past retention, prune tokens and logs. |
 
-The framework heartbeat is the only job registered until intake work is implemented. It exists to exercise scheduling and the admin screen; it does not poll mail, process events, or send email.
+The framework heartbeat is the only job registered until intake work is implemented. It exists to exercise scheduling and the admin screen; it does not poll mail or sources, process events, or send email. A future source job can receive the WordPress-free `SourceHealthRecorder` through constructor injection; no source adapters or source polling job are added in E1.4.
 
 xneelo cron jobs can run at most every 2 hours, and there is no WP-CLI, so jobs have several triggers ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)):
 - WP-Cron stays on, so site visits run due jobs.
