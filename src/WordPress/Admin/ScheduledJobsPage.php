@@ -70,7 +70,7 @@ final class ScheduledJobsPage
 
         check_admin_referer($this->nonceAction($jobId));
 
-        $result = $this->runner->run($job, true);
+        $result = $this->runner->run($job, true, null, null, 'manual');
         $redirect = add_query_arg([
             'page' => self::PAGE_SLUG,
             'adct_pi_job_id' => $jobId,
@@ -105,6 +105,7 @@ final class ScheduledJobsPage
                         <tr>
                             <th scope="col">Job</th>
                             <th scope="col">Last run</th>
+                            <th scope="col">Trigger</th>
                             <th scope="col">Last success</th>
                             <th scope="col">Last error</th>
                             <th scope="col">Items processed</th>
@@ -122,6 +123,7 @@ final class ScheduledJobsPage
                                     <code><?php echo esc_html($job->id()); ?></code>
                                 </td>
                                 <td><?php echo esc_html($this->formatDate($state->lastRunAt)); ?></td>
+                                <td><?php echo esc_html($state->lastTrigger ?? 'Not yet recorded'); ?></td>
                                 <td><?php echo esc_html($this->formatDate($state->lastSuccessAt)); ?></td>
                                 <td>
                                     <?php if ($state->lastErrorMessage === null) : ?>

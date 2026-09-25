@@ -4240,6 +4240,7 @@ foreach (['administrator', 'editor'] as $roleName) {
 }
 
 require WP_CONTENT_DIR . '/test-harness/EventsListingCheck.php';
+require WP_CONTENT_DIR . '/test-harness/HealthCheck.php';
 
 if (! defined('WP_UNINSTALL_PLUGIN')) {
     define('WP_UNINSTALL_PLUGIN', $pluginBasename);

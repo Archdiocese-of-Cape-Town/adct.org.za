@@ -56,6 +56,7 @@ use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
+use ADCT\ParishIntake\WordPress\Admin\HealthPage;
 use ADCT\ParishIntake\WordPress\Admin\InboundMessagesPage;
 use ADCT\ParishIntake\WordPress\Admin\DeaneriesPage;
 use ADCT\ParishIntake\WordPress\Admin\MailboxesPage;
@@ -106,6 +107,7 @@ use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
+use ADCT\ParishIntake\WordPress\Jobs\HealthAlerts;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailQueueImmediateDispatch;
@@ -136,6 +138,8 @@ final class Plugin
     private HttpClientInterface $httpClient;
     private WordPressJobScheduler $jobScheduler;
     private ScheduledJobsPage $scheduledJobsPage;
+    private HealthPage $healthPage;
+    private HealthAlerts $healthAlerts;
     private MailQueueService $mailQueue;
     private OutboundMailPage $outboundMailPage;
     private DeaneriesPage $deaneriesPage;
@@ -394,6 +398,24 @@ final class Plugin
             $jobRunner,
             $stateStore
         );
+        $this->healthAlerts = new HealthAlerts(
+            $this->jobScheduler,
+            $stateStore,
+            $sources,
+            $this->mailQueue,
+            $clock
+        );
+        $this->healthPage = new HealthPage(
+            $this->jobScheduler,
+            $jobRunner,
+            $stateStore,
+            $sources,
+            $mailboxes,
+            $inboundMessages,
+            $this->mailQueue,
+            $deaneries,
+            $this->healthAlerts
+        );
     }
 
     public static function boot(string $pluginFile): void
@@ -620,6 +642,9 @@ final class Plugin
         add_action('admin_menu', [$this->inboundMessagesPage, 'registerMenu']);
         add_action('admin_menu', [$this->outboundMailPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
+        add_action('admin_menu', [$this->healthPage, 'registerMenu']);
+        add_action('admin_post_adct_pi_health_check_now', [$this->healthPage, 'handleCheckNow']);
+        add_action('init', [$this, 'checkHealthAlerts'], 20);
         add_action('admin_init', [$this, 'maybeUpgradeRoles'], 1);
         add_action('admin_init', [$this, 'restrictWpAdminForPortalRoles'], 2);
         add_action('admin_init', [$this, 'maybeRunDatabaseMigrations'], 5);
@@ -653,6 +678,20 @@ final class Plugin
         add_action('admin_notices', [$this->outboundMailPage, 'renderAdminNotice']);
         add_action('admin_notices', [$this->scheduledJobsPage, 'renderResultNotice']);
         $this->jobScheduler->registerHooks();
+    }
+
+    public function checkHealthAlerts(): void
+    {
+        if (get_transient('adct_pi_health_scan') !== false) {
+            return;
+        }
+        try {
+            $this->healthAlerts->check();
+            set_transient('adct_pi_health_scan', '1', 300);
+        } catch (\Throwable $failure) {
+            error_log('[ADCT Parish Intake] Health alert check failed (' . get_class($failure) . '): '
+                . $failure->getMessage());
+        }
     }
 
     private static function createRoleInstaller(): VersionedRoleInstaller

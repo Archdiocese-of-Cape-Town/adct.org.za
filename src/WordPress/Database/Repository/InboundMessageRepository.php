@@ -120,6 +120,31 @@ final class InboundMessageRepository extends AbstractRepository
     }
 
     /**
+     * @return array{waiting: int, processing: int, oldest_waiting: ?string, oldest_processing: ?string}
+     */
+    public function healthStats(): array
+    {
+        $row = $this->fetchRow($this->database->prepare(
+            'SELECT SUM(CASE WHEN status = %s THEN 1 ELSE 0 END) AS waiting, '
+            . 'SUM(CASE WHEN status = %s THEN 1 ELSE 0 END) AS processing, '
+            . 'MIN(CASE WHEN status = %s THEN created_at ELSE NULL END) AS oldest_waiting, '
+            . 'MIN(CASE WHEN status = %s THEN created_at ELSE NULL END) AS oldest_processing '
+            . 'FROM ' . $this->tableName(),
+            InboundMessageRecord::STATUS_RECEIVED,
+            InboundMessageRecord::STATUS_EXTRACTING,
+            InboundMessageRecord::STATUS_RECEIVED,
+            InboundMessageRecord::STATUS_EXTRACTING
+        ));
+
+        return [
+            'waiting' => (int) ($row['waiting'] ?? 0),
+            'processing' => (int) ($row['processing'] ?? 0),
+            'oldest_waiting' => $row['oldest_waiting'] ?? null,
+            'oldest_processing' => $row['oldest_processing'] ?? null,
+        ];
+    }
+
+    /**
      * @param list<int> $messageIds
      */
     public function requeueFailedMessages(array $messageIds, string $timestamp): array
