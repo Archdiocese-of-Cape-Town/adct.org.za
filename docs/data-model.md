@@ -67,7 +67,7 @@ Approver WordPress accounts are created with a random password and no notificati
 | address, suburb | |
 | latitude, longitude | decimal(9,6); used for "near me" |
 | website, phone | |
-| official_source_id | FK → sources; the channel whose content is trusted |
+| official_source_id | FK → sources; the parish's current official source (kept in sync with `sources.role`) |
 | expected_cadence_days | e.g. 30; null = no expectation |
 | reminders_enabled | per-parish on/off (a global switch also exists) |
 | status | `active`, `inactive` |
@@ -111,13 +111,19 @@ Learning rule: when an unknown address submits, a `pending` row is created with 
 | id | PK |
 | parish_id | nullable (archdiocese-wide sources) |
 | type | `email`, `ics`, `pdf_url`, `facebook_page`, `whatsapp_forward`, `rss`, `web_page`, `manual` |
-| identifier | mailbox address, URL, page id… |
+| identifier | normalised email address for `email`; HTTP(S) URL for `ics`, `pdf_url`, `facebook_page`, `rss` and `web_page`; free label for `whatsapp_forward` and `manual` |
 | role | `official` or `monitored` |
 | status | `active`, `paused`, `unreliable`, `disabled` |
-| poll_interval_minutes | |
+| poll_interval_minutes | at least 10 for pollable types; defaults to 1,440 (24 hours). `manual` sources are not polled and store NULL. These limits are provisional. |
 | checkpoint | JSON (e.g. IMAP UIDVALIDITY + last UID, ICS ETag, last post id) |
 | last_checked_at, last_success_at, last_item_at | health tracking |
 | consecutive_failures, last_error | |
+
+The source registry already exists in schema v1, so source management does not need a schema migration. Parish-scoped `(parish_id, type, identifier)` values are unique. Saving an official parish source locks the parish row, demotes its previous official source to `monitored`, then updates `parishes.official_source_id` in the same transaction. A parish can have no official source until one is selected; at most one is official at a time. Archdiocese-wide sources (`parish_id IS NULL`) may have multiple official sources, including multiple sources of the same type (provisional; there is no cross-source uniqueness rule).
+
+Source health is changed only by the Core `SourceHealthRecorder`, not by the admin form. A success updates check/success times, resets failures and clears the last error; its item time changes only when a new item time is supplied. A failure increments the count and marks an active source `unreliable` after five consecutive failures (provisional), without overriding `paused` or `disabled`. A later success resets the failure count but does not reactivate an unreliable source; an operator must change its status. Last errors are technical diagnostics, limited to 500 characters, with email addresses redacted; adapters must not pass fetched content or personal data into the recorder.
+
+During a parish directory import, a verified office email is also registered as that parish's official `email` source only when the parish has no official source. This is idempotent on repeat imports and provisional; an existing official source is not replaced.
 
 ### `adct_pi_inbound_messages`
 | Column | Notes |

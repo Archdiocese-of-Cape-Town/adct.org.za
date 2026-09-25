@@ -11,6 +11,7 @@ use ADCT\ParishIntake\Core\Directory\ImportRow;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
+use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use DateTimeZone;
@@ -26,6 +27,7 @@ final class DirectoryImportService
         private DeaneryRepository $deaneries,
         private ContactService $contacts,
         private ClockInterface $clock,
+        private SourceRegistryService $sources,
         private VenueDirectoryImporter $venueImporter
     ) {
     }
@@ -124,6 +126,7 @@ final class DirectoryImportService
 
             if ($officeEmail !== null) {
                 $this->contacts->linkOfficial($id, (string) $officeEmail);
+                $this->sources->registerOfficialEmailIfMissing($id, (string) $officeEmail);
             }
         }
 

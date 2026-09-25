@@ -78,6 +78,8 @@ The parish directory stores known parent relationships through `parent_slug`/`pa
 
 An `office_email` in the CSV is added as a verified parish contact with a verification timestamp if the address has no existing links. If that address is already linked, its current trust is retained and shared with the new parish link. Existing contact details are left untouched. Use the import to add new official office addresses; contact management is available on each parish's edit screen and on the Senders screen.
 
+For a parish with no official source, the import also registers that office email as its official `email` source. Re-importing is safe: it does not duplicate the source or replace a different official source. This source seeding is provisional.
+
 **Export parishes CSV** downloads the current directory using the template's columns. **Download CSV template** provides the same header with no data rows. The export includes a verified office email when one is available; it does not include unknown, pending or blocked contacts. To protect spreadsheet users, cells beginning with `=`, `+`, `-`, `@`, a tab or a carriage return are prefixed with a single quote, except a value in the phone column that matches a phone-number pattern (for example, `+27 00 000 0000`). The importer removes that export-added prefix so an exported file can be imported again. Keep private contact details out of the public repository.
 
 ### Manage parish contacts and senders
@@ -87,12 +89,20 @@ An `office_email` in the CSV is added as a verified parish contact with a verifi
 3. Use **Verify address** only after checking the contact with the parish. Verification fills in the sender's linked parish information and permits immediate changes to already-published events; every new event still needs approval by a dean or archdiocese reviewer.
 4. **Block address** stops intake for that email address across every linked parish. An administrator can use **Unblock address** to return it to `unknown`; verify it again before treating it as trusted. A blocked address cannot lose its final parish link until an administrator explicitly unblocks it, so removing one of several links does not change trust for the remaining links.
 
+### Manage sources
+
+An Administrator or Intake manager with `adct_pi_manage_directory` can open **Parish Intake → Sources** to see sources across the archdiocese. Filter by parish (including archdiocese-wide), type, role or status, and review the last check, last success, last item, consecutive failures and last error. Use **Add archdiocese-wide source** to create or edit a source that is not tied to a parish. Parish-bound sources are edited from that parish's **Sources** tab; the global list links back to the parish tab.
+
+On a parish's Sources tab, add or edit a source and select its type, identifier, role, status and polling interval. Email identifiers are normalized to lowercase; ICS, PDF, Facebook Page, RSS and web-page identifiers must be HTTP(S) URLs; forwarded-WhatsApp and manual sources use a short label. A parish can have no official source, but it can have at most one: selecting another as **Official** demotes the previous one to **Monitored** in the same transaction. Archdiocese-wide sources can have multiple Official entries without a uniqueness limit (provisional).
+
+Pollable sources default to 1,440 minutes (24 hours) and cannot be set below 10 minutes; both values are provisional. Manual sources are not polled and have no poll interval. Health fields are read-only. Once polling jobs are implemented, five consecutive failures (provisional) mark an active source **Unreliable**; **Paused** and **Disabled** sources are not changed by failures. A success clears the failure count and last error, but an Unreliable source remains so until an operator changes its status. Last errors are technical diagnostics only; do not put message contents or personal information in them.
+
 ## Check database installation and upgrade (staging)
 
 Do this on a staging site with a recent database backup; do not change schema options on the live site.
 
-1. On a fresh staging install, activate the plugin and use the site's database manager to confirm `adct_pi_db_version` is `2` and that the 15 `adct_pi_*` tables in [the data model](data-model.md) exist. Confirm `adct_pi_venues` has the aliases, coordinates, default, status and source-parish columns.
-2. On a staging copy of a prototype installation, update/activate the new plugin and visit a WordPress admin page to run the upgrade check. Confirm the option is `2`, the venue columns exist, and no database-upgrade error notice is shown.
+1. On a fresh staging install, activate the plugin and use the site's database manager to confirm `adct_pi_db_version` is `2` and that the 15 `adct_pi_*` tables in [the data model](data-model.md) exist. Confirm `adct_pi_venues` has the aliases, coordinates, default, status and source-parish columns, and `adct_pi_sources` has its registry and health columns.
+2. On a staging copy of a prototype installation, update/activate the new plugin and visit a WordPress admin page to run the upgrade check. Confirm the option is `2`, the venue and source columns exist, and no database-upgrade error notice is shown.
 3. Confirm `wp_adct_parish_intake_items` and its row count are unchanged, then open **Parish Intake → Manual parser** and verify that recent stored parses still appear.
 
 ## Keep scheduled jobs running
