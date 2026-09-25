@@ -58,6 +58,23 @@ final class ImapMailboxTest extends TestCase
         self::assertSame("A0004 UID SEARCH UID 9:*\r\n", $transport->writes[3]);
     }
 
+    public function testSearchUsesAnUpperUidBoundWhenProvided(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake()
+            . "* OK [UIDVALIDITY 55771] UIDs valid\r\n"
+            . "A0003 OK SELECT completed\r\n"
+            . "* SEARCH 11 12 15\r\nA0004 OK SEARCH completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        self::assertSame(
+            [11, 12, 15],
+            $mailbox->searchFolder(new MailboxSearchCriteria(afterUid: 10, beforeUid: 15), 'Processed')
+        );
+        self::assertSame("A0004 UID SEARCH UID 11:15\r\n", $transport->writes[3]);
+    }
+
     public function testReturnsUidValidityFromTheSelectedInbox(): void
     {
         $transport = new ScriptedTransport(
@@ -310,6 +327,26 @@ final class ImapMailboxTest extends TestCase
         $mailbox->move(77, 'Processed');
 
         self::assertSame("A0006 EXPUNGE\r\n", $transport->writes[5]);
+    }
+
+    public function testDeleteRequiresUidplusToAvoidAnUnsafeMailboxExpungeFallback(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake()
+            . "A0003 OK SELECT completed\r\n"
+            . "A0004 OK STORE completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        try {
+            $mailbox->delete(77, 'Processed');
+            self::fail('Expected the processed-folder deletion to fail closed without UIDPLUS.');
+        } catch (ProtocolError $exception) {
+            self::assertStringContainsString('UIDPLUS', $exception->getMessage());
+        }
+
+        self::assertSame("A0004 UID STORE 77 +FLAGS.SILENT (\\Deleted)\r\n", $transport->writes[3]);
+        self::assertStringNotContainsString('EXPUNGE', implode('', $transport->writes));
     }
 
     public function testMarksMessageSeen(): void

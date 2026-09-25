@@ -12,11 +12,20 @@ final readonly class MailboxSearchCriteria
         public bool $unseen = false,
         public ?DateTimeImmutable $since = null,
         public ?int $afterUid = null,
+        public ?int $beforeUid = null,
         public ?DateTimeImmutable $before = null,
         public ?string $folder = null,
     ) {
         if ($afterUid !== null && ($afterUid < 0 || $afterUid > MailboxCheckpoint::MAX_UID)) {
             throw new \InvalidArgumentException('A UID search checkpoint must be a valid IMAP UID.');
+        }
+
+        if ($beforeUid !== null && ($beforeUid < 1 || $beforeUid > MailboxCheckpoint::MAX_UID)) {
+            throw new \InvalidArgumentException('A UID search range must be a valid IMAP UID.');
+        }
+
+        if ($afterUid !== null && $beforeUid !== null && $beforeUid < $afterUid) {
+            throw new \InvalidArgumentException('A UID search range must be ascending.');
         }
 
         if ($folder !== null && trim($folder) === '') {

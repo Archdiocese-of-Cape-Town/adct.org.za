@@ -46,10 +46,12 @@ final class RetentionCleanupJobTest extends TestCase
         $attOne = str_repeat('4', 64) . '.pdf';
         $attTwo = str_repeat('5', 64) . '.pdf';
         $attThree = str_repeat('6', 64) . '.pdf';
+        $retentionAtNow = '2026-09-24 23:00:00';
+        $receivedAtCutoff = '2025-09-24 23:00:00';
         $deps->database->messages = [
-            1 => $deps->message(1, 'parsed', $rawOne, '2025-09-24 00:00:00'),
-            2 => $deps->message(2, 'parsed', $rawTwo, '2025-09-24 00:00:00'),
-            3 => $deps->message(3, 'parsed', $rawThree, '2025-09-24 00:00:00'),
+            1 => $deps->message(1, 'parsed', $rawOne, $retentionAtNow, $receivedAtCutoff),
+            2 => $deps->message(2, 'parsed', $rawTwo, $retentionAtNow, $receivedAtCutoff),
+            3 => $deps->message(3, 'parsed', $rawThree, $retentionAtNow, $receivedAtCutoff),
         ];
         $deps->database->candidates = [
             2 => ['draft'],
@@ -87,10 +89,12 @@ final class RetentionCleanupJobTest extends TestCase
         $rawOne = str_repeat('1', 64) . '.eml';
         $rawTwo = str_repeat('2', 64) . '.eml';
         $rawThree = str_repeat('3', 64) . '.eml';
+        $retentionAtNow = '2026-09-24 23:00:00';
+        $receivedAtCutoff = '2025-09-24 23:00:00';
         $deps->database->messages = [
-            1 => $deps->message(1, 'parsed', $rawOne, '2025-09-24 00:00:00'),
-            2 => $deps->message(2, 'parsed', $rawTwo, '2025-09-24 00:00:00'),
-            3 => $deps->message(3, 'parsed', $rawThree, '2025-09-24 00:00:00'),
+            1 => $deps->message(1, 'parsed', $rawOne, $retentionAtNow, $receivedAtCutoff),
+            2 => $deps->message(2, 'parsed', $rawTwo, $retentionAtNow, $receivedAtCutoff),
+            3 => $deps->message(3, 'parsed', $rawThree, $retentionAtNow, $receivedAtCutoff),
         ];
         $deps->storage->files = [
             $rawOne => 'message 1',
@@ -115,6 +119,104 @@ final class RetentionCleanupJobTest extends TestCase
         self::assertTrue($second->isComplete());
         self::assertSame([$rawOne, $rawTwo, $rawThree], $deps->storage->deleted);
         self::assertNull($deps->database->messages[3]['raw_path']);
+    }
+
+    public function testRawCleanupHonoursTheStoredRetentionFloorBeforeConfiguredAgeCutoff(): void
+    {
+        $deps = new RetentionTestDependencies();
+        $flooredRaw = str_repeat('7', 64) . '.eml';
+        $eligibleRaw = str_repeat('8', 64) . '.eml';
+        $deps->database->messages = [
+            1 => $deps->message(
+                1,
+                'parsed',
+                $flooredRaw,
+                '2026-09-25 23:00:00',
+                '2025-09-24 23:00:00'
+            ),
+            2 => $deps->message(
+                2,
+                'parsed',
+                $eligibleRaw,
+                '2026-09-24 23:00:00',
+                '2025-09-24 23:00:00'
+            ),
+        ];
+        $deps->storage->files = [
+            $flooredRaw => 'floored message',
+            $eligibleRaw => 'eligible message',
+        ];
+
+        $job = $this->job($deps, RetentionSettings::fromValues('1', '30', '0', '30'), 5);
+        $result = $job->processNext($this->encodeCheckpoint('raw', 0));
+
+        self::assertInstanceOf(JobStepResult::class, $result);
+        self::assertTrue($result->isComplete());
+        self::assertSame([$eligibleRaw], $deps->storage->deleted);
+        self::assertSame($flooredRaw, $deps->database->messages[1]['raw_path']);
+        self::assertNull($deps->database->messages[2]['raw_path']);
+    }
+
+    public function testTokenAndAuditCleanupStayOptIn(): void
+    {
+        $deps = new RetentionTestDependencies();
+        $deps->database->actionTokenRows = [
+            1 => ['id' => 1, 'expires_at' => '2025-09-24 00:00:00'],
+        ];
+        $deps->database->auditRows = [
+            ['id' => 1, 'created_at' => '2023-09-24 00:00:00'],
+        ];
+
+        $job = $this->job($deps, RetentionSettings::fromValues('1', '30', '0', '30', '0', '0'));
+        $result = $job->processNext(null);
+
+        self::assertInstanceOf(JobStepResult::class, $result);
+        self::assertFalse($result->isComplete());
+        self::assertSame(
+            [['id' => 1, 'expires_at' => '2025-09-24 00:00:00']],
+            array_values($deps->database->actionTokenRows)
+        );
+        self::assertSame(
+            [['id' => 1, 'created_at' => '2023-09-24 00:00:00']],
+            array_values($deps->database->auditRows)
+        );
+    }
+
+    public function testRawCleanupRetriesSafelyWhenTheDatabaseUpdateFails(): void
+    {
+        $deps = new RetentionTestDependencies();
+        $rawPath = str_repeat('9', 64) . '.eml';
+        $deps->database->messages = [
+            1 => $deps->message(
+                1,
+                'parsed',
+                $rawPath,
+                '2026-09-24 23:00:00',
+                '2025-09-24 23:00:00'
+            ),
+        ];
+        $deps->storage->files = [
+            $rawPath => 'message',
+        ];
+        $deps->database->rawUpdateFailuresRemaining = 1;
+        $job = $this->job($deps, RetentionSettings::fromValues('1', '30', '0', '30'), 5);
+
+        try {
+            $job->processNext($this->encodeCheckpoint('raw', 0));
+            self::fail('Expected the injected database failure to stop the cleanup step.');
+        } catch (RuntimeException $exception) {
+            self::assertStringContainsString('raw message pointer', $exception->getMessage());
+        }
+
+        self::assertSame([$rawPath], $deps->storage->deleted);
+        self::assertSame($rawPath, $deps->database->messages[1]['raw_path']);
+
+        $retry = $job->processNext($this->encodeCheckpoint('raw', 0));
+
+        self::assertInstanceOf(JobStepResult::class, $retry);
+        self::assertTrue($retry->isComplete());
+        self::assertSame([$rawPath, $rawPath], $deps->storage->deleted);
+        self::assertNull($deps->database->messages[1]['raw_path']);
     }
 
     public function testProcessedCleanupDeletesBatchesAndResumesWithTheSameMailbox(): void
@@ -154,11 +256,49 @@ final class RetentionCleanupJobTest extends TestCase
         $second = $job->processNext($first->checkpoint());
 
         self::assertInstanceOf(JobStepResult::class, $second);
-        self::assertTrue($second->isComplete());
+        self::assertFalse($second->isComplete());
         self::assertSame([10, 11, 12], $deps->mailbox->deleted['Processed']);
         self::assertCount(2, $deps->mailbox->searchCriteria);
         self::assertSame(11, $deps->mailbox->searchCriteria[1]['criteria']->afterUid);
         self::assertTrue($deps->mailbox->closed);
+
+        $third = $job->processNext($second->checkpoint());
+
+        self::assertInstanceOf(JobStepResult::class, $third);
+        self::assertTrue($third->isComplete());
+        self::assertCount(3, $deps->mailbox->searchCriteria);
+    }
+
+    public function testProcessedCleanupScansLargeFoldersInBoundedWindows(): void
+    {
+        $deps = new RetentionTestDependencies();
+        $deps->mailbox = new RetentionMailbox([
+            'Processed' => range(1, 2000),
+        ]);
+        $deps->mailboxSettingsStore = new RetentionMailboxSettingsStore([
+            new MailboxSettings(
+                'Processed mailbox',
+                'imap.example.test',
+                993,
+                MailboxEncryption::SSL,
+                'intake@example.test',
+                'INBOX',
+                'Processed',
+                30 * 1024 * 1024,
+                true,
+                1,
+                1
+            ),
+        ]);
+
+        $job = $this->job($deps, RetentionSettings::fromValues('0', '30', '1', '30'), 25);
+        $result = $job->processNext($this->encodeProcessedCheckpoint(1, 0));
+
+        self::assertInstanceOf(JobStepResult::class, $result);
+        self::assertFalse($result->isComplete());
+        self::assertCount(1, $deps->mailbox->searchCriteria);
+        self::assertSame(500, $deps->mailbox->searchCriteria[0]['criteria']->beforeUid);
+        self::assertSame(range(1, 25), $deps->mailbox->deleted['Processed']);
     }
 
     private function job(RetentionTestDependencies $deps, RetentionSettings $settings, int $batchSize = 25): RetentionCleanupJob
@@ -222,13 +362,14 @@ final class RetentionTestDependencies
     /**
      * @return array<string, mixed>
      */
-    public function message(int $id, string $status, ?string $rawPath, string $retentionUntil): array
+    public function message(int $id, string $status, ?string $rawPath, string $retentionUntil, string $receivedAt): array
     {
         return [
             'id' => $id,
             'status' => $status,
             'raw_path' => $rawPath,
             'retention_until' => $retentionUntil,
+            'received_at' => $receivedAt,
             'updated_at' => '2025-09-24 00:00:00',
         ];
     }
@@ -257,6 +398,10 @@ final class RetentionTestDatabase implements DatabaseConnectionInterface
     /** @var list<array<string, mixed>> */
     public array $actionTokenRows = [];
 
+    public int $rawUpdateFailuresRemaining = 0;
+
+    private string $lastError = '';
+
     public function prefix(): string
     {
         return 'wp_';
@@ -272,6 +417,7 @@ final class RetentionTestDatabase implements DatabaseConnectionInterface
     public function query(string $query): int|false
     {
         $this->queries[] = $query;
+        $this->lastError = '';
 
         if (in_array($query, ['START TRANSACTION', 'COMMIT', 'ROLLBACK'], true)) {
             return 1;
@@ -316,6 +462,13 @@ final class RetentionTestDatabase implements DatabaseConnectionInterface
         }
 
         if (str_contains($prepared['query'], 'UPDATE `wp_adct_pi_inbound_messages` SET raw_path = NULL')) {
+            if ($this->rawUpdateFailuresRemaining > 0) {
+                --$this->rawUpdateFailuresRemaining;
+                $this->lastError = 'Injected raw cleanup update failure.';
+
+                return false;
+            }
+
             $messageId = (int) ($prepared['arguments'][1] ?? 0);
 
             if (! isset($this->messages[$messageId])) {
@@ -390,7 +543,7 @@ final class RetentionTestDatabase implements DatabaseConnectionInterface
         }
 
         if (str_contains($sql, 'FROM `wp_adct_pi_inbound_messages`')) {
-            [$cutoff, $pattern, $statusA, $statusB, $statusC, $lastId, $candA, $candB, $candC, $candD, $limit] = $arguments;
+            [$retentionCutoff, $receivedCutoff, $pattern, $statusA, $statusB, $statusC, $lastId, $candA, $candB, $candC, $candD, $limit] = $arguments;
             $rows = [];
 
             foreach ($this->messages as $row) {
@@ -400,7 +553,11 @@ final class RetentionTestDatabase implements DatabaseConnectionInterface
                     continue;
                 }
 
-                if (($row['retention_until'] ?? '') > $cutoff) {
+                if (($row['retention_until'] ?? '') > $retentionCutoff) {
+                    continue;
+                }
+
+                if (($row['received_at'] ?? '') > $receivedCutoff) {
                     continue;
                 }
 
@@ -461,11 +618,12 @@ final class RetentionTestDatabase implements DatabaseConnectionInterface
 
     public function clearLastError(): void
     {
+        $this->lastError = '';
     }
 
     public function lastError(): string
     {
-        return '';
+        return $this->lastError;
     }
 }
 
@@ -561,6 +719,13 @@ final class RetentionMailbox implements MailboxInterface
             $uids = array_values(array_filter(
                 $uids,
                 static fn (int $uid): bool => $uid > $criteria->afterUid
+            ));
+        }
+
+        if ($criteria->beforeUid !== null) {
+            $uids = array_values(array_filter(
+                $uids,
+                static fn (int $uid): bool => $uid <= $criteria->beforeUid
             ));
         }
 

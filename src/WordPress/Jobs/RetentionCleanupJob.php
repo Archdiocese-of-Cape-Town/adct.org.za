@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Jobs;
 
 use ADCT\ParishIntake\Core\Ingestion\MailboxSearchCriteria;
+use ADCT\ParishIntake\Core\Ingestion\MailboxCheckpoint;
 use ADCT\ParishIntake\Core\Jobs\AbstractJob;
 use ADCT\ParishIntake\Core\Jobs\JobState;
 use ADCT\ParishIntake\Core\Jobs\JobStepResult;
@@ -23,6 +24,7 @@ final class RetentionCleanupJob extends AbstractJob
 {
     private const DEFAULT_INTERVAL_SECONDS = 86400;
     private const BATCH_SIZE = 25;
+    private const PROCESSED_SEARCH_WINDOW = 500;
     private const ACTION_TOKEN_RETENTION_DAYS = 30;
     private const AUDIT_LOG_RETENTION_MONTHS = 24;
     /** @var callable */
@@ -79,6 +81,10 @@ final class RetentionCleanupJob extends AbstractJob
         }
 
         if ($phase === 'tokens') {
+            if (! $settings->actionTokenCleanupEnabled()) {
+                return $this->advancePhase('audit', $settings);
+            }
+
             $result = $this->pruneActionTokens($state['tokens_last_id'], $settings);
 
             if ($result['more']) {
@@ -89,6 +95,10 @@ final class RetentionCleanupJob extends AbstractJob
         }
 
         if ($phase === 'audit') {
+            if (! $settings->auditCleanupEnabled()) {
+                return $this->advancePhase('raw', $settings);
+            }
+
             $result = $this->pruneAuditLog($state['audit_last_id'], $settings);
 
             if ($result['more']) {
@@ -252,12 +262,15 @@ final class RetentionCleanupJob extends AbstractJob
      */
     private function pruneRawMessages(int $lastId, RetentionSettings $settings): array
     {
-        $cutoff = $this->utc($this->clock->now()->modify('-' . $settings->rawRetentionDays() . ' days'));
+        $clockNow = $this->clock->now();
+        $now = $this->utc($clockNow);
+        $cutoff = $this->utc($clockNow->modify('-' . $settings->rawRetentionDays() . ' days'));
         $messagesTable = $this->tableName('adct_pi_inbound_messages');
         $candidatesTable = $this->tableName('adct_pi_event_candidates');
         $query = $this->database->prepare(
             'SELECT m.id, m.raw_path FROM ' . $messagesTable . ' m'
             . ' WHERE m.retention_until <= %s'
+            . ' AND m.received_at <= %s'
             . ' AND m.raw_path IS NOT NULL'
             . ' AND m.raw_path REGEXP %s'
             . ' AND m.status IN (%s, %s, %s)'
@@ -268,6 +281,7 @@ final class RetentionCleanupJob extends AbstractJob
             . ' AND c.status IN (%s, %s, %s, %s)'
             . ' )'
             . ' ORDER BY m.id ASC LIMIT %d',
+            $now,
             $cutoff,
             '^[a-f0-9]{64}\\.eml$',
             'parsed',
@@ -299,11 +313,15 @@ final class RetentionCleanupJob extends AbstractJob
             $messageIds[] = $messageId;
             $this->storage->delete($rawPath);
             $this->deleteAttachmentFilesForMessage($messageId);
-            $this->database->query($this->database->prepare(
+            $updated = $this->database->query($this->database->prepare(
                 'UPDATE ' . $messagesTable . ' SET raw_path = NULL, updated_at = %s WHERE id = %d AND raw_path IS NOT NULL',
                 $this->utc($this->clock->now()),
                 $messageId
             ));
+
+            if ($updated !== 1 || $this->database->lastError() !== '') {
+                throw new RuntimeException('Retention cleanup could not clear the raw message pointer.');
+            }
         }
 
         if ($messageIds === []) {
@@ -336,67 +354,101 @@ final class RetentionCleanupJob extends AbstractJob
         $lastUid = $cursor['last_uid'] ?? 0;
         $mailboxIndex = $this->mailboxIndexForSourceId($mailboxes, $sourceId);
 
-        for ($index = $mailboxIndex; $index < count($mailboxes); ++$index) {
-            $mailboxSettings = $mailboxes[$index];
-            $password = ($this->passwordResolver)($mailboxSettings);
+        if ($mailboxIndex >= count($mailboxes)) {
+            return [
+                'cursor' => [
+                    'source_id' => 0,
+                    'last_uid' => 0,
+                ],
+                'next_cursor' => [
+                    'source_id' => 0,
+                    'last_uid' => 0,
+                ],
+                'more' => false,
+            ];
+        }
 
-            if (! is_string($password) || trim($password) === '') {
-                throw new RuntimeException('No mailbox password is configured.');
-            }
+        $mailboxSettings = $mailboxes[$mailboxIndex];
+        $password = ($this->passwordResolver)($mailboxSettings);
 
-            $mailbox = ($this->mailboxFactory)($mailboxSettings, $password);
+        if (! is_string($password) || trim($password) === '') {
+            throw new RuntimeException('No mailbox password is configured.');
+        }
 
-            if (! $mailbox instanceof MailboxInterface) {
-                throw new RuntimeException('The mailbox factory returned an invalid adapter.');
-            }
+        $mailbox = ($this->mailboxFactory)($mailboxSettings, $password);
 
-            try {
-                $cutoff = $this->clock->now()->modify('-' . $settings->processedRetentionDays() . ' days');
-                $uids = $mailbox->searchFolder(
-                    MailboxSearchCriteria::before($cutoff, $mailboxSettings->processedFolder, $lastUid > 0 ? $lastUid : null),
-                    $mailboxSettings->processedFolder
-                );
+        if (! $mailbox instanceof MailboxInterface) {
+            throw new RuntimeException('The mailbox factory returned an invalid adapter.');
+        }
 
-                if ($uids === []) {
-                    $lastUid = 0;
-                    continue;
-                }
+        try {
+            $cutoff = $this->clock->now()->modify('-' . $settings->processedRetentionDays() . ' days');
+            $windowStart = max(0, $lastUid);
+            $windowEnd = min(MailboxCheckpoint::MAX_UID, $windowStart + self::PROCESSED_SEARCH_WINDOW);
 
-                sort($uids, SORT_NUMERIC);
-                $uids = array_slice($uids, 0, $this->batchSize);
-
-                foreach ($uids as $uid) {
-                    $mailbox->delete($uid, $mailboxSettings->processedFolder);
-                    $lastUid = $uid;
-                }
-
+            if ($windowEnd <= $windowStart) {
                 return [
                     'cursor' => [
                         'source_id' => $mailboxSettings->sourceId,
-                        'last_uid' => $lastUid,
+                        'last_uid' => $windowStart,
                     ],
                     'next_cursor' => [
                         'source_id' => $this->nextMailboxSourceId($mailboxes, $mailboxSettings->sourceId),
                         'last_uid' => 0,
                     ],
-                    'more' => count($uids) === $this->batchSize,
+                    'more' => false,
                 ];
-            } finally {
-                $mailbox->close();
             }
-        }
 
-        return [
-            'cursor' => [
-                'source_id' => 0,
-                'last_uid' => 0,
-            ],
-            'next_cursor' => [
-                'source_id' => 0,
-                'last_uid' => 0,
-            ],
-            'more' => false,
-        ];
+            $uids = $mailbox->searchFolder(
+                new MailboxSearchCriteria(
+                    before: $cutoff,
+                    afterUid: $windowStart > 0 ? $windowStart : null,
+                    beforeUid: $windowEnd,
+                    folder: $mailboxSettings->processedFolder
+                ),
+                $mailboxSettings->processedFolder
+            );
+
+            if ($uids === []) {
+                return [
+                    'cursor' => [
+                        'source_id' => $mailboxSettings->sourceId,
+                        'last_uid' => $windowEnd,
+                    ],
+                    'next_cursor' => [
+                        'source_id' => $this->nextMailboxSourceId($mailboxes, $mailboxSettings->sourceId),
+                        'last_uid' => 0,
+                    ],
+                    'more' => false,
+                ];
+            }
+
+            sort($uids, SORT_NUMERIC);
+            $uids = array_slice($uids, 0, $this->batchSize);
+            $deletedUid = $windowStart;
+
+            foreach ($uids as $uid) {
+                $mailbox->delete($uid, $mailboxSettings->processedFolder);
+                $deletedUid = $uid;
+            }
+
+            $processedAllInWindow = count($uids) < $this->batchSize;
+
+            return [
+                'cursor' => [
+                    'source_id' => $mailboxSettings->sourceId,
+                    'last_uid' => $processedAllInWindow ? $windowEnd : $deletedUid,
+                ],
+                'next_cursor' => [
+                    'source_id' => $this->nextMailboxSourceId($mailboxes, $mailboxSettings->sourceId),
+                    'last_uid' => 0,
+                ],
+                'more' => ! $processedAllInWindow || $windowEnd < MailboxCheckpoint::MAX_UID,
+            ];
+        } finally {
+            $mailbox->close();
+        }
     }
 
     /**
@@ -492,10 +544,14 @@ final class RetentionCleanupJob extends AbstractJob
     private function nextEnabledPhase(string $phase, RetentionSettings $settings): string
     {
         if ($phase === 'tokens') {
-            return 'audit';
+            return $this->nextEnabledPhase('audit', $settings);
         }
 
         if ($phase === 'audit') {
+            if ($settings->auditCleanupEnabled()) {
+                return 'audit';
+            }
+
             return $settings->rawCleanupEnabled()
                 ? 'raw'
                 : ($settings->processedCleanupEnabled() ? 'processed' : 'done');

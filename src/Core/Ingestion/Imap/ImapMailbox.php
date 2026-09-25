@@ -102,7 +102,15 @@ final class ImapMailbox implements MailboxInterface
                 return [];
             }
 
-            $searchKeys[] = 'UID ' . ($criteria->afterUid + 1) . ':*';
+            $startUid = $criteria->afterUid + 1;
+
+            if ($criteria->beforeUid !== null) {
+                $searchKeys[] = 'UID ' . $startUid . ':' . $criteria->beforeUid;
+            } else {
+                $searchKeys[] = 'UID ' . $startUid . ':*';
+            }
+        } elseif ($criteria->beforeUid !== null) {
+            $searchKeys[] = 'UID 1:' . $criteria->beforeUid;
         }
 
         if ($searchKeys === []) {
@@ -226,9 +234,11 @@ final class ImapMailbox implements MailboxInterface
         $storeResult = $this->client->execute(sprintf('UID STORE %d +FLAGS.SILENT (\\Deleted)', $uid));
         $this->client->requireOkay($storeResult, 'The message could not be marked for deletion.');
 
-        $expunge = $this->client->supports('UIDPLUS')
-            ? sprintf('UID EXPUNGE %d', $uid)
-            : 'EXPUNGE';
+        if (! $this->client->supports('UIDPLUS')) {
+            throw new ProtocolError('The mail server must support UIDPLUS to remove messages safely from the processed folder.');
+        }
+
+        $expunge = sprintf('UID EXPUNGE %d', $uid);
         $expungeResult = $this->client->execute($expunge);
         $this->client->requireOkay($expungeResult, 'The message could not be removed from the folder.');
     }
