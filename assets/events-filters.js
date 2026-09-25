@@ -241,6 +241,10 @@
         var suburb = form.querySelector('#adct-near-me-suburb');
         var radius = form.querySelector('[data-near-radius]');
         var attempt = ++locationAttempt;
+        if (activeRequest) {
+            activeRequest.abort();
+            activeRequest = null;
+        }
         setLocationStatus(section, 'Requesting your location.');
 
         function unavailable() {

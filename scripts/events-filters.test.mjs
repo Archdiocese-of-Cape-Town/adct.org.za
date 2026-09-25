@@ -8,7 +8,7 @@ const initialUrl = 'https://example.test/events/?page_id=123&adct_period=range' 
   '&adct_types%5B1%5D=9&adct_parish=42&adct_deanery=7' +
   '&adct_collapse=1&adct_pin=1';
 
-function createEnvironment({ geolocation } = {}) {
+function createEnvironment({ geolocation, ignoreFetchAbort = false } = {}) {
   const listeners = {};
   const fetchCalls = [];
   const sectionHistory = [];
@@ -102,6 +102,9 @@ function createEnvironment({ geolocation } = {}) {
         return null;
       },
       replaceWith(replacement) {
+        if (currentSection !== section) {
+          return;
+        }
         currentSection = replacement;
         sectionHistory.push(replacement);
       },
@@ -185,11 +188,13 @@ function createEnvironment({ geolocation } = {}) {
     fetch(url, options) {
       return new Promise((resolve, reject) => {
         fetchCalls.push({ url, options, resolve, reject });
-        options.signal.addEventListener('abort', () => {
-          const error = new Error('Aborted');
-          error.name = 'AbortError';
-          reject(error);
-        }, { once: true });
+        if (!ignoreFetchAbort) {
+          options.signal.addEventListener('abort', () => {
+            const error = new Error('Aborted');
+            error.name = 'AbortError';
+            reject(error);
+          }, { once: true });
+        }
       });
     },
     window: {
@@ -363,6 +368,33 @@ test('geolocation is requested only on activation and sent only in a no-store PO
   assert.equal(environment.radiusField.name, undefined);
   assert.equal(environment.currentSection().form.entries().some(([key]) => /near|latitude|longitude|suburb|radius/i.test(key)), false);
 
+  await environment.resolveFetch(1, { html: 'nearby-results' });
+  assert.equal(environment.currentSection().renderedHtml, 'nearby-results');
+});
+
+test('a pending filter response cannot detach the section while geolocation is pending', async () => {
+  let browserSuccess;
+  const environment = createEnvironment({
+    geolocation: {
+      getCurrentPosition(success) {
+        browserSuccess = success;
+      },
+    },
+    ignoreFetchAbort: true,
+  });
+  loadScript(environment);
+
+  environment.dispatchSubmit();
+  const filterRequest = environment.fetchCalls[0];
+  environment.dispatchClick('near');
+
+  await environment.resolveFetch(0, { html: 'stale-filter-results' });
+  assert.equal(environment.currentSection().renderedHtml, 'initial');
+  assert.equal(filterRequest.options.signal.aborted, true);
+
+  browserSuccess({ coords: { latitude: -33.9258, longitude: 18.4232 } });
+  assert.equal(environment.fetchCalls.length, 2);
+  assert.equal(bodyOf(environment.fetchCalls[1]).near_mode, 'browser');
   await environment.resolveFetch(1, { html: 'nearby-results' });
   assert.equal(environment.currentSection().renderedHtml, 'nearby-results');
 });
