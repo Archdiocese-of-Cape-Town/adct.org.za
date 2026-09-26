@@ -1,48 +1,43 @@
-# adct.org.za
+# ADCT Parish Intake
 
-## ADCT Parish Intake plugin
+A WordPress plugin to collect parish notices and show upcoming events on the Archdiocese of Cape Town site. It runs on the existing shared host (PHP 8.2, WordPress database and scheduled jobs), without a separate server. Email is the first input; other channels are planned.
 
-This repository now contains a lightweight WordPress plugin prototype for parish intake parsing on shared hosting.
+**Status:** Core pieces work in tests, but the full email-to-publication journey is **not ready for live rollout**. Received emails produce draft candidates; they do not yet trigger submitter confirmation and approval.
 
-### What it does
+## What works now
 
-- Runs an offline-first parsing pipeline for parish communications.
-- Normalizes source text, applies deterministic extraction, detects recurring events, scores confidence, and only then optionally calls an AI provider.
-- Stores raw and extracted data separately so parses can be reviewed and reprocessed later.
-- Adds a dedicated **Parish Intake** admin menu with separate **Settings** and **Manual parser** screens.
-- Can generate a static HTML snapshot report from stored parse results.
+- **Directory:** import and manage parishes, deaneries, venues, contacts, sources and approver assignments.
+- **Inbox:** configure/test an IMAP mailbox, poll and privately store mail, extract draft events, and inspect/retry failures. The **Manual parser** works without a mailbox. Optional AI is off by default; manual parsing stays offline.
+- **Events:** create/edit one-off or recurring WordPress events. The **Upcoming events** block or `[adct_events]` shortcode provides a date/type/parish/deanery-filtered listing; `/?adct_ics=1` provides an ICS feed. Drafts from email do **not** appear here automatically.
+- **Operations:** bounded scheduled jobs, health reporting, a capped mail queue and single-use token foundations; automated PHP and installed-ZIP WordPress tests.
 
-### AI support
+## Try it on a test WordPress site
 
-AI is disabled by default. The background inbox job can optionally enrich low-confidence candidates through an OpenAI-compatible endpoint (OpenRouter, Groq or local Ollama). The Manual parser remains offline even when AI is enabled. OpenRouter defaults to `qwen/qwen3.8-27b:free`; check current provider quotas and pricing before enabling AI.
+1. On a **test** WordPress site (PHP 8.2+, MySQL/MariaDB), upload and activate `adct-parish-intake.zip` via **Plugins -> Add New -> Upload Plugin**. Use a GitHub Release ZIP or build one below, **not** GitHub's source-code ZIP.
+2. Open **Parish Intake -> Manual parser** to try a fictional notice. For a public preview, publish a sample event under **Events -> Add New** and place the **Upcoming events** block or `[adct_events]` on a test page.
+3. To test email separately, configure a **test** source and mailbox under **Parish Intake -> Sources / Mailboxes**, use **Test connection**, run jobs under **Parish Intake -> Scheduled jobs**, then inspect **Inbox**. Do not connect the live mailbox; enable outbound **Test mode** with an allow-list on test sites that may send mail.
 
-### Inbox parsing status
+For passwords, cron, roles and upgrades, see the [operator guide](docs/operator-guide.md).
 
-Automated inbox polling and mailbox connection settings are not part of this prototype yet. The current workflow is to configure AI fallback in **Parish Intake → Settings** and test messages manually in **Parish Intake → Manual parser**.
+## Run the project locally
 
-### Roadmap and design
-
-The plan is to grow this prototype into an email-first intake loop: parishes email `events@adct.org.za`, confirm a preview of their events by email, and approved events appear on a filterable public events page and ICS feed. See [`docs/`](docs/README.md), especially:
-
-- [Backlog and phases](docs/parish-intake-project-backlog.md)
-- [Architecture](docs/architecture.md) and [data model](docs/data-model.md)
-- [Decisions (ADRs)](docs/decisions/README.md)
-
-### Project coordination
-
-Use GitHub Issues plus a GitHub Project to coordinate work across sessions. Repository-side scaffolding for this lives in:
-
-- [`.github/ISSUE_TEMPLATE/epic.yml`](.github/ISSUE_TEMPLATE/epic.yml)
-- [`.github/ISSUE_TEMPLATE/work-item.yml`](.github/ISSUE_TEMPLATE/work-item.yml)
-- [`docs/parish-intake-project-backlog.md`](docs/parish-intake-project-backlog.md)
-
-### Validation
-
-See the [development guide](docs/development.md) for setup (PHP runs in Docker), rules and the build order, and [`docs/testing.md`](docs/testing.md) for the test layers. To run all tests (PHPUnit and the prototype smoke test) through Docker:
+From the repository root in PowerShell, use Docker Desktop (no host PHP needed):
 
 ```powershell
 docker run --rm -v "${PWD}:/app" -w /app composer:2 install --no-interaction --no-progress
-docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c "vendor/bin/phpunit && php tests/parser_smoke_test.php"
+docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c 'vendor/bin/phpunit && php tests/parser_smoke_test.php'
 ```
 
-GitHub Actions runs the same tests on PHP 8.2, 8.3 and 8.4 for every pull request.
+Build `dist/adct-parish-intake.zip`:
+
+```powershell
+docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
+```
+
+For installed-ZIP WordPress tests, install Node.js and run `npm ci`, then `npm run test:integration`. Local runs **leave their isolated containers running**; use a unique `WP_ENV_HOME` and ports alongside other environments. See the [development guide](docs/development.md).
+
+## What is still pending
+
+Complete and validate email confirmation, dean/reviewer approval, change notices and the end-to-end pilot. Near-me search and single-event pages are separate work. Parish self-service, reminders, PDF/image extraction, Google Calendar, Facebook and WhatsApp inputs come later. A staging check and small parish pilot must precede live use.
+
+The [backlog](docs/parish-intake-project-backlog.md) is a plan, **not** a completed-feature list. The [documentation index](docs/README.md) links to architecture and testing.
