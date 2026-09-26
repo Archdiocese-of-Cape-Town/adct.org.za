@@ -2,7 +2,7 @@
 
 All custom tables live in the **site's existing WordPress database** (MySQL; on xneelo this is MariaDB 10.11, a MySQL-compatible server). No separate database is needed. SQL must work on both MySQL 8 and MariaDB 10.11: no engine-specific features, and JSON is stored in `longtext`. Tables use the WordPress table prefix (shown as `wp_` here) and the `adct_pi_` namespace. Every table has an auto-incrementing `bigint(20) unsigned` `id` and UTC `created_at` / `updated_at` columns. Local-time values are stored with the timezone `Africa/Johannesburg`. Schema changes go through ordered, versioned migrations (`adct_pi_db_version` plus `dbDelta` for table definitions); the v4 nullability change uses a checked, idempotent `ALTER TABLE` through the database adapter. Scheduled-job checkpoints, locks, and run history are stored in non-autoloaded WordPress options and do not add custom tables.
 
-**Current schema version: 5.** Version 1 creates the 15 `adct_pi_*` tables listed below; version 2 extends `adct_pi_venues` without changing that table count; version 3 adds `adct_pi_mailboxes` for 16 tables total; version 4 makes `adct_pi_occurrences.parish_id` nullable so archdiocese-wide events do not use a fake parish ID; and version 5 adds the unique `(recipient, group_key)` mail queue index. Fresh installs create the nullable occurrence column and unique mail index in the canonical schema. Upgrades verify the mail index and add it only when absent; duplicate non-NULL recipient/key pairs block v5 with an explicit error and no rows are removed. `adct_event` remains a WordPress custom post type and is not a custom table migration. Schema v1 stores JSON in `longtext`, booleans in `tinyint(1)`, and uses indexed `varchar` columns no longer than 191 characters for utf8mb4 key limits. The composite mail queue index is 1,528 bytes at utf8mb4 (191 characters × 4 bytes × 2 columns), within the 3,072-byte InnoDB index limit for MySQL 8 and MariaDB 10.11. Relationships shown as foreign keys below are logical references; physical foreign-key constraints are intentionally not used so schema upgrades work on both supported database servers. For columns whose prose description did not specify storage types, v1 uses unsigned `bigint(20)` for WordPress and relationship IDs, `datetime` for UTC instants, and `date` for `occurrences.start_local_date`; enum-like values use `varchar` rather than database `ENUM`. `attachments.size_bytes` is unsigned `bigint(20)`, and `event_candidates.confidence` is `decimal(4,3)`. `mail_queue.subject` is `varchar(255)`, action-token `created_ip` is `varchar(45)`, and event-change snapshots use `before_payload` / `after_payload` `longtext` columns.
+**Current schema version: 6.** Version 1 creates the 15 `adct_pi_*` tables listed below; version 2 extends `adct_pi_venues` without changing that table count; version 3 adds `adct_pi_mailboxes` for 16 tables total; version 4 makes `adct_pi_occurrences.parish_id` nullable so archdiocese-wide events do not use a fake parish ID; version 5 adds the unique `(recipient, group_key)` mail queue index; and version 6 adds the action-token rate-limit table for 17 tables total. Fresh installs create the nullable occurrence column and unique mail index in the canonical schema. Upgrades verify the mail index and add it only when absent; duplicate non-NULL recipient/key pairs block v5 with an explicit error and no rows are removed. `adct_event` remains a WordPress custom post type and is not a custom table migration. Schema v1 stores JSON in `longtext`, booleans in `tinyint(1)`, and uses indexed `varchar` columns no longer than 191 characters for utf8mb4 key limits. The composite mail queue index is 1,528 bytes at utf8mb4 (191 characters × 4 bytes × 2 columns), within the 3,072-byte InnoDB index limit for MySQL 8 and MariaDB 10.11. Relationships shown as foreign keys below are logical references; physical foreign-key constraints are intentionally not used so schema upgrades work on both supported database servers. For columns whose prose description did not specify storage types, v1 uses unsigned `bigint(20)` for WordPress and relationship IDs, `datetime` for UTC instants, and `date` for `occurrences.start_local_date`; enum-like values use `varchar` rather than database `ENUM`. `attachments.size_bytes` is unsigned `bigint(20)`, and `event_candidates.confidence` is `decimal(4,3)`. `mail_queue.subject` is `varchar(255)`, action-token `created_ip` is `varchar(45)`, and event-change snapshots use `before_payload` / `after_payload` `longtext` columns.
 
 The prototype table `wp_adct_parish_intake_items` is retained as a legacy table. Versioned migrations neither alter, drop, nor migrate it; the current Manual parser and static report continue using it unchanged. Its future disposition is pending an explicit owner decision: migrate its rows into `inbound_messages` + `event_candidates`, or drop it only after explicit admin confirmation. It must never be dropped silently.
 
@@ -152,17 +152,19 @@ Mailbox connection settings are kept separately from source identity and health.
 | sender_email, sender_name, subject | |
 | received_at | |
 | raw_path | Relative path to the protected, unguessably named raw `.eml` under the private uploads directory |
-| body_text | Extracted plain text; the polling stage leaves this `NULL` and does not parse events |
+| body_text | Extracted plain text; the poller leaves this `NULL`, and the bounded processing job fills it after parsing the stored raw message |
 | auth_results | Nullable version-1 JSON: `version`, plus `spf`, `dkim` and `dmarc` lists of `{authserv_id, result, trusted}` verdicts. Only recognized values are stored; raw header text is not. `trusted` is true only for an explicitly allowlisted authserv-id (the default allowlist is empty). |
 | is_auto_reply | bool; set for declared or likely auto-reply/list signals and blocks confirmations, including to mailing lists |
-| status | see state machine |
-| error | |
+| status | `received`, `extracting`, `parsed`, `failed`, `ignored`, or `skipped`; see state machine |
+| error | Safe operator-facing processing, screening or size-limit reason; never a copy of raw message content |
 | retention_until | raw data deleted after this date |
 
 ### `adct_pi_attachments`
 `message_id`, filename, declared `mime_type`, `size_bytes`, private `storage_path`, SHA-256 `content_hash`, `extracted_text`, `extraction_method` (`pdf_text`, `ocr_external`, `ai_vision`, `manual`, `none`), status.
 
 The poller stores an attachment only when its declared MIME type is on the provisional allowlist (PDF, JPEG, PNG, WebP, HEIC and HEIF), its file signature matches, and it is no larger than 15 MiB. Unsupported, oversized and signature-mismatched attachments retain metadata and a skip status but no stored file. The allowlist is centralized in `AttachmentStoragePolicy`; skipped items are shown to administrators on the Mailboxes screen.
+
+The Inbox shows received, extracting, parsed, failed and ignored messages to users with intake review permission. Its Ignored filter also includes oversize messages stored with the legacy `skipped` status. It does not select `body_text`, `raw_path`, raw headers or attachments. A failed message can be requeued only after an authorized, nonce-protected admin action; reprocessing uses the same row and protected raw file, preserves attachments and mailbox checkpoints, and does not publish events or send email.
 
 ### `adct_pi_event_candidates`
 | Column | Notes |
@@ -175,7 +177,7 @@ The poller stores an attachment only when its declared MIME type is on the provi
 | recurrence | JSON: normalized supported RRULE, human-readable source phrase, RRULE parts, and optional `ambiguous` / `anchor_inferred` flags |
 | confidence | 0–1 |
 | parser_version, strategies, notes | provenance |
-| ai_used, ai_provider, ai_model | provenance |
+| ai_used, ai_provider, ai_model | provenance; `fields.ai_fields_filled` lists only the accepted keys AI actually filled, never credentials |
 | match_event_id, match_kind | `new`, `update`, `duplicate`, `cancellation` |
 | status | see state machine |
 | confirmed_by, confirmed_at | submitter confirmation (email or user) |
@@ -191,10 +193,14 @@ The parser stores a validator-approved RFC 5545 subset rule at `recurrence.rrule
 
 The parser's `ParseOutcome` returns every event candidate and block metadata. The compatibility `parse()` API and the legacy prototype table use only the first candidate; the Manual parser shows all candidates. The source snippet is candidate provenance, not the full message body, which remains in `inbound_messages.body_text` under the retention policy.
 
+Reprocessing replaces or removes only `draft` candidate rows for the same `message_id` and `block_index` inside a transaction. The unique message/block key prevents duplicate candidates after a retry; candidates that have moved beyond draft are left unchanged. Inbound parsing only creates draft candidates: event publishing and confirmation/approval messages belong to later workflow stages.
+
 ### `adct_event` (WordPress custom post type)
 The public `adct_event` post type has an `/events` archive and REST representation; its title, content, excerpt and featured image hold the public text. The hierarchical `adct_event_type` taxonomy is REST-enabled and seeded idempotently with Social, Spiritual, Formation, Liturgy/Mass, Youth, Outreach, Fundraising, Meeting and Other. This initial list is **provisional** and can be edited by users who manage event types.
 
 Registered post meta holds `parish_id`, `venue_id`, `start_local`, `end_local`, `all_day`, `rrule`, `exdates`, `rdates`, `featured`, `status_flag` (`scheduled`, `cancelled`, `postponed`), `source_candidate_id` and `contact`. `start_local` and `end_local` use the strict local format `Y-m-d\TH:i`; all-day values are normalized to local midnight and an end date is inclusive. `exdates` and `rdates` are lists of local datetimes stored as WordPress metadata arrays. RRULE values are checked against and expanded from the supported RFC 5545 subset (DAILY/WEEKLY/MONTHLY/YEARLY, INTERVAL, COUNT, UNTIL, BYDAY, BYMONTHDAY, BYMONTH and BYSETPOS).
+
+The private post meta `_adct_pi_featured_override` records that an editor explicitly set or cleared Featured in the event form or REST edit. For subsequent approved candidate updates, the publisher keeps that value instead of replacing it with a parser suggestion. New candidates still require the usual approval, and unedited events can accept new suggestions. No table or migration is needed.
 
 `contact` stores the contact name, email and phone for authorized event editors only and is deliberately absent from public REST responses. `source_candidate_id` is internal provenance, not an editor field. Parish and venue IDs are checked against the directory adapter when metadata is saved; a venue must belong to the selected parish. A parish or venue may be omitted for an archdiocese-wide event; the REST API represents an omitted ID as `0`.
 
@@ -207,7 +213,10 @@ A post type (rather than only custom tables) gives WordPress revisions, search, 
 event_id, candidate_id (nullable), actor (user id / email), kind (`update`, `cancel`, `postpone`, `revert`, `unpublish`), before_payload JSON, after_payload JSON, notified_at, reverted_by, reverted_at. The JSON snapshots are stored as `longtext`. Every change to a published event is written here, so approvers can see what changed and **revert with one click** ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md)).
 
 ### `adct_pi_action_tokens`
-token_hash, purpose (`confirm`, `deny`, `edit`, `login`, `publish_found`, `approve_event`, `reject_event`, `revert_change`), subject_type/subject_id, email, expires_at, used_at, created_ip.
+token_hash, purpose (`confirm`, `deny`, `edit`, `login`, `publish_found`, `approve_event`, `reject_event`, `revert_change`), subject_type/subject_id, normalized email, expires_at, used_at, created_ip. The link contains 32 cryptographically random bytes encoded as unpadded base64url; only its SHA-256 hash is stored here. Tokens are single-use and bound to all four values: hash, purpose, subject and email. Default expiry is 14 days for event actions and 30 minutes for login. `created_ip` is NULL; rate limits use keyed hashes rather than storing raw IP addresses.
+
+### `adct_pi_action_token_rate_limits` (v6)
+`scope_hash` is the primary key and contains an HMAC-SHA256 of an email or canonical remote IP using the WordPress auth salt; the remaining columns are `window_started_at` (fixed UTC hour), `hit_count`, `created_at`, and `updated_at`. There is no auto-increment column so generated row IDs cannot overwrite the connection-local atomic admission marker. The limiter allows 3 new-link requests per email and 20 per IP per hour. The counter stops at one above its limit so admission fails closed without relying on affected-row behavior. No email address or IP is stored in this table; inactive rows are pruned after 48 hours.
 
 ### `adct_pi_follow_ups`
 parish_id, kind (`inactivity_reminder`, `found_on_secondary`, `unknown_sender`, `approval_reminder`), channel, sent_at, outcome, note.
@@ -226,13 +235,21 @@ actor (user id / email / `system`), action, subject_type, subject_id, details JS
 ```mermaid
 stateDiagram-v2
     [*] --> received
-    received --> ignored: auto-reply / bounce / blocked sender
+    [*] --> skipped: too large to fetch
     received --> extracting
+    received --> failed: sender check or safe-ignore failure
+    received --> ignored: blocked sender
+    extracting --> extracting: resume after interruption
     extracting --> parsed
     extracting --> failed
-    failed --> extracting: retry / reprocess
+    extracting --> ignored: blocked sender or automated/list mail without candidate
+    failed --> received: authorized reprocess of the same row and file
     parsed --> [*]
+    ignored --> [*]
+    skipped --> [*]
 ```
+
+Automated/list messages with event candidates move to `parsed` and remain draft candidates; they never trigger confirmation email during ingestion. A DMARC failure remains a review flag and does not make a sender trusted. The Inbox's `ignored` filter groups the separate `skipped` status for operator convenience.
 
 ### Event candidate
 ```mermaid
@@ -253,6 +270,12 @@ stateDiagram-v2
 ```
 
 `awaiting_approval` items appear in the queue of every active approver of the parish's deanery **and** in the archdiocese reviewers' queue. The move out of `awaiting_approval` is a single conditional update (`… SET status = 'published' WHERE id = ? AND status = 'awaiting_approval'`), so only the first approver's action takes effect. Later clicks show "already decided by …".
+
+The candidate publisher accepts only a recorded `dean`, `reviewer` or `self` approval with an approver and approval time; submitter confirmation alone never authorizes publication. The `contact_change` label by itself is not proof of a verified contact and remains unavailable until the verified-contact workflow in E5.5 supplies that proof. Publishing locks the candidate and, for changes, its matched event; post/meta, before/after revision, occurrences and candidate state commit together. Retries of an already-published candidate return the linked event without writing a second revision. New events have no change row; updates, cancellations and postponements each keep a complete before/after payload. Approval and publication must be coordinated by the calling approval flow so a failed publication does not acknowledge a completed approval.
+
+When a candidate explicitly supplies an `event_type`, publication resolves it to an existing event-type term or fails; an update without `event_type` retains the existing term assignment (new events use the taxonomy default). A failed publication must leave both SQL data and WordPress post/term caches showing the previous event, including when the same PHP request retries.
+
+The listing cache generation is a random, option-backed `adct_pi_event_listing_generation` token. The publisher changes it **after** the event transaction commits, including on an idempotent retry, so an old-key transient populated by a concurrent pre-commit reader is unreachable. If the option write fails after commit, the publisher reports that the event was already committed and asks the caller to retry the same candidate; the retry repairs the generation without a second revision. The events listing reads this generation as part of its transient key, and manual/REST occurrence refreshes also bump it after the underlying writes.
 
 ### Published event
 `scheduled` → `cancelled` / `postponed` (still visible, clearly marked) → the event is trashed only by an admin. Past events stay visible in an archive view.

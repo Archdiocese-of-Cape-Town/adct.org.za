@@ -4,16 +4,17 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Ingestion;
 
-use ADCT\ParishIntake\Core\Ports\InboundMailStorageInterface;
+use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
 
-final class ProtectedInboundMailStorage implements InboundMailStorageInterface
+final class ProtectedInboundMailStorage implements InboundMailStorageReaderInterface
 {
     private const DIRECTORY_NAME = 'adct-parish-intake';
     private const PRIVATE_SUBDIRECTORY = 'private';
     private const PROTECTION_MARKER = '# ADCT Parish Intake private files';
+    private const MAX_RAW_MESSAGE_SIZE_BYTES = 30 * 1024 * 1024;
 
     private ?string $directory;
 
@@ -34,6 +35,33 @@ final class ProtectedInboundMailStorage implements InboundMailStorageInterface
         }
 
         return $this->store($content, $extension);
+    }
+
+    public function readRawMessage(string $relativePath): string
+    {
+        if (preg_match('/\A[a-f0-9]{64}\.eml\z/', $relativePath) !== 1) {
+            throw new InvalidArgumentException('The private inbound email path is invalid.');
+        }
+
+        $path = $this->directoryPath() . DIRECTORY_SEPARATOR . $relativePath;
+
+        if (! is_file($path) || is_link($path)) {
+            throw new RuntimeException('The stored inbound email file is missing.');
+        }
+
+        $size = filesize($path);
+
+        if ($size === false || $size > self::MAX_RAW_MESSAGE_SIZE_BYTES) {
+            throw new RuntimeException('The stored inbound email file exceeds the processing size limit.');
+        }
+
+        $rawMessage = file_get_contents($path);
+
+        if (! is_string($rawMessage)) {
+            throw new RuntimeException('The stored inbound email file could not be read.');
+        }
+
+        return $rawMessage;
     }
 
     public function delete(string $relativePath): void

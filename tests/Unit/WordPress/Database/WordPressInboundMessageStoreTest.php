@@ -8,6 +8,7 @@ use ADCT\ParishIntake\Core\Ingestion\InboundAttachmentRecord;
 use ADCT\ParishIntake\Core\Ingestion\AuthenticationResult;
 use ADCT\ParishIntake\Core\Ingestion\AuthenticationResults;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
+use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingRecord;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
@@ -136,6 +137,40 @@ final class WordPressInboundMessageStoreTest extends TestCase
         self::assertNotFalse($authenticationIndex);
         self::assertSame(1, $arguments[$authenticationIndex + 1]);
     }
+
+    public function testLoadsTheSameStoredMessageForBoundedProcessing(): void
+    {
+        $database = new FakeInboundStoreDatabase();
+        $database->rowResult = [
+            'id' => '41',
+            'source_id' => '17',
+            'external_id' => '<processing@example.test>',
+            'sender_email' => 'notices@example.test',
+            'sender_name' => 'Example Notices',
+            'subject' => 'Example Parish notice',
+            'received_at' => '2026-09-25 04:00:00',
+            'raw_path' => 'a1b2c3.eml',
+            'is_auto_reply' => '1',
+        ];
+        $store = new WordPressInboundMessageStore(
+            $database,
+            new InboundMessageRepository($database),
+            new AttachmentRepository($database)
+        );
+
+        $message = $store->findForProcessingById(41);
+
+        self::assertInstanceOf(InboundMessageProcessingRecord::class, $message);
+        self::assertSame(41, $message->id);
+        self::assertSame(17, $message->sourceId);
+        self::assertSame('<processing@example.test>', $message->externalId);
+        self::assertSame('a1b2c3.eml', $message->rawPath);
+        self::assertTrue($message->isAutoReply);
+        self::assertSame(
+            '2026-09-25 04:00:00',
+            $message->receivedAt?->format('Y-m-d H:i:s')
+        );
+    }
 }
 
 final class FakeInboundStoreDatabase implements DatabaseConnectionInterface
@@ -149,6 +184,9 @@ final class FakeInboundStoreDatabase implements DatabaseConnectionInterface
     public array $queries = [];
 
     public ?array $rowResult = null;
+
+    /** @var list<array<string, mixed>> */
+    public array $resultRows = [];
 
     public function prefix(): string
     {
@@ -176,7 +214,7 @@ final class FakeInboundStoreDatabase implements DatabaseConnectionInterface
 
     public function getResults(string $query): array
     {
-        return [];
+        return $this->resultRows;
     }
 
     public function escapeLike(string $text): string

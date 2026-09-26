@@ -2,22 +2,26 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { prepareIsolatedWpEnvConfig } from './wp-env-config.mjs';
 import { resolveWpEnvHome, stopWpEnvAfterTests } from './wp-env-home.mjs';
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 const releaseZip = join(repositoryRoot, 'dist', 'adct-parish-intake.zip');
-const npmCli = process.env.npm_execpath;
 
 if (!existsSync(releaseZip)) {
   throw new Error('Build dist/adct-parish-intake.zip before running WordPress integration tests.');
 }
 
-if (!npmCli) {
-  throw new Error('Run this harness with `npm run test:integration` or `composer test:integration`.');
-}
-
 const wpEnvHome = resolveWpEnvHome(repositoryRoot);
 const stopAfterTests = stopWpEnvAfterTests();
+const wpEnvCli = join(repositoryRoot, 'node_modules', '@wordpress', 'env', 'bin', 'wp-env');
+
+if (!existsSync(wpEnvCli)) {
+  throw new Error('Install Node dependencies before running WordPress integration tests.');
+}
+
+const isolatedConfig = prepareIsolatedWpEnvConfig(repositoryRoot, wpEnvHome);
+console.log(`Using isolated wp-env project ${isolatedConfig.projectHash}.`);
 const environment = {
   ...process.env,
   WP_ENV_HOME: wpEnvHome,
@@ -26,9 +30,9 @@ const environment = {
 function runWpEnv(args) {
   const result = spawnSync(
     process.execPath,
-    [npmCli, 'exec', '--no', '--', 'wp-env', ...args],
+    [wpEnvCli, ...args],
     {
-      cwd: repositoryRoot,
+      cwd: isolatedConfig.configDirectory,
       env: environment,
       stdio: 'inherit',
     }

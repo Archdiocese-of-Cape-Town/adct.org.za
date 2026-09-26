@@ -60,7 +60,7 @@ GreenMail's standalone image provides a throwaway local IMAP/SMTP server. Tests 
 
 The build pins Strauss 0.30.0 and verifies the official [release asset](https://github.com/BrianHenryIE/strauss/releases/download/0.30.0/strauss.phar) against SHA-256 `08c1a8e553594745c22294e158129005fd11ed09ed452d7d4f48566f38c66c96` before running it. To upgrade Strauss, calculate the SHA-256 of the chosen official release asset and update both `STRAUSS_VERSION` and `STRAUSS_SHA256` in `scripts/build-release.sh`, then rebuild the zip locally.
 
-The build validates the zip by unpacking it, checking its contents, linting every packaged PHP file, and loading the plugin bootstrap and Core autoloader under plain PHP. The zip's small `WordPress\Autoloader` loads the plugin's `src/` classes; Composer's generated PSR-4 autoloader is used in development and tests. CI runs this same build on every PR and `v*` tag; PRs receive an `adct-parish-intake.zip` artifact.
+The build validates the zip by unpacking it, checking its contents (including the small public event block script and stylesheet in `assets/`), linting every packaged PHP file, and loading the plugin bootstrap and Core autoloader under plain PHP. The zip's small `WordPress\Autoloader` loads the plugin's `src/` classes; Composer's generated PSR-4 autoloader is used in development and tests. CI runs this same build on every PR and `v*` tag; PRs receive an `adct-parish-intake.zip` artifact.
 
 Release tags must match the plugin header version exactly after removing the leading `v`. The build fails on a mismatch; it never edits the plugin header. To exercise that check locally without creating a tag or release:
 
@@ -75,7 +75,7 @@ docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scr
 | `adct-parish-intake.php` | Plugin bootstrap (WordPress entry point) |
 | `src/Core/` | Domain parsing pipeline, stages, value objects, pure-PHP helpers and ports; no WordPress functions, classes or globals |
 | `src/Core/Jobs/` | Pure-PHP scheduled job contract, runner, budgets, checkpoint and run-state value objects |
-| `src/WordPress/` | Plugin bootstrap, admin UI, schema/report adapters, OpenRouter provider and WordPress HTTP client |
+| `src/WordPress/` | Plugin bootstrap, admin UI, schema/report adapters, OpenAI-compatible provider and WordPress HTTP client |
 | `src/WordPress/Jobs/` | WP-Cron registration plus option-backed job state and lock adapters |
 | `composer.json` | PSR-4 autoloading for `ADCT\ParishIntake\Core\…` and `ADCT\ParishIntake\WordPress\…`; development/tests load through Composer |
 | `src/WordPress/Autoloader.php` | Small PSR-4 source loader included in the release zip, where Composer's development autoloader is not shipped |

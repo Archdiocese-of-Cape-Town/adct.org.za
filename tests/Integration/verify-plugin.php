@@ -5,6 +5,7 @@ use ADCT\ParishIntake\Core\Approval\ApprovalRoute;
 use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;
 use ADCT\ParishIntake\Core\Approval\ApproverSettings;
 use ADCT\ParishIntake\Core\Directory\ContactService;
+use ADCT\ParishIntake\Core\Directory\DirectorySnapshot;
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
 use ADCT\ParishIntake\Core\Directory\ImportRow;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
@@ -18,6 +19,11 @@ use ADCT\ParishIntake\Core\Ingestion\AuthenticationResults;
 use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
 use ADCT\ParishIntake\Core\Ingestion\InboundAttachmentRecord;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
+use ADCT\ParishIntake\Core\Ingestion\MimeMessageParser;
+use ADCT\ParishIntake\Core\Jobs\InboundMessageProcessingJob;
+use ADCT\ParishIntake\Core\Jobs\JobRunner;
+use ADCT\ParishIntake\Core\Parsing\Pipeline;
+use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
 use ADCT\ParishIntake\Core\Mail\MailPriority;
 use ADCT\ParishIntake\Core\Mail\MailQueueClaimStatus;
@@ -26,6 +32,7 @@ use ADCT\ParishIntake\Core\Mail\MailQueueDispatchStatus;
 use ADCT\ParishIntake\Core\Mail\MailQueueDispatcher;
 use ADCT\ParishIntake\Core\Mail\MailQueueStatus;
 use ADCT\ParishIntake\Core\Mail\OutboundEmail;
+use ADCT\ParishIntake\Core\Ports\DirectorySnapshotProviderInterface;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\Source;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
@@ -37,6 +44,7 @@ use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
@@ -50,6 +58,7 @@ use ADCT\ParishIntake\WordPress\Database\WordPressMailQueueRepository;
 use ADCT\ParishIntake\WordPress\Admin\OutboundMailPage;
 use ADCT\ParishIntake\WordPress\Plugin;
 use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
+use ADCT\ParishIntake\WordPress\Database\WordPressEventCandidateStore;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
 use ADCT\ParishIntake\WordPress\Directory\DeaneryApproverAssignmentService;
 use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
@@ -58,6 +67,10 @@ use ADCT\ParishIntake\WordPress\Events\EventPostType;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeRecipientPolicy;
 use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeSettings;
+use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
+use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
+use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
+use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
 
 require_once ABSPATH . 'wp-admin/includes/plugin.php';
 require_once ABSPATH . 'wp-admin/includes/user.php';
@@ -120,8 +133,8 @@ if (
     $fail('Fresh plugin activation did not default outbound test mode to off with an empty allow-list.');
 }
 
-if ((int) get_option('adct_pi_db_version', 0) !== 5) {
-    $fail('Activation did not set the parish intake schema version to 5.');
+if ((int) get_option('adct_pi_db_version', 0) !== 6) {
+    $fail('Activation did not set the parish intake schema version to 6.');
 }
 
 if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CURRENT_VERSION) {
@@ -236,6 +249,7 @@ global $wpdb;
 $installedTables = (array) $wpdb->get_col('SHOW TABLES');
 $expectedTableSuffixes = [
     'adct_pi_action_tokens',
+    'adct_pi_action_token_rate_limits',
     'adct_pi_attachments',
     'adct_pi_audit_log',
     'adct_pi_deaneries',
@@ -267,7 +281,7 @@ if ($actualTables !== $expectedTables) {
     $missingTables = array_diff($expectedTables, $actualTables);
     $unexpectedTables = array_diff($actualTables, $expectedTables);
     $fail(sprintf(
-        'Schema v5 tables differ. Missing: [%s]; unexpected: [%s].',
+        'Schema v6 tables differ. Missing: [%s]; unexpected: [%s].',
         implode(', ', $missingTables),
         implode(', ', $unexpectedTables)
     ));
@@ -317,6 +331,13 @@ if ($forcedNotNull === false) {
     $fail('The v3-to-v4 migration test could not restore the v3 occurrences column definition.');
 }
 
+$rateLimitTable = $wpdb->prefix . 'adct_pi_action_token_rate_limits';
+$dropRateLimitTableForV3Upgrade = $wpdb->query("DROP TABLE {$rateLimitTable}");
+
+if ($dropRateLimitTableForV3Upgrade === false) {
+    $fail('The v3-to-v6 migration test could not restore the pre-v6 schema.');
+}
+
 update_option('adct_pi_db_version', 3, false);
 do_action('admin_init');
 $occurrenceParishColumn = $wpdb->get_row(
@@ -325,7 +346,7 @@ $occurrenceParishColumn = $wpdb->get_row(
 );
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 5
+    (int) get_option('adct_pi_db_version', 0) !== 6
     || ! is_array($occurrenceParishColumn)
     || strtoupper((string) ($occurrenceParishColumn['Null'] ?? '')) !== 'YES'
 ) {
@@ -449,7 +470,7 @@ $preservedQueueRowCount = (int) $wpdb->get_var($wpdb->prepare(
 ));
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 5
+    (int) get_option('adct_pi_db_version', 0) !== 6
     || ! $upgradedMailQueueIndexIsUnique
     || array_values($upgradedMailQueueIndexColumns) !== ['recipient', 'group_key']
     || $preservedQueueRowCount !== 1
@@ -469,6 +490,57 @@ $deletedPreservedQueueRows = $wpdb->delete(
 if ($deletedPreservedQueueRows !== 1) {
     $fail('The preserved v4-to-v5 mail queue fixture could not be removed.');
 }
+
+$droppedRateLimitTable = $wpdb->query("DROP TABLE {$rateLimitTable}");
+
+if ($droppedRateLimitTable === false) {
+    $fail('The v5-to-v6 migration test could not prepare the pre-v6 schema.');
+}
+
+update_option('adct_pi_db_version', 5, false);
+do_action('admin_init');
+$recreatedRateLimitTable = $wpdb->get_var($wpdb->prepare(
+    'SHOW TABLES LIKE %s',
+    $rateLimitTable
+));
+$rateLimitColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$rateLimitTable}", 0);
+$rateLimitIndexes = (array) $wpdb->get_results("SHOW INDEX FROM {$rateLimitTable}", ARRAY_A);
+$scopeHashIsPrimaryKey = false;
+$windowStartedAtIsIndexed = false;
+
+foreach ($rateLimitIndexes as $index) {
+    if (
+        ($index['Key_name'] ?? '') === 'PRIMARY'
+        && ($index['Column_name'] ?? '') === 'scope_hash'
+        && (int) ($index['Non_unique'] ?? 1) === 0
+    ) {
+        $scopeHashIsPrimaryKey = true;
+    }
+
+    if (
+        ($index['Key_name'] ?? '') === 'window_started_at'
+        && ($index['Column_name'] ?? '') === 'window_started_at'
+    ) {
+        $windowStartedAtIsIndexed = true;
+    }
+}
+
+if (
+    (int) get_option('adct_pi_db_version', 0) !== 6
+    || $recreatedRateLimitTable !== $rateLimitTable
+    || ! in_array('scope_hash', $rateLimitColumns, true)
+    || ! in_array('window_started_at', $rateLimitColumns, true)
+    || ! in_array('hit_count', $rateLimitColumns, true)
+    || in_array('id', $rateLimitColumns, true)
+    || count($rateLimitIndexes) !== 2
+    || ! $scopeHashIsPrimaryKey
+    || ! $windowStartedAtIsIndexed
+) {
+    $fail('The v5-to-v6 migration did not create the primary-keyed hashed rate-limit table.');
+}
+
+require_once __DIR__ . '/ActionTokenEndpointCheck.php';
+ActionTokenEndpointCheck::run($fail);
 
 $venueTable = $wpdb->prefix . 'adct_pi_venues';
 $sourceTable = $wpdb->prefix . 'adct_pi_sources';
@@ -1069,6 +1141,28 @@ if (strpos($manualParserHtml, 'name="body"') === false) {
     $fail('The Manual parser message form did not render.');
 }
 
+update_option('adct_parish_intake_ai_enabled', '1');
+update_option('adct_parish_intake_ai_provider', 'openrouter');
+update_option('adct_parish_intake_openrouter_model', 'paid-example/model');
+ob_start();
+try {
+    do_action($settingsHook);
+} finally {
+    $paidModelSettingsHtml = (string) ob_get_clean();
+}
+if (strpos($paidModelSettingsHtml, 'AI cost warning:') === false
+    || strpos($paidModelSettingsHtml, 'Not marked free:') === false) {
+    $fail('The Settings screen did not prominently warn about a non-free model.');
+}
+$httpAttempts = 0;
+$rejectAiHttp = static function ($preempt, $args, $url) use (&$httpAttempts) {
+    if (str_contains($url, '/chat/completions')) {
+        ++$httpAttempts;
+        return new WP_Error('ai_test_blocked', 'AI HTTP must not run in manual parser.');
+    }
+    return $preempt;
+};
+add_filter('pre_http_request', $rejectAiHttp, 10, 3);
 $previousPost = $_POST;
 $previousRequest = $_REQUEST;
 $_POST = [
@@ -1089,9 +1183,14 @@ try {
     $submittedParserHtml = (string) ob_get_clean();
     $_POST = $previousPost;
     $_REQUEST = $previousRequest;
+    remove_filter('pre_http_request', $rejectAiHttp, 10);
+    update_option('adct_parish_intake_ai_enabled', '0');
+    update_option('adct_parish_intake_ai_provider', 'none');
 }
 
 if (
+    $httpAttempts !== 0
+    ||
     strpos($submittedParserHtml, 'Latest parse outcome') === false
     || strpos($submittedParserHtml, 'candidate_count') === false
     || strpos($submittedParserHtml, 'Youth gathering') === false
@@ -1102,6 +1201,17 @@ if (
     || strpos($submittedParserHtml, $constantTestApiKey) !== false
 ) {
     $fail('The Manual parser did not render candidates and text-free skip metadata for a bulletin.');
+}
+
+$aiGate = new \ADCT\ParishIntake\WordPress\Ai\WordPressAiCallGate(
+    new \ADCT\ParishIntake\WordPress\Database\WordPressActionTokenRateLimitStore(
+        new \ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection()
+    ),
+    new \ADCT\ParishIntake\Core\Support\SystemClock(),
+    2
+);
+if (! $aiGate->reserve() || ! $aiGate->reserve() || $aiGate->reserve()) {
+    $fail('The database-backed daily AI call cap did not atomically reject a third reservation.');
 }
 
 $_POST = [
@@ -1601,6 +1711,7 @@ if (
     get_post_meta($eventPostId, 'exdates', true) !== ['2026-11-06T16:00']
     || get_post_meta($eventPostId, 'rdates', true) !== ['2026-11-13T16:00']
     || ! in_array(get_post_meta($eventPostId, 'featured', true), [true, 1, '1'], true)
+    || get_post_meta($eventPostId, EventEditor::FEATURED_OVERRIDE_META, true) !== '1'
     || (get_post_meta($eventPostId, 'contact', true)['email'] ?? '') !== 'event-contact@example.test'
 ) {
     $_POST = $originalEventPost;
@@ -1697,10 +1808,89 @@ $eventColumns = apply_filters('manage_adct_event_posts_columns', [
     'date' => 'Date',
 ]);
 
-foreach (['event_start', 'event_parish', 'event_type', 'event_status', 'event_featured'] as $column) {
+foreach (['event_start', 'event_next', 'event_parish', 'event_type', 'event_recurring', 'event_status', 'event_featured'] as $column) {
     if (! array_key_exists($column, $eventColumns)) {
         $fail('The event admin list is missing the ' . $column . ' column.');
     }
+}
+ob_start();
+do_action('restrict_manage_posts', EventPostType::POST_TYPE);
+$eventListFilters = (string) ob_get_clean();
+foreach (['adct_pi_parish', 'adct_pi_next', 'adct_pi_recurring', 'adct_pi_featured', 'adct_pi_status'] as $filterName) {
+    if (! str_contains($eventListFilters, 'name="' . $filterName . '"')) {
+        $fail('The event admin list is missing the ' . $filterName . ' filter.');
+    }
+}
+$previousEventScreen = get_current_screen();
+$previousEventGet = $_GET;
+$previousMainQuery = $GLOBALS['wp_the_query'] ?? null;
+$legacyFeaturedValue = false;
+set_current_screen('edit-adct_event');
+try {
+    if (! is_admin()) {
+        $fail('The event admin list filter test could not enter an admin screen.');
+    }
+    $matchingEventIds = static function (array $filters): array {
+        $_GET = $filters;
+        $query = new WP_Query();
+        $GLOBALS['wp_the_query'] = $query;
+        $query->query([
+            'post_type' => EventPostType::POST_TYPE,
+            'post_status' => 'publish',
+            'posts_per_page' => 100,
+        ]);
+        return array_map('intval', wp_list_pluck($query->posts, 'ID'));
+    };
+    $nextEventDate = $wpdb->get_var($wpdb->prepare(
+        "SELECT start_local_date FROM {$wpdb->prefix}adct_pi_occurrences "
+        . 'WHERE event_id = %d ORDER BY start_utc ASC LIMIT 1',
+        $eventPostId
+    ));
+    if (! is_string($nextEventDate)
+        || ! in_array($eventPostId, $matchingEventIds([
+            'adct_pi_parish' => (string) $firstParishId,
+            'adct_pi_next' => $nextEventDate,
+            'adct_pi_recurring' => 'yes',
+            'adct_pi_featured' => 'yes',
+            'adct_pi_status' => 'scheduled',
+        ]), true)) {
+        $fail('Combined event admin list filters hid a matching event.');
+    }
+    foreach ([
+        ['adct_pi_parish' => 'none'],
+        ['adct_pi_recurring' => 'no'],
+        ['adct_pi_featured' => 'no'],
+        ['adct_pi_status' => 'cancelled'],
+        ['adct_pi_next' => '2026-12-25'],
+    ] as $filter) {
+        if (in_array($eventPostId, $matchingEventIds($filter), true)) {
+            $fail('An event admin list filter did not exclude a nonmatching event: ' . wp_json_encode($filter));
+        }
+    }
+    if ($wpdb->update(
+        $wpdb->postmeta,
+        ['meta_value' => '0'],
+        ['post_id' => $eventPostId, 'meta_key' => 'featured'],
+        ['%s'],
+        ['%d', '%s']
+    ) !== 1) {
+        $fail('Could not seed a legacy explicit false featured value.');
+    }
+    $legacyFeaturedValue = true;
+    clean_post_cache($eventPostId);
+    $unfeaturedIds = $matchingEventIds(['adct_pi_featured' => 'no']);
+    $featuredIds = $matchingEventIds(['adct_pi_featured' => 'yes']);
+    if (! in_array($eventPostId, $unfeaturedIds, true)
+        || in_array($eventPostId, $featuredIds, true)) {
+        $fail('The featured admin filter omitted a published event stored with explicit false metadata.');
+    }
+} finally {
+    if ($legacyFeaturedValue) {
+        update_post_meta($eventPostId, 'featured', true);
+    }
+    $_GET = $previousEventGet;
+    $GLOBALS['wp_the_query'] = $previousMainQuery;
+    set_current_screen($previousEventScreen ?? 'front');
 }
 
 $currentEventUserId = get_current_user_id();
@@ -2753,6 +2943,29 @@ if (has_action($mailboxesPageHook) === false) {
     $fail('The Mailboxes page callback was not registered.');
 }
 
+$inboxPageSlug = 'adct-parish-intake-inbox';
+$inboxPageItems = array_values(array_filter(
+    $GLOBALS['submenu'][$parentSlug] ?? [],
+    static fn ($item): bool => is_array($item) && ($item[2] ?? null) === $inboxPageSlug
+));
+
+if (
+    count($inboxPageItems) !== 1
+    || $inboxPageItems[0][0] !== 'Inbox'
+    || $inboxPageItems[0][1] !== Capabilities::REVIEW
+) {
+    $fail('The review-capability Inbox admin submenu was not registered.');
+}
+
+$inboxPageHook = get_plugin_page_hookname($inboxPageSlug, $parentSlug);
+
+if (
+    has_action($inboxPageHook) === false
+    || has_action('admin_post_adct_pi_reprocess_inbound_messages') === false
+) {
+    $fail('The Inbox page or its protected reprocess action was not registered.');
+}
+
 $mailboxEmail = 'intake-mailbox-integration@example.test';
 $mailboxSource = $sourceRepository->findGlobalEmailSource($mailboxEmail);
 $mailboxSource = $sourceRegistry->save(new Source(
@@ -2815,6 +3028,10 @@ if (! in_array($savedMailbox->id, $activeMailboxIds, true)) {
 
 if (has_action('adct_pi_job_poll_mailboxes') === false) {
     $fail('The mailbox polling job was not registered with the scheduled-job framework.');
+}
+
+if (has_action('adct_pi_job_process_inbound_messages') === false) {
+    $fail('The inbound message processing job was not registered with the scheduled-job framework.');
 }
 
 if (has_action('adct_pi_job_send_mail') === false) {
@@ -3032,6 +3249,263 @@ if (
 }
 
 delete_option($mailboxPasswordOption);
+
+$inboundTable = $wpdb->prefix . 'adct_pi_inbound_messages';
+$attachmentsTable = $wpdb->prefix . 'adct_pi_attachments';
+$candidateTable = $wpdb->prefix . 'adct_pi_event_candidates';
+$processingStorage = new ProtectedInboundMailStorage();
+$reprocessRawPath = $processingStorage->storeRawMessage('');
+$reprocessExternalId = '<inbox-reprocess-' . bin2hex(random_bytes(8)) . '@example.test>';
+$reprocessMessage = new InboundMessageRecord(
+    $mailboxSource->id,
+    $reprocessExternalId,
+    hash('sha256', 'fictional reprocess acceptance body'),
+    'reprocess-notices@example.test',
+    'Fictional Intake Sender',
+    'Fictional parish community supper',
+    new DateTimeImmutable('2026-09-25T04:00:00+00:00'),
+    $reprocessRawPath,
+    [
+        new InboundAttachmentRecord(
+            'fictional-skipped.txt',
+            'text/plain',
+            strlen('fictional skipped attachment bytes'),
+            '',
+            hash('sha256', 'fictional skipped attachment bytes'),
+            AttachmentStoragePolicy::STATUS_SKIPPED_TYPE
+        ),
+    ],
+    InboundMessageRecord::STATUS_RECEIVED,
+    null,
+    false,
+    new AuthenticationResults([
+        new AuthenticationResult('dmarc', 'fail', 'untrusted.example.test', false),
+    ])
+);
+$reprocessStoreResult = $inboundMessageStore->store($reprocessMessage, $integrationTimestamp);
+
+if ($reprocessStoreResult->duplicate) {
+    $fail('The synthetic reprocess acceptance message unexpectedly matched an existing row.');
+}
+
+$reprocessMessageId = $reprocessStoreResult->messageId;
+$uploads = wp_upload_dir();
+
+if (
+    ! is_array($uploads)
+    || ! empty($uploads['error'])
+    || ! isset($uploads['basedir'])
+    || ! is_string($uploads['basedir'])
+) {
+    $fail('The integration test could not locate the protected upload directory.');
+}
+
+$reprocessRawFile = rtrim($uploads['basedir'], DIRECTORY_SEPARATOR)
+    . DIRECTORY_SEPARATOR . 'adct-parish-intake'
+    . DIRECTORY_SEPARATOR . 'private'
+    . DIRECTORY_SEPARATOR . $reprocessRawPath;
+$attachmentBeforeProcessing = $wpdb->get_row($wpdb->prepare(
+    "SELECT id, status, storage_path, content_hash FROM {$attachmentsTable} WHERE message_id = %d LIMIT 1",
+    $reprocessMessageId
+), ARRAY_A);
+$jobStateStore = new WordPressJobStateStore();
+$pollCheckpointBeforeProcessing = $jobStateStore->load('poll_mailboxes')->checkpoint;
+$mailQueueCountBeforeProcessing = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$mailQueueTable}");
+$processingClock = new SystemClock();
+$processingPipelineFactory = new PipelineFactory($processingClock);
+$processingDirectory = new class implements DirectorySnapshotProviderInterface {
+    public function getSnapshot(): DirectorySnapshot
+    {
+        return new DirectorySnapshot([], [], []);
+    }
+};
+$processingJob = new InboundMessageProcessingJob(
+    $inboundMessageStore,
+    $processingStorage,
+    new MimeMessageParser(),
+    static fn (): Pipeline => $processingPipelineFactory->create(),
+    new WordPressEventCandidateStore(new EventCandidateRepository($mailboxDatabase)),
+    new WordPressInboundMessageProcessingFailureLogger(),
+    $processingDirectory,
+    $processingClock
+);
+$processingRunner = new JobRunner(
+    new WordPressJobLock(),
+    $jobStateStore,
+    $processingClock
+);
+$runPrioritizedMessage = static function () use ($processingJob, $processingRunner, $reprocessMessageId) {
+    $processingJob->prioritizeMessageIds([$reprocessMessageId]);
+
+    try {
+        return $processingRunner->run($processingJob, true);
+    } finally {
+        $processingJob->clearPrioritizedMessageIds();
+    }
+};
+$failedRun = $runPrioritizedMessage();
+$failedMessageRow = $wpdb->get_row($wpdb->prepare(
+    "SELECT id, raw_path, status, error, body_text FROM {$inboundTable} WHERE id = %d LIMIT 1",
+    $reprocessMessageId
+), ARRAY_A);
+
+if (
+    $failedRun->status->value !== 'completed'
+    || ! is_array($failedMessageRow)
+    || ! is_array($attachmentBeforeProcessing)
+    || (int) $failedMessageRow['id'] !== $reprocessMessageId
+    || $failedMessageRow['raw_path'] !== $reprocessRawPath
+    || $failedMessageRow['status'] !== InboundMessageRecord::STATUS_FAILED
+    || $failedMessageRow['error'] !== 'The saved email is empty. Restore the original message, then reprocess it.'
+    || $failedMessageRow['body_text'] !== null
+) {
+    $fail('An empty stored email did not become failed with a safe, plain-language reason.');
+}
+
+$originalGet = $_GET;
+$_GET = ['page' => $inboxPageSlug, 'status' => 'failed'];
+ob_start();
+try {
+    do_action($inboxPageHook);
+} finally {
+    $failedInboxHtml = (string) ob_get_clean();
+    $_GET = $originalGet;
+}
+
+if (
+    strpos($failedInboxHtml, 'The saved email is empty. Restore the original message, then reprocess it.') === false
+    || strpos($failedInboxHtml, 'name="reprocess_one"') === false
+    || strpos($failedInboxHtml, 'name="adct_pi_reprocess_nonce"') === false
+    || strpos($failedInboxHtml, $reprocessRawPath) !== false
+    || strpos($failedInboxHtml, 'raw_path') !== false
+) {
+    $fail('The Inbox did not show the failure note and protected reprocess form without exposing its file path.');
+}
+
+$queuedReprocessIds = $inboundMessageStore->requeueFailedMessages([$reprocessMessageId], $integrationTimestamp);
+
+if ($queuedReprocessIds !== [$reprocessMessageId]) {
+    $fail('The failed inbound message was not requeued by its original row ID.');
+}
+
+$repairedRawMessage = implode("\r\n", [
+    'From: Fictional Intake Sender <reprocess-notices@example.test>',
+    'To: events@example.test',
+    'Date: Fri, 25 Sep 2026 04:00:00 +0000',
+    'Message-ID: ' . $reprocessExternalId,
+    'Subject: Fictional parish community supper',
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=UTF-8',
+    '',
+    'Parish: Example Parish',
+    'Please join us for the community supper on 12 October 2026 at 18:30 at Example Parish Hall. '
+        . '[PRIVATE-INBOX-BODY-SHOULD-NOT-RENDER]',
+    '',
+]);
+$repairedBytes = file_put_contents($reprocessRawFile, $repairedRawMessage, LOCK_EX);
+
+if ($repairedBytes !== strlen($repairedRawMessage)) {
+    $fail('The integration test could not repair the same private raw email file.');
+}
+
+$parsedRun = $runPrioritizedMessage();
+$parsedMessageRow = $wpdb->get_row($wpdb->prepare(
+    "SELECT id, raw_path, status, error, body_text, auth_results FROM {$inboundTable} WHERE id = %d LIMIT 1",
+    $reprocessMessageId
+), ARRAY_A);
+$candidateRowsAfterParse = (array) $wpdb->get_results($wpdb->prepare(
+    "SELECT id, block_index, status FROM {$candidateTable} WHERE message_id = %d ORDER BY block_index ASC",
+    $reprocessMessageId
+), ARRAY_A);
+$candidateCountAfterParse = count($candidateRowsAfterParse);
+
+if (
+    $parsedRun->status->value !== 'completed'
+    || ! is_array($parsedMessageRow)
+    || (int) $parsedMessageRow['id'] !== $reprocessMessageId
+    || $parsedMessageRow['raw_path'] !== $reprocessRawPath
+    || $parsedMessageRow['status'] !== InboundMessageRecord::STATUS_PARSED
+    || $parsedMessageRow['error'] !== null
+    || ! is_string($parsedMessageRow['body_text'])
+    || strpos($parsedMessageRow['body_text'], 'PRIVATE-INBOX-BODY-SHOULD-NOT-RENDER') === false
+    || ! is_string($parsedMessageRow['auth_results'])
+    || ! AuthenticationResults::fromJson($parsedMessageRow['auth_results'])->hasReportedDmarcFailure()
+    || $candidateCountAfterParse !== 1
+    || ($candidateRowsAfterParse[0]['status'] ?? null) !== 'draft'
+) {
+    $fail('Reprocessing did not parse the same stored message into one reviewable draft candidate.');
+}
+
+$candidateIdAfterParse = (int) $candidateRowsAfterParse[0]['id'];
+$candidatePostLinks = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value = %s",
+    'source_candidate_id',
+    (string) $candidateIdAfterParse
+));
+
+if ($candidatePostLinks !== 0) {
+    $fail('Inbound reprocessing published an event from a draft candidate.');
+}
+
+$reprocessStatusUpdate = $wpdb->update(
+    $inboundTable,
+    ['status' => 'extracting'],
+    ['id' => $reprocessMessageId],
+    ['%s'],
+    ['%d']
+);
+
+if ($reprocessStatusUpdate !== 1) {
+    $fail('The integration test could not prepare an interrupted-processing retry.');
+}
+
+$resumedRun = $runPrioritizedMessage();
+$candidateRowsAfterResume = (array) $wpdb->get_results($wpdb->prepare(
+    "SELECT id, block_index, status FROM {$candidateTable} WHERE message_id = %d ORDER BY block_index ASC",
+    $reprocessMessageId
+), ARRAY_A);
+$attachmentAfterProcessing = $wpdb->get_row($wpdb->prepare(
+    "SELECT id, status, storage_path, content_hash FROM {$attachmentsTable} WHERE message_id = %d LIMIT 1",
+    $reprocessMessageId
+), ARRAY_A);
+$pollCheckpointAfterProcessing = $jobStateStore->load('poll_mailboxes')->checkpoint;
+$mailQueueCountAfterProcessing = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$mailQueueTable}");
+
+if (
+    $resumedRun->status->value !== 'completed'
+    || count($candidateRowsAfterResume) !== 1
+    || (int) ($candidateRowsAfterResume[0]['id'] ?? 0) !== $candidateIdAfterParse
+    || ($candidateRowsAfterResume[0]['status'] ?? null) !== 'draft'
+    || $attachmentBeforeProcessing !== $attachmentAfterProcessing
+    || $pollCheckpointBeforeProcessing !== $pollCheckpointAfterProcessing
+    || $mailQueueCountBeforeProcessing !== $mailQueueCountAfterProcessing
+) {
+    $fail('Resuming a stored message duplicated candidates or changed attachments, mailbox checkpoints or queued mail.');
+}
+
+$originalGet = $_GET;
+$_GET = ['page' => $inboxPageSlug, 'status' => 'parsed'];
+ob_start();
+try {
+    do_action($inboxPageHook);
+} finally {
+    $parsedInboxHtml = (string) ob_get_clean();
+    $_GET = $originalGet;
+}
+
+if (
+    strpos($parsedInboxHtml, 'Fictional parish community supper') === false
+    || strpos($parsedInboxHtml, 'PRIVATE-INBOX-BODY-SHOULD-NOT-RENDER') !== false
+    || strpos($parsedInboxHtml, $reprocessRawPath) !== false
+) {
+    $fail('The parsed Inbox view exposed private message content or the protected raw-file path.');
+}
+
+$processingStorage->delete($reprocessRawPath);
+$wpdb->delete($candidateTable, ['message_id' => $reprocessMessageId], ['%d']);
+$wpdb->delete($attachmentsTable, ['message_id' => $reprocessMessageId], ['%d']);
+$wpdb->delete($inboundTable, ['id' => $reprocessMessageId], ['%d']);
+delete_option('adct_pi_job_state_process_inbound_messages');
 
 if ($wpdb->query($wpdb->prepare(
     "UPDATE {$contactTable} SET trust = %s, verified_at = NULL WHERE id = %d",
@@ -3902,6 +4376,10 @@ if ($secondApproverUser instanceof WP_User && in_array('deanery_approver', $seco
     $fail('The final sample approver role was not removed during integration cleanup.');
 }
 
+require_once __DIR__ . '/PublicationCheck.php';
+PublicationCheck::run($fail);
+require WP_CONTENT_DIR . '/test-harness/IcsFeedCheck.php';
+
 foreach (['administrator', 'editor'] as $roleName) {
     $role = get_role($roleName);
 
@@ -3912,6 +4390,9 @@ foreach (['administrator', 'editor'] as $roleName) {
     $role->add_cap('edit_events');
     $role->add_cap('publish_events');
 }
+
+require WP_CONTENT_DIR . '/test-harness/EventsListingCheck.php';
+require WP_CONTENT_DIR . '/test-harness/HealthCheck.php';
 
 if (! defined('WP_UNINSTALL_PLUGIN')) {
     define('WP_UNINSTALL_PLUGIN', $pluginBasename);
@@ -3944,4 +4425,4 @@ foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
     }
 }
 
-WP_CLI::success('Release ZIP activation, schema v5/v3-to-v5 and v4-to-v5 migrations, fresh and upgraded mail queue unique indexes with duplicate preservation, occurrence expansion/save/REST/job behavior, mailbox settings and safe password rendering, polling and outbound-mail job registration, inbound-message de-duplication/skip notices, login-priority delivery ahead of 200 queued digests through intercepted wp_mail, mail group idempotency and atomic hourly-cap claims, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
+WP_CLI::success('Release ZIP activation, schema v6/v3-to-v6/v4-to-v5/v5-to-v6 migrations, hashed action-token storage and renewal limits, GET preview and nonce-protected single-use POST behavior, fresh and upgraded mail queue unique indexes with duplicate preservation, occurrence expansion/save/REST/job behavior, mailbox settings and safe password rendering, polling, inbound processing and Inbox reprocessing without candidate, attachment, checkpoint, email or privacy regressions, outbound-mail job registration, inbound-message de-duplication/skip notices, login-priority delivery ahead of 200 queued digests through intercepted wp_mail, mail group idempotency and atomic hourly-cap claims, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');

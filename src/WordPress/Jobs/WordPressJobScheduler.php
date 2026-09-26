@@ -160,7 +160,7 @@ final class WordPressJobScheduler
     private function runScheduledJob(string $jobId, JobInterface $job): void
     {
         try {
-            $result = $this->runner->run($job);
+            $result = $this->runner->run($job, false, null, null, 'cron');
 
             if ($result->status === JobRunStatus::FAILED) {
                 $this->logFailure('Scheduled job "' . $jobId . '" failed; see the Scheduled jobs screen.');

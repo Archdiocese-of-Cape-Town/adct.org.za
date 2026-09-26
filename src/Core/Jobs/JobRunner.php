@@ -52,7 +52,8 @@ final class JobRunner
         JobInterface $job,
         bool $force = false,
         ?int $timeBudgetSeconds = null,
-        ?int $itemBudget = null
+        ?int $itemBudget = null,
+        string $trigger = 'internal'
     ): JobRunResult {
         $jobId = $job->id();
         $this->assertJobId($jobId);
@@ -93,7 +94,7 @@ final class JobRunner
                         return new JobRunResult(JobRunStatus::LOCK_LOST, 0, $failure->getMessage());
                     }
 
-                    $state = $state->withRunStarted($startedAt);
+                    $state = $state->withRunStarted($startedAt, $trigger);
 
                     return $this->recordFailure($jobId, $lockToken, $state, 0, $failure);
                 }
@@ -105,7 +106,7 @@ final class JobRunner
                 return new JobRunResult(JobRunStatus::LOCK_LOST, 0);
             }
 
-            $state = $state->withRunStarted($startedAt);
+            $state = $state->withRunStarted($startedAt, $trigger);
             $checkpoint = $state->checkpoint;
             $itemsProcessed = 0;
             $status = JobRunStatus::COMPLETED;

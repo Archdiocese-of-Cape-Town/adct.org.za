@@ -1,0 +1,215 @@
+<?php
+
+declare(strict_types=1);
+
+namespace ADCT\ParishIntake\Tests\Unit\WordPress\Database;
+
+use ADCT\ParishIntake\Core\Parsing\ParseOutcome;
+use ADCT\ParishIntake\Core\Parsing\ParseResult;
+use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
+use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
+use ADCT\ParishIntake\WordPress\Database\WordPressEventCandidateStore;
+use InvalidArgumentException;
+use PHPUnit\Framework\TestCase;
+
+final class EventCandidateRepositoryTest extends TestCase
+{
+    public function testReprocessingUpdatesDraftCandidateAndInsertsNewBlockOnce(): void
+    {
+        $database = new EventCandidateRepositoryDatabase();
+        $database->resultRows = [['id' => '12', 'block_index' => '0', 'status' => 'draft']];
+        $repository = new EventCandidateRepository($database);
+
+        $repository->replaceDraftCandidatesForMessage(
+            41,
+            [
+                $this->candidate(0, 'Updated community supper'),
+                $this->candidate(1, 'New parish meeting'),
+            ],
+            '2026-09-25 04:10:00'
+        );
+
+        self::assertCount(4, $database->queries);
+        self::assertSame('START TRANSACTION', $database->queries[0]);
+        self::assertStringContainsString('UPDATE wp_adct_pi_event_candidates', $database->queries[1]);
+        self::assertStringContainsString('`match_event_id` = NULL', $database->prepared[1]['query']);
+        self::assertStringContainsString('INSERT INTO wp_adct_pi_event_candidates', $database->queries[2]);
+        self::assertSame('COMMIT', $database->queries[3]);
+        self::assertStringContainsString('FOR UPDATE', $database->prepared[0]['query']);
+        self::assertStringNotContainsString('status =', $database->prepared[1]['query']);
+        self::assertCount(3, $database->prepared);
+    }
+
+    public function testReprocessingPreservesReviewedCandidateAndItsStatus(): void
+    {
+        $database = new EventCandidateRepositoryDatabase();
+        $database->resultRows = [[
+            'id' => '12',
+            'block_index' => '0',
+            'status' => 'awaiting_approval',
+            'match_event_id' => '573',
+            'match_kind' => 'exact',
+        ]];
+        $repository = new EventCandidateRepository($database);
+
+        $repository->replaceDraftCandidatesForMessage(
+            41,
+            [$this->candidate(0, 'Reparsed but reviewed event')],
+            '2026-09-25 04:10:00'
+        );
+
+        self::assertSame(['START TRANSACTION', 'COMMIT'], $database->queries);
+        self::assertCount(1, $database->prepared);
+        self::assertStringContainsString('SELECT `id`, `block_index`, `status`', $database->prepared[0]['query']);
+    }
+
+    public function testReprocessingRemovesStaleDraftsWhenTheNewParseHasNoCandidates(): void
+    {
+        $database = new EventCandidateRepositoryDatabase();
+        $database->resultRows = [['id' => '12', 'block_index' => '0', 'status' => 'draft']];
+        $repository = new EventCandidateRepository($database);
+
+        $repository->replaceDraftCandidatesForMessage(41, [], '2026-09-25 04:10:00');
+
+        self::assertCount(3, $database->queries);
+        self::assertStringContainsString('DELETE FROM wp_adct_pi_event_candidates', $database->queries[1]);
+        self::assertSame('COMMIT', $database->queries[2]);
+    }
+
+    public function testEventCandidateStorePersistsTheTrimmedSourceSnippet(): void
+    {
+        $database = new EventCandidateRepositoryDatabase();
+        $candidate = new ParseResult();
+        $candidate->setField('title', 'Example community supper');
+        $candidate->setField('parish_id', 7);
+        $candidate->setConfidence(0.82);
+        $candidate->setNeedsReprocess(true);
+        $candidate->setBlockMetadata(0, 'A short, fictional source excerpt.');
+        $outcome = new ParseOutcome([$candidate], [], [], [], $candidate);
+        $store = new WordPressEventCandidateStore(new EventCandidateRepository($database));
+
+        $store->replaceDraftCandidatesForMessage(41, $outcome, '2026-09-25 04:10:00');
+
+        $fieldsJson = $database->prepared[1]['arguments'][1];
+        $fields = json_decode($fieldsJson, true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame('A short, fictional source excerpt.', $fields['source_snippet']);
+        self::assertSame(true, $fields['reprocess_needed']);
+        self::assertSame(7, $database->prepared[1]['arguments'][0]);
+    }
+
+    public function testDuplicateBlockIndexesAreRejectedBeforeOpeningATransaction(): void
+    {
+        $database = new EventCandidateRepositoryDatabase();
+        $repository = new EventCandidateRepository($database);
+
+        $this->expectException(InvalidArgumentException::class);
+        $repository->replaceDraftCandidatesForMessage(
+            41,
+            [
+                $this->candidate(0, 'First event'),
+                $this->candidate(0, 'Duplicate event'),
+            ],
+            '2026-09-25 04:10:00'
+        );
+    }
+
+    /**
+     * @return array{
+     *     block_index: int,
+     *     parish_id: int|null,
+     *     fields: string,
+     *     recurrence: string|null,
+     *     confidence: float,
+     *     parser_version: string,
+     *     strategies: string,
+     *     notes: string,
+     *     ai_used: int,
+     *     ai_provider: string|null,
+     *     ai_model: string|null
+     * }
+     */
+    private function candidate(int $blockIndex, string $title): array
+    {
+        return [
+            'block_index' => $blockIndex,
+            'parish_id' => null,
+            'fields' => json_encode(['title' => $title], JSON_THROW_ON_ERROR),
+            'recurrence' => null,
+            'confidence' => 0.75,
+            'parser_version' => '0.1.0',
+            'strategies' => '[]',
+            'notes' => '[]',
+            'ai_used' => 0,
+            'ai_provider' => null,
+            'ai_model' => null,
+        ];
+    }
+}
+
+final class EventCandidateRepositoryDatabase implements DatabaseConnectionInterface
+{
+    /**
+     * @var list<array{query: string, arguments: array<int, mixed>}>
+     */
+    public array $prepared = [];
+
+    /** @var list<string> */
+    public array $queries = [];
+
+    /** @var list<array<string, mixed>> */
+    public array $resultRows = [];
+
+    public function prefix(): string
+    {
+        return 'wp_';
+    }
+
+    public function prepare(string $query, mixed ...$arguments): string
+    {
+        $this->prepared[] = ['query' => $query, 'arguments' => $arguments];
+
+        return $query;
+    }
+
+    public function query(string $query): int|false
+    {
+        $this->queries[] = $query;
+
+        return 1;
+    }
+
+    public function getRow(string $query): ?array
+    {
+        return null;
+    }
+
+    public function getResults(string $query): array
+    {
+        return $this->resultRows;
+    }
+
+    public function escapeLike(string $text): string
+    {
+        return $text;
+    }
+
+    public function insertId(): int
+    {
+        return 92;
+    }
+
+    public function charsetCollate(): string
+    {
+        return '';
+    }
+
+    public function clearLastError(): void
+    {
+    }
+
+    public function lastError(): string
+    {
+        return '';
+    }
+}

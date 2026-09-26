@@ -9,5 +9,5 @@ interface HttpClientInterface
     /**
      * @param array<string, string> $headers
      */
-    public function post(string $url, array $headers, string $body, int $timeout): ?string;
+    public function post(string $url, array $headers, string $body, int $timeout): HttpResponse;
 }

@@ -11,6 +11,18 @@ use Throwable;
 
 final class EventOccurrenceHooks
 {
+    private static bool $publishingCandidate = false;
+
+    public static function setPublishingCandidate(bool $publishing): void
+    {
+        self::$publishingCandidate = $publishing;
+    }
+
+    public static function isPublishingCandidate(): bool
+    {
+        return self::$publishingCandidate;
+    }
+
     /**
      * @var array<int, Throwable>
      */
@@ -28,7 +40,8 @@ final class EventOccurrenceHooks
     public function handleSavePost(int $postId, \WP_Post $post, bool $update): void
     {
         if (
-            $post->post_type !== EventPostType::POST_TYPE
+            self::$publishingCandidate
+            || $post->post_type !== EventPostType::POST_TYPE
             || $post->post_status !== 'publish'
             || wp_is_post_revision($postId)
             || wp_is_post_autosave($postId)
@@ -71,7 +84,8 @@ final class EventOccurrenceHooks
         bool $creating
     ): void {
         if (
-            $post->post_type !== EventPostType::POST_TYPE
+            self::$publishingCandidate
+            || $post->post_type !== EventPostType::POST_TYPE
             || $post->post_status !== 'publish'
         ) {
             return;
@@ -87,7 +101,8 @@ final class EventOccurrenceHooks
     public function handleStatusTransition(string $newStatus, string $oldStatus, \WP_Post $post): void
     {
         if (
-            $post->post_type !== EventPostType::POST_TYPE
+            self::$publishingCandidate
+            || $post->post_type !== EventPostType::POST_TYPE
             || $newStatus === 'publish'
             || $newStatus === $oldStatus
         ) {
