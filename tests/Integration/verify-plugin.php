@@ -1247,6 +1247,37 @@ if (
     $fail('The legacy Manual parser table did not store the first bulletin candidate.');
 }
 
+$previousPost = $_POST;
+$previousRequest = $_REQUEST;
+$_POST = [
+    'adct_parish_intake_parse_nonce' => wp_create_nonce('adct_parish_intake_parse'),
+    'adct_parish_intake_parse' => '1',
+    'source_type' => 'manual-test',
+    'source_identifier' => 'skipped-section-integration-test',
+    'sender_email' => 'events@example.test',
+    'subject' => 'Fictional Parish bulletin',
+    'body' => "MASS INTENTIONS\nFictional Person Alpha\n\n"
+        . 'Parish braai on Sunday 11 October 2026 at 12:00 at Fictional Hall.',
+];
+$_REQUEST = $_POST;
+ob_start();
+try {
+    do_action($pageHook);
+} finally {
+    $skippedSectionHtml = (string) ob_get_clean();
+    $_POST = $previousPost;
+    $_REQUEST = $previousRequest;
+}
+
+if (
+    strpos($skippedSectionHtml, 'A skipped private section may contain an event') === false
+    || strpos($skippedSectionHtml, 'possible_missed_event_after_skipped_section: 1') === false
+    || strpos($skippedSectionHtml, 'Fictional Person Alpha') !== false
+    || strpos($skippedSectionHtml, 'Parish braai') !== false
+) {
+    $fail('The Manual parser must flag a possible missed event without exposing skipped text.');
+}
+
 $originalSettingsScreen = $GLOBALS['current_screen'] ?? null;
 set_current_screen('dashboard');
 $_POST = [
@@ -2266,6 +2297,8 @@ if (count($preexistingOccurrenceRows) !== 3) {
 
 $forcedVenueFailureEventId = $occurrenceEventId;
 $failedUpdateStart = $restOccurrenceStart->modify('+3 weeks');
+// Ensure an unintended duplicate rebuild changes second-resolution timestamps.
+sleep(1);
 $failedUpdateRequest = new WP_REST_Request(
     'PATCH',
     '/wp/v2/adct_event/' . $occurrenceEventId

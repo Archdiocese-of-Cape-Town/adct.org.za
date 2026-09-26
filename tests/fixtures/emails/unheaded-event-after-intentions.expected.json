@@ -1,0 +1,18 @@
+{
+  "classification": "general_notice",
+  "candidate_count": 0,
+  "notes": [
+    "Skipped 1 obvious non-event block(s).",
+    "skipped_sections: mass_intentions=1",
+    "possible_missed_event_after_skipped_section: 1",
+    "No event candidate was identified; the legacy result is a notice."
+  ],
+  "blocks": [
+    {
+      "block_index": 0,
+      "classification": "skipped",
+      "candidate": false,
+      "reason": "mass_intentions"
+    }
+  ]
+}

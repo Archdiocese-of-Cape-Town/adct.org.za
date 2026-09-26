@@ -1,40 +1,27 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { prepareIsolatedWpEnvConfig } from './wp-env-config.mjs';
+import { resolveWpEnvHome, stopWpEnvAfterTests } from './wp-env-home.mjs';
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 const releaseZip = join(repositoryRoot, 'dist', 'adct-parish-intake.zip');
-const npmCli = process.env.npm_execpath;
 
 if (!existsSync(releaseZip)) {
   throw new Error('Build dist/adct-parish-intake.zip before running WordPress integration tests.');
 }
 
-if (!npmCli) {
-  throw new Error('Run this harness with `npm run test:integration` or `composer test:integration`.');
-}
-
-const hasCustomWpEnvHome = Boolean(process.env.WP_ENV_HOME);
-const wpEnvHome = hasCustomWpEnvHome
-  ? resolve(process.env.WP_ENV_HOME)
-  : join(tmpdir(), 'adct-parish-intake-wp-env');
+const wpEnvHome = resolveWpEnvHome(repositoryRoot);
+const stopAfterTests = stopWpEnvAfterTests();
 const wpEnvCli = join(repositoryRoot, 'node_modules', '@wordpress', 'env', 'bin', 'wp-env');
 
 if (!existsSync(wpEnvCli)) {
   throw new Error('Install Node dependencies before running WordPress integration tests.');
 }
 
-let wpEnvConfigDirectory = repositoryRoot;
-
-if (hasCustomWpEnvHome) {
-  const isolatedConfig = prepareIsolatedWpEnvConfig(repositoryRoot, wpEnvHome);
-  wpEnvConfigDirectory = isolatedConfig.configDirectory;
-  console.log(`Using isolated wp-env project ${isolatedConfig.projectHash}.`);
-}
-
+const isolatedConfig = prepareIsolatedWpEnvConfig(repositoryRoot, wpEnvHome);
+console.log(`Using isolated wp-env project ${isolatedConfig.projectHash}.`);
 const environment = {
   ...process.env,
   WP_ENV_HOME: wpEnvHome,
@@ -45,7 +32,7 @@ function runWpEnv(args) {
     process.execPath,
     [wpEnvCli, ...args],
     {
-      cwd: wpEnvConfigDirectory,
+      cwd: isolatedConfig.configDirectory,
       env: environment,
       stdio: 'inherit',
     }
@@ -60,12 +47,12 @@ function runWpEnv(args) {
   }
 }
 
-let startAttempted = false;
+let started = false;
 let failure = null;
 
 try {
-  startAttempted = true;
   runWpEnv(['start']);
+  started = true;
   runWpEnv([
     'run',
     'cli',
@@ -93,7 +80,7 @@ try {
   failure = error;
 } finally {
   try {
-    if (startAttempted) {
+    if (started && stopAfterTests) {
       runWpEnv(['stop']);
     }
   } catch (cleanupError) {
