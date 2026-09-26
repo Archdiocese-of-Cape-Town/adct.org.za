@@ -18,6 +18,11 @@ final class WordPressMailDeliveryAdapter implements MailDeliveryInterface
         $body = $hasHtml ? $email->htmlBody : $email->textBody;
         $contentType = $hasHtml ? 'text/html' : 'text/plain';
         $headers = ['Content-Type: ' . $contentType . '; charset=UTF-8'];
+
+        if ($email->threadHeaders !== null) {
+            array_push($headers, ...$email->threadHeaders->toHeaderLines());
+        }
+
         $setAlternativeBody = static function ($mailer) use ($email, $hasHtml): void {
             if (! $hasHtml) {
                 return;

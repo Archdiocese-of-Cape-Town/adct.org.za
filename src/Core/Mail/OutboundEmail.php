@@ -18,6 +18,8 @@ final class OutboundEmail
      * Stable idempotency key for one already-composed message to this recipient, not a coalescing bucket.
      */
     public readonly ?string $groupKey;
+    public readonly ?EmailThreadHeaders $threadHeaders;
+    public readonly ?string $payloadFingerprint;
 
     public function __construct(
         string $recipient,
@@ -25,7 +27,9 @@ final class OutboundEmail
         string $htmlBody,
         string $textBody,
         MailPriority $priority,
-        ?string $groupKey = null
+        ?string $groupKey = null,
+        ?EmailThreadHeaders $threadHeaders = null,
+        ?string $payloadFingerprint = null
     ) {
         $recipient = strtolower(trim($recipient));
 
@@ -59,12 +63,21 @@ final class OutboundEmail
             throw new InvalidArgumentException('The outbound email group key is invalid.');
         }
 
+        if (
+            $payloadFingerprint !== null
+            && preg_match('/\A[a-f0-9]{64}\z/D', $payloadFingerprint) !== 1
+        ) {
+            throw new InvalidArgumentException('The outbound email payload fingerprint must be a SHA-256 value.');
+        }
+
         $this->recipient = $recipient;
         $this->subject = $subject;
         $this->htmlBody = $htmlBody;
         $this->textBody = $textBody;
         $this->priority = $priority;
         $this->groupKey = $groupKey;
+        $this->threadHeaders = $threadHeaders;
+        $this->payloadFingerprint = $payloadFingerprint;
     }
 
     public function hasSamePayload(self $other): bool
@@ -74,6 +87,17 @@ final class OutboundEmail
             && $this->htmlBody === $other->htmlBody
             && $this->textBody === $other->textBody
             && $this->priority === $other->priority
-            && $this->groupKey === $other->groupKey;
+            && $this->groupKey === $other->groupKey
+            && $this->threadHeadersEqual($other)
+            && $this->payloadFingerprint === $other->payloadFingerprint;
+    }
+
+    private function threadHeadersEqual(self $other): bool
+    {
+        if ($this->threadHeaders === null || $other->threadHeaders === null) {
+            return $this->threadHeaders === $other->threadHeaders;
+        }
+
+        return $this->threadHeaders->equals($other->threadHeaders);
     }
 }

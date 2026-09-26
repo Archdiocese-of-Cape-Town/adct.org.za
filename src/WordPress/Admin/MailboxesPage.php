@@ -294,7 +294,13 @@ final class MailboxesPage
     }
 
     /**
-     * @param list<array{received_at: string, auth_results: string|null, is_auto_reply: int|string}> $messages
+     * @param list<array{
+     *     received_at: string,
+     *     auth_results: string|null,
+     *     is_auto_reply: int|string,
+     *     confirmation_status: string|null,
+     *     confirmation_reason: string|null
+     * }> $messages
      */
     private function renderRecentScreeningMessages(array $messages): void
     {
@@ -303,7 +309,7 @@ final class MailboxesPage
         }
         ?>
         <div class="notice notice-info inline">
-            <p><strong>Recent message screening</strong></p>
+            <p><strong>Recent message screening and confirmation</strong></p>
             <ul>
                 <?php foreach ($messages as $message) : ?>
                     <?php $authentication = $this->authenticationSummary($message['auth_results'] ?? null); ?>
@@ -311,6 +317,10 @@ final class MailboxesPage
                         <?php echo esc_html((string) ($message['received_at'] ?? '')); ?> UTC:
                         <?php if ((int) ($message['is_auto_reply'] ?? 0) === 1) : ?>
                             <strong>No confirmation: automated or list mail detected.</strong>
+                        <?php endif; ?>
+                        <?php $confirmation = $this->confirmationSummary($message); ?>
+                        <?php if ($confirmation !== null) : ?>
+                            <strong>Confirmation: <?php echo esc_html($confirmation); ?>.</strong>
                         <?php endif; ?>
                         <?php echo esc_html($authentication['summary']); ?>
                         <?php if ($authentication['reported_dmarc_failure']) : ?>
@@ -321,6 +331,43 @@ final class MailboxesPage
             </ul>
         </div>
         <?php
+    }
+
+    /**
+     * @param array{confirmation_status: string|null, confirmation_reason: string|null} $message
+     */
+    private function confirmationSummary(array $message): ?string
+    {
+        $status = $message['confirmation_status'] ?? null;
+
+        if (! is_string($status) || $status === '') {
+            return null;
+        }
+
+        $statusLabel = match ($status) {
+            'queued' => 'queued for delivery',
+            'sent' => 'accepted by the mail transport',
+            'suppressed' => 'suppressed',
+            'failed' => 'delivery failed',
+            default => 'status unavailable',
+        };
+        $reason = $message['confirmation_reason'] ?? null;
+        $reasonLabel = match ($reason) {
+            'blocked_sender' => 'sender is blocked',
+            'automated_or_list' => 'automated or list mail',
+            'no_safe_recipient' => 'no safe confirmation address',
+            'no_candidates' => 'no draft event candidates',
+            'test_mode' => 'blocked by the test-mode allow-list',
+            'delivery_failed' => 'outbound queue reached terminal failure',
+            'queue_conflict' => 'confirmation queue conflict needs review',
+            'raw_message_unavailable' => 'stored message headers are unavailable',
+            null => null,
+            default => 'reason unavailable',
+        };
+
+        return $reasonLabel === null
+            ? $statusLabel
+            : $statusLabel . ': ' . $reasonLabel;
     }
 
     /**

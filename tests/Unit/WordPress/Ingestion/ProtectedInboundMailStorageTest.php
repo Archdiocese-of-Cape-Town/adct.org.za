@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Ingestion;
 
+use ADCT\ParishIntake\Core\Ingestion\PermanentInboundHeaderReadException;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
@@ -83,6 +84,32 @@ final class ProtectedInboundMailStorageTest extends TestCase
         $storage->delete('../private/example.eml');
     }
 
+    public function testReadsOnlyTheBoundedRawHeaderBlock(): void
+    {
+        $storage = new ProtectedInboundMailStorage($this->directory);
+        $rawPath = $storage->storeRawMessage(
+            "From: notices@example.test\r\n"
+            . "Message-ID: <notice@example.test>\r\n"
+            . "\r\n"
+            . str_repeat('body content', 100)
+        );
+
+        self::assertSame(
+            "From: notices@example.test\r\nMessage-ID: <notice@example.test>\r\n",
+            $storage->readHeaderBlock($rawPath)
+        );
+    }
+
+    public function testMissingPrivateRawMessageIsARecognizedPermanentHeaderFailure(): void
+    {
+        $storage = new ProtectedInboundMailStorage($this->directory);
+        $rawPath = $storage->storeRawMessage("From: notices@example.test\r\n\r\nExample message.");
+        $storage->delete($rawPath);
+
+        $this->expectException(PermanentInboundHeaderReadException::class);
+        $storage->readHeaderBlock($rawPath);
+    }
+
     public function testReadsOnlyExistingProtectedRawEmailFiles(): void
     {
         $storage = new ProtectedInboundMailStorage($this->directory);
@@ -103,6 +130,7 @@ final class ProtectedInboundMailStorageTest extends TestCase
         $this->expectException(RuntimeException::class);
         $storage->readRawMessage($relativePath);
     }
+
 
     public function testCommentedDenyRuleDoesNotCountAsDirectoryProtection(): void
     {
