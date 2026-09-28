@@ -9,6 +9,8 @@ use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingRecord;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageStoreResult;
 use ADCT\ParishIntake\Core\Ports\InboundMessageStoreInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingStoreInterface;
+use ADCT\ParishIntake\Core\Retention\RetentionSettings;
+use Closure;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use DateTimeImmutable;
@@ -21,11 +23,16 @@ final class WordPressInboundMessageStore implements
     InboundMessageStoreInterface,
     InboundMessageProcessingStoreInterface
 {
+    /** @var Closure(): RetentionSettings|null */
+    private ?Closure $retentionSettings;
+
     public function __construct(
         private DatabaseConnectionInterface $database,
         private InboundMessageRepository $messages,
-        private AttachmentRepository $attachments
+        private AttachmentRepository $attachments,
+        ?callable $retentionSettings = null
     ) {
+        $this->retentionSettings = $retentionSettings === null ? null : Closure::fromCallable($retentionSettings);
     }
 
     public function findDuplicate(int $sourceId, string $externalId, ?string $contentHash): ?int
@@ -35,6 +42,9 @@ final class WordPressInboundMessageStore implements
 
     public function store(InboundMessageRecord $message, string $timestamp): InboundMessageStoreResult
     {
+        $months = $this->retentionSettings === null
+            ? RetentionSettings::DEFAULT_RAW_MONTHS
+            : ($this->retentionSettings)()->rawMonths;
         $this->beginTransaction();
 
         try {
@@ -67,7 +77,7 @@ final class WordPressInboundMessageStore implements
                 'is_auto_reply' => $message->isAutoReply ? 1 : 0,
                 'status' => $message->status,
                 'error' => $message->error,
-                'retention_until' => $receivedAt->modify('+12 months')->format('Y-m-d H:i:s'),
+                'retention_until' => $receivedAt->modify('+' . $months . ' months')->format('Y-m-d H:i:s'),
                 'created_at' => $timestamp,
                 'updated_at' => $timestamp,
             ];

@@ -284,4 +284,23 @@ To start a registered job manually, an Administrator or Intake manager can open 
 
 ## Uninstall and data retention
 
+Open **Parish Intake → Data retention** to set how long private inbound
+email files are kept (1–120 months; default 12 for newly received messages)
+and how long copies in each active mailbox's Processed folder are kept
+(1–3650 days; default 90). Changing the file setting does not rewrite
+deadlines on already received messages. The daily **Remove expired private
+data** job runs in bounded batches, resuming from its checkpoint; use
+**Parish Intake → Scheduled jobs** to check failures and retry. It removes
+old raw messages and attachments only after their deadline and once their
+processing has stopped; no published events or event change history are
+deleted. An expired failed message with a removed raw file cannot be
+reprocessed. Tokens expire and are removed 30 days later; audit entries
+are removed after 24 months.
+
+The Processed-folder cleanup requires the mailbox server to support
+UIDPLUS. If a mailbox does not support it, the job stops with an error
+instead of risking deletion of unrelated mail. Check the mailbox setting
+and server capabilities before retrying; never use the plugin against a
+live mailbox as a dry-run test.
+
 Uninstalling the plugin removes its custom roles and Parish Intake capabilities from the built-in Administrator and Editor roles. It does **not** drop Parish Intake tables or delete plugin data. Data deletion requires a separate owner decision.

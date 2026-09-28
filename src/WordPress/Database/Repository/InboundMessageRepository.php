@@ -175,7 +175,7 @@ final class InboundMessageRepository extends AbstractRepository
         try {
             $eligibleRows = $this->fetchRows($this->database->prepare(
                 'SELECT id FROM ' . $this->tableName()
-                . ' WHERE status = %s AND id IN (' . $placeholders . ') ORDER BY id ASC FOR UPDATE',
+                .                                 ' WHERE status = %s AND id IN (' . $placeholders . ') AND raw_path IS NOT NULL ORDER BY id ASC FOR UPDATE',
                 InboundMessageRecord::STATUS_FAILED,
                 ...$messageIds
             ));

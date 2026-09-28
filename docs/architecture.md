@@ -130,7 +130,7 @@ Each job's state records `last_run_at` (run start), `last_success_at` (updated o
 | `poll_sources` | hourly | Planned: poll a few active ICS/PDF/secondary sources per run (oldest `last_checked_at` first) and record checks, successes, failures and item times through `SourceHealthRecorder`. No source polling adapter is registered yet. |
 | `expand_occurrences` | daily | Rebuild published events' occurrences for the inclusive 12-month window; per-event replacement is transactional, and batches resume from a checkpoint. |
 | `monitoring` | daily | Planned: update source health, create reminder candidates, send inactivity reminders, approval reminders and approver digests (each can be switched off). |
-| `retention` | daily | Planned: delete raw messages/attachments past retention, prune tokens and logs. |
+| `retention` | daily | Checkpointed file, Processed mailbox, token and audit cleanup. Retries retain a fixed cutoff; individual file removals hold a row lock and skip active processing. Mail deletion requires UIDPLUS. |
 
 The framework heartbeat, `poll_mailboxes`, `process_inbound_messages`, `queue_confirmation_previews`, `send_mail` and `expand_occurrences` are registered jobs. The heartbeat only exercises scheduling; the mailbox poller stores incoming mail but does not parse messages or process events. `process_inbound_messages` parses existing private message files and creates or refreshes draft candidates; it does not publish events or queue mail.
 
