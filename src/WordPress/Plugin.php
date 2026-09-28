@@ -29,6 +29,7 @@ use ADCT\ParishIntake\Core\Jobs\InboundMessageProcessingJob;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
 use ADCT\ParishIntake\Core\Jobs\MailQueueSenderJob;
 use ADCT\ParishIntake\Core\Jobs\OccurrenceExpansionJob;
+use ADCT\ParishIntake\Core\Jobs\RetentionJob;
 use ADCT\ParishIntake\Core\Ingestion\Imap\ImapMailbox;
 use ADCT\ParishIntake\Core\Ingestion\MimeMessageParser;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxConnectionConfig;
@@ -51,6 +52,7 @@ use ADCT\ParishIntake\Core\Ports\AiCallGateInterface;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
+use ADCT\ParishIntake\Core\Ports\ProcessedMailRetentionInterface;
 use ADCT\ParishIntake\Core\Ports\MailerInterface;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
@@ -62,6 +64,7 @@ use ADCT\ParishIntake\WordPress\Admin\DeaneriesPage;
 use ADCT\ParishIntake\WordPress\Admin\MailboxesPage;
 use ADCT\ParishIntake\WordPress\Admin\OutboundMailPage;
 use ADCT\ParishIntake\WordPress\Admin\ParserPage;
+use ADCT\ParishIntake\WordPress\Admin\RetentionPage;
 use ADCT\ParishIntake\WordPress\Admin\ParishesPage;
 use ADCT\ParishIntake\WordPress\Admin\SendersPage;
 use ADCT\ParishIntake\WordPress\Admin\SourcesPage;
@@ -95,6 +98,7 @@ use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenRateLimitStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressMailQueueRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
+use ADCT\ParishIntake\WordPress\Database\WordPressRetentionStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressEventCandidateStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationLogger;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationVersionStore;
@@ -109,6 +113,8 @@ use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
+use ADCT\ParishIntake\WordPress\Retention\WordPressRetentionSettings;
+use ADCT\ParishIntake\WordPress\Jobs\HealthAlerts;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailQueueImmediateDispatch;
@@ -152,6 +158,7 @@ final class Plugin
     private PublicEventListing $publicEventListing;
     private MailboxesPage $mailboxesPage;
     private InboundMessagesPage $inboundMessagesPage;
+    private RetentionPage $retentionPage;
 
     private function __construct(string $pluginFile)
     {
@@ -177,7 +184,8 @@ final class Plugin
         $inboundMessageStore = new WordPressInboundMessageStore(
             $database,
             $inboundMessages,
-            $attachmentRepository
+            $attachmentRepository,
+            static fn () => WordPressRetentionSettings::current()
         );
         $secrets = new WordPressSecretResolver();
         $directorySnapshots = new CachedDirectorySnapshotProvider(
@@ -320,6 +328,7 @@ final class Plugin
             new WordPressMailQueueImmediateDispatch($jobRunner, $mailQueueSenderJob)
         );
         $protectedInboundMailStorage = new ProtectedInboundMailStorage();
+        $this->retentionPage = new RetentionPage();
         $this->actionTokenService = new ActionTokenService(
             new WordPressActionTokenStore($database),
             $clock
@@ -393,6 +402,30 @@ final class Plugin
                 $inboundMessageProcessingJob,
                 new OccurrenceExpansionJob($occurrenceMaintenance, $clock, $timezone),
                 $mailQueueSenderJob,
+                new RetentionJob(
+                    new WordPressRetentionStore($database, $protectedInboundMailStorage),
+                    $clock,
+                    static fn () => WordPressRetentionSettings::current(),
+                    static fn (): array => array_map(
+                        static fn (MailboxSettings $settings): int => $settings->id,
+                        $mailboxes->findActiveMailboxes()
+                    ),
+                    static function (int $id) use ($mailboxes, $secrets): ProcessedMailRetentionInterface {
+                        $settings = $mailboxes->findMailboxById($id);
+                        if ($settings === null || ! $settings->active) {
+                            throw new \RuntimeException('The retention mailbox is no longer active.');
+                        }
+                        return new ImapMailbox(new MailboxConnectionConfig(
+                            host: $settings->host,
+                            port: $settings->port,
+                            encryption: $settings->encryption,
+                            username: $settings->username,
+                            password: $secrets->resolve(SecretRegistry::IMAP_PASSWORD, $settings->secretScope()),
+                            folders: ['inbox' => $settings->inboxFolder, 'processed' => $settings->processedFolder],
+                            maxMessageSizeBytes: $settings->maxMessageSizeBytes
+                        ));
+                    }
+                ),
             ],
             $jobRunner,
             $stateStore,
@@ -628,6 +661,7 @@ final class Plugin
         add_action('admin_menu', [$this->mailboxesPage, 'registerMenu']);
         add_action('admin_menu', [$this->inboundMessagesPage, 'registerMenu']);
         add_action('admin_menu', [$this->outboundMailPage, 'registerMenu']);
+        add_action('admin_menu', [$this->retentionPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
         add_action('admin_init', [$this, 'maybeUpgradeRoles'], 1);
         add_action('admin_init', [$this, 'restrictWpAdminForPortalRoles'], 2);
@@ -641,6 +675,7 @@ final class Plugin
         add_action('admin_post_adct_pi_parish_contact', [$this->parishesPage, 'handleContactAction']);
         add_action('admin_post_adct_pi_save_source', [$this->sourcesPage, 'handleSaveSource']);
         add_action('admin_post_adct_pi_save_mailbox', [$this->mailboxesPage, 'handleSaveMailbox']);
+        add_action('admin_post_adct_pi_save_retention', [$this->retentionPage, 'handleSave']);
         add_action(
             'admin_post_adct_pi_reprocess_inbound_messages',
             [$this->inboundMessagesPage, 'handleReprocess']

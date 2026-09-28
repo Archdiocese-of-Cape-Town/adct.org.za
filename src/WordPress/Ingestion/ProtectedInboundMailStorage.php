@@ -101,7 +101,20 @@ final class ProtectedInboundMailStorage implements
 
         $path = $this->directoryPath() . DIRECTORY_SEPARATOR . $relativePath;
 
+        $directory = $this->directoryPath();
+        for ($parent = $directory; dirname($parent) !== $parent; $parent = dirname($parent)) {
+            if (is_link($parent)) {
+                throw new RuntimeException('The private inbound storage directory contains a symbolic link.');
+            }
+        }
+        if (is_link($path)) {
+            throw new RuntimeException('The private inbound storage path contains a symbolic link.');
+        }
+
         if (! is_file($path)) {
+            if (file_exists($path)) {
+                throw new RuntimeException('The private inbound storage path is not a regular file.');
+            }
             return;
         }
 

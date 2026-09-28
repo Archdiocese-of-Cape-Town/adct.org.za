@@ -294,4 +294,21 @@ The listing cache generation is a random, option-backed `adct_pi_event_listing_g
 - Bulletin sections with personal information (Mass intentions, sick lists, finances) are skipped by the parser and never copied into candidates, events or AI prompts ([E3.7](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/74)).
 - Event change history (`event_changes`): kept while the event exists, then deleted with it.
 - Audit log: 24 months.
+
+The daily `retention` job uses the existing `retention_until` timestamp on each inbound
+message (set at receipt from the configurable 1–120 month private-file setting,
+default 12). Only terminal messages (`parsed`, `ignored`, `skipped`, `failed`)
+can lose their raw `.eml` and attachment files. The job leaves the message,
+attachment metadata, parsed candidates, events, and `event_changes` in place;
+it clears stored file paths and attachment extracted text. A failed message
+whose raw file has expired cannot be requeued. Existing rows keep their saved
+deadline when the setting changes. Missing files are safe to retry; invalid
+paths and symlinks fail the job visibly.
+
+Processed-folder copies are removed after the configurable 1–3650 day period
+(default 90). Mailbox deletion requires UIDPLUS and uses UID SEARCH against
+the server's INTERNALDATE plus UID STORE / UID EXPUNGE for one UID, never
+mailbox-wide EXPUNGE. The cutoff day itself is retained. The Inbox and Too
+large folders are untouched. Expired tokens and audit records are pruned in
+bounded steps without touching event revisions.
 - Outgoing emails show the archdiocese's contact details for questions about personal information.
