@@ -23,6 +23,13 @@ final class ProtectedInboundMailStorage implements
     private const PROTECTION_MARKER = '# ADCT Parish Intake private files';
     private const MAX_RAW_MESSAGE_SIZE_BYTES = 30 * 1024 * 1024;
 
+    /**
+     * The only file names this storage will create, resolve or delete. Anything
+     * else could escape the private directory, so it is rejected before use.
+     * `.eml` is the stored raw message; the rest are attachment types.
+     */
+    private const ATTACHMENT_NAME_PATTERN = '/\A[a-f0-9]{64}\.(?:eml|pdf|jpg|png|webp|heic|heif)\z/';
+
     private ?string $directory;
 
     public function __construct(?string $directory = null)
@@ -71,9 +78,24 @@ final class ProtectedInboundMailStorage implements
         return $rawMessage;
     }
 
+    public function resolveAttachmentPath(string $relativePath): string
+    {
+        if (preg_match(self::ATTACHMENT_NAME_PATTERN, $relativePath) !== 1) {
+            throw new InvalidArgumentException('The private inbound attachment path is invalid.');
+        }
+
+        $path = $this->directoryPath() . DIRECTORY_SEPARATOR . $relativePath;
+
+        if (! is_file($path) || is_link($path)) {
+            throw new RuntimeException('The stored inbound attachment is missing.');
+        }
+
+        return $path;
+    }
+
     public function delete(string $relativePath): void
     {
-        if (preg_match('/\A[a-f0-9]{64}\.(?:eml|pdf|jpg|png|webp|heic|heif)\z/', $relativePath) !== 1) {
+        if (preg_match(self::ATTACHMENT_NAME_PATTERN, $relativePath) !== 1) {
             throw new InvalidArgumentException('The private inbound file path is invalid.');
         }
 

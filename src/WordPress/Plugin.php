@@ -51,6 +51,7 @@ use ADCT\ParishIntake\Core\Mail\ConfirmationEmailPreviewService;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
+use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
@@ -59,6 +60,8 @@ use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
 use ADCT\ParishIntake\Core\Support\SystemClock;
+use ADCT\ParishIntake\WordPress\Pdf\PrinsFrankPdfTextExtractor;
+use ADCT\ParishIntake\WordPress\Pdf\WordPressAttachmentExtractionStore;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
 use ADCT\ParishIntake\WordPress\Admin\HealthPage;
 use ADCT\ParishIntake\WordPress\Admin\InboundMessagesPage;
@@ -205,7 +208,8 @@ final class Plugin
             new WordPressAiCallGate(
                 new WordPressActionTokenRateLimitStore($database),
                 $clock
-            )
+            ),
+            new AttachmentRepository($database)
         );
         $sourceRegistryService = new SourceRegistryService($sources, $clock);
         $this->mailboxesPage = new MailboxesPage(
@@ -407,7 +411,15 @@ final class Plugin
             new WordPressEventCandidateStore(new EventCandidateRepository($database)),
             new WordPressInboundMessageProcessingFailureLogger(),
             $directorySnapshots,
-            $clock
+            $clock,
+            new PdfTextEnrichmentService(
+                new WordPressAttachmentExtractionStore(
+                    new AttachmentRepository($database),
+                    $clock
+                ),
+                new PrinsFrankPdfTextExtractor(),
+                $protectedInboundMailStorage
+            )
         );
         $this->inboundMessagesPage = new InboundMessagesPage(
             $inboundMessages,

@@ -165,6 +165,8 @@ Mailbox connection settings are kept separately from source identity and health.
 
 The poller stores an attachment only when its declared MIME type is on the provisional allowlist (PDF, JPEG, PNG, WebP, HEIC and HEIF), its file signature matches, and it is no larger than 15 MiB. Unsupported, oversized and signature-mismatched attachments retain metadata and a skip status but no stored file. The allowlist is centralized in `AttachmentStoragePolicy`; skipped items are shown to administrators on the Mailboxes screen.
 
+A stored PDF's `extraction_method` and `status` are set during processing (ADR 0015). `extraction_method` is `pdf_text` when text was read and `none` otherwise; `status` is one of `extracted`, `no_text_layer` (a scan, which needs OCR or manual entry), `skipped_size`, `skipped_page_limit`, `skipped_timeout`, `failed`, or the three storage-policy values above. Only the first group is new — the existing `varchar(20)` status column holds all of them, so no migration was required. PDFs that did not yield text are listed on the Manual parser screen.
+
 The Inbox shows received, extracting, parsed, failed and ignored messages to users with intake review permission. Its Ignored filter also includes oversize messages stored with the legacy `skipped` status. It does not select `body_text`, `raw_path`, raw headers or attachments. A failed message can be requeued only after an authorized, nonce-protected admin action; reprocessing uses the same row and protected raw file, preserves attachments and mailbox checkpoints, and does not publish events or send email.
 
 ### `adct_pi_event_candidates`

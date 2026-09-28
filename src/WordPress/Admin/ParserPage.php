@@ -8,13 +8,16 @@ use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\Pipeline;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
+use ADCT\ParishIntake\Core\Pdf\PdfExtractionResult;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Ports\AiCallGateInterface;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\WordPress\Ai\OpenAiCompatibleProvider;
 use ADCT\ParishIntake\WordPress\Database\Schema;
+use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
+use Throwable;
 
 final class ParserPage
 {
@@ -29,19 +32,50 @@ final class ParserPage
     private StaticReportGenerator $reportGenerator;
     private HttpClientInterface $httpClient;
     private AiCallGateInterface $aiGate;
+    private ?AttachmentRepository $attachments;
 
     public function __construct(
         Schema $schema,
         PipelineFactory $pipelineFactory,
         StaticReportGenerator $reportGenerator,
         HttpClientInterface $httpClient,
-        AiCallGateInterface $aiGate
+        AiCallGateInterface $aiGate,
+        ?AttachmentRepository $attachments = null
     ) {
         $this->schema = $schema;
         $this->pipelineFactory = $pipelineFactory;
         $this->reportGenerator = $reportGenerator;
         $this->httpClient = $httpClient;
         $this->aiGate = $aiGate;
+        $this->attachments = $attachments;
+    }
+
+    /**
+     * @return list<array{filename: string, status: string, updated_at: string}>
+     */
+    private function unreadablePdfs(): array
+    {
+        if ($this->attachments === null) {
+            return [];
+        }
+
+        try {
+            return $this->attachments->findRecentUnreadablePdfs(5);
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    private function pdfStatusLabel(string $status): string
+    {
+        return match ($status) {
+            PdfExtractionResult::STATUS_NO_TEXT_LAYER => 'No text layer (likely a scan)',
+            PdfExtractionResult::STATUS_SKIPPED_SIZE => 'Too large to read',
+            PdfExtractionResult::STATUS_SKIPPED_PAGE_LIMIT => 'Too many pages',
+            PdfExtractionResult::STATUS_SKIPPED_TIMEOUT => 'Took too long to read',
+            PdfExtractionResult::STATUS_FAILED => 'Could not be opened',
+            default => 'Not read',
+        };
     }
 
     public function createConfiguredPipeline(bool $allowAi = false): Pipeline
@@ -386,6 +420,25 @@ final class ParserPage
 
             <?php if ($report && ! empty($report['url'])) : ?>
                 <p><strong>Static snapshot:</strong> <a href="<?php echo esc_url($report['url']); ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html($report['url']); ?></a></p>
+            <?php endif; ?>
+
+            <?php $unreadablePdfs = $this->unreadablePdfs(); ?>
+            <?php if ($unreadablePdfs !== []) : ?>
+                <div class="notice notice-warning">
+                    <p><strong><?php echo esc_html__('PDF posters that could not be read', 'adct-parish-intake'); ?></strong></p>
+                    <p><?php echo esc_html__('These PDFs arrived as attachments but produced no text, so any event in them must be entered by hand. The email around them was still processed.', 'adct-parish-intake'); ?></p>
+                    <ul>
+                        <?php foreach ($unreadablePdfs as $pdf) : ?>
+                            <li>
+                                <code><?php echo esc_html((string) ($pdf['filename'] ?? '')); ?></code>
+                                &mdash; <?php echo esc_html($this->pdfStatusLabel((string) ($pdf['status'] ?? ''))); ?>
+                                <?php if ((string) ($pdf['updated_at'] ?? '') !== '') : ?>
+                                    <br /><small><?php echo esc_html((string) $pdf['updated_at']); ?> UTC</small>
+                                <?php endif; ?>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                </div>
             <?php endif; ?>
 
             <h2>Recent stored parses</h2>
