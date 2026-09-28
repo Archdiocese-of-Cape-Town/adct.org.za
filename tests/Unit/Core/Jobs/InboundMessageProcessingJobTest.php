@@ -520,7 +520,12 @@ final class ProcessingFileStorage implements InboundMailStorageReaderInterface
     {
         throw new RuntimeException('The processing job must not delete stored files.');
     }
-}
+
+        public function resolveAttachmentPath(string $relativePath): string
+        {
+            throw new RuntimeException('The processing job must not resolve attachment paths in tests.');
+        }
+    }
 
 final class ProcessingCandidateStore implements EventCandidateStoreInterface
 {
