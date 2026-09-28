@@ -57,6 +57,31 @@ final class OccurrenceRepository
     }
 
     /**
+     * @return list<array{start_utc: string, end_utc: string|null, start_local_date: string, is_cancelled: int|string}>
+     */
+    public function upcomingForEvent(int $eventId, DateTimeImmutable $after, int $limit = 5): array
+    {
+        if ($eventId < 1) {
+            throw new InvalidArgumentException('The event ID must be positive.');
+        }
+
+        if ($limit < 1 || $limit > 20) {
+            throw new InvalidArgumentException('The occurrence limit must be between 1 and 20.');
+        }
+
+        $table = $this->occurrencesTable();
+        $query = $this->database->prepare(
+            "SELECT start_utc, end_utc, start_local_date, is_cancelled FROM {$table} "
+            . 'WHERE event_id = %d AND start_utc >= %s ORDER BY start_utc ASC LIMIT %d',
+            $eventId,
+            $after->setTimezone($this->utc)->format('Y-m-d H:i:s'),
+            $limit
+        );
+
+        return $this->fetchRows($query);
+    }
+
+    /**
      * @return array{latitude: float|null, longitude: float|null}
      */
     public function locationForEvent(?int $parishId, ?int $venueId): array
@@ -320,6 +345,21 @@ final class OccurrenceRepository
         }
 
         return $row;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function fetchRows(string $query): array
+    {
+        $this->database->clearLastError();
+        $rows = $this->database->getResults($query);
+
+        if ($this->database->lastError() !== '') {
+            throw new RuntimeException('The occurrence database read failed: ' . $this->database->lastError());
+        }
+
+        return $rows;
     }
 
     private function coordinates(mixed $latitude, mixed $longitude): array

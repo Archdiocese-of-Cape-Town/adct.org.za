@@ -2266,6 +2266,8 @@ if (count($preexistingOccurrenceRows) !== 3) {
 
 $forcedVenueFailureEventId = $occurrenceEventId;
 $failedUpdateStart = $restOccurrenceStart->modify('+3 weeks');
+// Ensure an unintended duplicate rebuild changes second-resolution timestamps.
+sleep(1);
 $failedUpdateRequest = new WP_REST_Request(
     'PATCH',
     '/wp/v2/adct_event/' . $occurrenceEventId
@@ -4345,6 +4347,10 @@ if ($secondApproverUser instanceof WP_User && in_array('deanery_approver', $seco
 
 require_once __DIR__ . '/PublicationCheck.php';
 PublicationCheck::run($fail);
+
+require_once __DIR__ . '/SingleEventPageCheck.php';
+SingleEventPageCheck::run($fail, $firstParishId, $occurrenceType, $occurrenceVenue);
+
 require WP_CONTENT_DIR . '/test-harness/IcsFeedCheck.php';
 
 foreach (['administrator', 'editor'] as $roleName) {
