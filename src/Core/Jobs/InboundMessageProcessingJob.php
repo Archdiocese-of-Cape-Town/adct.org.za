@@ -10,7 +10,9 @@ use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingFailure;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingRecord;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
 use ADCT\ParishIntake\Core\Ingestion\MimeMessageParser;
+use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\Pipeline;
+use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\DirectorySnapshotProviderInterface;
 use ADCT\ParishIntake\Core\Ports\EventCandidateStoreInterface;
@@ -49,7 +51,8 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
         private EventCandidateStoreInterface $candidates,
         private InboundMessageProcessingFailureLoggerInterface $failureLogger,
         DirectorySnapshotProviderInterface $directorySnapshots,
-        private ClockInterface $clock
+        private ClockInterface $clock,
+        private ?PdfTextEnrichmentService $pdfTextEnrichment = null
     ) {
         parent::__construct(
             'process_inbound_messages',
@@ -176,6 +179,7 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
             }
 
             $parsedMessage = $parsedMessage->withReceivedAt($message->receivedAt);
+            $parsedMessage = $this->appendPdfText($message, $parsedMessage);
             $pipeline = ($this->pipelineFactory)();
 
             if (! $pipeline instanceof Pipeline) {
@@ -266,9 +270,36 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
         return null;
     }
 
+    /**
+     * Fold a PDF attachment's text into the message body so a poster sent as a
+     * PDF is parsed like one pasted into the email.
+     *
+     * Enrichment itself is designed never to fail, so this only guards the
+     * unlikely case of the service itself being misconfigured.
+     */
+    private function appendPdfText(
+        InboundMessageProcessingRecord $message,
+        Message $parsedMessage
+    ): Message {
+        if ($this->pdfTextEnrichment === null) {
+            return $parsedMessage;
+        }
+
+        try {
+            return $this->pdfTextEnrichment->enrich($message->id, $parsedMessage)->message;
+        } catch (Throwable $failure) {
+            $this->logFailure(
+                $message->id,
+                InboundMessageProcessingFailure::CONTEXT_PDF_EXTRACTION,
+                $failure
+            );
+
+            return $parsedMessage;
+        }
+    }
+
     private function senderIsBlocked(InboundMessageProcessingRecord $message): bool
-    {
-        $email = trim((string) $message->senderEmail);
+    {        $email = trim((string) $message->senderEmail);
 
         if ($email === '' || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
             return false;

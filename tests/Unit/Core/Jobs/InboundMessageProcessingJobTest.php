@@ -19,6 +19,12 @@ use ADCT\ParishIntake\Core\Ports\EventCandidateStoreInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingFailureLoggerInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingStoreInterface;
+use ADCT\ParishIntake\Core\Pdf\PdfExtractionLimits;
+use ADCT\ParishIntake\Core\Pdf\PdfExtractionResult;
+use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
+use ADCT\ParishIntake\Core\Pdf\StoredPdfAttachment;
+use ADCT\ParishIntake\Core\Ports\AttachmentExtractionStoreInterface;
+use ADCT\ParishIntake\Core\Ports\PdfTextExtractorInterface;
 use DateTimeImmutable;
 use DateTimeZone;
 use PHPUnit\Framework\TestCase;
@@ -256,8 +262,11 @@ final class InboundMessageProcessingJobTest extends TestCase
      *     failureLogger: ProcessingFailureLogger
      * }
      */
-    private function fixture(DirectorySnapshot $snapshot, bool $pipelineFactoryThrows = false): array
-    {
+    private function fixture(
+        DirectorySnapshot $snapshot,
+        bool $pipelineFactoryThrows = false,
+        ?PdfTextEnrichmentService $pdfTextEnrichment = null
+    ): array {
         $clock = new ProcessingClock();
         $directory = new ProcessingDirectorySnapshotProvider($snapshot);
         $pipelineFactory = new PipelineFactory($clock, $directory);
@@ -280,7 +289,8 @@ final class InboundMessageProcessingJobTest extends TestCase
             $candidates,
             $failureLogger,
             $directory,
-            $clock
+            $clock,
+            $pdfTextEnrichment
         );
 
         return [
@@ -291,6 +301,84 @@ final class InboundMessageProcessingJobTest extends TestCase
             'directory' => $directory,
             'failureLogger' => $failureLogger,
         ];
+    }
+
+    public function testAnEventSentOnlyAsAPdfStillProducesACandidate(): void
+    {
+        $fixture = $this->fixture(
+            new DirectorySnapshot([], [], []),
+            pdfTextEnrichment: $this->pdfEnrichment('bulletin.pdf', PdfExtractionResult::extracted(
+                "Parish Retreat Day\nSaturday 17 October 2026 from 9am to 3pm at Example Parish Hall.",
+                1
+            ))
+        );
+        $fixture['messages']->add($this->message());
+        $fixture['storage']->files['private-message.eml'] = $this->emailWithoutAnEvent();
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame('parsed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        self::assertNotSame([], $fixture['candidates']->candidates[self::MESSAGE_ID] ?? []);
+        self::assertStringContainsString(
+            'Parish Retreat Day',
+            $fixture['messages']->bodies[self::MESSAGE_ID]
+        );
+    }
+
+    public function testAnUnreadablePdfDoesNotStopTheEmailBeingParsed(): void
+    {
+        $fixture = $this->fixture(
+            new DirectorySnapshot([], [], []),
+            pdfTextEnrichment: $this->pdfEnrichment('scan.pdf', PdfExtractionResult::noTextLayer(1))
+        );
+        $fixture['messages']->add($this->message());
+        $fixture['storage']->files['private-message.eml'] = $this->validEmail();
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame('parsed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        self::assertCount(1, $fixture['candidates']->candidates[self::MESSAGE_ID]);
+    }
+
+    public function testMessagesAreProcessedWhenPdfEnrichmentIsNotConfigured(): void
+    {
+        $fixture = $this->fixture(new DirectorySnapshot([], [], []));
+        $fixture['messages']->add($this->message());
+        $fixture['storage']->files['private-message.eml'] = $this->validEmail();
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame('parsed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        self::assertCount(1, $fixture['candidates']->candidates[self::MESSAGE_ID]);
+    }
+
+    private function pdfEnrichment(string $filename, PdfExtractionResult $result): PdfTextEnrichmentService
+    {
+        return new PdfTextEnrichmentService(
+            new ProcessingAttachmentExtractionStore([
+                new StoredPdfAttachment(1, $filename, 'a.pdf', 'pending', 'none'),
+            ]),
+            new ProcessingPdfTextExtractor($result),
+            new ProcessingFileStorage(attachmentPaths: ['a.pdf' => '/var/private/a.pdf']),
+            PdfExtractionLimits::defaults()
+        );
+    }
+
+    private function emailWithoutAnEvent(): string
+    {
+        return implode("\r\n", [
+            'From: Example Parish Office <notices@example.test>',
+            'To: intake@example.test',
+            'Date: Fri, 25 Sep 2026 04:00:00 +0000',
+            'Message-ID: <processing-test@example.test>',
+            'Subject: Example Parish community supper',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=UTF-8',
+            '',
+            'Parish: Example Parish',
+            'The programme for the coming month is attached as a PDF.',
+            '',
+        ]);
     }
 
     private function message(
@@ -454,10 +542,17 @@ final class ProcessingMessageStore implements InboundMessageProcessingStoreInter
 
 final class ProcessingFileStorage implements InboundMailStorageReaderInterface
 {
-    /** @var array<string, string> */
-    public array $files = [];
-
     public int $readCount = 0;
+
+    /**
+     * @param array<string, string> $files
+     * @param array<string, string>|null $attachmentPaths
+     */
+    public function __construct(
+        public array $files = [],
+        public ?array $attachmentPaths = null,
+    ) {
+    }
 
     public function readRawMessage(string $relativePath): string
     {
@@ -468,6 +563,16 @@ final class ProcessingFileStorage implements InboundMailStorageReaderInterface
         }
 
         return $this->files[$relativePath];
+    }
+
+    public function resolveAttachmentPath(string $relativePath): string
+    {
+        if ($this->attachmentPaths === null) {
+            throw new RuntimeException('The processing job must not read attachments directly.');
+        }
+
+        return $this->attachmentPaths[$relativePath]
+            ?? throw new RuntimeException('The stored inbound attachment is missing.');
     }
 
     public function storeRawMessage(string $rawMessage): string
@@ -483,6 +588,46 @@ final class ProcessingFileStorage implements InboundMailStorageReaderInterface
     public function delete(string $relativePath): void
     {
         throw new RuntimeException('The processing job must not delete stored files.');
+    }
+}
+
+final class ProcessingAttachmentExtractionStore implements AttachmentExtractionStoreInterface
+{
+    /** @var array<int, PdfExtractionResult> */
+    public array $recorded = [];
+
+    /**
+     * @param list<StoredPdfAttachment> $attachments
+     */
+    public function __construct(private readonly array $attachments)
+    {
+    }
+
+    public function findPendingPdfsForMessage(int $messageId): array
+    {
+        return $this->attachments;
+    }
+
+    public function recordResult(int $attachmentId, PdfExtractionResult $result): void
+    {
+        $this->recorded[$attachmentId] = $result;
+    }
+}
+
+final class ProcessingPdfTextExtractor implements PdfTextExtractorInterface
+{
+    /** @var list<string> */
+    public array $requestedPaths = [];
+
+    public function __construct(private readonly PdfExtractionResult $result)
+    {
+    }
+
+    public function extract(string $absolutePath, PdfExtractionLimits $limits): PdfExtractionResult
+    {
+        $this->requestedPaths[] = $absolutePath;
+
+        return $this->result;
     }
 }
 

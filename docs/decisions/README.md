@@ -17,6 +17,7 @@ Short records of important decisions: what was decided, why, and what follows fr
 | [0011](0011-outbound-email-queue-with-hourly-cap.md) | Outbound email queue with an hourly cap and priorities | Accepted |
 | [0012](0012-pure-php-mime-parser.md) | Pure-PHP MIME parsing with a prefixed Composer dependency | Accepted |
 | [0013](0013-built-in-pure-php-imap-client.md) | Built-in pure-PHP IMAP client | Accepted |
+| [0014](0014-pure-php-pdf-text-extraction.md) | Pure-PHP PDF text extraction with hard limits | Accepted |
 
 Template:
 
