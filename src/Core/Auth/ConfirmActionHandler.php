@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Core\Auth;
 
 use ADCT\ParishIntake\Core\Ports\ActionTokenActionHandlerInterface;
+use LogicException;
 
 final class ConfirmActionHandler implements ActionTokenActionHandlerInterface
 {
@@ -36,9 +37,11 @@ final class ConfirmActionHandler implements ActionTokenActionHandlerInterface
 
     public function perform(ActionTokenBinding $binding): ActionTokenOutcome
     {
-        if (is_callable($this->onConfirm)) {
-            ($this->onConfirm)($binding);
+        if (! is_callable($this->onConfirm)) {
+            throw new LogicException('No confirmation handler callback was configured.');
         }
+
+        ($this->onConfirm)($binding);
 
         return new ActionTokenOutcome('Your event submission has been confirmed and submitted for approval.');
     }

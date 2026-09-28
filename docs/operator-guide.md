@@ -161,7 +161,7 @@ The Mailboxes screen's **Recent message screening and confirmation** summary sho
 - A missing, corrupt or oversized stored message header is marked **delivery failed: stored message headers are unavailable**; that message is not sent and the scheduled job continues with later messages. Temporary storage or database errors remain retryable.
 - If the recipient is no longer safe or has changed, the payload has changed, or multiple rows use the same inbound key, it is marked **delivery failed: confirmation queue conflict** rather than sent a second time.
 
-Do not expect the Approve, Deny, Edit or Approve all links in these preview emails to work yet. They are explicitly marked **not active**; their token preview reports that the action is unavailable and does not consume the token or change an event. Replies are not processed automatically. Until an operator requeue action is available, do not edit the database or assume a suppressed message will be resent; contact the site owner if a confirmation needs recovery.
+Confirmation, approval, rejection, and change-revert action token handlers (`ConfirmActionHandler`, `DenyActionHandler`, `ApproveEventActionHandler`, `RejectEventActionHandler`, and `RevertChangeActionHandler`) implement `ActionTokenActionHandlerInterface` in the domain core (`src/Core/Auth/`). Single-use, hashed action tokens (`ActionTokenService`) are issued for email links. Link GET requests display preview metadata safely without modifying database state; form submission executes configured domain callbacks on POST. Replies are not processed automatically.
 
 ## Configure parser safeguards
 

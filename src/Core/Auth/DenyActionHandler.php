@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Core\Auth;
 
 use ADCT\ParishIntake\Core\Ports\ActionTokenActionHandlerInterface;
+use LogicException;
 
 final class DenyActionHandler implements ActionTokenActionHandlerInterface
 {
@@ -36,9 +37,11 @@ final class DenyActionHandler implements ActionTokenActionHandlerInterface
 
     public function perform(ActionTokenBinding $binding): ActionTokenOutcome
     {
-        if (is_callable($this->onDeny)) {
-            ($this->onDeny)($binding);
+        if (! is_callable($this->onDeny)) {
+            throw new LogicException('No deny handler callback was configured.');
         }
+
+        ($this->onDeny)($binding);
 
         return new ActionTokenOutcome('The event submission has been rejected and cancelled.');
     }

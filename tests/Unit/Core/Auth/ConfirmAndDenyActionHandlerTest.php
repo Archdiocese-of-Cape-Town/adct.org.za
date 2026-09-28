@@ -9,6 +9,7 @@ use ADCT\ParishIntake\Core\Auth\ActionTokenHandlerRegistry;
 use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 use ADCT\ParishIntake\Core\Auth\ConfirmActionHandler;
 use ADCT\ParishIntake\Core\Auth\DenyActionHandler;
+use LogicException;
 use PHPUnit\Framework\TestCase;
 
 final class ConfirmAndDenyActionHandlerTest extends TestCase
@@ -40,6 +41,20 @@ final class ConfirmAndDenyActionHandlerTest extends TestCase
         $this->assertStringContainsString('confirmed', $outcome->message);
     }
 
+    public function testConfirmActionHandlerThrowsWithoutCallback(): void
+    {
+        $handler = new ConfirmActionHandler();
+        $binding = new ActionTokenBinding(
+            ActionTokenPurpose::CONFIRM,
+            'message',
+            42,
+            'secretary@example.test'
+        );
+
+        $this->expectException(LogicException::class);
+        $handler->perform($binding);
+    }
+
     public function testDenyActionHandlerProvidesPreviewAndPerformsCallback(): void
     {
         $called = false;
@@ -67,10 +82,24 @@ final class ConfirmAndDenyActionHandlerTest extends TestCase
         $this->assertStringContainsString('cancelled', $outcome->message);
     }
 
+    public function testDenyActionHandlerThrowsWithoutCallback(): void
+    {
+        $handler = new DenyActionHandler();
+        $binding = new ActionTokenBinding(
+            ActionTokenPurpose::DENY,
+            'message',
+            42,
+            'secretary@example.test'
+        );
+
+        $this->expectException(LogicException::class);
+        $handler->perform($binding);
+    }
+
     public function testHandlersCanBeRegisteredInRegistry(): void
     {
-        $confirmHandler = new ConfirmActionHandler();
-        $denyHandler = new DenyActionHandler();
+        $confirmHandler = new ConfirmActionHandler(static fn () => null);
+        $denyHandler = new DenyActionHandler(static fn () => null);
 
         $registry = new ActionTokenHandlerRegistry([$confirmHandler, $denyHandler]);
 
