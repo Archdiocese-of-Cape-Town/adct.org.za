@@ -264,8 +264,9 @@ final class Plugin
             $venues,
             new EventValidator($timezone, $rruleValidator),
             new RRulePresetMapper($rruleValidator),
-            $timezone
-        );
+                    $timezone,
+                    $clock
+                );
         $occurrenceMaintenance = new WordPressEventOccurrenceMaintenance(
             new OccurrenceRepository($database),
             new OccurrenceExpander($timezone, $rruleValidator),
