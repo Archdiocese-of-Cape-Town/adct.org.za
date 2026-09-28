@@ -286,10 +286,15 @@ final class ParserPage
         ) {
             check_admin_referer('adct_parish_intake_parse', 'adct_parish_intake_parse_nonce');
 
+            $senderInput = wp_unslash($_POST['sender_email'] ?? '');
+            $sanitizedSender = is_string($senderInput) && is_email($senderInput)
+                ? sanitize_email($senderInput)
+                : sanitize_text_field($senderInput);
+
             $message = new Message(
                 sanitize_text_field(wp_unslash($_POST['source_type'] ?? 'email')),
                 sanitize_text_field(wp_unslash($_POST['source_identifier'] ?? 'manual-admin')),
-                sanitize_email(wp_unslash($_POST['sender_email'] ?? '')),
+                $sanitizedSender,
                 sanitize_text_field(wp_unslash($_POST['sender_name'] ?? '')),
                 sanitize_text_field(wp_unslash($_POST['subject'] ?? '')),
                 sanitize_textarea_field(wp_unslash($_POST['body'] ?? ''))
@@ -327,22 +332,34 @@ final class ParserPage
                     <tr>
                         <th scope="row">Source type</th>
                         <td>
-                            <input type="text" class="regular-text" name="source_type" value="email" />
-                            <p class="description">The channel this message came from, for example <code>email</code>, <code>webform</code>, or <code>manual-test</code>.</p>
+                            <input type="text" class="regular-text" name="source_type" value="email" list="adct_source_type_options" />
+                            <datalist id="adct_source_type_options">
+                                <option value="email">
+                                <option value="ics">
+                                <option value="pdf_url">
+                                <option value="facebook_page">
+                                <option value="whatsapp_forward">
+                                <option value="rss">
+                                <option value="web_page">
+                                <option value="manual">
+                                <option value="webform">
+                                <option value="manual-test">
+                            </datalist>
+                            <p class="description">The channel or input type this message came from, e.g. <code>email</code>, <code>whatsapp_forward</code>, <code>facebook_page</code>, <code>ics</code>, <code>pdf_url</code>, <code>rss</code>, <code>web_page</code>, <code>manual</code>, <code>webform</code>, or any custom type.</p>
                         </td>
                     </tr>
                     <tr>
                         <th scope="row">Message identifier</th>
                         <td>
                             <input type="text" class="regular-text" name="source_identifier" value="manual-admin" />
-                            <p class="description">A reference that helps you trace the original item later, for example an inbox UID, message ID, or a label like <code>manual-admin</code>.</p>
+                            <p class="description">A reference that helps you trace the original item later, for example an inbox UID, message ID, URL, or a label like <code>manual-admin</code>.</p>
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row">Sender email</th>
+                        <th scope="row">Sender / Sender email</th>
                         <td>
-                            <input type="email" class="regular-text" name="sender_email" value="" />
-                            <p class="description">A verified address linked to one parish fills that parish and its default venue; other senders are matched from message text.</p>
+                            <input type="text" class="regular-text" name="sender_email" value="" />
+                            <p class="description">Email address, phone number, handle, or sender identifier. A verified address or contact linked to a parish fills that parish and venue.</p>
                         </td>
                     </tr>
                     <tr>
