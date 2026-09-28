@@ -47,6 +47,7 @@ use ADCT\ParishIntake\Core\Mail\MailQueueStats;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
+use ADCT\ParishIntake\Core\Ports\AiCallGateInterface;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
@@ -65,6 +66,7 @@ use ADCT\ParishIntake\WordPress\Admin\ParishesPage;
 use ADCT\ParishIntake\WordPress\Admin\SendersPage;
 use ADCT\ParishIntake\WordPress\Admin\SourcesPage;
 use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
+use ADCT\ParishIntake\WordPress\Ai\WordPressAiCallGate;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRateLimitKeyProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRenewalDelivery;
@@ -188,8 +190,13 @@ final class Plugin
             $this->schema,
             $this->pipelineFactory,
             new StaticReportGenerator($this->schema),
-            $this->httpClient
-        );
+                    $this->httpClient,
+                    new WordPressAiCallGate(
+                        new WordPressActionTokenRateLimitStore($database),
+                        $clock
+                    ),
+                    new AttachmentRepository($database)
+                );
         $sourceRegistryService = new SourceRegistryService($sources, $clock);
         $this->mailboxesPage = new MailboxesPage(
             $mailboxes,
