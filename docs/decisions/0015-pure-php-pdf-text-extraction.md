@@ -1,4 +1,4 @@
-# ADR 0014: Pure-PHP PDF text extraction with hard limits
+# ADR 0015: Pure-PHP PDF text extraction with hard limits
 
 - Status: Accepted
 - Date: 2026-09-26

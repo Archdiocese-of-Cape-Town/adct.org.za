@@ -32,7 +32,7 @@ Before launch, the release checklist runs once on a temporary xneelo staging ins
 
 ### Phase 1.5 – Posters and PDFs
 Text from PDF attachments, manual entry beside an attachment preview, bulletin splitting quality.
-**Status:** PDF text extraction is done (E8.1, [ADR 0014](decisions/0014-pure-php-pdf-text-extraction.md)): text-layer posters and bulletins are read in pure PHP with size, page and time limits, and anything unreadable is listed for manual entry. Manual entry beside an attachment preview (E8.2) and optional OCR (E8.3) are still to do.
+**Status:** PDF text extraction is done (E8.1, [ADR 0015](decisions/0015-pure-php-pdf-text-extraction.md)): text-layer posters and bulletins are read in pure PHP with size, page and time limits, and anything unreadable is listed for manual entry. Manual entry beside an attachment preview (E8.2) and optional OCR (E8.3) are still to do.
 **Exit criteria:** a PDF poster with a text layer produces a correct candidate. A multi-column bulletin is read column by column. An image-only poster is either read by the optional OCR provider (when switched on) or shown beside the edit form for manual entry. Real samples showed about 1 in 4 posters are image-only ([parser findings](parser-samples.md)).
 
 ### Phase 2 – Self-service, monitoring and more inputs

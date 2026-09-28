@@ -15,9 +15,10 @@ Short records of important decisions: what was decided, why, and what follows fr
 | [0009](0009-preview-and-test-environments.md) | Playground PR previews, test sites from the CI zip, temporary staging only | Accepted |
 | [0010](0010-scheduled-jobs-with-2-hour-cron-limit.md) | Scheduled jobs with a 2-hour cron limit: WP-Cron + 2-hourly backstop + optional external pinger | Accepted |
 | [0011](0011-outbound-email-queue-with-hourly-cap.md) | Outbound email queue with an hourly cap and priorities | Accepted |
-| [0012](0012-pure-php-mime-parser.md) | Pure-PHP MIME parsing with a prefixed Composer dependency | Accepted |
+| [0012](0012-pure-php-mime-parser.md) | Pure-PHP MIME parsing with a prefixed Composer dependency | Accepted; version line superseded by 0014 |
 | [0013](0013-built-in-pure-php-imap-client.md) | Built-in pure-PHP IMAP client | Accepted |
-| [0014](0014-pure-php-pdf-text-extraction.md) | Pure-PHP PDF text extraction with hard limits | Accepted |
+| [0014](0014-mail-mime-parser-4-x.md) | MIME parser 4.x to keep wide transitive constraints | Accepted |
+| [0015](0015-pure-php-pdf-text-extraction.md) | Pure-PHP PDF text extraction with hard limits | Accepted |
 
 Template:
 
