@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Events;
 
 use ADCT\ParishIntake\Core\Events\ListingRange;
+use ADCT\ParishIntake\Core\Events\ListingSelection;
+use ADCT\ParishIntake\Core\Events\RecurrenceSummary;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use DateTimeZone;
 use InvalidArgumentException;
@@ -41,6 +43,13 @@ final class PublicEventListing
             ],
             'render_callback' => [$this, 'block'],
         ]);
+        wp_register_script(
+            'adct-events-filters',
+            plugins_url('assets/events-filters.js', $this->pluginFile),
+            [],
+            '1.0.0',
+            true
+        );
     }
 
     public function styles(): void
@@ -49,8 +58,56 @@ final class PublicEventListing
             'adct-events',
             plugins_url('assets/events.css', $this->pluginFile),
             [],
-            '1.0.0'
+            '1.0.1'
         );
+        wp_enqueue_script('adct-events-filters');
+    }
+
+    public function registerRestRoute(): void
+    {
+        register_rest_route('adct-parish-intake/v1', '/events', [
+            'methods' => \WP_REST_Server::READABLE,
+            'permission_callback' => '__return_true',
+            'callback' => [$this, 'rest'],
+        ]);
+    }
+
+    public function rest(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        try {
+            $base = $request->get_param('page_url');
+            if (! is_string($base) || strlen($base) > 1024 || ! $this->isPublicPageUrl($base)) {
+                throw new InvalidArgumentException('Enter a valid page URL.');
+            }
+            $selection = new ListingSelection($request->get_query_params());
+
+            return new \WP_REST_Response(['html' => $this->listing($selection, $base)]);
+        } catch (InvalidArgumentException $error) {
+            return new \WP_Error('adct_invalid_filter', $error->getMessage(), ['status' => 400]);
+        } catch (Throwable $error) {
+            error_log('[ADCT Parish Intake] Public event REST listing failed: ' . $error->getMessage());
+
+            return new \WP_Error('adct_listing_unavailable', 'Events are temporarily unavailable.', ['status' => 503]);
+        }
+    }
+
+    private function isPublicPageUrl(string $url): bool
+    {
+        $page = wp_parse_url($url);
+        $home = wp_parse_url(home_url('/'));
+        $query = $page['query'] ?? '';
+
+        return is_array($page) && is_array($home)
+            && ($page['scheme'] ?? null) === ($home['scheme'] ?? null)
+            && ($page['host'] ?? null) === ($home['host'] ?? null)
+            && ($page['port'] ?? null) === ($home['port'] ?? null)
+            && ! isset($page['user']) && ! isset($page['pass'])
+            && ! isset($page['fragment'])
+            && isset($page['path']) && str_starts_with($page['path'], '/')
+            && ($query === '' || (
+                preg_match('/\A(?:page_id|p)=([1-9][0-9]{0,9})\z/D', $query, $matches) === 1
+                && (float) $matches[1] <= 2147483647
+            ));
     }
 
     public function invalidate(int $postId = 0): void
@@ -107,17 +164,12 @@ final class PublicEventListing
     private function render(array $attributes): string
     {
         try {
-            $period = $this->input('adct_period', $attributes['period'] ?? 'upcoming');
-            $from = $this->input('adct_from', '');
-            $through = $this->input('adct_to', '');
-            $page = $this->input('adct_page', '1');
-
-            if (preg_match('/\A(?:[1-9]|[1-9][0-9]|100)\z/D', $page) !== 1) {
-                throw new InvalidArgumentException('Choose a page between 1 and 100.');
-            }
-
-            $range = new ListingRange($period, $from, $through, $this->clock->now(), $this->timezone);
-            $result = $this->rows($range, (int) $page, $period);
+            $selection = new ListingSelection(wp_unslash($_GET), $attributes['period'] ?? 'upcoming');
+            return $this->listing($selection, remove_query_arg([
+                'adct_page', 'adct_period', 'adct_from', 'adct_to',
+                'adct_types', 'adct_parish', 'adct_deanery',
+                'adct_pin', 'adct_collapse',
+            ]));
         } catch (InvalidArgumentException $error) {
             return '<p role="alert">' . esc_html($error->getMessage()) . '</p>';
         } catch (Throwable $error) {
@@ -125,27 +177,59 @@ final class PublicEventListing
 
             return '<p role="alert">Events are temporarily unavailable. Please try again later.</p>';
         }
+    }
 
-        try {
-            return $this->renderResults($period, $from, $through, (int) $page, $result);
-        } catch (Throwable $error) {
-            error_log('[ADCT Parish Intake] Public event rendering failed: ' . $error->getMessage());
-
-            return '<p role="alert">Events are temporarily unavailable. Please try again later.</p>';
+    private function listing(ListingSelection $selection, string $base): string
+    {
+        $range = new ListingRange(
+            $selection->period, $selection->from, $selection->through, $this->clock->now(), $this->timezone
+        );
+        $types = get_terms(['taxonomy' => EventPostType::TAXONOMY, 'hide_empty' => false]);
+        if (is_wp_error($types) || ! is_array($types)) {
+            throw new RuntimeException('The event types could not be loaded.');
         }
+        $parishes = $this->options('adct_pi_parishes');
+        $deaneries = $this->options('adct_pi_deaneries');
+        if ($selection->types !== [] && array_diff($selection->types, array_map(
+            static fn (\WP_Term $term): int => (int) $term->term_id, $types
+        )) !== []) {
+            throw new InvalidArgumentException('Choose an available event type.');
+        }
+        if ($selection->parish !== null && ! isset($parishes[$selection->parish])) {
+            throw new InvalidArgumentException('Choose an available parish.');
+        }
+        if ($selection->deanery !== null && ! isset($deaneries[$selection->deanery])) {
+            throw new InvalidArgumentException('Choose an available deanery.');
+        }
+        $result = $this->rows($range, $selection);
+
+        return $this->renderResults($selection, $result, $types, $parishes, $deaneries, $base);
     }
 
     /**
      * @param array{rows: array<int, array<string, mixed>>, more: bool} $result
      */
-    private function renderResults(string $period, string $from, string $through, int $page, array $result): string
+    private function renderResults(
+        ListingSelection $selection,
+        array $result,
+        array $types,
+        array $parishes,
+        array $deaneries,
+        string $base
+    ): string
     {
-        $html = '<section class="adct-events" aria-label="Upcoming events">'
+        $html = '<section class="adct-events" aria-label="Upcoming events" data-endpoint="'
+            . esc_url(rest_url('adct-parish-intake/v1/events')) . '">'
             . '<form method="get" class="adct-events__filters">';
-        foreach (['page_id', 'p'] as $queryKey) {
-            if (isset($_GET[$queryKey]) && is_scalar($_GET[$queryKey]) && (int) $_GET[$queryKey] > 0) {
-                $html .= '<input type="hidden" name="' . esc_attr($queryKey)
-                    . '" value="' . esc_attr((string) absint($_GET[$queryKey])) . '">';
+        $baseQuery = wp_parse_url($base, PHP_URL_QUERY);
+        if (is_string($baseQuery)) {
+            parse_str($baseQuery, $pageQuery);
+            foreach (['page_id', 'p'] as $queryKey) {
+                if (isset($pageQuery[$queryKey]) && is_scalar($pageQuery[$queryKey])
+                    && (int) $pageQuery[$queryKey] > 0) {
+                    $html .= '<input type="hidden" name="' . esc_attr($queryKey)
+                        . '" value="' . esc_attr((string) absint($pageQuery[$queryKey])) . '">';
+                }
             }
         }
         $html .= '<label for="adct-period">Show events</label>'
@@ -153,14 +237,38 @@ final class PublicEventListing
 
         foreach (['upcoming' => 'All upcoming', 'week' => 'This week', 'month' => 'This month', 'range' => 'Date range'] as $key => $label) {
             $html .= '<option value="' . esc_attr($key) . '"'
-                . selected($period, $key, false) . '>' . esc_html($label) . '</option>';
+                . selected($selection->period, $key, false) . '>' . esc_html($label) . '</option>';
         }
 
         $html .= '</select><label for="adct-from">From</label>'
-            . '<input id="adct-from" type="date" name="adct_from" value="' . esc_attr($from) . '">'
+            . '<input id="adct-from" type="date" name="adct_from" value="' . esc_attr($selection->from) . '">'
             . '<label for="adct-to">Through</label>'
-            . '<input id="adct-to" type="date" name="adct_to" value="' . esc_attr($through) . '">'
-            . '<button type="submit">Apply dates</button></form>';
+            . '<input id="adct-to" type="date" name="adct_to" value="' . esc_attr($selection->through) . '">'
+            . '<label for="adct-types">Event types (choose several with Ctrl or Command)</label>'
+            . '<select id="adct-types" name="adct_types[]" multiple size="5">';
+        foreach ($types as $type) {
+            $id = (int) $type->term_id;
+            $html .= '<option value="' . esc_attr((string) $id) . '"'
+                . (in_array($id, $selection->types, true) ? ' selected="selected"' : '')
+                . '>' . esc_html($type->name) . '</option>';
+        }
+        $html .= '</select><label for="adct-deanery">Deanery</label>'
+            . '<select id="adct-deanery" name="adct_deanery"><option value="">All deaneries</option>';
+        foreach ($deaneries as $id => $name) {
+            $html .= '<option value="' . esc_attr((string) $id) . '"'
+                . selected($selection->deanery, $id, false) . '>' . esc_html($name) . '</option>';
+        }
+        $html .= '</select><label for="adct-parish">Parish</label>'
+            . '<select id="adct-parish" name="adct_parish"><option value="">All parishes</option>';
+        foreach ($parishes as $id => $name) {
+            $html .= '<option value="' . esc_attr((string) $id) . '"'
+                . selected($selection->parish, $id, false) . '>' . esc_html($name) . '</option>';
+        }
+        $html .= '</select><label><input type="checkbox" name="adct_collapse" value="1"'
+            . checked($selection->collapse, true, false) . '> Show only the next date of each recurring event</label>'
+            . '<label><input type="checkbox" name="adct_pin" value="1"'
+            . checked($selection->pin, true, false) . '> Show featured events first</label>'
+            . '<button type="submit">Apply filters</button></form>';
 
         $visible = [];
         foreach ($result['rows'] as $row) {
@@ -175,6 +283,8 @@ final class PublicEventListing
                 $visible[] = [$row, $post];
             }
         }
+        $html .= '<p class="adct-events__status" tabindex="-1">Showing '
+            . count($visible) . ' matching events on this page.</p>';
 
         $eventIds = [];
         if ($visible !== []) {
@@ -217,10 +327,21 @@ final class PublicEventListing
                 $timeLabel .= ' - ' . $endTime->format('H:i');
             }
             $type = $typeNames[(int) $post->ID] ?? '';
-            $html .= '<li class="adct-events__card"><h3><a href="' . esc_url(get_permalink($post)) . '">'
+            $featured = in_array(get_post_meta($post->ID, 'featured', true), [true, '1', 1], true);
+            $rrule = get_post_meta($post->ID, 'rrule', true);
+            $html .= '<li class="adct-events__card'
+                . ($featured ? ' adct-events__card--featured' : '')
+                . (is_string($rrule) && $rrule !== '' ? ' adct-events__card--recurring' : '')
+                . '"><h3><a href="' . esc_url(get_permalink($post)) . '">'
                 . esc_html(get_the_title($post)) . '</a></h3>'
                 . '<p><time datetime="' . esc_attr($start->format('Y-m-d\TH:iP')) . '">'
                 . esc_html($timeLabel) . '</time></p>';
+            if (is_string($rrule) && $rrule !== '') {
+                $html .= '<p class="adct-events__recurrence">'
+                    . esc_html(RecurrenceSummary::describe($rrule)
+                        . ($selection->collapse ? ' - next: ' . $start->format('j M') : ''))
+                    . '</p>';
+            }
             if (! empty($row['parish_name'])) {
                 $html .= '<p>' . esc_html((string) $row['parish_name']) . '</p>';
             }
@@ -231,10 +352,10 @@ final class PublicEventListing
             if ($type !== '') {
                 $html .= '<span class="adct-events__badge">' . esc_html($type) . '</span> ';
             }
-            if (get_post_meta($post->ID, 'rrule', true) !== '') {
+            if (is_string($rrule) && $rrule !== '') {
                 $html .= '<span class="adct-events__badge">Recurring</span> ';
             }
-            if (in_array(get_post_meta($post->ID, 'featured', true), [true, '1', 1], true)) {
+            if ($featured) {
                 $html .= '<span class="adct-events__badge">Featured</span> ';
             }
             if ((int) $row['is_cancelled'] === 1) {
@@ -251,19 +372,13 @@ final class PublicEventListing
             $html .= '<p>No upcoming events found for these dates.</p>';
         }
 
-        $base = remove_query_arg(['adct_page', 'adct_period', 'adct_from', 'adct_to']);
-        $query = ['adct_period' => $period];
-        if ($period === 'range') {
-            $query['adct_from'] = $from;
-            $query['adct_to'] = $through;
-        }
         $html .= '<nav aria-label="Event pages">';
-        if ((int) $page > 1) {
-            $html .= '<a href="' . esc_url(add_query_arg($query + ['adct_page' => (int) $page - 1], $base))
+        if ($selection->page > 1) {
+            $html .= '<a href="' . esc_url(add_query_arg($selection->query($selection->page - 1), $base))
                 . '">Previous page</a> ';
         }
-        if ($result['more'] && (int) $page < self::MAX_PAGE) {
-            $html .= '<a href="' . esc_url(add_query_arg($query + ['adct_page' => (int) $page + 1], $base))
+        if ($result['more'] && $selection->page < self::MAX_PAGE) {
+            $html .= '<a href="' . esc_url(add_query_arg($selection->query($selection->page + 1), $base))
                 . '">More events</a>';
         } elseif ($result['more']) {
             $html .= '<p>Narrow the date range to see more events.</p>';
@@ -272,20 +387,32 @@ final class PublicEventListing
         return $html . '</nav></section>';
     }
 
-    private function input(string $key, mixed $default): string
+    /** @return array<int, string> */
+    private function options(string $suffix): array
     {
-        $value = isset($_GET[$key]) ? wp_unslash($_GET[$key]) : $default;
-        if (! is_string($value) || strlen($value) > 32) {
-            throw new InvalidArgumentException('Enter a valid event filter.');
+        global $wpdb;
+        $table = $wpdb->prefix . $suffix;
+        $wpdb->last_error = '';
+        $rows = $wpdb->get_results(
+            "SELECT id, name FROM {$table} WHERE status = 'active' ORDER BY name ASC LIMIT 500",
+            ARRAY_A
+        );
+        if (! is_array($rows) || $wpdb->last_error !== '') {
+            throw new RuntimeException('The public event directory could not be loaded: ' . $wpdb->last_error);
         }
 
-        return $value;
+        $options = [];
+        foreach ($rows as $row) {
+            $options[(int) $row['id']] = (string) $row['name'];
+        }
+
+        return $options;
     }
 
     /**
      * @return array{rows: array<int, array<string, mixed>>, more: bool}
      */
-    private function rows(ListingRange $range, int $page, string $period): array
+    private function rows(ListingRange $range, ListingSelection $selection): array
     {
         global $wpdb;
 
@@ -293,9 +420,11 @@ final class PublicEventListing
         $from = $range->from->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $end = $range->through->modify('+1 day')->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $from = max($from, $now);
-        $cacheable = $period !== 'range';
+        $cacheable = $selection->period !== 'range'
+            && $selection->types === [] && $selection->parish === null && $selection->deanery === null;
         $generation = '';
-        $key = 'adct_pi_list_' . $period . '_' . $page;
+        $key = 'adct_pi_list_v3_' . $selection->period . '_' . $selection->page
+            . '_' . (int) $selection->collapse . (int) $selection->pin;
         if ($cacheable) {
             $generation = $this->generation()->current();
             $cached = get_transient($key);
@@ -312,20 +441,52 @@ final class PublicEventListing
 
         $table = $wpdb->prefix . 'adct_pi_occurrences';
         $posts = $wpdb->posts;
+        $postmeta = $wpdb->postmeta;
         $parishes = $wpdb->prefix . 'adct_pi_parishes';
+        $where = '';
+        $joins = '';
+        $order = 'o.start_utc ASC, o.id ASC';
+        $args = [EventPostType::POST_TYPE, 'publish', $from, $end];
+        if ($selection->collapse) {
+            $joins .= " LEFT JOIN {$postmeta} rm ON rm.post_id = o.event_id AND rm.meta_key = 'rrule'";
+            $where .= " AND (rm.meta_value IS NULL OR rm.meta_value = '' OR NOT EXISTS "
+                . "(SELECT 1 FROM {$table} earlier WHERE earlier.event_id = o.event_id "
+                . "AND earlier.start_utc >= %s AND (earlier.start_utc < o.start_utc "
+                . "OR (earlier.start_utc = o.start_utc AND earlier.id < o.id))))";
+            $args[] = $from;
+        }
+        if ($selection->pin) {
+            $joins .= " LEFT JOIN {$postmeta} fm ON fm.post_id = o.event_id AND fm.meta_key = 'featured'";
+            $order = "CASE WHEN fm.meta_value = '1' THEN 0 ELSE 1 END, " . $order;
+        }
+        if ($selection->parish !== null) {
+            $where .= ' AND o.parish_id = %d';
+            $args[] = $selection->parish;
+        }
+        if ($selection->deanery !== null) {
+            $where .= ' AND p.deanery_id = %d';
+            $args[] = $selection->deanery;
+        }
+        if ($selection->types !== []) {
+            $relationships = $wpdb->term_relationships;
+            $taxonomy = $wpdb->term_taxonomy;
+            $placeholders = implode(', ', array_fill(0, count($selection->types), '%d'));
+            $where .= " AND EXISTS (SELECT 1 FROM {$relationships} tr "
+                . "INNER JOIN {$taxonomy} tt ON tt.term_taxonomy_id = tr.term_taxonomy_id "
+                . "WHERE tr.object_id = o.event_id AND tt.taxonomy = %s AND tt.term_id IN ({$placeholders}))";
+            $args[] = EventPostType::TAXONOMY;
+            array_push($args, ...$selection->types);
+        }
+        $args[] = self::PAGE_SIZE + 1;
+        $args[] = ($selection->page - 1) * self::PAGE_SIZE;
         $sql = $wpdb->prepare(
             "SELECT o.event_id, o.start_utc, o.end_utc, o.start_local_date, o.is_cancelled, "
             . "p.name AS parish_name "
             . "FROM {$table} o INNER JOIN {$posts} e ON e.ID = o.event_id AND e.post_type = %s AND e.post_status = %s "
-            . "LEFT JOIN {$parishes} p ON p.id = o.parish_id "
-            . "WHERE o.start_utc >= %s AND o.start_utc < %s "
-            . "ORDER BY o.start_utc ASC, o.id ASC LIMIT %d OFFSET %d",
-            EventPostType::POST_TYPE,
-            'publish',
-            $from,
-            $end,
-            self::PAGE_SIZE + 1,
-            ($page - 1) * self::PAGE_SIZE
+            . "LEFT JOIN {$parishes} p ON p.id = o.parish_id {$joins} "
+            . "WHERE o.start_utc >= %s AND o.start_utc < %s {$where} "
+            . "ORDER BY {$order} LIMIT %d OFFSET %d",
+            ...$args
         );
         $wpdb->last_error = '';
         $rows = $wpdb->get_results($sql, ARRAY_A);

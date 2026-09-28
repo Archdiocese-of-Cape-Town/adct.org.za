@@ -44,6 +44,7 @@ final class BulletinBlockSplitter
         $tableHeader = null;
         $sectionSkipReason = null;
         $sectionSkipMode = null;
+        $afterSkippedBlank = false;
         $pendingTitle = null;
         $current = null;
         $rawBlocks = [];
@@ -54,6 +55,7 @@ final class BulletinBlockSplitter
 
             if ($line === '') {
                 if ($sectionSkipReason !== null) {
+                    $afterSkippedBlank = true;
                     if ($current !== null) {
                         $current['lines'][] = '';
                         $current['parse_text'] .= "\n";
@@ -87,6 +89,7 @@ final class BulletinBlockSplitter
                     $this->flushCurrent($rawBlocks, $current, $nextIndex);
                     $sectionSkipReason = $sectionHeadingReason;
                     $sectionSkipMode = 'section';
+                    $afterSkippedBlank = false;
                     $pendingTitle = null;
                     $tableHeader = null;
                     $this->startSkippedBlock($current, $line, $context, $sectionSkipReason);
@@ -97,6 +100,7 @@ final class BulletinBlockSplitter
                     $this->flushCurrent($rawBlocks, $current, $nextIndex);
                     $sectionSkipReason = null;
                     $sectionSkipMode = null;
+                    $afterSkippedBlank = false;
                     $pendingTitle = null;
                     $tableHeader = null;
                     continue;
@@ -106,6 +110,7 @@ final class BulletinBlockSplitter
                     $this->flushCurrent($rawBlocks, $current, $nextIndex);
                     $sectionSkipReason = null;
                     $sectionSkipMode = null;
+                    $afterSkippedBlank = false;
                     $tableHeader = null;
                 } elseif (
                     $sectionSkipMode === 'table'
@@ -115,8 +120,21 @@ final class BulletinBlockSplitter
                     $this->flushCurrent($rawBlocks, $current, $nextIndex);
                     $sectionSkipReason = null;
                     $sectionSkipMode = null;
+                    $afterSkippedBlank = false;
                     $tableHeader = null;
                 } else {
+                    if (
+                        $afterSkippedBlank
+                        && $sectionSkipReason !== 'mass_times'
+                        && $this->sectionSkipper->hasEventSignalForKeywordOverride($line)
+                        && ! preg_match(
+                            '/\b(?:RIP|late|deceased|in memoriam|pray for|intentions?|sick list|anniversar(?:y|ies))\b/iu',
+                            $line
+                        )
+                    ) {
+                        $current['possible_missed_event'] = true;
+                    }
+                    $afterSkippedBlank = false;
                     $this->appendSkippedLine($current, $line, $context, $sectionSkipReason);
                     continue;
                 }
@@ -126,6 +144,7 @@ final class BulletinBlockSplitter
                 $this->flushCurrent($rawBlocks, $current, $nextIndex);
                 $sectionSkipReason = $sectionHeadingReason;
                 $sectionSkipMode = 'section';
+                $afterSkippedBlank = false;
                 $pendingTitle = null;
                 $tableHeader = null;
                 $this->startSkippedBlock($current, $line, $context, $sectionSkipReason);
@@ -136,6 +155,7 @@ final class BulletinBlockSplitter
                 $this->flushCurrent($rawBlocks, $current, $nextIndex);
                 $sectionSkipReason = 'mass_times';
                 $sectionSkipMode = 'table';
+                $afterSkippedBlank = false;
                 $pendingTitle = null;
                 $tableHeader = null;
                 $this->startSkippedBlock($current, $line, $context, $sectionSkipReason);
@@ -286,6 +306,7 @@ final class BulletinBlockSplitter
             'context' => $context,
             'title' => null,
             'skip_reason' => $reason,
+            'possible_missed_event' => false,
             'table_row' => false,
             'table_has_date' => false,
         ];
@@ -335,6 +356,7 @@ final class BulletinBlockSplitter
                 'context' => $current['context'],
                 'title' => $current['title'],
                 'skip_reason' => $skipReason,
+                'possible_missed_event' => $current['possible_missed_event'] ?? false,
                 'section_keyword_override' => $sectionKeywordOverride,
                 'table_row' => $current['table_row'] ?? false,
                 'table_has_date' => $current['table_has_date'] ?? false,
@@ -529,8 +551,12 @@ final class BulletinBlockSplitter
     private function appendSkippedSectionSummary(array $notes, array $rawBlocks): array
     {
         $counts = [];
+        $possibleMissed = 0;
 
         foreach ($rawBlocks as $block) {
+            if ($block['possible_missed_event'] ?? false) {
+                $possibleMissed++;
+            }
             $reason = $block['skip_reason'];
 
             if (is_string($reason) && array_key_exists($reason, SectionSkipper::CATEGORIES)) {
@@ -548,6 +574,10 @@ final class BulletinBlockSplitter
 
         if ($summary !== []) {
             $notes[] = 'skipped_sections: ' . implode(', ', $summary);
+        }
+
+        if ($possibleMissed > 0) {
+            $notes[] = 'possible_missed_event_after_skipped_section: ' . $possibleMissed;
         }
 
         return $notes;

@@ -8,12 +8,16 @@ use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\Pipeline;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
+use ADCT\ParishIntake\Core\Pdf\PdfExtractionResult;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
+use ADCT\ParishIntake\Core\Ports\AiCallGateInterface;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
-use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
+use ADCT\ParishIntake\WordPress\Ai\OpenAiCompatibleProvider;
 use ADCT\ParishIntake\WordPress\Database\Schema;
+use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
+use Throwable;
 
 final class ParserPage
 {
@@ -27,27 +31,61 @@ final class ParserPage
     private PipelineFactory $pipelineFactory;
     private StaticReportGenerator $reportGenerator;
     private HttpClientInterface $httpClient;
+    private AiCallGateInterface $aiGate;
+    private ?AttachmentRepository $attachments;
 
     public function __construct(
         Schema $schema,
         PipelineFactory $pipelineFactory,
         StaticReportGenerator $reportGenerator,
-        HttpClientInterface $httpClient
+        HttpClientInterface $httpClient,
+        AiCallGateInterface $aiGate,
+        ?AttachmentRepository $attachments = null
     ) {
         $this->schema = $schema;
         $this->pipelineFactory = $pipelineFactory;
         $this->reportGenerator = $reportGenerator;
         $this->httpClient = $httpClient;
+        $this->aiGate = $aiGate;
+        $this->attachments = $attachments;
     }
 
-    public function createConfiguredPipeline(): Pipeline
+    /**
+     * @return list<array{filename: string, status: string, updated_at: string}>
+     */
+    private function unreadablePdfs(): array
+    {
+        if ($this->attachments === null) {
+            return [];
+        }
+
+        try {
+            return $this->attachments->findRecentUnreadablePdfs(5);
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    private function pdfStatusLabel(string $status): string
+    {
+        return match ($status) {
+            PdfExtractionResult::STATUS_NO_TEXT_LAYER => 'No text layer (likely a scan)',
+            PdfExtractionResult::STATUS_SKIPPED_SIZE => 'Too large to read',
+            PdfExtractionResult::STATUS_SKIPPED_PAGE_LIMIT => 'Too many pages',
+            PdfExtractionResult::STATUS_SKIPPED_TIMEOUT => 'Took too long to read',
+            PdfExtractionResult::STATUS_FAILED => 'Could not be opened',
+            default => 'Not read',
+        };
+    }
+
+    public function createConfiguredPipeline(bool $allowAi = false): Pipeline
     {
         $settings = $this->settings();
 
         return $this->pipelineFactory->create([
-            'ai_enabled' => $settings['ai_enabled'],
+            'ai_enabled' => $allowAi && $settings['ai_enabled'],
             'ai_threshold' => $settings['ai_threshold'],
-            'ai_provider' => $this->buildAiProvider(),
+            'ai_provider' => $allowAi ? $this->buildAiProvider() : new NullAiProvider(),
             'section_keywords' => $settings['section_keywords'],
         ]);
     }
@@ -105,7 +143,8 @@ final class ParserPage
 
         update_option('adct_parish_intake_ai_enabled', isset($_POST['ai_enabled']) ? '1' : '0');
         update_option('adct_parish_intake_ai_provider', sanitize_text_field(wp_unslash($_POST['ai_provider'] ?? 'none')));
-        update_option('adct_parish_intake_openrouter_model', sanitize_text_field(wp_unslash($_POST['openrouter_model'] ?? 'openrouter/auto')));
+        update_option('adct_parish_intake_openrouter_model', sanitize_text_field(wp_unslash($_POST['openrouter_model'] ?? OpenAiCompatibleProvider::FREE_MODEL)));
+        update_option('adct_parish_intake_ai_base_url', esc_url_raw(wp_unslash($_POST['ai_base_url'] ?? OpenAiCompatibleProvider::DEFAULT_URL)));
 
         $secretResolver = new WordPressSecretResolver();
         $apiKeyOption = SecretRegistry::optionName(SecretRegistry::AI_API_KEY);
@@ -165,7 +204,10 @@ final class ParserPage
             <?php endif; ?>
 
             <h2>AI fallback</h2>
-            <p>The parser runs locally first. AI is only used when you enable it and a message scores below the confidence threshold.</p>
+            <p>The parser runs locally first. AI is only used by the background inbox processing job when you enable it and a message scores below the confidence threshold. Manual parser requests never call AI.</p>
+            <?php if ($settings['ai_enabled'] && ! str_ends_with($settings['openrouter_model'], ':free')) : ?>
+                <div class="notice notice-warning"><p><strong>AI cost warning:</strong> This model is not marked <code>:free</code>. It may incur charges; other providers and even free-tier endpoints may have quotas or fees. Check your provider's pricing before processing mail.</p></div>
+            <?php endif; ?>
             <form method="post">
                 <?php wp_nonce_field('adct_parish_intake_save_settings', 'adct_parish_intake_settings_nonce'); ?>
                 <input type="hidden" name="adct_parish_intake_save_settings" value="1" />
@@ -183,19 +225,32 @@ final class ParserPage
                             <select name="ai_provider">
                                 <option value="none" <?php selected($settings['ai_provider'], 'none'); ?>>None</option>
                                 <option value="openrouter" <?php selected($settings['ai_provider'], 'openrouter'); ?>>OpenRouter</option>
+                                <option value="groq" <?php selected($settings['ai_provider'], 'groq'); ?>>Groq</option>
+                                <option value="ollama" <?php selected($settings['ai_provider'], 'ollama'); ?>>Local Ollama</option>
+                                <option value="custom" <?php selected($settings['ai_provider'], 'custom'); ?>>Other OpenAI-compatible endpoint</option>
                             </select>
                             <p class="description">Choose which AI provider to call when fallback is enabled.</p>
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row">OpenRouter model</th>
+                        <th scope="row">Model</th>
                         <td>
                             <input class="regular-text" type="text" name="openrouter_model" value="<?php echo esc_attr($settings['openrouter_model']); ?>" />
-                            <p class="description">Example: <code>openrouter/auto</code>. This is ignored unless OpenRouter is selected above.</p>
+                            <p class="description">Default OpenRouter model: <code><?php echo esc_html(OpenAiCompatibleProvider::FREE_MODEL); ?></code>. Free models have rate limits and availability may change. Choose a model your provider supports.</p>
+                            <?php if (! str_ends_with($settings['openrouter_model'], ':free')) : ?>
+                                <p class="description"><strong>Not marked free: this model may incur charges.</strong> Check the provider's pricing.</p>
+                            <?php endif; ?>
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row">OpenRouter API key</th>
+                        <th scope="row">API base URL</th>
+                        <td>
+                            <input class="regular-text" type="url" name="ai_base_url" value="<?php echo esc_attr($settings['ai_base_url']); ?>" />
+                            <p class="description">Include <code>/v1</code> where required; the plugin appends <code>/chat/completions</code>. HTTPS required except loopback local Ollama. No external URLs from email are fetched.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Provider API key</th>
                         <td>
                             <?php if ($settings['openrouter_api_key_is_constant']) : ?>
                                 <p class="description">Set in wp-config.php</p>
@@ -349,11 +404,41 @@ final class ParserPage
 
             <?php if ($outcome) : ?>
                 <h2>Latest parse outcome</h2>
+                <?php if (array_filter(
+                    $outcome->getNotes(),
+                    static fn (string $note): bool => str_starts_with(
+                        $note,
+                        'possible_missed_event_after_skipped_section: '
+                    )
+                ) !== []) : ?>
+                    <div class="notice notice-warning">
+                        <p><?php echo esc_html__('A skipped private section may contain an event after a blank line. Review the original message manually; the skipped text was not parsed or sent to AI.', 'adct-parish-intake'); ?></p>
+                    </div>
+                <?php endif; ?>
                 <pre><?php echo esc_html(wp_json_encode($outcome->toArray(), JSON_PRETTY_PRINT)); ?></pre>
             <?php endif; ?>
 
             <?php if ($report && ! empty($report['url'])) : ?>
                 <p><strong>Static snapshot:</strong> <a href="<?php echo esc_url($report['url']); ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html($report['url']); ?></a></p>
+            <?php endif; ?>
+
+            <?php $unreadablePdfs = $this->unreadablePdfs(); ?>
+            <?php if ($unreadablePdfs !== []) : ?>
+                <div class="notice notice-warning">
+                    <p><strong><?php echo esc_html__('PDF posters that could not be read', 'adct-parish-intake'); ?></strong></p>
+                    <p><?php echo esc_html__('These PDFs arrived as attachments but produced no text, so any event in them must be entered by hand. The email around them was still processed.', 'adct-parish-intake'); ?></p>
+                    <ul>
+                        <?php foreach ($unreadablePdfs as $pdf) : ?>
+                            <li>
+                                <code><?php echo esc_html((string) ($pdf['filename'] ?? '')); ?></code>
+                                &mdash; <?php echo esc_html($this->pdfStatusLabel((string) ($pdf['status'] ?? ''))); ?>
+                                <?php if ((string) ($pdf['updated_at'] ?? '') !== '') : ?>
+                                    <br /><small><?php echo esc_html((string) $pdf['updated_at']); ?> UTC</small>
+                                <?php endif; ?>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                </div>
             <?php endif; ?>
 
             <h2>Recent stored parses</h2>
@@ -391,18 +476,24 @@ final class ParserPage
         <?php
     }
 
-    private function buildAiProvider()
+    public function buildAiProvider()
     {
         $enabled = get_option('adct_parish_intake_ai_enabled', '0') === '1';
         $provider = get_option('adct_parish_intake_ai_provider', 'none');
         $apiKey = (new WordPressSecretResolver())->resolve(SecretRegistry::AI_API_KEY);
-        $model = trim((string) get_option('adct_parish_intake_openrouter_model', 'openrouter/auto'));
-
-        if (! $enabled || $provider !== 'openrouter' || $apiKey === '') {
+        $settings = $this->settings();
+        if (! $enabled || ! in_array($provider, ['openrouter', 'groq', 'ollama', 'custom'], true)) {
             return new NullAiProvider();
         }
 
-        return new OpenRouterProvider($apiKey, $model, $this->httpClient);
+        return new OpenAiCompatibleProvider(
+            $settings['ai_base_url'],
+            $settings['openrouter_model'],
+            $apiKey,
+            $provider,
+            $this->httpClient,
+            $this->aiGate
+        );
     }
 
     private function settings(): array
@@ -412,12 +503,29 @@ final class ParserPage
         return [
             'ai_enabled' => get_option('adct_parish_intake_ai_enabled', '0') === '1',
             'ai_provider' => (string) get_option('adct_parish_intake_ai_provider', 'none'),
-            'openrouter_model' => (string) get_option('adct_parish_intake_openrouter_model', 'openrouter/auto'),
+            'openrouter_model' => $this->configuredModel(),
+            'ai_base_url' => $this->configuredBaseUrl(),
             'openrouter_api_key_is_constant' => $secretResolver->isConstantConfigured(SecretRegistry::AI_API_KEY),
             'openrouter_api_key_is_saved' => $secretResolver->hasStoredOption(SecretRegistry::AI_API_KEY),
             'ai_threshold' => (float) get_option('adct_parish_intake_ai_threshold', '0.55'),
             'section_keywords' => $this->sectionKeywords(),
         ];
+    }
+
+    private function configuredModel(): string
+    {
+        $value = defined('ADCT_PI_AI_MODEL')
+            ? constant('ADCT_PI_AI_MODEL')
+            : get_option('adct_parish_intake_openrouter_model', OpenAiCompatibleProvider::FREE_MODEL);
+        return $value === 'openrouter/auto' ? OpenAiCompatibleProvider::FREE_MODEL : trim((string) $value);
+    }
+
+    private function configuredBaseUrl(): string
+    {
+        $value = defined('ADCT_PI_AI_BASE_URL')
+            ? constant('ADCT_PI_AI_BASE_URL')
+            : get_option('adct_parish_intake_ai_base_url', OpenAiCompatibleProvider::DEFAULT_URL);
+        return trim((string) $value);
     }
 
     private function sectionKeywords(): array

@@ -49,6 +49,23 @@ final class JobRunnerTest extends TestCase
         self::assertSame(['first', 'second', 'third'], $job->processedItems);
     }
 
+    public function testTriggerAndConsecutiveFailuresResetAfterARealSuccess(): void
+    {
+        $clock = new FakeJobClock(new DateTimeImmutable('2026-09-25T00:00:00+02:00'));
+        $states = new FakeJobStateStore();
+        $runner = new JobRunner(new FakeJobLock(), $states, $clock);
+        $job = new TestJob($clock, ['one']);
+        $states->save($job->id(), new JobState(
+            consecutiveFailures: 2
+        ));
+
+        $result = $runner->run($job, true, null, null, 'manual');
+
+        self::assertSame(JobRunStatus::COMPLETED, $result->status);
+        self::assertSame('manual', $states->load($job->id())->lastTrigger);
+        self::assertSame(0, $states->load($job->id())->consecutiveFailures);
+    }
+
     public function testStopsAtTheItemBudgetAndSavesEachCheckpoint(): void
     {
         $clock = new FakeJobClock(new DateTimeImmutable('2026-09-25T00:00:00+02:00'));

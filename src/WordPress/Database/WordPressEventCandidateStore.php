@@ -33,6 +33,9 @@ final class WordPressEventCandidateStore implements EventCandidateStoreInterface
             $fields = $candidate->fields();
             $fields['source_snippet'] = $candidate->getSourceSnippet();
             $fields['reprocess_needed'] = $candidate->needsReprocess();
+            if ($candidate->usedAi()) {
+                $fields['ai_fields_filled'] = $candidate->getAiFieldsFilled();
+            }
             $recurrence = $candidate->getRecurrence();
 
             $candidates[] = [
@@ -46,7 +49,7 @@ final class WordPressEventCandidateStore implements EventCandidateStoreInterface
                 'notes' => $this->encode($candidate->getNotes()),
                 'ai_used' => $candidate->usedAi() ? 1 : 0,
                 'ai_provider' => $candidate->getAiProvider(),
-                'ai_model' => null,
+                'ai_model' => $candidate->getAiModel(),
             ];
         }
 

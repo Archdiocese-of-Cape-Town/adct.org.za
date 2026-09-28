@@ -12,6 +12,7 @@ use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
 use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
+use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
 use ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance;
 use DateTimeZone;
@@ -132,7 +133,10 @@ final class WordPressPublicationStore implements PublicationStoreInterface
                     'rrule' => $details->rrule ?? '',
                     'exdates' => $details->exdates,
                     'rdates' => $details->rdates,
-                    'featured' => $details->featured,
+                    'featured' => $before !== null
+                        && get_post_meta($eventId, EventEditor::FEATURED_OVERRIDE_META, true) === '1'
+                        ? in_array($before['meta']['featured'], [true, 1, '1'], true)
+                        : $details->featured,
                     'status_flag' => $details->statusFlag,
                     'source_candidate_id' => $candidateId,
                     'contact' => $details->contact,

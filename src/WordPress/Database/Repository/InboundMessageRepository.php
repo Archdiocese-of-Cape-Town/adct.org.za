@@ -120,6 +120,31 @@ final class InboundMessageRepository extends AbstractRepository
     }
 
     /**
+     * @return array{waiting: int, processing: int, oldest_waiting: ?string, oldest_processing: ?string}
+     */
+    public function healthStats(): array
+    {
+        $row = $this->fetchRow($this->database->prepare(
+            'SELECT SUM(CASE WHEN status = %s THEN 1 ELSE 0 END) AS waiting, '
+            . 'SUM(CASE WHEN status = %s THEN 1 ELSE 0 END) AS processing, '
+            . 'MIN(CASE WHEN status = %s THEN created_at ELSE NULL END) AS oldest_waiting, '
+            . 'MIN(CASE WHEN status = %s THEN created_at ELSE NULL END) AS oldest_processing '
+            . 'FROM ' . $this->tableName(),
+            InboundMessageRecord::STATUS_RECEIVED,
+            InboundMessageRecord::STATUS_EXTRACTING,
+            InboundMessageRecord::STATUS_RECEIVED,
+            InboundMessageRecord::STATUS_EXTRACTING
+        ));
+
+        return [
+            'waiting' => (int) ($row['waiting'] ?? 0),
+            'processing' => (int) ($row['processing'] ?? 0),
+            'oldest_waiting' => $row['oldest_waiting'] ?? null,
+            'oldest_processing' => $row['oldest_processing'] ?? null,
+        ];
+    }
+
+    /**
      * @param list<int> $messageIds
      */
     public function requeueFailedMessages(array $messageIds, string $timestamp): array
@@ -263,7 +288,13 @@ final class InboundMessageRepository extends AbstractRepository
     }
 
     /**
-     * @return list<array{received_at: string, auth_results: string|null, is_auto_reply: int|string}>
+     * @return list<array{
+     *     received_at: string,
+     *     auth_results: string|null,
+     *     is_auto_reply: int|string,
+     *     confirmation_status: string|null,
+     *     confirmation_reason: string|null
+     * }>
      */
     public function findRecentScreeningMessagesBySourceId(int $sourceId, int $limit = 5): array
     {
@@ -272,8 +303,10 @@ final class InboundMessageRepository extends AbstractRepository
         }
 
         return $this->fetchRows($this->database->prepare(
-            'SELECT received_at, auth_results, is_auto_reply FROM ' . $this->tableName()
-            . ' WHERE source_id = %d AND (is_auto_reply = 1 OR auth_results IS NOT NULL) '
+            'SELECT received_at, auth_results, is_auto_reply, confirmation_status, confirmation_reason '
+            . 'FROM ' . $this->tableName()
+            . ' WHERE source_id = %d AND (is_auto_reply = 1 OR auth_results IS NOT NULL '
+            . 'OR confirmation_status IS NOT NULL) '
             . 'ORDER BY id DESC LIMIT %d',
             $sourceId,
             max(1, min(20, $limit))

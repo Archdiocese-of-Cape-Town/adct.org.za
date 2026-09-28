@@ -27,7 +27,7 @@ docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
 npm run test:integration
 ```
 
-These commands were checked on 2026-09-24: the smoke test passes, lint is clean, and PHPUnit 11 runs on `php:8.2-cli` with the platform pin. Use **PHPUnit 11** (PHPUnit 12 needs PHP 8.3). The integration command starts a dedicated `wp-env` Docker environment, installs the built zip with WP-CLI, runs the public-behaviour checks through WP-CLI, and stops that environment; it never activates the raw checkout. It retains only its disposable Docker data under the system temporary directory for faster local reruns.
+These commands were checked on 2026-09-24: the smoke test passes, lint is clean, and PHPUnit 11 runs on `php:8.2-cli` with the platform pin. Use **PHPUnit 11** (PHPUnit 12 needs PHP 8.3). The integration command checks its environment configuration, starts a dedicated `wp-env` Docker environment, installs the built zip with WP-CLI, and runs the public-behaviour checks through WP-CLI; it never activates the raw checkout. Its default disposable Docker data directory is distinct for each checkout. For parallel runs, set an unused absolute `WP_ENV_HOME` path (prefer a short path on Windows) and distinct `WP_ENV_PORT` and `WP_ENV_TESTS_PORT` values before running the command. Never point it at an environment another session is using. **Local runs leave their environment running**, even on failure: record the home and ports for later approved cleanup. CI (`CI=true`) stops the environment after the run. Set `ADCT_PI_KEEP_WP_ENV_RUNNING=1` to keep it running even in CI, or `0` to explicitly opt into stopping it locally after approval. Run `npm run test:integration-config` to check the isolated-home and cleanup settings without starting or stopping containers.
 
 GitHub Actions (added in [#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17)) runs the unit tests on PHP 8.2, 8.3 and 8.4 and the WordPress integration suite on PHP 8.2 for every PR. CI is the final judge.
 
@@ -41,7 +41,7 @@ docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
 
 This creates `dist/adct-parish-intake.zip`. The script installs production dependencies with `composer install --no-dev` in a temporary directory, copies them into `vendor-prefixed/`, removes dependency documentation and `.github/` metadata, then runs the pinned Strauss release in that directory so generated Composer paths remain package-relative. It packages the plugin bootstrap, `uninstall.php`, `src/`, and the prefixed runtime dependencies. Strauss is used instead of PHP-Scoper because it directly prefixes Composer dependencies into one directory and generates the autoloader the plugin uses. The current plugin does not read `data/seed/` at runtime, so seed data is not shipped.
 
-Inbound RFC 822 parsing uses the pre-approved pure-PHP `zbateson/mail-mime-parser` 3.x package (PHP 8.1+, BSD-2-Clause; see [ADR 0012](decisions/0012-pure-php-mime-parser.md)). It and its runtime dependencies are included in the Strauss-prefixed release; no `ext-imap` or `ext-dom` is needed.
+Inbound RFC 822 parsing uses the pre-approved pure-PHP `zbateson/mail-mime-parser` 4.x package (PHP 8.1+, BSD-2-Clause; see [ADR 0012](decisions/0012-pure-php-mime-parser.md) and [ADR 0014](decisions/0014-mail-mime-parser-4-x.md)). It and its runtime dependencies are included in the Strauss-prefixed release; no `ext-imap` or `ext-dom` is needed. Stay on 4.x: the 3.0.8 and 3.0.9 releases narrow `guzzlehttp/psr7` to `^2.5` and force a major-version downgrade of the transitive set, and 3.0.7 is delisted from Packagist.
 
 Mailbox access uses the built-in PHP-stream client behind `Core\Ports\MailboxInterface` (see [ADR 0013](decisions/0013-built-in-pure-php-imap-client.md)). It adds no Composer dependency or `ext-imap` requirement. TLS peer verification is enabled by default; plain IMAP and disabled peer verification require an explicit test-only configuration. Messages larger than the configurable 30 MiB default are rejected before their bodies are fetched.
 
@@ -75,7 +75,7 @@ docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scr
 | `adct-parish-intake.php` | Plugin bootstrap (WordPress entry point) |
 | `src/Core/` | Domain parsing pipeline, stages, value objects, pure-PHP helpers and ports; no WordPress functions, classes or globals |
 | `src/Core/Jobs/` | Pure-PHP scheduled job contract, runner, budgets, checkpoint and run-state value objects |
-| `src/WordPress/` | Plugin bootstrap, admin UI, schema/report adapters, OpenRouter provider and WordPress HTTP client |
+| `src/WordPress/` | Plugin bootstrap, admin UI, schema/report adapters, OpenAI-compatible provider and WordPress HTTP client |
 | `src/WordPress/Jobs/` | WP-Cron registration plus option-backed job state and lock adapters |
 | `composer.json` | PSR-4 autoloading for `ADCT\ParishIntake\Core\…` and `ADCT\ParishIntake\WordPress\…`; development/tests load through Composer |
 | `src/WordPress/Autoloader.php` | Small PSR-4 source loader included in the release zip, where Composer's development autoloader is not shipped |
