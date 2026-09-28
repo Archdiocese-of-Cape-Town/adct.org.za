@@ -15,6 +15,7 @@ use ADCT\ParishIntake\Core\Database\MailboxSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MigrationRunner;
 use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
 use ADCT\ParishIntake\Core\Events\EventValidator;
+use ADCT\ParishIntake\Core\Events\IcsCalendar;
 use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
 use ADCT\ParishIntake\Core\Events\OccurrenceExpander;
 use ADCT\ParishIntake\Core\Events\RRulePresetMapper;
@@ -27,6 +28,7 @@ use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\Core\Jobs\FrameworkHeartbeatJob;
 use ADCT\ParishIntake\Core\Jobs\InboundMessageProcessingJob;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
+use ADCT\ParishIntake\Core\Jobs\ConfirmationEmailPreviewJob;
 use ADCT\ParishIntake\Core\Jobs\MailQueueSenderJob;
 use ADCT\ParishIntake\Core\Jobs\OccurrenceExpansionJob;
 use ADCT\ParishIntake\Core\Jobs\RetentionJob;
@@ -35,6 +37,7 @@ use ADCT\ParishIntake\Core\Ingestion\MimeMessageParser;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxConnectionConfig;
 use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
 use ADCT\ParishIntake\Core\Ingestion\AuthenticationResultsParser;
+use ADCT\ParishIntake\Core\Ingestion\InboundHeaderBlockParser;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettings;
 use ADCT\ParishIntake\Core\Ingestion\MailboxConnectionTestService;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
@@ -45,9 +48,11 @@ use ADCT\ParishIntake\Core\Mail\MailQueueConfiguration;
 use ADCT\ParishIntake\Core\Mail\MailQueueDispatcher;
 use ADCT\ParishIntake\Core\Mail\MailQueueService;
 use ADCT\ParishIntake\Core\Mail\MailQueueStats;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailPreviewService;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
+use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
@@ -57,23 +62,29 @@ use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
 use ADCT\ParishIntake\Core\Support\SystemClock;
+use ADCT\ParishIntake\WordPress\Pdf\PrinsFrankPdfTextExtractor;
+use ADCT\ParishIntake\WordPress\Pdf\WordPressAttachmentExtractionStore;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
+use ADCT\ParishIntake\WordPress\Admin\HealthPage;
 use ADCT\ParishIntake\WordPress\Admin\InboundMessagesPage;
 use ADCT\ParishIntake\WordPress\Admin\DeaneriesPage;
 use ADCT\ParishIntake\WordPress\Admin\MailboxesPage;
 use ADCT\ParishIntake\WordPress\Admin\OutboundMailPage;
-use ADCT\ParishIntake\WordPress\Admin\RetentionPage;
 use ADCT\ParishIntake\WordPress\Admin\ParserPage;
+use ADCT\ParishIntake\WordPress\Admin\RetentionPage;
 use ADCT\ParishIntake\WordPress\Admin\ParishesPage;
 use ADCT\ParishIntake\WordPress\Admin\SendersPage;
 use ADCT\ParishIntake\WordPress\Admin\SourcesPage;
-use ADCT\ParishIntake\WordPress\Ai\OpenRouterProvider;
+use ADCT\ParishIntake\WordPress\Ai\OpenAiCompatibleProvider;
+use ADCT\ParishIntake\WordPress\Ai\WordPressAiCallGate;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
+use ADCT\ParishIntake\WordPress\Auth\WordPressConfirmationActionLinkProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRateLimitKeyProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRenewalDelivery;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleCapabilityStore;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleVersionStore;
 use ADCT\ParishIntake\WordPress\Database\ActionTokenRateLimitSchemaMigration;
+use ADCT\ParishIntake\WordPress\Database\ConfirmationEmailPreviewSchemaMigration;
 use ADCT\ParishIntake\WordPress\Database\DbDeltaSchemaInstaller;
 use ADCT\ParishIntake\WordPress\Database\MailQueueGroupKeyMigration;
 use ADCT\ParishIntake\WordPress\Database\OccurrenceParishNullableMigration;
@@ -110,6 +121,8 @@ use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
+use ADCT\ParishIntake\WordPress\Retention\WordPressRetentionSettings;
+use ADCT\ParishIntake\WordPress\Jobs\HealthAlerts;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailQueueImmediateDispatch;
@@ -120,8 +133,9 @@ use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
 use ADCT\ParishIntake\WordPress\Events\PublicEventListing;
+use ADCT\ParishIntake\WordPress\Events\PublicIcsFeed;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
-use ADCT\ParishIntake\WordPress\Retention\WordPressRetentionSettings;
+use ADCT\ParishIntake\WordPress\Ingestion\WordPressConfirmationEmailJobSource;
 use ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance;
 use ADCT\ParishIntake\WordPress\Publishing\WordPressPublicationStore;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
@@ -141,6 +155,8 @@ final class Plugin
     private HttpClientInterface $httpClient;
     private WordPressJobScheduler $jobScheduler;
     private ScheduledJobsPage $scheduledJobsPage;
+    private HealthPage $healthPage;
+    private HealthAlerts $healthAlerts;
     private MailQueueService $mailQueue;
     private OutboundMailPage $outboundMailPage;
     private DeaneriesPage $deaneriesPage;
@@ -152,6 +168,7 @@ final class Plugin
     private EventOccurrenceHooks $eventOccurrenceHooks;
     private CandidatePublisher $candidatePublisher;
     private PublicEventListing $publicEventListing;
+    private PublicIcsFeed $publicIcsFeed;
     private MailboxesPage $mailboxesPage;
     private InboundMessagesPage $inboundMessagesPage;
     private RetentionPage $retentionPage;
@@ -194,7 +211,12 @@ final class Plugin
             $this->schema,
             $this->pipelineFactory,
             new StaticReportGenerator($this->schema),
-            $this->httpClient
+            $this->httpClient,
+            new WordPressAiCallGate(
+                new WordPressActionTokenRateLimitStore($database),
+                $clock
+            ),
+            new AttachmentRepository($database)
         );
         $sourceRegistryService = new SourceRegistryService($sources, $clock);
         $this->mailboxesPage = new MailboxesPage(
@@ -250,12 +272,14 @@ final class Plugin
             $pluginFile,
             $listingGeneration
         );
+        $this->publicIcsFeed = new PublicIcsFeed($clock, $listingGeneration, new IcsCalendar());
         $this->eventEditor = new EventEditor(
             $parishes,
             $venues,
             new EventValidator($timezone, $rruleValidator),
             new RRulePresetMapper($rruleValidator),
-            $timezone
+            $timezone,
+            $clock
         );
         $occurrenceMaintenance = new WordPressEventOccurrenceMaintenance(
             new OccurrenceRepository($database),
@@ -339,6 +363,23 @@ final class Plugin
                 new WordPressActionTokenRenewalDelivery($this->mailQueue)
             )
         );
+        $confirmationPreviewJob = new ConfirmationEmailPreviewJob(
+            new WordPressConfirmationEmailJobSource(
+                $database,
+                $contacts,
+                new ProtectedInboundMailStorage(),
+                new InboundHeaderBlockParser(),
+                $timezone
+            ),
+            new ConfirmationEmailPreviewService(
+                $this->actionTokenService,
+                new WordPressConfirmationActionLinkProvider(),
+                $this->mailQueue,
+                $mailQueueRepository,
+                new \ADCT\ParishIntake\Core\Mail\ConfirmationEmailRenderer($timezone)
+            ),
+            $clock
+        );
         $mailboxPollingJob = new MailboxPollingJob(
             $mailboxes,
             $sources,
@@ -372,11 +413,21 @@ final class Plugin
             $inboundMessageStore,
             $protectedInboundMailStorage,
             new MimeMessageParser(),
-            fn () => $this->parserPage->createConfiguredPipeline(),
+            fn () => $this->parserPage->createConfiguredPipeline(
+                function_exists('wp_doing_cron') && wp_doing_cron()
+            ),
             new WordPressEventCandidateStore(new EventCandidateRepository($database)),
             new WordPressInboundMessageProcessingFailureLogger(),
             $directorySnapshots,
-            $clock
+            $clock,
+            new PdfTextEnrichmentService(
+                new WordPressAttachmentExtractionStore(
+                    new AttachmentRepository($database),
+                    $clock
+                ),
+                new PrinsFrankPdfTextExtractor(),
+                $protectedInboundMailStorage
+            )
         );
         $this->inboundMessagesPage = new InboundMessagesPage(
             $inboundMessages,
@@ -389,6 +440,7 @@ final class Plugin
             [
                 new FrameworkHeartbeatJob(),
                 $mailboxPollingJob,
+                $confirmationPreviewJob,
                 $inboundMessageProcessingJob,
                 new OccurrenceExpansionJob($occurrenceMaintenance, $clock, $timezone),
                 $mailQueueSenderJob,
@@ -425,6 +477,24 @@ final class Plugin
             $this->jobScheduler,
             $jobRunner,
             $stateStore
+        );
+        $this->healthAlerts = new HealthAlerts(
+            $this->jobScheduler,
+            $stateStore,
+            $sources,
+            $this->mailQueue,
+            $clock
+        );
+        $this->healthPage = new HealthPage(
+            $this->jobScheduler,
+            $jobRunner,
+            $stateStore,
+            $sources,
+            $mailboxes,
+            $inboundMessages,
+            $this->mailQueue,
+            $deaneries,
+            $this->healthAlerts
         );
     }
 
@@ -491,7 +561,8 @@ final class Plugin
 
         add_option('adct_parish_intake_ai_enabled', '0');
         add_option('adct_parish_intake_ai_provider', 'none');
-        add_option('adct_parish_intake_openrouter_model', 'openrouter/auto');
+        add_option('adct_parish_intake_openrouter_model', OpenAiCompatibleProvider::FREE_MODEL);
+        add_option('adct_parish_intake_ai_base_url', OpenAiCompatibleProvider::DEFAULT_URL);
         add_option('adct_parish_intake_ai_threshold', '0.55');
         add_option('adct_parish_intake_section_keywords', SectionSkipper::defaultKeywordLists());
         add_option(
@@ -598,8 +669,10 @@ final class Plugin
 
         add_filter('query_vars', [$this->actionTokenEndpoint, 'registerQueryVars']);
         add_action('template_redirect', [$this->actionTokenEndpoint, 'handleRequest'], 0);
+        add_action('template_redirect', [$this->publicIcsFeed, 'handleRequest'], 1);
         add_action('init', [$this->eventPostType, 'register'], 5);
         add_action('init', [$this->publicEventListing, 'register'], 10);
+        add_action('rest_api_init', [$this->publicEventListing, 'registerRestRoute']);
         add_action('wp_enqueue_scripts', [$this->publicEventListing, 'styles']);
         add_action('save_post_adct_event', [$this->publicEventListing, 'invalidate'], 30);
         add_action('rest_after_insert_adct_event', [$this->publicEventListing, 'invalidateTerms'], 30);
@@ -631,6 +704,18 @@ final class Plugin
             2
         );
         add_filter(
+            'rest_request_before_callbacks',
+            [$this->eventOccurrenceHooks, 'beginRestWrite'],
+            10,
+            3
+        );
+        add_filter(
+            'rest_request_after_callbacks',
+            [$this->eventOccurrenceHooks, 'endRestWrite'],
+            10,
+            3
+        );
+        add_filter(
             'rest_post_dispatch',
             [$this->eventOccurrenceHooks, 'filterRestResponse'],
             10,
@@ -641,7 +726,11 @@ final class Plugin
         add_action('admin_notices', [$this->eventOccurrenceHooks, 'renderFailureNotice']);
         add_filter('manage_adct_event_posts_columns', [$this->eventEditor, 'filterColumns']);
         add_action('manage_adct_event_posts_custom_column', [$this->eventEditor, 'renderColumn'], 10, 2);
+        add_action('restrict_manage_posts', [$this->eventEditor, 'renderListFilters']);
+        add_action('pre_get_posts', [$this->eventEditor, 'filterListQuery']);
+        add_filter('posts_where', [$this->eventEditor, 'filterNextDateWhere'], 10, 2);
         add_filter('rest_pre_insert_adct_event', [$this->eventEditor, 'validateRestRequest'], 10, 2);
+        add_action('rest_after_insert_adct_event', [$this->eventEditor, 'markRestFeaturedChoice'], 10, 2);
         add_filter('show_admin_bar', [$this, 'hideAdminBarForPortalRoles']);
         add_action('admin_menu', [$this->parserPage, 'registerMenu']);
         add_action('admin_menu', [$this->deaneriesPage, 'registerMenu']);
@@ -653,6 +742,9 @@ final class Plugin
         add_action('admin_menu', [$this->outboundMailPage, 'registerMenu']);
         add_action('admin_menu', [$this->retentionPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
+        add_action('admin_menu', [$this->healthPage, 'registerMenu']);
+        add_action('admin_post_adct_pi_health_check_now', [$this->healthPage, 'handleCheckNow']);
+        add_action('init', [$this, 'checkHealthAlerts'], 20);
         add_action('admin_init', [$this, 'maybeUpgradeRoles'], 1);
         add_action('admin_init', [$this, 'restrictWpAdminForPortalRoles'], 2);
         add_action('admin_init', [$this, 'maybeRunDatabaseMigrations'], 5);
@@ -689,6 +781,20 @@ final class Plugin
         $this->jobScheduler->registerHooks();
     }
 
+    public function checkHealthAlerts(): void
+    {
+        if (get_transient('adct_pi_health_scan') !== false) {
+            return;
+        }
+        try {
+            $this->healthAlerts->check();
+            set_transient('adct_pi_health_scan', '1', 300);
+        } catch (\Throwable $failure) {
+            error_log('[ADCT Parish Intake] Health alert check failed (' . get_class($failure) . '): '
+                . $failure->getMessage());
+        }
+    }
+
     private static function createRoleInstaller(): VersionedRoleInstaller
     {
         return new VersionedRoleInstaller(
@@ -722,6 +828,7 @@ final class Plugin
                 new OccurrenceParishNullableMigration($database),
                 new MailQueueGroupKeyMigration($database),
                 new ActionTokenRateLimitSchemaMigration(new DbDeltaSchemaInstaller($database)),
+                new ConfirmationEmailPreviewSchemaMigration($database),
             ],
             new WordPressMigrationVersionStore(),
             new WordPressMigrationLogger()
@@ -770,20 +877,6 @@ final class Plugin
             return new NullAiProvider();
         }
 
-        $enabled = get_option('adct_parish_intake_ai_enabled', '0') === '1';
-        $provider = get_option('adct_parish_intake_ai_provider', 'none');
-
-        if (! $enabled || $provider !== 'openrouter') {
-            return new NullAiProvider();
-        }
-
-        $apiKey = (new WordPressSecretResolver())->resolve(SecretRegistry::AI_API_KEY);
-        $model = trim((string) get_option('adct_parish_intake_openrouter_model', 'openrouter/auto'));
-
-        if ($apiKey === '') {
-            return new NullAiProvider();
-        }
-
-        return new OpenRouterProvider($apiKey, $model, $this->httpClient);
+        return $this->parserPage->buildAiProvider();
     }
 }
