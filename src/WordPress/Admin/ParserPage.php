@@ -4,6 +4,7 @@ namespace ADCT\ParishIntake\WordPress\Admin;
 
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
+use ADCT\ParishIntake\Core\Parsing\Input\Attachment;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\Pipeline;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
@@ -291,13 +292,16 @@ final class ParserPage
                 ? sanitize_email($senderInput)
                 : sanitize_text_field($senderInput);
 
+            $attachments = $this->processUploadedAttachments();
+
             $message = new Message(
                 sanitize_text_field(wp_unslash($_POST['source_type'] ?? 'email')),
                 sanitize_text_field(wp_unslash($_POST['source_identifier'] ?? 'manual-admin')),
                 $sanitizedSender,
                 sanitize_text_field(wp_unslash($_POST['sender_name'] ?? '')),
                 sanitize_text_field(wp_unslash($_POST['subject'] ?? '')),
-                sanitize_textarea_field(wp_unslash($_POST['body'] ?? ''))
+                sanitize_textarea_field(wp_unslash($_POST['body'] ?? '')),
+                $attachments
             );
 
             $outcome = $this->createConfiguredPipeline()->parseAll($message);
@@ -325,7 +329,7 @@ final class ParserPage
             <p>Use this screen to test the parser with a pasted message and store the result. Every detected candidate is shown; the legacy prototype table stores the first candidate, or the notice result when none is detected. Configuration lives under <strong>Parish Intake → Settings</strong>.</p>
 
             <h2>Parse a message</h2>
-            <form method="post">
+            <form method="post" enctype="multipart/form-data">
                 <?php wp_nonce_field('adct_parish_intake_parse', 'adct_parish_intake_parse_nonce'); ?>
                 <input type="hidden" name="adct_parish_intake_parse" value="1" />
                 <table class="form-table" role="presentation">
@@ -373,6 +377,13 @@ final class ParserPage
                     <tr>
                         <th scope="row">Body</th>
                         <td><textarea class="large-text code" rows="12" name="body"></textarea></td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Attachments (PDF / Poster images)</th>
+                        <td>
+                            <input type="file" name="attachments[]" multiple accept="image/*,.pdf" />
+                            <p class="description">Upload optional PDF bulletins, poster images, or other attachments to include with this message.</p>
+                        </td>
                     </tr>
                 </table>
                 <?php submit_button('Parse and save'); ?>
@@ -438,6 +449,48 @@ final class ParserPage
             </table>
         </div>
         <?php
+    }
+
+    /**
+     * @return Attachment[]
+     */
+    private function processUploadedAttachments(): array
+    {
+        if (empty($_FILES['attachments']) || ! is_array($_FILES['attachments'])) {
+            return [];
+        }
+
+        $files = $_FILES['attachments'];
+
+        if (! isset($files['name']) || ! is_array($files['name'])) {
+            return [];
+        }
+
+        $attachments = [];
+        $count = count($files['name']);
+
+        for ($i = 0; $i < $count; $i++) {
+            $error = $files['error'][$i] ?? UPLOAD_ERR_NO_FILE;
+            if ($error !== UPLOAD_ERR_OK) {
+                continue;
+            }
+
+            $name = sanitize_file_name(wp_unslash($files['name'][$i] ?? ''));
+            $tmpName = $files['tmp_name'][$i] ?? '';
+            $type = sanitize_mime_type(wp_unslash($files['type'][$i] ?? ''));
+
+            if ($name === '' || ! is_uploaded_file($tmpName)) {
+                continue;
+            }
+
+            if ($type === '' && function_exists('wp_check_filetype')) {
+                $type = wp_check_filetype($name)['type'] ?? 'application/octet-stream';
+            }
+
+            $attachments[] = new Attachment($name, $type ?: 'application/octet-stream', $tmpName);
+        }
+
+        return $attachments;
     }
 
     public function buildAiProvider()
