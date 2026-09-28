@@ -79,6 +79,13 @@ final class ReviewQueuePage
         $total = $counts[$tab];
         $page = min($page, max(1, (int) ceil($total / self::PAGE_SIZE)));
         $rows = $this->queue->find($tab, $userId, $email, $reviewer, $search, self::PAGE_SIZE, ($page - 1) * self::PAGE_SIZE);
+        $hasApprovableRows = false;
+        foreach ($rows as $row) {
+            if ($this->canApproveRow($row)) {
+                $hasApprovableRows = true;
+                break;
+            }
+        }
         ?>
         <div class="wrap">
             <h1>Review queue</h1>
@@ -111,7 +118,9 @@ final class ReviewQueuePage
                     <?php wp_nonce_field(self::ACTION, 'review_nonce'); ?>
                     <?php if ($this->canActOnTab($tab)) : ?>
                         <p>
-                            <button class="button button-primary" name="bulk_action" value="approve" type="submit">Approve selected</button>
+                            <?php if ($hasApprovableRows) : ?>
+                                <button class="button button-primary" name="bulk_action" value="approve" type="submit">Approve selected</button>
+                            <?php endif; ?>
                             <button class="button" name="bulk_action" value="reject" type="submit">Reject selected</button>
                             <label for="adct-pi-reason">Reason for rejection (optional)</label>
                             <input id="adct-pi-reason" type="text" name="reason" maxlength="500" />
@@ -141,7 +150,7 @@ final class ReviewQueuePage
                                 <tr><td colspan="7">No candidates match this view.</td></tr>
                             <?php else : ?>
                                 <?php foreach ($rows as $row) : ?>
-                                    <?php $this->renderRow($row, $tab, $email); ?>
+                                    <?php $this->renderRow($row, $tab); ?>
                                 <?php endforeach; ?>
                             <?php endif; ?>
                         </tbody>
@@ -175,7 +184,21 @@ final class ReviewQueuePage
             wp_die(esc_html('This view is read-only.'), '', ['response' => 403]);
         }
         $ids = $_POST['candidate_ids'] ?? [];
-        if (! is_array($ids) || $ids === [] || count($ids) > self::PAGE_SIZE) {
+        $manualReviewIds = $_POST['manual_review_candidate_ids'] ?? [];
+        if (! is_array($ids) || ! is_array($manualReviewIds)) {
+            wp_die(esc_html('The selected review items are invalid.'), '', ['response' => 400]);
+        }
+        if ($action === 'approve' && $manualReviewIds !== []) {
+            wp_die(
+                esc_html('One or more selected candidates need manual resolution before they can be approved.'),
+                '',
+                ['response' => 409]
+            );
+        }
+        if ($action !== 'approve') {
+            $ids = array_merge($ids, $manualReviewIds);
+        }
+        if ($ids === [] || count($ids) > self::PAGE_SIZE) {
             wp_die(esc_html('Select between 1 and 25 review items.'), '', ['response' => 400]);
         }
         $parsed = [];
@@ -230,30 +253,25 @@ final class ReviewQueuePage
     }
 
     /** @param array<string, mixed> $row */
-    private function renderRow(array $row, string $tab, string $email): void
+    private function renderRow(array $row, string $tab): void
     {
         $id = (int) $row['id'];
         $fields = $this->safeFields($row);
         $title = is_string($fields['title'] ?? null) ? $fields['title'] : '(Title unavailable)';
         $decided = ($row['decided_by'] ?? null) ?: ($row['approved_by'] ?? null);
+        $canApprove = $this->canApproveRow($row);
         $canSelect = $this->canActOnTab($tab) && (
             $this->policy->canDecide($row)
-            || ($row['status'] === 'awaiting_approval' && $decided !== null
-                && strcasecmp((string) ($row['approved_by'] ?? ''), $email) === 0)
+            || $canApprove
         );
-        $canApprove = false;
-        if ($this->policy->canDecide($row)) {
-            try {
-                $canApprove = $this->policy->canBulkApprove($row);
-            } catch (DomainException) {
-                // The row stays visible for manual repair, never approval.
-            }
-        }
+        $selectionName = $canApprove ? 'candidate_ids[]' : 'manual_review_candidate_ids[]';
         ?>
         <tr>
             <td><?php if ($canSelect) : ?>
-                <input type="checkbox" name="candidate_ids[]" value="<?php echo esc_attr((string) $id); ?>"
-                    aria-label="<?php echo esc_attr('Select candidate #' . $id); ?>" />
+                <input type="checkbox" name="<?php echo esc_attr($selectionName); ?>" value="<?php echo esc_attr((string) $id); ?>"
+                    aria-label="<?php echo esc_attr($canApprove
+                        ? 'Select candidate #' . $id
+                        : 'Select candidate #' . $id . ' for rejection or assignment; manual resolution is required before approval'); ?>" />
                 <?php endif; ?></td>
             <td><a href="<?php echo esc_url(add_query_arg('candidate', $id, $this->url($tab, ''))); ?>">
                 <?php echo esc_html('#' . $id . ' ' . $title); ?></a></td>
@@ -276,6 +294,26 @@ final class ReviewQueuePage
                 : esc_html('Not decided'); ?></td>
         </tr>
         <?php
+    }
+
+    /** @param array<string, mixed> $row */
+    private function canApproveRow(array $row): bool
+    {
+        if ($this->policy->canDecide($row)) {
+            try {
+                return $this->policy->canBulkApprove($row);
+            } catch (DomainException) {
+                return false;
+            }
+        }
+        if (empty($row['can_retry'])) {
+            return false;
+        }
+        try {
+            return ! $this->policy->requiresMatchResolution($row);
+        } catch (DomainException) {
+            return false;
+        }
     }
 
     /** @param array<string, mixed> $row */
