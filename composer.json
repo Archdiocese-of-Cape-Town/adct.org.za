@@ -8,10 +8,8 @@
         "zbateson/mail-mime-parser": "^4.0"
     },
     "require-dev": {
-        "bamarni/composer-bin-plugin": "^1.9",
-            "brianhenryie/strauss": "^0.30",
-            "phpunit/phpunit": "^11.5"
-        },
+        "phpunit/phpunit": "^11.5"
+    },
     "autoload": {
         "psr-4": {
             "ADCT\\ParishIntake\\Core\\": "src/Core/",
@@ -28,10 +26,7 @@
             "php": "8.2.0",
             "ext-gd": "2.3.3"
         },
-        "sort-packages": true,
-        "allow-plugins": {
-            "bamarni/composer-bin-plugin": true
-        }
+        "sort-packages": true
     },
     "extra": {
         "strauss": {
@@ -55,9 +50,8 @@
         ],
         "fixture-score": "@php scripts/fixture-score.php",
         "test:unit": "phpunit --testsuite unit",
-            "test:integration": "npm run test:integration",
-            "build-zip": "vendor/bin/strauss"
-        },
+        "test:integration": "npm run test:integration"
+    },
     "scripts-descriptions": {
         "test": "Run the PHPUnit suite and the prototype smoke test.",
         "fixture-score": "Report parser fixture fields correct per fixture and overall.",

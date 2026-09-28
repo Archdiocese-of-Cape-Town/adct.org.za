@@ -1,1 +1,6 @@
 *.sh text eol=lf
+
+# Never let end-of-line conversion rewrite a PDF: core.autocrlf on Windows
+# inflates the committed bytes, and the PDF text-layer tests compare fixture
+# sizes and parse content streams that corruption invalidates.
+*.pdf binary
