@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "a05a9472221ad97e679bd145d5f83065",
+    "content-hash": "41479277e6b46494d20d364b3e40935b",
     "packages": [
         {
             "name": "guzzlehttp/psr7",
@@ -860,16 +860,16 @@
         },
         {
             "name": "zbateson/mail-mime-parser",
-            "version": "3.0.7",
+            "version": "4.0.6",
             "source": {
                 "type": "git",
                 "url": "https://github.com/zbateson/mail-mime-parser.git",
-                "reference": "4cc63e42154d0062812a11aac13f2772e4a5de55"
+                "reference": "f7d3c271536a8b3d50dc3a942de8f56282629bb8"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/zbateson/mail-mime-parser/zipball/4cc63e42154d0062812a11aac13f2772e4a5de55",
-                "reference": "4cc63e42154d0062812a11aac13f2772e4a5de55",
+                "url": "https://api.github.com/repos/zbateson/mail-mime-parser/zipball/f7d3c271536a8b3d50dc3a942de8f56282629bb8",
+                "reference": "f7d3c271536a8b3d50dc3a942de8f56282629bb8",
                 "shasum": ""
             },
             "require": {
@@ -932,7 +932,7 @@
                     "type": "github"
                 }
             ],
-            "time": "2026-09-09T17:40:56+00:00"
+            "time": "2026-09-28T20:32:29+00:00"
         },
         {
             "name": "zbateson/mb-wrapper",
