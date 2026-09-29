@@ -18,6 +18,6 @@ Parishes send free-form English text, bulletins and posters (PDF/image). AI mode
 6. Candidates store `parser_version`, so they can be re-parsed when rules improve.
 
 ## Consequences
-- Runs free and offline by default; AI and OCR can be switched on without code changes.
+- Runs free by default; AI and OCR can be switched on without code changes.
 - Rule maintenance is ongoing, but it is test-driven and visible.
 - Posters without a text layer need either an external OCR service or manual entry.
