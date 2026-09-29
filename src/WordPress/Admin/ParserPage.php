@@ -300,7 +300,7 @@ final class ParserPage
                     </tr>
                 </table>
                 <h2>Retention and cleanup</h2>
-                <p>Retention cleanup is off by default. Enable only what you need and set clear retention periods first, because the plugin deletes data permanently once it is eligible. Raw-data pruning removes stored `.eml` files and related attachment files after the retention period; Processed-folder pruning removes old messages from the IMAP mailbox. Expired action tokens are removed after 30 days past expiry and audit log rows older than 24 months are pruned only when their separate switches are enabled.</p>
+                <p>Retention cleanup is off by default. Enable only what you need and set clear retention periods first, because the plugin deletes data permanently once it is eligible. Raw-data pruning removes stored `.eml` files and related attachment files after the retention period; Processed-folder pruning removes only messages with exact plugin move receipts and matching mailbox identity and UIDVALIDITY. Existing or untracked mailbox messages are never pruned. Expired action tokens are removed after 30 days past expiry and audit log rows older than 24 months are pruned only when their separate switches are enabled.</p>
                 <table class="form-table" role="presentation">
                     <tr>
                         <th scope="row">Raw message retention</th>
@@ -320,9 +320,9 @@ final class ParserPage
                         <td>
                             <label>
                                 <input type="checkbox" name="retention_processed_enabled" value="1" <?php checked($settings['retention_processed_enabled']); ?> />
-                                Delete old messages from the mailbox's Processed folder
+                                Delete eligible plugin-moved messages from the Processed folder
                             </label>
-                            <p class="description">This removes messages from the IMAP Processed folder after the selected number of days. The deletion is irreversible and happens on the live mailbox, so enable it only when the mailbox contents are no longer needed.</p>
+                            <p class="description">Only messages moved by this plugin with an exact server-provided UID mapping are eligible, and only while the mailbox identity and folder UIDVALIDITY still match. Existing or untracked messages are never deleted. Safe deletion also requires UIDPLUS; without it, cleanup fails closed and leaves messages in place.</p>
                             <label for="adct-pi-retention-processed-days">Prune after</label>
                             <input id="adct-pi-retention-processed-days" type="number" min="1" step="1" name="retention_processed_days" value="<?php echo esc_attr((string) $settings['retention_processed_days']); ?>" />
                             <span class="description">days</span>

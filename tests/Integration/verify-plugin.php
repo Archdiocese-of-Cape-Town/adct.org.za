@@ -138,8 +138,8 @@ if (
     $fail('Fresh plugin activation did not default outbound test mode to off with an empty allow-list.');
 }
 
-if ((int) get_option('adct_pi_db_version', 0) !== 8) {
-    $fail('Activation did not set the parish intake schema version to 8.');
+if ((int) get_option('adct_pi_db_version', 0) !== 9) {
+    $fail('Activation did not set the parish intake schema version to 9.');
 }
 
 if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CURRENT_VERSION) {
@@ -272,9 +272,14 @@ $expectedTableSuffixes = [
     'adct_pi_occurrences',
     'adct_pi_parish_contacts',
     'adct_pi_parishes',
+    'adct_pi_processed_mail_ownership',
     'adct_pi_sources',
     'adct_pi_venues',
 ];
+if (count($expectedTableSuffixes) !== 19) {
+    $fail('The schema v9 integration fixture must enumerate all 19 plugin tables.');
+}
+
 $expectedTables = array_map(
     static fn (string $suffix): string => $wpdb->prefix . $suffix,
     $expectedTableSuffixes
@@ -290,7 +295,7 @@ if ($actualTables !== $expectedTables) {
     $missingTables = array_diff($expectedTables, $actualTables);
     $unexpectedTables = array_diff($actualTables, $expectedTables);
     $fail(sprintf(
-        'Schema v8 tables differ. Missing: [%s]; unexpected: [%s].',
+        'Schema v9 tables differ. Missing: [%s]; unexpected: [%s].',
         implode(', ', $missingTables),
         implode(', ', $unexpectedTables)
     ));
@@ -311,6 +316,19 @@ if (
 
 $mailQueueTable = $wpdb->prefix . 'adct_pi_mail_queue';
 $inboundMessageTable = $wpdb->prefix . 'adct_pi_inbound_messages';
+$approvalNoticesTable = $wpdb->prefix . 'adct_pi_approval_notices';
+$processedOwnershipTable = $wpdb->prefix . 'adct_pi_processed_mail_ownership';
+$expectedProcessedOwnershipColumns = [
+    'id',
+    'source_id',
+    'mailbox_identity',
+    'processed_folder',
+    'uid_validity',
+    'uid',
+    'internal_date',
+    'created_at',
+    'updated_at',
+];
 $confirmationSchemaColumns = [
     [$mailQueueTable, 'thread_headers', 'longtext'],
     [$mailQueueTable, 'payload_fingerprint', 'char(64)'],
@@ -331,6 +349,25 @@ foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
     ) {
         $fail('A fresh install did not create the nullable ' . $columnName . ' confirmation-preview column.');
     }
+}
+
+$approvalNoticeColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$approvalNoticesTable}", 0);
+if ($approvalNoticeColumns !== [
+    'id',
+    'candidate_id',
+    'recipient',
+    'group_key',
+    'notify_mode',
+    'queued_at',
+    'created_at',
+    'updated_at',
+]) {
+    $fail('A fresh install did not create the expected v8 approval-notice table.');
+}
+
+$processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
+if ($processedOwnershipColumns !== $expectedProcessedOwnershipColumns) {
+    $fail('A fresh install did not create the expected v9 processed-mail ownership table.');
 }
 
 $freshMailQueueIndexRows = (array) $wpdb->get_results(
@@ -365,9 +402,10 @@ if ($forcedNotNull === false) {
 
 $rateLimitTable = $wpdb->prefix . 'adct_pi_action_token_rate_limits';
 $dropRateLimitTableForV3Upgrade = $wpdb->query("DROP TABLE {$rateLimitTable}");
+$dropProcessedOwnershipTableForV3Upgrade = $wpdb->query("DROP TABLE {$processedOwnershipTable}");
 
-if ($dropRateLimitTableForV3Upgrade === false) {
-    $fail('The v3-to-v8 migration test could not restore the pre-v6 schema.');
+if ($dropRateLimitTableForV3Upgrade === false || $dropProcessedOwnershipTableForV3Upgrade === false) {
+    $fail('The v3-to-v9 migration test could not restore the pre-v6 and pre-v9 schema.');
 }
 
 update_option('adct_pi_db_version', 3, false);
@@ -376,13 +414,16 @@ $occurrenceParishColumn = $wpdb->get_row(
     $wpdb->prepare("SHOW COLUMNS FROM {$occurrencesTable} LIKE %s", 'parish_id'),
     ARRAY_A
 );
+$processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 8
+    (int) get_option('adct_pi_db_version', 0) !== 9
     || ! is_array($occurrenceParishColumn)
     || strtoupper((string) ($occurrenceParishColumn['Null'] ?? '')) !== 'YES'
+    || $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $processedOwnershipTable)) !== $processedOwnershipTable
+    || $processedOwnershipColumns !== $expectedProcessedOwnershipColumns
 ) {
-    $fail('The v3 upgrade did not preserve the nullable occurrences.parish_id column.');
+    $fail('The v3-to-v9 upgrade did not restore the nullable occurrence column and ownership schema.');
 }
 
 $dropMailQueueIndex = $wpdb->query(
@@ -502,7 +543,7 @@ $preservedQueueRowCount = (int) $wpdb->get_var($wpdb->prepare(
 ));
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 8
+    (int) get_option('adct_pi_db_version', 0) !== 9
     || ! $upgradedMailQueueIndexIsUnique
     || array_values($upgradedMailQueueIndexColumns) !== ['recipient', 'group_key']
     || $preservedQueueRowCount !== 1
@@ -524,9 +565,10 @@ if ($deletedPreservedQueueRows !== 1) {
 }
 
 $droppedRateLimitTable = $wpdb->query("DROP TABLE {$rateLimitTable}");
+$droppedProcessedOwnershipTable = $wpdb->query("DROP TABLE {$processedOwnershipTable}");
 
-if ($droppedRateLimitTable === false) {
-    $fail('The v5-to-v6 migration test could not prepare the pre-v6 schema.');
+if ($droppedRateLimitTable === false || $droppedProcessedOwnershipTable === false) {
+    $fail('The v5-to-v9 migration test could not prepare the pre-v6 and pre-v9 schema.');
 }
 
 update_option('adct_pi_db_version', 5, false);
@@ -537,6 +579,7 @@ $recreatedRateLimitTable = $wpdb->get_var($wpdb->prepare(
 ));
 $rateLimitColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$rateLimitTable}", 0);
 $rateLimitIndexes = (array) $wpdb->get_results("SHOW INDEX FROM {$rateLimitTable}", ARRAY_A);
+$processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
 $scopeHashIsPrimaryKey = false;
 $windowStartedAtIsIndexed = false;
 
@@ -558,7 +601,7 @@ foreach ($rateLimitIndexes as $index) {
 }
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 8
+    (int) get_option('adct_pi_db_version', 0) !== 9
     || $recreatedRateLimitTable !== $rateLimitTable
     || ! in_array('scope_hash', $rateLimitColumns, true)
     || ! in_array('window_started_at', $rateLimitColumns, true)
@@ -567,26 +610,57 @@ if (
     || count($rateLimitIndexes) !== 2
     || ! $scopeHashIsPrimaryKey
     || ! $windowStartedAtIsIndexed
+    || $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $processedOwnershipTable)) !== $processedOwnershipTable
+    || $processedOwnershipColumns !== $expectedProcessedOwnershipColumns
 ) {
-    $fail('The v5-to-v6 migration did not create the primary-keyed hashed rate-limit table.');
+    $fail('The v5-to-v9 migrations did not create the rate-limit and processed-mail ownership tables.');
+}
+
+$droppedProcessedOwnershipTableForV6Upgrade = $wpdb->query("DROP TABLE {$processedOwnershipTable}");
+
+if ($droppedProcessedOwnershipTableForV6Upgrade === false) {
+    $fail('The v6-to-v9 migration test could not prepare the pre-v9 schema.');
+}
+
+update_option('adct_pi_db_version', 6, false);
+do_action('admin_init');
+$recreatedProcessedOwnershipTable = $wpdb->get_var($wpdb->prepare(
+    'SHOW TABLES LIKE %s',
+    $processedOwnershipTable
+));
+$processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
+
+if (
+    (int) get_option('adct_pi_db_version', 0) !== 9
+    || $recreatedProcessedOwnershipTable !== $processedOwnershipTable
+    || $processedOwnershipColumns !== $expectedProcessedOwnershipColumns
+    || get_option('adct_pi_db_migration_error', '') !== ''
+) {
+    $fail('The v6-to-v9 migration did not recreate the processed-mail ownership table.');
 }
 
 foreach ($confirmationSchemaColumns as [$table, $columnName]) {
     if ($wpdb->query("ALTER TABLE {$table} DROP COLUMN `{$columnName}`") === false) {
-        $fail('The v6-to-v8 migration test could not prepare the legacy confirmation-preview schema.');
+        $fail('The v6-to-v9 migration test could not prepare the legacy confirmation-preview schema.');
     }
 }
 
-$approvalNoticesTable = $wpdb->prefix . 'adct_pi_approval_notices';
 if ($wpdb->query("DROP TABLE {$approvalNoticesTable}") === false) {
-    $fail('The v6-to-v8 migration test could not prepare the pre-v8 approval-notice schema.');
+    $fail('The v6-to-v9 migration test could not prepare the pre-v8 approval-notice schema.');
+}
+
+if ($wpdb->query("DROP TABLE {$processedOwnershipTable}") === false) {
+    $fail('The v6-to-v9 migration test could not prepare the pre-v9 ownership schema.');
 }
 
 update_option('adct_pi_db_version', 6, false);
 do_action('admin_init');
 
-if ((int) get_option('adct_pi_db_version', 0) !== 8) {
-    $fail('The v6-to-v8 migrations did not advance the schema version.');
+if (
+    (int) get_option('adct_pi_db_version', 0) !== 9
+    || get_option('adct_pi_db_migration_error', '') !== ''
+) {
+    $fail('The v6-to-v9 migrations did not advance the schema version.');
 }
 
 $recreatedApprovalNoticesTable = $wpdb->get_var($wpdb->prepare(
@@ -609,7 +683,19 @@ if (
         'updated_at',
     ]
 ) {
-    $fail('The v6-to-v8 migration did not recreate the expected approval-notice table.');
+    $fail('The v6-to-v9 migration did not recreate the expected approval-notice table.');
+}
+
+$recreatedProcessedOwnershipTable = $wpdb->get_var($wpdb->prepare(
+    'SHOW TABLES LIKE %s',
+    $processedOwnershipTable
+));
+$processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
+if (
+    $recreatedProcessedOwnershipTable !== $processedOwnershipTable
+    || $processedOwnershipColumns !== $expectedProcessedOwnershipColumns
+) {
+    $fail('The v6-to-v9 migration did not recreate the expected processed-mail ownership schema.');
 }
 
 foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
@@ -623,7 +709,55 @@ foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
         || strtolower((string) ($column['Type'] ?? '')) !== $expectedType
         || strtoupper((string) ($column['Null'] ?? '')) !== 'YES'
     ) {
-        $fail('The v6-to-v8 migrations did not restore the nullable ' . $columnName . ' column.');
+        $fail('The v6-to-v9 migrations did not restore the nullable ' . $columnName . ' column.');
+    }
+}
+
+$droppedOwnershipTableForV8Upgrade = $wpdb->query("DROP TABLE {$processedOwnershipTable}");
+if ($droppedOwnershipTableForV8Upgrade === false) {
+    $fail('The installed v8-to-v9 migration test could not prepare the pre-v9 ownership schema.');
+}
+
+update_option('adct_pi_db_version', 8, false);
+do_action('admin_init');
+
+$recreatedProcessedOwnershipTable = $wpdb->get_var($wpdb->prepare(
+    'SHOW TABLES LIKE %s',
+    $processedOwnershipTable
+));
+$processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
+$approvalNoticeColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$approvalNoticesTable}", 0);
+if (
+    (int) get_option('adct_pi_db_version', 0) !== 9
+    || $recreatedProcessedOwnershipTable !== $processedOwnershipTable
+    || $processedOwnershipColumns !== $expectedProcessedOwnershipColumns
+    || $approvalNoticeColumns !== [
+        'id',
+        'candidate_id',
+        'recipient',
+        'group_key',
+        'notify_mode',
+        'queued_at',
+        'created_at',
+        'updated_at',
+    ]
+    || get_option('adct_pi_db_migration_error', '') !== ''
+) {
+    $fail('The installed v8-to-v9 migration did not add ownership while preserving v7/v8 schema objects.');
+}
+
+foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
+    $column = $wpdb->get_row(
+        $wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", $columnName),
+        ARRAY_A
+    );
+
+    if (
+        ! is_array($column)
+        || strtolower((string) ($column['Type'] ?? '')) !== $expectedType
+        || strtoupper((string) ($column['Null'] ?? '')) !== 'YES'
+    ) {
+        $fail('The installed v8-to-v9 migration did not preserve the nullable v7 column ' . $columnName . '.');
     }
 }
 
@@ -2358,6 +2492,8 @@ if (count($preexistingOccurrenceRows) !== 3) {
 
 $forcedVenueFailureEventId = $occurrenceEventId;
 $failedUpdateStart = $restOccurrenceStart->modify('+3 weeks');
+// Ensure an unintended duplicate rebuild changes second-resolution timestamps.
+sleep(1);
 $failedUpdateRequest = new WP_REST_Request(
     'PATCH',
     '/wp/v2/adct_event/' . $occurrenceEventId
@@ -5057,4 +5193,4 @@ foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
     }
 }
 
-WP_CLI::success('Release ZIP activation, schema v8 and v3-to-v8 migrations, action-token, approver decisions and outbound-queue checks, multi-candidate confirmation previews with safe recipient suppression and threaded headers, bounded inbound parsing and Inbox reprocessing without candidate, attachment, checkpoint, email or privacy regressions, public event listing, occurrence expansion/save/REST/job behavior, mail idempotency and hourly-cap claims, event metadata and REST authorization, directory and venue imports, mailbox and sender administration, and Manual parser integration checks passed.');
+WP_CLI::success('Installed release ZIP checks passed: schema v9 fresh and upgrade paths, v7 confirmation fields, v8 approval notices and v9 processed-mail ownership, action-token, approval/review-queue and confirmation flows, mailbox retention safety, event and directory administration, and public output.');
