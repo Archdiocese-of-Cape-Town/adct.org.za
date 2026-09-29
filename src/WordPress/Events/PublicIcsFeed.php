@@ -23,7 +23,7 @@ final class PublicIcsFeed
     ) {
     }
 
-    public static function url(?int $parish = null, ?string $type = null): string
+    public static function url(?int $parish = null, ?string $type = null, ?int $eventId = null): string
     {
         $query = ['adct_ics' => '1'];
         if ($parish !== null) {
@@ -31,6 +31,9 @@ final class PublicIcsFeed
         }
         if ($type !== null) {
             $query['type'] = $type;
+        }
+        if ($eventId !== null) {
+            $query['event'] = $eventId;
         }
         return add_query_arg($query, home_url('/'));
     }
@@ -50,9 +53,14 @@ final class PublicIcsFeed
             if ($marker !== '1') {
                 throw new InvalidArgumentException('Invalid calendar feed request.');
             }
+            $event = isset($_GET['event']) ? wp_unslash($_GET['event']) : null;
+            if ($event !== null && (! is_string($event) || preg_match('/\A[1-9][0-9]{0,9}\z/D', $event) !== 1)) {
+                throw new InvalidArgumentException('Invalid event filter.');
+            }
             $response = $this->response(
                 isset($_GET['parish']) ? wp_unslash($_GET['parish']) : null,
-                isset($_GET['type']) ? wp_unslash($_GET['type']) : null
+                isset($_GET['type']) ? wp_unslash($_GET['type']) : null,
+                $event === null ? null : (int) $event
             );
             header('Content-Type: text/calendar; charset=utf-8');
             header('Content-Disposition: inline; filename="adct-events.ics"');
@@ -87,7 +95,7 @@ final class PublicIcsFeed
     /**
      * @return array{body: string, etag: string, last_modified: string}
      */
-    public function response(mixed $parish = null, mixed $type = null): array
+    public function response(mixed $parish = null, mixed $type = null, mixed $eventId = null): array
     {
         if ($parish !== null && (! is_string($parish) || preg_match('/\A[1-9][0-9]{0,9}\z/D', $parish) !== 1)) {
             throw new InvalidArgumentException('Invalid parish filter.');
@@ -95,6 +103,12 @@ final class PublicIcsFeed
         if ($type !== null && (! is_string($type) || preg_match('/\A[a-z0-9]+(?:-[a-z0-9]+)*\z/D', $type) !== 1
             || strlen($type) > 100)) {
             throw new InvalidArgumentException('Invalid event type filter.');
+        }
+        if ($eventId !== null && (! is_int($eventId) || $eventId < 1)) {
+            throw new InvalidArgumentException('Invalid event filter.');
+        }
+        if ($eventId !== null && ($parish !== null || $type !== null)) {
+            throw new InvalidArgumentException('Single-event calendar feeds cannot be combined with filters.');
         }
         $parishId = $parish === null ? null : (int) $parish;
         if ($parishId !== null && $parishId > 2147483647) {
@@ -114,7 +128,7 @@ final class PublicIcsFeed
         $generation = $this->generation->current();
         $day = $this->clock->now()->setTimezone(new DateTimeZone('Africa/Johannesburg'))->format('Y-m-d');
         $key = 'adct_pi_ics_all';
-        if ($parishId === null && $termId === null) {
+        if ($parishId === null && $termId === null && $eventId === null) {
             $cached = get_transient($key);
             if (is_array($cached) && ($cached['generation'] ?? null) === $generation
                 && ($cached['day'] ?? null) === $day
@@ -126,7 +140,7 @@ final class PublicIcsFeed
                 ];
             }
         }
-        $events = $this->events($parishId, $termId);
+        $events = $this->events($parishId, $termId, $eventId);
         $body = $this->calendar->render($events);
         $lastModified = 0;
         foreach ($events as $event) {
@@ -137,7 +151,7 @@ final class PublicIcsFeed
             'etag' => '"' . hash('sha256', $generation . $day . $body) . '"',
             'last_modified' => gmdate('D, d M Y H:i:s', $lastModified ?: $this->clock->now()->getTimestamp()) . ' GMT',
         ];
-        if ($parishId === null && $termId === null && $this->generation->current() === $generation
+        if ($parishId === null && $termId === null && $eventId === null && $this->generation->current() === $generation
             && ! set_transient($key, $result + ['generation' => $generation, 'day' => $day], 60)) {
             error_log('[ADCT Parish Intake] Calendar feed cache could not be written.');
         }
@@ -147,61 +161,74 @@ final class PublicIcsFeed
     /**
      * @return list<array{id: int, uid_domain: string, title: string, description: string, url: string, modified: string, start: string, end: string|null, all_day: bool, rrule: string, exdates: list<string>, rdates: list<string>, cancelled: bool}>
      */
-    private function events(?int $parishId, ?int $termId): array
+    private function events(?int $parishId, ?int $termId, ?int $eventId): array
     {
         global $wpdb;
         $table = $wpdb->prefix . 'adct_pi_occurrences';
-        $window = OccurrenceWindow::rollingTwelveMonths(
-            $this->clock->now(),
-            new DateTimeZone('Africa/Johannesburg')
-        );
         $utc = new DateTimeZone('UTC');
-        $where = 'o.start_utc >= %s AND o.start_utc < %s '
-            . 'AND e.post_type = %s AND e.post_status = %s';
-        $args = [
-            $window->startLocal->setTimezone($utc)->format('Y-m-d H:i:s'),
-            $window->endLocal->modify('+1 day')->setTimezone($utc)->format('Y-m-d H:i:s'),
-            EventPostType::POST_TYPE,
-            'publish',
-        ];
-        if ($parishId !== null) {
-            $where .= ' AND o.parish_id = %d';
-            $args[] = $parishId;
+        if ($eventId !== null) {
+            $posts = get_posts([
+                'post_type' => EventPostType::POST_TYPE,
+                'post_status' => 'publish',
+                'post__in' => [$eventId],
+                'posts_per_page' => 1,
+                'orderby' => 'ID',
+                'order' => 'ASC',
+                'suppress_filters' => true,
+            ]);
+            $ids = $posts === [] ? [] : [(int) $posts[0]->ID];
+            if ($ids === []) {
+                throw new InvalidArgumentException('Unknown event.');
+            }
+        } else {
+            $window = OccurrenceWindow::rollingTwelveMonths(
+                $this->clock->now(),
+                new DateTimeZone('Africa/Johannesburg')
+            );
+            $where = 'o.start_utc >= %s AND o.start_utc < %s '
+                . 'AND e.post_type = %s AND e.post_status = %s';
+            $args = [
+                $window->startLocal->setTimezone($utc)->format('Y-m-d H:i:s'),
+                $window->endLocal->modify('+1 day')->setTimezone($utc)->format('Y-m-d H:i:s'),
+                EventPostType::POST_TYPE,
+                'publish',
+            ];
+            if ($parishId !== null) {
+                $where .= ' AND o.parish_id = %d';
+                $args[] = $parishId;
+            }
+            if ($termId !== null) {
+                $where .= " AND EXISTS (SELECT 1 FROM {$wpdb->term_relationships} tr "
+                    . "INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_taxonomy_id = tr.term_taxonomy_id "
+                    . 'WHERE tr.object_id = e.ID AND tt.taxonomy = %s AND tt.term_id = %d)';
+                $args[] = EventPostType::TAXONOMY;
+                $args[] = $termId;
+            }
+            $args[] = self::MAX_EVENTS + 1;
+            $wpdb->last_error = '';
+            $rows = $wpdb->get_results($wpdb->prepare(
+                "SELECT DISTINCT o.event_id FROM {$table} o "
+                . "INNER JOIN {$wpdb->posts} e ON e.ID = o.event_id "
+                . "WHERE {$where} ORDER BY o.event_id ASC LIMIT %d",
+                ...$args
+            ), ARRAY_A);
+            if (! is_array($rows) || $wpdb->last_error !== '') {
+                throw new RuntimeException('Calendar event query failed: ' . $wpdb->last_error);
+            }
+            if (count($rows) > self::MAX_EVENTS) {
+                throw new RuntimeException('Calendar feed exceeds its 500-event limit; use a filtered feed.');
+            }
+            $ids = array_map(static fn (array $row): int => (int) $row['event_id'], $rows);
+            $posts = get_posts([
+                'post_type' => EventPostType::POST_TYPE,
+                'post_status' => 'publish',
+                'post__in' => $ids,
+                'posts_per_page' => count($ids),
+                'orderby' => 'post__in',
+                'order' => 'ASC',
+                'suppress_filters' => true,
+            ]);
         }
-        if ($termId !== null) {
-            $where .= " AND EXISTS (SELECT 1 FROM {$wpdb->term_relationships} tr "
-                . "INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_taxonomy_id = tr.term_taxonomy_id "
-                . 'WHERE tr.object_id = e.ID AND tt.taxonomy = %s AND tt.term_id = %d)';
-            $args[] = EventPostType::TAXONOMY;
-            $args[] = $termId;
-        }
-        $args[] = self::MAX_EVENTS + 1;
-        $wpdb->last_error = '';
-        $rows = $wpdb->get_results($wpdb->prepare(
-            "SELECT DISTINCT o.event_id FROM {$table} o "
-            . "INNER JOIN {$wpdb->posts} e ON e.ID = o.event_id "
-            . "WHERE {$where} ORDER BY o.event_id ASC LIMIT %d",
-            ...$args
-        ), ARRAY_A);
-        if (! is_array($rows) || $wpdb->last_error !== '') {
-            throw new RuntimeException('Calendar event query failed: ' . $wpdb->last_error);
-        }
-        if (count($rows) > self::MAX_EVENTS) {
-            throw new RuntimeException('Calendar feed exceeds its 500-event limit; use a filtered feed.');
-        }
-        $ids = array_map(static fn (array $row): int => (int) $row['event_id'], $rows);
-        if ($ids === []) {
-            return [];
-        }
-        $posts = get_posts([
-            'post_type' => EventPostType::POST_TYPE,
-            'post_status' => 'publish',
-            'post__in' => $ids,
-            'posts_per_page' => self::MAX_EVENTS,
-            'orderby' => 'ID',
-            'order' => 'ASC',
-            'suppress_filters' => true,
-        ]);
         $events = [];
         foreach ($posts as $post) {
             if (! in_array((int) $post->ID, $ids, true) || $post->post_status !== 'publish') {

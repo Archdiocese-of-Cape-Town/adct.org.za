@@ -144,6 +144,7 @@ use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
+use ADCT\ParishIntake\WordPress\Events\PublicEventPage;
 use ADCT\ParishIntake\WordPress\Events\EventTypeKeywords;
 use ADCT\ParishIntake\WordPress\Events\PublicEventListing;
 use ADCT\ParishIntake\WordPress\Events\PublicIcsFeed;
@@ -181,6 +182,7 @@ final class Plugin
     private EventOccurrenceHooks $eventOccurrenceHooks;
     private CandidatePublisher $candidatePublisher;
     private PublicEventListing $publicEventListing;
+    private PublicEventPage $publicEventPage;
     private PublicIcsFeed $publicIcsFeed;
     private MailboxesPage $mailboxesPage;
     private InboundMessagesPage $inboundMessagesPage;
@@ -287,6 +289,7 @@ final class Plugin
         $this->sendersPage = new SendersPage($contacts, $contactService, $parishes);
         $this->eventPostType = new EventPostType();
         $listingGeneration = new EventListingGeneration();
+        $occurrences = new OccurrenceRepository($database);
         $this->publicEventListing = new PublicEventListing(
             $clock,
             new DateTimeZone('Africa/Johannesburg'),
@@ -294,6 +297,14 @@ final class Plugin
             $listingGeneration
         );
         $this->publicIcsFeed = new PublicIcsFeed($clock, $listingGeneration, new IcsCalendar());
+        $this->publicEventPage = new PublicEventPage(
+            $clock,
+            $timezone,
+            $parishes,
+            $venues,
+            $occurrences,
+            $pluginFile
+        );
         $this->eventEditor = new EventEditor(
             $parishes,
             $venues,
@@ -303,7 +314,7 @@ final class Plugin
             $clock
         );
         $occurrenceMaintenance = new WordPressEventOccurrenceMaintenance(
-            new OccurrenceRepository($database),
+            $occurrences,
             new OccurrenceExpander($timezone, $rruleValidator),
             $clock,
             function (): void {
@@ -614,6 +625,15 @@ final class Plugin
         return self::$instance->mailQueue->stats();
     }
 
+    public static function publicEventPage(): PublicEventPage
+    {
+        if (! self::$instance instanceof self) {
+            throw new \RuntimeException('The Parish Intake plugin has not been booted.');
+        }
+
+        return self::$instance->publicEventPage;
+    }
+
     public static function activate(): void
     {
         if (! function_exists('add_option')) {
@@ -741,6 +761,7 @@ final class Plugin
         add_filter('query_vars', [$this->actionTokenEndpoint, 'registerQueryVars']);
         add_action('template_redirect', [$this->actionTokenEndpoint, 'handleRequest'], 0);
         add_action('template_redirect', [$this->publicIcsFeed, 'handleRequest'], 1);
+        add_action('init', [$this->publicEventPage, 'register'], 12);
         add_action('init', [$this->eventPostType, 'register'], 5);
         $typeKeywords = new EventTypeKeywords();
         add_action(EventPostType::TAXONOMY . '_add_form_fields', [$typeKeywords, 'renderAddField']);

@@ -139,6 +139,30 @@ final class OccurrenceRepositoryTest extends TestCase
         self::assertStringContainsString('ID > %d', $database->preparedQueries[0]['query']);
     }
 
+    public function testUpcomingOccurrencesUsePreparedEventIdAndUtcBoundary(): void
+    {
+        $database = new RecordingOccurrenceDatabase();
+        $database->rowResults = [
+            [
+                'start_utc' => '2026-10-02 16:00:00',
+                'end_utc' => '2026-10-02 17:00:00',
+                'start_local_date' => '2026-10-02',
+                'is_cancelled' => '0',
+            ],
+        ];
+        $repository = new OccurrenceRepository($database);
+
+        $rows = $repository->upcomingForEvent(
+            17,
+            new DateTimeImmutable('2026-10-02T14:00:00+00:00'),
+            3
+        );
+
+        self::assertSame($database->rowResults, $rows);
+        self::assertSame([17, '2026-10-02 14:00:00', 3], $database->preparedQueries[0]['arguments']);
+        self::assertStringContainsString('WHERE event_id = %d AND start_utc >= %s', $database->preparedQueries[0]['query']);
+    }
+
     public function testLocationUsesVenueCoordinatesAndParishFallback(): void
     {
         $database = new RecordingOccurrenceDatabase();
@@ -244,7 +268,7 @@ final class RecordingOccurrenceDatabase implements DatabaseConnectionInterface
 
     public function getResults(string $query): array
     {
-        return [];
+        return $this->rowResults;
     }
 
     public function escapeLike(string $text): string
