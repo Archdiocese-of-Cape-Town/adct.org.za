@@ -2,6 +2,7 @@
 
 namespace ADCT\ParishIntake\Core\Parsing\Stages;
 
+use ADCT\ParishIntake\Core\Parsing\BulletinMastheadMatcher;
 use ADCT\ParishIntake\Core\Parsing\Contracts\StageInterface;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\ParseContext;
@@ -39,28 +40,48 @@ final class RuleBasedExtractionStage implements StageInterface
             $blockContext = [];
         }
 
-        $bulletinRange = $this->findBulletinDateRange($text);
-        $dateText = $text;
-
-        if ($bulletinRange !== null) {
-            $dateText = substr_replace(
-                $text,
-                ' ',
-                $bulletinRange['offset'],
-                strlen($bulletinRange['match'])
-            );
-        } elseif (isset($blockContext['bulletin_date_range']) && is_string($blockContext['bulletin_date_range'])) {
-            $bulletinRange = $this->findBulletinDateRange($blockContext['bulletin_date_range']);
-        }
-
-        $referenceDate = $bulletinRange['date'] ?? $this->referenceDate($message);
+        $masthead = $this->resolveMasthead($text, $blockContext);
+        $referenceDate = $masthead['date'] ?? $this->referenceDate($message);
         $context->setRuntimeValue('reference_date', $referenceDate);
+        $dateText = $masthead === null ? $text : $this->blankOut($text, $masthead['offset'], $masthead['match']);
         $monthContext = isset($blockContext['month']) && is_string($blockContext['month'])
             ? $blockContext['month']
             : null;
         $yearContext = isset($blockContext['year']) && is_numeric($blockContext['year'])
             ? (int) $blockContext['year']
             : null;
+
+        if ($masthead !== null) {
+            // The masthead is wider evidence than block context: it is tied to the words
+            // "bulletin" or "newsletter", so a bare month and year is a publication date
+            // rather than unlabelled body copy. With no year available anywhere the
+            // masthead still pins the month, which is what "end of September" needs.
+            $monthContext ??= $masthead['month'];
+
+            // A reviewer seeing a date they cannot trace back to the text needs to know
+            // where the year came from. Suppressed when the year was already pinned by
+            // block context, because then nothing was inferred.
+            if (! isset($blockContext['year'])) {
+                $result->addNote(sprintf(
+                    'The year was taken from the bulletin masthead, %s %d, which the event text did not state.',
+                    $masthead['month'],
+                    $masthead['year']
+                ));
+            }
+        }
+
+        // With a masthead the year is read back off the reference date rather than off
+        // the masthead, so that one date governs both the year and the ordering. A
+        // wrapping range ("28 December to 4 January 2027") is the reason: the matcher's
+        // year belongs to the end month, while nextMonthDay() needs the start year, and
+        // handing the raw year to both would double-count the adjustment.
+        //
+        // Without a masthead the year stays unknown, so a yearless date still rolls
+        // forward to its next occurrence on or after the received date.
+        if ($yearContext === null && $masthead !== null) {
+            $yearContext = (int) $referenceDate->format('Y');
+        }
+
         $dateText = $this->removeUntilDate($dateText);
         $replacementText = $this->replacementScheduleText($body);
         $replacementDate = $replacementText === null
@@ -485,7 +506,7 @@ final class RuleBasedExtractionStage implements StageInterface
                 $month = $this->monthNumber($monthText ?? '');
                 $date = $month === null
                     ? null
-                    : $this->resolveMonthDay(1, $month, $this->capturedValue($match, 'year'), $referenceDate);
+                    : $this->resolveMonthDay(1, $month, $this->capturedValue($match, 'year'), $referenceDate, $yearContext);
                 $weekdayMismatch = false;
             } else {
                 $monthText = $this->capturedValue($match, 'month');
@@ -500,7 +521,7 @@ final class RuleBasedExtractionStage implements StageInterface
                 $day = (int) $this->capturedValue($match, 'day');
                 $yearText = $this->capturedValue($match, 'year');
                 $date = $yearText === null
-                    ? $this->nextMonthDay($day, $month, $referenceDate)
+                    ? $this->nextMonthDay($day, $month, $referenceDate, $yearContext)
                     : $this->makeDate($this->normalizeYear($yearText), $month, $day);
 
                 if ($date === null) {
@@ -572,10 +593,16 @@ final class RuleBasedExtractionStage implements StageInterface
         $contextMonth = $monthContext === null ? null : $this->monthNumber($monthContext);
 
         if ($contextMonth !== null) {
-            $year = $yearContext ?? (int) $referenceDate->format('Y');
-            $date = $this->lastDayOfMonth($year, $month);
+            // A year stated in the document is authoritative, so the deadline is not
+            // rolled past it just because the day has already gone by. With only a
+            // month known, a deadline already in the past must roll forward.
+            $date = $this->lastDayOfMonth($yearContext ?? (int) $referenceDate->format('Y'), $month);
 
-            if ($date !== null && $date >= $referenceDate) {
+            if ($date !== null && $yearContext === null && $date >= $referenceDate) {
+                return $date;
+            }
+
+            if ($date !== null && $yearContext !== null) {
                 return $date;
             }
         }
@@ -657,10 +684,11 @@ final class RuleBasedExtractionStage implements StageInterface
         int $day,
         int $month,
         ?string $yearText,
-        DateTimeImmutable $referenceDate
+        DateTimeImmutable $referenceDate,
+        ?int $yearContext = null
     ): ?DateTimeImmutable {
         return $yearText === null
-            ? $this->nextMonthDay($day, $month, $referenceDate)
+            ? $this->nextMonthDay($day, $month, $referenceDate, $yearContext)
             : $this->makeDate($this->normalizeYear($yearText), $month, $day);
     }
 
@@ -865,40 +893,52 @@ final class RuleBasedExtractionStage implements StageInterface
     }
 
     /**
-     * @return array{date: DateTimeImmutable, match: string, offset: int}|null
+     * Resolves the reference date from a bulletin masthead.
+     *
+     * The body is the first place to look, then the block context. The splitter runs
+     * ahead of this stage and lifts a subject-line masthead into that context, so the
+     * subject does not need checking again here. The matching itself is shared with the
+     * splitter, so the two can never disagree about which forms count as a masthead.
+     *
+     * @param array<string, mixed> $blockContext
+     *
+     * @return array{date: \DateTimeImmutable, match: string, offset: int, month: string, year: int}|null
      */
-    private function findBulletinDateRange(string $text): ?array
+    private function resolveMasthead(string $text, array $blockContext): ?array
     {
-        $header = substr($text, 0, 512);
-        $pattern = '~\b(?:bulletin|newsletter)\b[\s\S]{0,120}?\b(?<start_day>\d{1,2})(?:st|nd|rd|th)?\s+(?<start_month>' . self::MONTH_PATTERN . ')\.?\s+(?:to|[-–])\s*(?<end_day>\d{1,2})(?:st|nd|rd|th)?\s+(?<end_month>' . self::MONTH_PATTERN . ')\.?,?\s+(?<year>\d{4})\b~iu';
+        $matcher = new BulletinMastheadMatcher();
+        $masthead = $matcher->match($text);
 
-        if (! preg_match($pattern, $header, $matches, PREG_OFFSET_CAPTURE | PREG_UNMATCHED_AS_NULL)) {
+        if ($masthead === null && isset($blockContext['masthead']) && is_string($blockContext['masthead'])) {
+            $masthead = $matcher->match($blockContext['masthead']);
+        }
+
+        if ($masthead === null) {
             return null;
         }
 
-        $startMonth = $this->monthNumber($matches['start_month'][0]);
-        $endMonth = $this->monthNumber($matches['end_month'][0]);
-        $year = (int) $matches['year'][0];
+        // An offset only means something for text this stage is about to scan, and the
+        // block context is not. -1 marks "not in $text", so nothing is blanked out of it.
+        $masthead['offset'] = $masthead['offset'] >= 0 && $masthead['offset'] < strlen($text)
+            && str_contains(substr($text, $masthead['offset'], strlen($masthead['match'])), $masthead['match'])
+                ? $masthead['offset']
+                : -1;
 
-        if ($startMonth === null || $endMonth === null) {
-            return null;
+        return $masthead;
+    }
+
+    /**
+     * Replaces a matched masthead span with a space so the date scanner cannot read a
+     * masthead date as the event date. An offset of -1 means the span came from
+     * somewhere other than $text, so there is nothing to blank out.
+     */
+    private function blankOut(string $text, int $offset, string $match): string
+    {
+        if ($offset < 0) {
+            return $text;
         }
 
-        if ($startMonth > $endMonth) {
-            --$year;
-        }
-
-        $date = $this->makeDate($year, $startMonth, (int) $matches['start_day'][0]);
-
-        if ($date === null) {
-            return null;
-        }
-
-        return [
-            'date' => $date,
-            'match' => $matches[0][0],
-            'offset' => $matches[0][1],
-        ];
+        return substr_replace($text, ' ', $offset, strlen($match));
     }
 
     private function referenceDate(Message $message): DateTimeImmutable
@@ -934,8 +974,43 @@ final class RuleBasedExtractionStage implements StageInterface
         return $referenceDate->modify('+' . $daysUntil . ' days');
     }
 
-    private function nextMonthDay(int $day, int $month, DateTimeImmutable $referenceDate): ?DateTimeImmutable
+    /**
+     * Resolves a day and month with no year of their own.
+     *
+     * A year stated in the document is authoritative, so when one is known the date is
+     * placed in it and never rolled. Rolling here regardless of the year is what made
+     * #133 an eleven-month error: a September 2026 masthead left the reference date in
+     * 2027, and "1 September" in the masthead's own year then rolled to 2027-09-01.
+     *
+     * With no year anywhere in the document the rolling behaviour is kept, because
+     * "the retreat is on 5 October" arriving in January does mean next October.
+     */
+    private function nextMonthDay(int $day, int $month, DateTimeImmutable $referenceDate, ?int $knownYear = null): ?DateTimeImmutable
     {
+        if ($knownYear !== null) {
+            // A stated year pins the year, but not the ordering. "December 2025 ...
+            // report due 5 January" belongs to 5 January 2026, not 5 January 2025 --
+            // so the masthead's own month decides which side of the year a bare day and
+            // month falls on, exactly as it would without a stated year.
+            $date = $this->makeDate($knownYear, $month, $day);
+
+            if ($date === null) {
+                return null;
+            }
+
+            $mastheadMonth = (int) $referenceDate->format('n');
+
+            if ($month < $mastheadMonth) {
+                $nextYear = $this->makeDate($knownYear + 1, $month, $day);
+
+                if ($nextYear !== null) {
+                    return $nextYear;
+                }
+            }
+
+            return $date;
+        }
+
         $referenceYear = (int) $referenceDate->format('Y');
 
         for ($year = $referenceYear; $year <= $referenceYear + 8; ++$year) {

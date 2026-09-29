@@ -12,13 +12,16 @@ final class BulletinBlockSplitter
 
     private EmailTextCleaner $textCleaner;
     private SectionSkipper $sectionSkipper;
+    private BulletinMastheadMatcher $mastheadMatcher;
 
     public function __construct(
         ?EmailTextCleaner $textCleaner = null,
-        ?SectionSkipper $sectionSkipper = null
+        ?SectionSkipper $sectionSkipper = null,
+        ?BulletinMastheadMatcher $mastheadMatcher = null
     ) {
         $this->textCleaner = $textCleaner ?? new EmailTextCleaner();
         $this->sectionSkipper = $sectionSkipper ?? new SectionSkipper();
+        $this->mastheadMatcher = $mastheadMatcher ?? new BulletinMastheadMatcher();
     }
 
     public function split(Message $message): BlockSplitResult
@@ -36,11 +39,23 @@ final class BulletinBlockSplitter
             'shared_signature_text' => $cleaned->getSignatureText(),
             'shared_quoted_text' => $cleaned->getQuotedText(),
         ];
-        $subjectContext = $this->contextUpdate($message->getSubject());
+        $subjectContext = $this->mastheadContext($message->getSubject());
 
         if ($subjectContext !== null) {
             $context = array_merge($context, $subjectContext);
         }
+
+        // A masthead is often laid out over two lines -- a "Parish Newsletter" heading
+        // with the date beneath it -- so the opening lines are matched as one region
+        // rather than line by line. Getting this wrong let the heading and date be read
+        // as an event block of their own, which then outranked the block holding the
+        // real event and the masthead date was lost (#133).
+        $mastheadLines = $this->stripMastheadLines($lines);
+
+        if ($mastheadLines !== null) {
+            $context['masthead'] = $mastheadLines['match'];
+        }
+
         $tableHeader = null;
         $sectionSkipReason = null;
         $sectionSkipMode = null;
@@ -645,14 +660,19 @@ final class BulletinBlockSplitter
             ];
         }
 
-        if (
-            preg_match('/\b(?:bulletin|newsletter)\b/i', $line)
-            && preg_match(
-                '/\b\d{1,2}(?:st|nd|rd|th)?\s+' . self::MONTH_PATTERN . '\.?\s+(?:to|[-–])\s*\d{1,2}(?:st|nd|rd|th)?\s+' . self::MONTH_PATTERN . '\.?,?\s+\d{4}\b/iu',
-                $line
-            )
-        ) {
-            return ['bulletin_date_range' => $line];
+        if (preg_match(
+            '/\b(?:bulletin|newsletter)\b/i',
+            $line
+        )) {
+            // A masthead is a publication date, so it is held as context and lifted out
+            // of the body text. All three shapes are captured, not just the day range:
+            // "September 2026" on its own is the commonest form, and dropping it left
+            // the reference date with no year to work from (#133).
+            $masthead = $this->mastheadContext($line);
+
+            if ($masthead !== null) {
+                return $masthead;
+            }
         }
 
         if (preg_match('/^\s*(?:venue|where|location)\s*[:\-]\s*(?<venue>.+?)\s*$/iu', $line, $matches)) {
@@ -660,6 +680,81 @@ final class BulletinBlockSplitter
         }
 
         return null;
+    }
+
+    /**
+     * Blanks out a masthead near the top of the bulletin and reports what it found.
+     *
+     * The masthead is publication metadata, so it must not compete with the events for
+     * candidacy. Left in place, "Parish Newsletter" plus the date beneath it reads as a
+     * two-line event whose title is the publication name, and it outscores the block
+     * holding the actual event.
+     *
+     * Only the opening of the bulletin is considered. A date further down is far more
+     * likely to belong to an event than to name the issue.
+     *
+     * @param string[] $lines Modified in place: covered lines are blanked.
+     *
+     * @return array{match: string}|null
+     */
+    private function stripMastheadLines(array &$lines): ?array
+    {
+        $window = 4;
+        $opening = [];
+
+        for ($index = 0; $index < min($window, count($lines)); ++$index) {
+            $trimmed = trim($lines[$index]);
+
+            // Blank lines separate the masthead from the events; stopping at the first
+            // real content means only the publication header is ever considered.
+            if ($opening !== [] && $trimmed === '') {
+                break;
+            }
+
+            $opening[] = $trimmed;
+        }
+
+        $masthead = $this->mastheadMatcher->match(implode("\n", $opening));
+
+        if ($masthead === null) {
+            return null;
+        }
+
+        // The match runs from the "bulletin"/"newsletter" word to the date, which for a
+        // two-line masthead spans both lines. Blanking only the date line would leave
+        // "Parish Newsletter" to open a block, so every line the match reaches is
+        // blanked rather than just the ones that match on their own.
+        $consumed = substr_count($masthead['match'], "\n");
+        $start = $masthead['start_line'];
+
+        for ($index = $start; $index <= $start + $consumed && $index < count($lines); ++$index) {
+            $lines[$index] = '';
+        }
+
+        return ['match' => $masthead['match']];
+    }
+
+    /**
+     * Captures a masthead as publication-date context.
+     *
+     * The match itself is delegated to BulletinMastheadMatcher so the splitter and the
+     * extraction stage cannot disagree about which shapes count as a masthead (#133).
+     *
+     * @return array<string, string>|null
+     */
+    private function mastheadContext(string $text): ?array
+    {
+        $masthead = $this->mastheadMatcher->match($text);
+
+        if ($masthead === null) {
+            return null;
+        }
+
+        return [
+            'masthead' => $masthead['match'],
+            'masthead_month' => $masthead['month'],
+            'masthead_year' => (string) $masthead['year'],
+        ];
     }
 
     private function isVenueHeading(string $line): bool
