@@ -25,7 +25,8 @@ final readonly class ConfirmationEmailBatch
         public string $replyToTrust,
         public bool $automatedOrList,
         public ?string $originalMessageId,
-        public array $candidates
+        public array $candidates,
+        public ?ConfirmationEmailReason $emptyReason = null
     ) {
         if ($messageId < 1 || $sourceId < 1) {
             throw new InvalidArgumentException('A confirmation preview needs valid inbound message and source IDs.');
@@ -37,6 +38,9 @@ final readonly class ConfirmationEmailBatch
 
         if (! array_is_list($candidates)) {
             throw new InvalidArgumentException('Confirmation preview candidates must be a list.');
+        }
+        if ($candidates !== [] && $emptyReason !== null) {
+            throw new InvalidArgumentException('An empty-batch suppression reason requires no candidates.');
         }
 
         $candidateIds = [];

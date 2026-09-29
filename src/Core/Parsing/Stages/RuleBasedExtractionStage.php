@@ -62,11 +62,21 @@ final class RuleBasedExtractionStage implements StageInterface
             ? (int) $blockContext['year']
             : null;
         $dateText = $this->removeUntilDate($dateText);
-        $date = $this->extractDate($dateText, $referenceDate, $monthContext, $yearContext);
-        $times = $this->extractTimes($text);
+        $replacementText = $this->replacementScheduleText($body);
+        $replacementDate = $replacementText === null
+            ? null
+            : $this->extractDate($replacementText, $referenceDate);
+        $replacementTimes = $replacementText === null ? null : $this->extractTimes($replacementText);
+        $date = $replacementDate ?? $this->extractDate($dateText, $referenceDate, $monthContext, $yearContext);
+        $times = $replacementTimes ?? ($replacementDate === null ? $this->extractTimes($text) : null);
 
         $classification = $this->classify($lower, $date !== null, $times !== null);
         $result->setClassification($classification);
+        if ($replacementText !== null && $replacementDate === null && $replacementTimes === null) {
+            $result->setNeedsReprocess(true);
+            $result->setField('replacement_schedule_unresolved', true);
+            $result->addNote('A replacement date was not found; review the change notice schedule.');
+        }
         $blockTitle = $context->getRuntimeValue('block_title');
         $result->setField(
             'title',
@@ -170,6 +180,15 @@ final class RuleBasedExtractionStage implements StageInterface
         $pattern = '~\buntil\s+' . $weekday . '(?:' . $dayMonth . '|' . $monthDay . ')\b~iu';
 
         return preg_replace($pattern, ' ', $text) ?? $text;
+    }
+
+    private function replacementScheduleText(string $body): ?string
+    {
+        if (! preg_match('~\b(?:postponed|rescheduled|moved)\s+to\s+([^\r\n]+)~iu', $body, $matches)) {
+            return null;
+        }
+
+        return $matches[1];
     }
 
     private function extractTitle(Message $message, string $text): ?string

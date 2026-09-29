@@ -12,6 +12,7 @@ use ADCT\ParishIntake\Core\Mail\ConfirmationEmailBatch;
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailCandidate;
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailHeaderUnavailableException;
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResult;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailReason;
 use ADCT\ParishIntake\Core\Ingestion\PermanentInboundHeaderReadException;
 use ADCT\ParishIntake\Core\Ports\ConfirmationEmailJobSourceInterface;
 use ADCT\ParishIntake\Core\Ports\InboundHeaderStorageInterface;
@@ -50,10 +51,11 @@ final class WordPressConfirmationEmailJobSource implements ConfirmationEmailJobS
             . " FROM {$messagesTable} m"
             . " WHERE m.status = %s AND m.confirmation_status IS NULL"
             . " AND EXISTS (SELECT 1 FROM {$candidatesTable} c"
-            . " WHERE c.message_id = m.id AND c.status = %s)"
+            . " WHERE c.message_id = m.id AND c.status IN (%s, %s))"
             . ' ORDER BY m.id ASC LIMIT 1',
             self::MESSAGE_STATUS_PARSED,
-            self::CANDIDATE_STATUS_DRAFT
+            self::CANDIDATE_STATUS_DRAFT,
+            'duplicate'
         ));
 
         if ($this->database->lastError() !== '') {
@@ -73,7 +75,7 @@ final class WordPressConfirmationEmailJobSource implements ConfirmationEmailJobS
         $receivedAt = $this->dateTime($message['received_at'] ?? null, 'received timestamp');
         $isAutoReply = $this->booleanValue($message['is_auto_reply'] ?? null, 'automated message marker');
         $candidateRows = $this->database->getResults($this->database->prepare(
-            "SELECT id, fields, recurrence, confidence, notes"
+            "SELECT id, fields, recurrence, confidence, notes, match_kind, match_event_id"
             . " FROM {$candidatesTable} WHERE message_id = %d AND status = %s"
             . ' ORDER BY block_index ASC, id ASC',
             $messageId,
@@ -85,7 +87,29 @@ final class WordPressConfirmationEmailJobSource implements ConfirmationEmailJobS
         }
 
         if ($candidateRows === []) {
-            throw new RuntimeException('A pending confirmation message no longer has draft event candidates.');
+            $duplicateRows = $this->database->getResults($this->database->prepare(
+                "SELECT id FROM {$candidatesTable} WHERE message_id = %d AND status = %s LIMIT 1",
+                $messageId,
+                'duplicate'
+            ));
+            if ($this->database->lastError() !== '' || $duplicateRows === []) {
+                throw new RuntimeException('A pending confirmation message no longer has reviewable candidates.');
+            }
+            return new ConfirmationEmailBatch(
+                $messageId,
+                $sourceId,
+                $senderEmail,
+                $senderName,
+                $subject,
+                $receivedAt,
+                null,
+                SenderTrust::UNKNOWN,
+                SenderTrust::UNKNOWN,
+                $isAutoReply,
+                null,
+                [],
+                ConfirmationEmailReason::DUPLICATE
+            );
         }
 
         $candidates = [];
@@ -104,7 +128,9 @@ final class WordPressConfirmationEmailJobSource implements ConfirmationEmailJobS
                 $fields,
                 $recurrence,
                 $this->floatValue($row['confidence'] ?? null, 'candidate confidence'),
-                $notes
+                $notes,
+                (string) ($row['match_kind'] ?? 'new'),
+                $this->matchedTitle($row['match_event_id'] ?? null)
             );
         }
 
@@ -142,6 +168,23 @@ final class WordPressConfirmationEmailJobSource implements ConfirmationEmailJobS
             $headers?->messageId,
             $candidates
         );
+    }
+
+    private function matchedTitle(mixed $eventId): ?string
+    {
+        if ($eventId === null) {
+            return null;
+        }
+        $id = $this->integerValue($eventId, 'matched event ID');
+        $posts = $this->tableName('posts');
+        $row = $this->database->getRow($this->database->prepare(
+            "SELECT post_title FROM {$posts} WHERE ID = %d AND post_type = %s AND post_status = %s",
+            $id, 'adct_event', 'publish'
+        ));
+        if ($this->database->lastError() !== '' || ! is_string($row['post_title'] ?? null)) {
+            throw new RuntimeException('The matched event title could not be read for the preview.');
+        }
+        return $row['post_title'];
     }
 
     public function recordResult(

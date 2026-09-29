@@ -7,6 +7,7 @@ namespace ADCT\ParishIntake\Tests\Unit\Parsing;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Tests\Support\FixtureDirectorySnapshotLoader;
 use ADCT\ParishIntake\Tests\Support\EmailFixtureLoader;
+use ADCT\ParishIntake\Tests\Support\EmailFixtureResult;
 use ADCT\ParishIntake\Tests\Support\FixtureComparator;
 use DateTimeImmutable;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -86,10 +87,7 @@ final class EmailFixtureCorpusTest extends TestCase
 
         $directorySnapshots = (new FixtureDirectorySnapshotLoader())->providerFor($expected, $emailPath);
         $outcome = (new PipelineFactory(null, $directorySnapshots))->create()->parseAll($message);
-        $actual = array_merge(
-            $outcome->getPrimaryResult()->toArray(),
-            $outcome->toArray()
-        );
+        $actual = EmailFixtureResult::actual($expected, $outcome);
 
         if (isset($expected['candidate_count']) && ! is_int($expected['candidate_count'])) {
             self::fail('candidate_count must be an integer: ' . basename($expectedPath));
