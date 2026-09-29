@@ -32,6 +32,7 @@ Before launch, the release checklist runs once on a temporary xneelo staging ins
 
 ### Phase 1.5 – Posters and PDFs
 Text from PDF attachments, manual entry beside an attachment preview, bulletin splitting quality.
+**Status:** PDF text extraction is done (E8.1, [ADR 0015](decisions/0015-pure-php-pdf-text-extraction.md)): text-layer posters and bulletins are read in pure PHP with size, page and time limits, and anything unreadable is listed for manual entry. Manual entry beside an attachment preview (E8.2) and optional OCR (E8.3) are still to do.
 **Exit criteria:** a PDF poster with a text layer produces a correct candidate. A multi-column bulletin is read column by column. An image-only poster is either read by the optional OCR provider (when switched on) or shown beside the edit form for manual entry. Real samples showed about 1 in 4 posters are image-only ([parser findings](parser-samples.md)).
 
 ### Phase 2 – Self-service, monitoring and more inputs
@@ -155,7 +156,7 @@ Phase 0, 1 and 1.5 items have GitHub issues. Phase 2 and 3 items are listed as c
 ### E8 – Posters, PDFs and attachments (Phase 1.5) ([E8](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/11))
 | ID | Item | Pri | Dep | Acceptance |
 |---|---|---|---|---|
-| [E8.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/65) | PDF text extraction with size/page limits, column-aware | P1 | E2.3 | Text-layer PDFs parsed; multi-column bulletins read column by column using text positions; oversized files flagged, not crashed. |
+| [E8.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/65) | PDF text extraction with size/page limits, column-aware | Done | E2.3 | Text-layer PDFs parsed; multi-column bulletins read column by column using text positions; oversized files flagged, not crashed. |
 | [E8.2](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/63) | Manual entry beside attachment preview | P1 | E7.2 | Image/PDF shown next to the edit form in the admin area (and later the portal). |
 | [E8.3](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/75) | Optional OCR for image-only posters (OCR.space / vision model) | P1 | E8.1, E8.2, E12.1 | Off by default; runs in the queue job with a timeout and daily cap; always falls back to manual entry. |
 | *Later* | Poster as featured image | P2 | E8.2 | |
@@ -218,7 +219,7 @@ Phase 0, in this order:
      - Can a temporary staging instance be set up later?
    - Done: FluentSMTP is set up, `wp_mail` works and the WP-Cron loopback check passes. Optionally send a test email and check its headers show SPF and DKIM `pass`.
    - Create a free cron-job.org account (or agree to use GitHub Actions) for the external pinger ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
-   - Real samples: 13 are in and reviewed ([parser findings](parser-samples.md)). Keep collecting, especially one-line email notices, forwarded emails and changes/cancellations ([#19](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/19)).
+   - Real samples: 13 attachments were reviewed privately ([parser findings](parser-samples.md)); the originals are not in this public repository. Anonymised fixtures derived from real examples are still needed for [#19](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/19). Keep collecting one-line email notices, forwarded emails and changes/cancellations.
    - Deaneries and parishes are seeded ([`data/seed`](../data/seed/README.md)). When you are ready, give the deans' email addresses to set them up as approvers. Until then, reviewers approve everything ([#68](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/68)).
 2. **Build** (see the [development guide](development.md#first-build-session) for the order and rules):
    - [#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17) CI and PHPUnit

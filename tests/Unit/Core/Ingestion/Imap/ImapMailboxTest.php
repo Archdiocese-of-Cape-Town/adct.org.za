@@ -20,6 +20,56 @@ use PHPUnit\Framework\TestCase;
 
 final class ImapMailboxTest extends TestCase
 {
+    public function testProcessedCleanupUsesOnlyServerSideUidsAndTargetedExpunge(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake('UIDPLUS')
+            . "* OK [UIDVALIDITY 123] valid\r\nA0003 OK SELECT completed\r\n"
+            . "* SEARCH 42 17\r\nA0004 OK SEARCH completed\r\n"
+            . "A0005 OK STORE completed\r\nA0006 OK EXPUNGE completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+        self::assertSame(
+            ['validity' => 123, 'uid' => 17],
+            $mailbox->nextOldProcessedUid(new DateTimeImmutable('2026-09-01 UTC'), 0)
+        );
+        $mailbox->deleteOldProcessedUid(17, 123);
+        self::assertSame("A0003 SELECT \"Processed\"\r\n", $transport->writes[2]);
+        self::assertSame("A0004 UID SEARCH BEFORE 01-Sep-2026\r\n", $transport->writes[3]);
+        self::assertSame("A0005 UID STORE 17 +FLAGS.SILENT (\\Deleted)\r\n", $transport->writes[4]);
+        self::assertSame("A0006 UID EXPUNGE 17\r\n", $transport->writes[5]);
+    }
+
+    public function testProcessedCleanupRefusesMailboxWideExpungeWithoutUidplus(): void
+    {
+        $transport = new ScriptedTransport(
+            "* OK ready\r\nA0001 OK login\r\n* CAPABILITY IMAP4rev1\r\nA0002 OK capabilities\r\n"
+            . "* OK [UIDVALIDITY 123] valid\r\nA0003 OK SELECT completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+        $this->expectException(ProtocolError::class);
+        try {
+            $mailbox->deleteOldProcessedUid(17, 123);
+        } finally {
+            self::assertCount(3, $transport->writes);
+        }
+    }
+
+    public function testProcessedCleanupRefusesAChangedUidValidity(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake('UIDPLUS')
+            . "* OK [UIDVALIDITY 456] valid\r\nA0003 OK SELECT completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+        $this->expectException(ProtocolError::class);
+        try {
+            $mailbox->deleteOldProcessedUid(17, 123);
+        } finally {
+            self::assertCount(3, $transport->writes);
+        }
+    }
+
     public function testSearchParsesUntaggedResultsAndBuildsSupportedCriteria(): void
     {
         $transport = new ScriptedTransport(

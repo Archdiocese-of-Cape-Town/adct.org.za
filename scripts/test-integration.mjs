@@ -18,6 +18,7 @@ if (!npmCli) {
 }
 
 const wpEnvHome = resolveWpEnvHome(repositoryRoot);
+const stopAfterTests = stopWpEnvAfterTests();
 const wpEnvCli = join(repositoryRoot, 'node_modules', '@wordpress', 'env', 'bin', 'wp-env');
 
 if (!existsSync(wpEnvCli)) {
@@ -28,7 +29,6 @@ const isolatedConfig = prepareIsolatedWpEnvConfig(repositoryRoot, wpEnvHome);
 const wpEnvConfigDirectory = isolatedConfig.configDirectory;
 console.log(`Using isolated wp-env project ${isolatedConfig.projectHash}.`);
 
-const stopAfterTests = stopWpEnvAfterTests();
 const environment = {
   ...process.env,
   WP_ENV_HOME: wpEnvHome,

@@ -6,6 +6,7 @@ namespace ADCT\ParishIntake\WordPress\Events;
 
 use ADCT\ParishIntake\Core\Events\ListingRange;
 use ADCT\ParishIntake\Core\Events\ListingSelection;
+use ADCT\ParishIntake\Core\Events\RecurrenceSummary;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use DateTimeZone;
 use InvalidArgumentException;
@@ -57,7 +58,7 @@ final class PublicEventListing
             'adct-events',
             plugins_url('assets/events.css', $this->pluginFile),
             [],
-            '1.0.0'
+            '1.0.1'
         );
         wp_enqueue_script('adct-events-filters');
     }
@@ -167,6 +168,7 @@ final class PublicEventListing
             return $this->listing($selection, remove_query_arg([
                 'adct_page', 'adct_period', 'adct_from', 'adct_to',
                 'adct_types', 'adct_parish', 'adct_deanery',
+                'adct_pin', 'adct_collapse',
             ]));
         } catch (InvalidArgumentException $error) {
             return '<p role="alert">' . esc_html($error->getMessage()) . '</p>';
@@ -262,7 +264,11 @@ final class PublicEventListing
             $html .= '<option value="' . esc_attr((string) $id) . '"'
                 . selected($selection->parish, $id, false) . '>' . esc_html($name) . '</option>';
         }
-        $html .= '</select><button type="submit">Apply filters</button></form>';
+        $html .= '</select><label><input type="checkbox" name="adct_collapse" value="1"'
+            . checked($selection->collapse, true, false) . '> Show only the next date of each recurring event</label>'
+            . '<label><input type="checkbox" name="adct_pin" value="1"'
+            . checked($selection->pin, true, false) . '> Show featured events first</label>'
+            . '<button type="submit">Apply filters</button></form>';
 
         $visible = [];
         foreach ($result['rows'] as $row) {
@@ -321,10 +327,21 @@ final class PublicEventListing
                 $timeLabel .= ' - ' . $endTime->format('H:i');
             }
             $type = $typeNames[(int) $post->ID] ?? '';
-            $html .= '<li class="adct-events__card"><h3><a href="' . esc_url(get_permalink($post)) . '">'
+            $featured = in_array(get_post_meta($post->ID, 'featured', true), [true, '1', 1], true);
+            $rrule = get_post_meta($post->ID, 'rrule', true);
+            $html .= '<li class="adct-events__card'
+                . ($featured ? ' adct-events__card--featured' : '')
+                . (is_string($rrule) && $rrule !== '' ? ' adct-events__card--recurring' : '')
+                . '"><h3><a href="' . esc_url(get_permalink($post)) . '">'
                 . esc_html(get_the_title($post)) . '</a></h3>'
                 . '<p><time datetime="' . esc_attr($start->format('Y-m-d\TH:iP')) . '">'
                 . esc_html($timeLabel) . '</time></p>';
+            if (is_string($rrule) && $rrule !== '') {
+                $html .= '<p class="adct-events__recurrence">'
+                    . esc_html(RecurrenceSummary::describe($rrule)
+                        . ($selection->collapse ? ' - next: ' . $start->format('j M') : ''))
+                    . '</p>';
+            }
             if (! empty($row['parish_name'])) {
                 $html .= '<p>' . esc_html((string) $row['parish_name']) . '</p>';
             }
@@ -335,10 +352,10 @@ final class PublicEventListing
             if ($type !== '') {
                 $html .= '<span class="adct-events__badge">' . esc_html($type) . '</span> ';
             }
-            if (get_post_meta($post->ID, 'rrule', true) !== '') {
+            if (is_string($rrule) && $rrule !== '') {
                 $html .= '<span class="adct-events__badge">Recurring</span> ';
             }
-            if (in_array(get_post_meta($post->ID, 'featured', true), [true, '1', 1], true)) {
+            if ($featured) {
                 $html .= '<span class="adct-events__badge">Featured</span> ';
             }
             if ((int) $row['is_cancelled'] === 1) {
@@ -406,7 +423,8 @@ final class PublicEventListing
         $cacheable = $selection->period !== 'range'
             && $selection->types === [] && $selection->parish === null && $selection->deanery === null;
         $generation = '';
-        $key = 'adct_pi_list_v2_' . $selection->period . '_' . $selection->page;
+        $key = 'adct_pi_list_v3_' . $selection->period . '_' . $selection->page
+            . '_' . (int) $selection->collapse . (int) $selection->pin;
         if ($cacheable) {
             $generation = $this->generation()->current();
             $cached = get_transient($key);
@@ -423,9 +441,24 @@ final class PublicEventListing
 
         $table = $wpdb->prefix . 'adct_pi_occurrences';
         $posts = $wpdb->posts;
+        $postmeta = $wpdb->postmeta;
         $parishes = $wpdb->prefix . 'adct_pi_parishes';
         $where = '';
+        $joins = '';
+        $order = 'o.start_utc ASC, o.id ASC';
         $args = [EventPostType::POST_TYPE, 'publish', $from, $end];
+        if ($selection->collapse) {
+            $joins .= " LEFT JOIN {$postmeta} rm ON rm.post_id = o.event_id AND rm.meta_key = 'rrule'";
+            $where .= " AND (rm.meta_value IS NULL OR rm.meta_value = '' OR NOT EXISTS "
+                . "(SELECT 1 FROM {$table} earlier WHERE earlier.event_id = o.event_id "
+                . "AND earlier.start_utc >= %s AND (earlier.start_utc < o.start_utc "
+                . "OR (earlier.start_utc = o.start_utc AND earlier.id < o.id))))";
+            $args[] = $from;
+        }
+        if ($selection->pin) {
+            $joins .= " LEFT JOIN {$postmeta} fm ON fm.post_id = o.event_id AND fm.meta_key = 'featured'";
+            $order = "CASE WHEN fm.meta_value = '1' THEN 0 ELSE 1 END, " . $order;
+        }
         if ($selection->parish !== null) {
             $where .= ' AND o.parish_id = %d';
             $args[] = $selection->parish;
@@ -450,9 +483,9 @@ final class PublicEventListing
             "SELECT o.event_id, o.start_utc, o.end_utc, o.start_local_date, o.is_cancelled, "
             . "p.name AS parish_name "
             . "FROM {$table} o INNER JOIN {$posts} e ON e.ID = o.event_id AND e.post_type = %s AND e.post_status = %s "
-            . "LEFT JOIN {$parishes} p ON p.id = o.parish_id "
+            . "LEFT JOIN {$parishes} p ON p.id = o.parish_id {$joins} "
             . "WHERE o.start_utc >= %s AND o.start_utc < %s {$where} "
-            . "ORDER BY o.start_utc ASC, o.id ASC LIMIT %d OFFSET %d",
+            . "ORDER BY {$order} LIMIT %d OFFSET %d",
             ...$args
         );
         $wpdb->last_error = '';

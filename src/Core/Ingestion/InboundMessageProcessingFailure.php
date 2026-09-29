@@ -15,6 +15,7 @@ final class InboundMessageProcessingFailure extends RuntimeException
     public const CONTEXT_MIME_DECODE = 'mime_decode';
     public const CONTEXT_MESSAGE_METADATA = 'message_metadata';
     public const CONTEXT_SENDER_LEARNING = 'sender_learning';
+    public const CONTEXT_PDF_EXTRACTION = 'pdf_extraction';
     public const CONTEXT_PIPELINE_PARSE = 'pipeline_parse';
     public const CONTEXT_CANDIDATE_STORAGE = 'candidate_storage';
     public const CONTEXT_PROCESSING = 'processing';

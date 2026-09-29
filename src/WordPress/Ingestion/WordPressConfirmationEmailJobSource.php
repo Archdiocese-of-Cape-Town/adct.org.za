@@ -85,7 +85,6 @@ final class WordPressConfirmationEmailJobSource implements ConfirmationEmailJobS
         if ($this->database->lastError() !== '') {
             throw new RuntimeException('The event candidates for a confirmation preview could not be read.');
         }
-
         if ($candidateRows === []) {
             $duplicateRows = $this->database->getResults($this->database->prepare(
                 "SELECT id FROM {$candidatesTable} WHERE message_id = %d AND status = %s LIMIT 1",

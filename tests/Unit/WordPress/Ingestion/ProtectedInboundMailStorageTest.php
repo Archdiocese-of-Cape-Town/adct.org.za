@@ -34,7 +34,7 @@ final class ProtectedInboundMailStorageTest extends TestCase
 
             $path = $this->directory . DIRECTORY_SEPARATOR . $filename;
 
-            if (is_file($path)) {
+            if (is_file($path) || is_link($path)) {
                 unlink($path);
             }
         }
@@ -145,5 +145,26 @@ final class ProtectedInboundMailStorageTest extends TestCase
         $rules = (string) file_get_contents($this->directory . DIRECTORY_SEPARATOR . '.htaccess');
 
         self::assertMatchesRegularExpression('/^[\t ]*Require all denied[\t ]*$/mi', $rules);
+    }
+
+    public function testDeleteIsIdempotentButRefusesSymlinkEvenWithValidName(): void
+    {
+        $storage = new ProtectedInboundMailStorage($this->directory);
+        $file = $storage->storeRawMessage('anonymised sample');
+        $storage->delete($file);
+        $storage->delete($file);
+        self::assertFileDoesNotExist($this->directory . DIRECTORY_SEPARATOR . $file);
+
+        $target = $storage->storeRawMessage('keep this file');
+        $link = str_repeat('a', 64) . '.eml';
+        if (! @symlink($this->directory . DIRECTORY_SEPARATOR . $target, $this->directory . DIRECTORY_SEPARATOR . $link)) {
+            self::markTestSkipped('Creating a test-only symlink requires filesystem permission.');
+        }
+        try {
+            $this->expectException(RuntimeException::class);
+            $storage->delete($link);
+        } finally {
+            self::assertFileExists($this->directory . DIRECTORY_SEPARATOR . $target);
+        }
     }
 }

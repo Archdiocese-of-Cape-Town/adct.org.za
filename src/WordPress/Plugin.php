@@ -53,6 +53,7 @@ use ADCT\ParishIntake\Core\Mail\ConfirmationEmailPreviewService;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
+use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
@@ -62,6 +63,8 @@ use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
+use ADCT\ParishIntake\WordPress\Pdf\PrinsFrankPdfTextExtractor;
+use ADCT\ParishIntake\WordPress\Pdf\WordPressAttachmentExtractionStore;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
 use ADCT\ParishIntake\WordPress\Admin\HealthPage;
 use ADCT\ParishIntake\WordPress\Admin\InboundMessagesPage;
@@ -206,7 +209,8 @@ final class Plugin
         $inboundMessageStore = new WordPressInboundMessageStore(
             $database,
             $inboundMessages,
-            $attachmentRepository
+            $attachmentRepository,
+            static fn (): RetentionSettings => RetentionSettings::current()
         );
         $processedMailboxMessages = new WordPressProcessedMailboxMessageStore($database);
         $secrets = new WordPressSecretResolver();
@@ -224,7 +228,8 @@ final class Plugin
             new WordPressAiCallGate(
                 new WordPressActionTokenRateLimitStore($database),
                 $clock
-            )
+            ),
+            new AttachmentRepository($database)
         );
         $sourceRegistryService = new SourceRegistryService($sources, $clock);
         $this->mailboxesPage = new MailboxesPage(
@@ -289,7 +294,8 @@ final class Plugin
             $venues,
             new EventValidator($timezone, $rruleValidator),
             new RRulePresetMapper($rruleValidator),
-            $timezone
+            $timezone,
+            $clock
         );
         $occurrenceMaintenance = new WordPressEventOccurrenceMaintenance(
             new OccurrenceRepository($database),
@@ -462,8 +468,17 @@ final class Plugin
             $directorySnapshots,
             $clock,
             $sources,
-            $senderLearningService
+            $senderLearningService,
+            pdfTextEnrichment: new PdfTextEnrichmentService(
+                new WordPressAttachmentExtractionStore(
+                    new AttachmentRepository($database),
+                    $clock
+                ),
+                new PrinsFrankPdfTextExtractor(),
+                $protectedInboundMailStorage
+            )
         );
+        // This is the only scheduled retention path; processed mail is deleted only by exact stored move receipts.
         $retentionCleanupJob = new RetentionCleanupJob(
             $database,
             $processedMailboxMessages,
@@ -783,7 +798,11 @@ final class Plugin
         add_action('admin_notices', [$this->eventOccurrenceHooks, 'renderFailureNotice']);
         add_filter('manage_adct_event_posts_columns', [$this->eventEditor, 'filterColumns']);
         add_action('manage_adct_event_posts_custom_column', [$this->eventEditor, 'renderColumn'], 10, 2);
+        add_action('restrict_manage_posts', [$this->eventEditor, 'renderListFilters']);
+        add_action('pre_get_posts', [$this->eventEditor, 'filterListQuery']);
+        add_filter('posts_where', [$this->eventEditor, 'filterNextDateWhere'], 10, 2);
         add_filter('rest_pre_insert_adct_event', [$this->eventEditor, 'validateRestRequest'], 10, 2);
+        add_action('rest_after_insert_adct_event', [$this->eventEditor, 'markRestFeaturedChoice'], 10, 2);
         add_filter('show_admin_bar', [$this, 'hideAdminBarForPortalRoles']);
         add_action('admin_menu', [$this->parserPage, 'registerMenu']);
         add_action('admin_menu', [$this->deaneriesPage, 'registerMenu']);

@@ -761,6 +761,34 @@ foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
     }
 }
 
+foreach ($confirmationSchemaColumns as [$table, $columnName]) {
+    if ($wpdb->query("ALTER TABLE {$table} DROP COLUMN `{$columnName}`") === false) {
+        $fail('The v6-to-v9 migration test could not prepare the legacy confirmation-preview schema.');
+    }
+}
+
+update_option('adct_pi_db_version', 6, false);
+do_action('admin_init');
+
+if ((int) get_option('adct_pi_db_version', 0) !== 9) {
+    $fail('The v6-to-v9 migration did not advance the schema version.');
+}
+
+foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
+    $column = $wpdb->get_row(
+        $wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", $columnName),
+        ARRAY_A
+    );
+
+    if (
+        ! is_array($column)
+        || strtolower((string) ($column['Type'] ?? '')) !== $expectedType
+        || strtoupper((string) ($column['Null'] ?? '')) !== 'YES'
+    ) {
+        $fail('The v6-to-v9 migration did not restore the nullable ' . $columnName . ' column.');
+    }
+}
+
 require_once __DIR__ . '/ActionTokenEndpointCheck.php';
 ActionTokenEndpointCheck::run($fail);
 
@@ -1986,6 +2014,7 @@ if (
     get_post_meta($eventPostId, 'exdates', true) !== ['2026-11-06T16:00']
     || get_post_meta($eventPostId, 'rdates', true) !== ['2026-11-13T16:00']
     || ! in_array(get_post_meta($eventPostId, 'featured', true), [true, 1, '1'], true)
+    || get_post_meta($eventPostId, EventEditor::FEATURED_OVERRIDE_META, true) !== '1'
     || (get_post_meta($eventPostId, 'contact', true)['email'] ?? '') !== 'event-contact@example.test'
 ) {
     $_POST = $originalEventPost;
@@ -2082,10 +2111,89 @@ $eventColumns = apply_filters('manage_adct_event_posts_columns', [
     'date' => 'Date',
 ]);
 
-foreach (['event_start', 'event_parish', 'event_type', 'event_status', 'event_featured'] as $column) {
+foreach (['event_start', 'event_next', 'event_parish', 'event_type', 'event_recurring', 'event_status', 'event_featured'] as $column) {
     if (! array_key_exists($column, $eventColumns)) {
         $fail('The event admin list is missing the ' . $column . ' column.');
     }
+}
+ob_start();
+do_action('restrict_manage_posts', EventPostType::POST_TYPE);
+$eventListFilters = (string) ob_get_clean();
+foreach (['adct_pi_parish', 'adct_pi_next', 'adct_pi_recurring', 'adct_pi_featured', 'adct_pi_status'] as $filterName) {
+    if (! str_contains($eventListFilters, 'name="' . $filterName . '"')) {
+        $fail('The event admin list is missing the ' . $filterName . ' filter.');
+    }
+}
+$previousEventScreen = get_current_screen();
+$previousEventGet = $_GET;
+$previousMainQuery = $GLOBALS['wp_the_query'] ?? null;
+$legacyFeaturedValue = false;
+set_current_screen('edit-adct_event');
+try {
+    if (! is_admin()) {
+        $fail('The event admin list filter test could not enter an admin screen.');
+    }
+    $matchingEventIds = static function (array $filters): array {
+        $_GET = $filters;
+        $query = new WP_Query();
+        $GLOBALS['wp_the_query'] = $query;
+        $query->query([
+            'post_type' => EventPostType::POST_TYPE,
+            'post_status' => 'publish',
+            'posts_per_page' => 100,
+        ]);
+        return array_map('intval', wp_list_pluck($query->posts, 'ID'));
+    };
+    $nextEventDate = $wpdb->get_var($wpdb->prepare(
+        "SELECT start_local_date FROM {$wpdb->prefix}adct_pi_occurrences "
+        . 'WHERE event_id = %d ORDER BY start_utc ASC LIMIT 1',
+        $eventPostId
+    ));
+    if (! is_string($nextEventDate)
+        || ! in_array($eventPostId, $matchingEventIds([
+            'adct_pi_parish' => (string) $firstParishId,
+            'adct_pi_next' => $nextEventDate,
+            'adct_pi_recurring' => 'yes',
+            'adct_pi_featured' => 'yes',
+            'adct_pi_status' => 'scheduled',
+        ]), true)) {
+        $fail('Combined event admin list filters hid a matching event.');
+    }
+    foreach ([
+        ['adct_pi_parish' => 'none'],
+        ['adct_pi_recurring' => 'no'],
+        ['adct_pi_featured' => 'no'],
+        ['adct_pi_status' => 'cancelled'],
+        ['adct_pi_next' => '2026-12-25'],
+    ] as $filter) {
+        if (in_array($eventPostId, $matchingEventIds($filter), true)) {
+            $fail('An event admin list filter did not exclude a nonmatching event: ' . wp_json_encode($filter));
+        }
+    }
+    if ($wpdb->update(
+        $wpdb->postmeta,
+        ['meta_value' => '0'],
+        ['post_id' => $eventPostId, 'meta_key' => 'featured'],
+        ['%s'],
+        ['%d', '%s']
+    ) !== 1) {
+        $fail('Could not seed a legacy explicit false featured value.');
+    }
+    $legacyFeaturedValue = true;
+    clean_post_cache($eventPostId);
+    $unfeaturedIds = $matchingEventIds(['adct_pi_featured' => 'no']);
+    $featuredIds = $matchingEventIds(['adct_pi_featured' => 'yes']);
+    if (! in_array($eventPostId, $unfeaturedIds, true)
+        || in_array($eventPostId, $featuredIds, true)) {
+        $fail('The featured admin filter omitted a published event stored with explicit false metadata.');
+    }
+} finally {
+    if ($legacyFeaturedValue) {
+        update_post_meta($eventPostId, 'featured', true);
+    }
+    $_GET = $previousEventGet;
+    $GLOBALS['wp_the_query'] = $previousMainQuery;
+    set_current_screen($previousEventScreen ?? 'front');
 }
 
 $currentEventUserId = get_current_user_id();
@@ -5138,6 +5246,8 @@ if ($secondApproverUser instanceof WP_User && in_array('deanery_approver', $seco
 
 require_once __DIR__ . '/PublicationCheck.php';
 PublicationCheck::run($fail);
+require_once __DIR__ . '/RetentionCheck.php';
+RetentionCheck::run($fail);
 require WP_CONTENT_DIR . '/test-harness/IcsFeedCheck.php';
 require_once __DIR__ . '/RepeatMatchingCheck.php';
 RepeatMatchingCheck::run($fail, $icsSource->id, $firstParishId);
@@ -5193,4 +5303,4 @@ foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
     }
 }
 
-WP_CLI::success('Installed release ZIP checks passed: schema v9 fresh and upgrade paths, v7 confirmation fields, v8 approval notices and v9 processed-mail ownership, action-token, approval/review-queue and confirmation flows, mailbox retention safety, event and directory administration, and public output.');
+WP_CLI::success('Installed release ZIP checks passed: schema v9 fresh and upgrade paths, v7 confirmation fields, v8 approval notices and v9 processed-mail ownership, action-token, approval/review-queue and confirmation flows, bounded inbound parsing and safe reprocessing, mailbox retention safety, event and directory administration, and public output.');

@@ -1029,6 +1029,11 @@ final class RetentionTestStorage implements InboundMailStorageReaderInterface
         return $this->files[$relativePath] ?? throw new RuntimeException('Missing file.');
     }
 
+    public function resolveAttachmentPath(string $relativePath): string
+    {
+        throw new RuntimeException('Not used in retention tests.');
+    }
+
     public function delete(string $relativePath): void
     {
         $this->deleted[] = $relativePath;

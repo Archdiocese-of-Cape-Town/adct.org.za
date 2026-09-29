@@ -160,13 +160,15 @@ source_id, `mailbox_identity` (SHA-256 of the mailbox endpoint, account and proc
 | is_auto_reply | bool; set for declared or likely auto-reply/list signals and blocks confirmations, including to mailing lists |
 | status | `received`, `extracting`, `parsed`, `failed`, `ignored`, or `skipped`; see state machine |
 | error | Safe operator-facing processing, screening or size-limit reason; never a copy of raw message content |
-| retention_until | raw data deleted after this date by the daily retention job; this is the per-message floor written at ingest, so shorter later settings do not shorten existing rows; metadata stays until review, retry and health workflows no longer need it. When a terminal row is cleaned up, the job removes the raw file, attachment files and normalized body text together; attachment and candidate metadata stay in place. |
+| retention_until | raw data is eligible after this date and the configured age limit; this per-message floor is written at ingest from the configured day limit, so shorter later settings do not shorten existing rows. When a terminal row is cleaned up, the job removes the raw file, attachment files and normalized body text together; attachment and candidate metadata stay in place. |
 | confirmation_status, confirmation_reason | nullable outcome (`queued`, `sent`, `suppressed`, `failed`) and safe reason code (`no_candidates`, `duplicate`, `blocked_sender`, `automated_or_list`, `no_safe_recipient`, `test_mode`, `delivery_failed`, `queue_conflict`, `raw_message_unavailable`); this marker is separate from the inbound processing status |
 
 ### `adct_pi_attachments`
 `message_id`, filename, declared `mime_type`, `size_bytes`, private `storage_path`, SHA-256 `content_hash`, `extracted_text`, `extraction_method` (`pdf_text`, `ocr_external`, `ai_vision`, `manual`, `none`), status.
 
 The poller stores an attachment only when its declared MIME type is on the provisional allowlist (PDF, JPEG, PNG, WebP, HEIC and HEIF), its file signature matches, and it is no larger than 15 MiB. Unsupported, oversized and signature-mismatched attachments retain metadata and a skip status but no stored file. The allowlist is centralized in `AttachmentStoragePolicy`; skipped items are shown to administrators on the Mailboxes screen.
+
+A stored PDF's `extraction_method` and `status` are set during processing (ADR 0015). `extraction_method` is `pdf_text` when text was read and `none` otherwise; `status` is one of `extracted`, `no_text_layer` (a scan, which needs OCR or manual entry), `skipped_size`, `skipped_page_limit`, `skipped_timeout`, `failed`, or the three storage-policy values above. Only the first group is new — the existing `varchar(20)` status column holds all of them, so no migration was required. PDFs that did not yield text are listed on the Manual parser screen.
 
 The Inbox shows received, extracting, parsed, failed and ignored messages to users with intake review permission. Its Ignored filter also includes oversize messages stored with the legacy `skipped` status. It does not select `body_text`, `raw_path`, raw headers or attachments. A failed message can be requeued only after an authorized, nonce-protected admin action; reprocessing uses the same row and protected raw file, preserves attachments and mailbox checkpoints, and does not publish events or send email.
 
@@ -207,6 +209,8 @@ A parsed message with only duplicate candidates gets `confirmation_status = supp
 The public `adct_event` post type has an `/events` archive and REST representation; its title, content, excerpt and featured image hold the public text. The hierarchical `adct_event_type` taxonomy is REST-enabled and seeded idempotently with Social, Spiritual, Formation, Liturgy/Mass, Youth, Outreach, Fundraising, Meeting, Pilgrimage and Other. Existing Fundraising and Meeting terms are retained; no term is renamed or deleted. Each default term receives a versioned, editable `adct_pi_type_keywords` term-meta list only when it has no list yet, so upgrades preserve site edits (including an intentionally empty list). Custom terms can have their own lists.
 
 Registered post meta holds `parish_id`, `venue_id`, `start_local`, `end_local`, `all_day`, `rrule`, `exdates`, `rdates`, `featured`, `status_flag` (`scheduled`, `cancelled`, `postponed`), `source_candidate_id` and `contact`. `start_local` and `end_local` use the strict local format `Y-m-d\TH:i`; all-day values are normalized to local midnight and an end date is inclusive. `exdates` and `rdates` are lists of local datetimes stored as WordPress metadata arrays. RRULE values are checked against and expanded from the supported RFC 5545 subset (DAILY/WEEKLY/MONTHLY/YEARLY, INTERVAL, COUNT, UNTIL, BYDAY, BYMONTHDAY, BYMONTH and BYSETPOS).
+
+The private post meta `_adct_pi_featured_override` records that an editor explicitly set or cleared Featured in the event form or REST edit. For subsequent approved candidate updates, the publisher keeps that value instead of replacing it with a parser suggestion. New candidates still require the usual approval, and unedited events can accept new suggestions. No table or migration is needed.
 
 `contact` stores the contact name, email and phone for authorized event editors only and is deliberately absent from public REST responses. `source_candidate_id` is internal provenance, not an editor field. Parish and venue IDs are checked against the directory adapter when metadata is saved; a venue must belong to the selected parish. A parish or venue may be omitted for an archdiocese-wide event; the REST API represents an omitted ID as `0`.
 
@@ -299,10 +303,30 @@ The listing cache generation is a random, option-backed `adct_pi_event_listing_g
 
 ## Retention (POPIA)
 
-- Raw `.eml` files and attachments: default **12 months** after receipt (configurable), then deleted. Extracted candidates and published events stay.
-- Processed-folder mail: opt-in; only exact plugin-move receipts with matching mailbox identity and UIDVALIDITY are eligible. Existing or otherwise untracked messages are never pruned by this job.
+- Raw `.eml` files and attachments: opt-in; the configured day limit defaults to **365 days** after receipt. Extracted candidates and published events stay.
+- Processed-folder mail: opt-in; only exact plugin-move receipts matching source, mailbox identity, Processed folder and destination UIDVALIDITY are eligible. Existing or otherwise untracked messages are never pruned by this job.
 - Action tokens: deleted 30 days after expiry.
 - Bulletin sections with personal information (Mass intentions, sick lists, finances) are skipped by the parser and never copied into candidates, events or AI prompts ([E3.7](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/74)).
 - Event change history (`event_changes`): kept while the event exists, then deleted with it.
 - Audit log: 24 months.
+
+The daily `retention_cleanup` job uses the existing `retention_until`
+timestamp on each inbound message, set at receipt from the configurable
+raw-data day limit (default 365 days). Only terminal messages (`parsed`,
+`ignored`, `skipped`, `failed`) can lose their raw `.eml` and attachment
+files. The job leaves the message, attachment metadata, parsed candidates,
+events and `event_changes` in place; it clears `raw_path`, normalized
+`body_text`, attachment file paths and extracted attachment text. A failed
+message whose raw file has expired cannot be requeued. Existing rows keep
+their saved deadline when the setting changes. Missing files are safe to
+retry; invalid paths and symlinks fail the job visibly.
+
+Processed-folder copies use a configurable day limit (default 30). The job
+deletes only UIDs mapped by successful plugin moves and matching the source,
+mailbox identity, Processed folder and destination UIDVALIDITY. Mailbox
+deletion requires UIDPLUS and uses UID SEARCH against the server's
+INTERNALDATE plus UID STORE / UID EXPUNGE for one UID, never mailbox-wide
+EXPUNGE. The cutoff day itself is retained. The Inbox and Too large folders
+are untouched. Expired tokens and audit records are pruned in bounded steps
+without touching event revisions.
 - Outgoing emails show the archdiocese's contact details for questions about personal information.
