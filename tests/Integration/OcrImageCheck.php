@@ -12,6 +12,7 @@
  */
 
 use ADCT\ParishIntake\Core\Auth\ActionTokenBinding;
+use ADCT\ParishIntake\Core\Auth\ActionTokenHandlerRegistry;
 use ADCT\ParishIntake\Core\Auth\ActionTokenOutcome;
 use ADCT\ParishIntake\Core\Auth\ActionTokenPreview;
 use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
@@ -29,7 +30,6 @@ use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
 use ADCT\ParishIntake\WordPress\Attachments\WordPressCandidateSourceMessage;
 use ADCT\ParishIntake\WordPress\Attachments\WordPressPreviewableImageRepository;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
-use ADCT\ParishIntake\WordPress\Auth\ActionTokenHandlerRegistry;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRenewalDelivery;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
@@ -221,9 +221,12 @@ final class OcrImageCheck
                 strpos($withPoster->body, 'data-target="adct_edit_description"') !== false,
                 'The token page OCR control did not target the description field.'
             );
+            // The control must point at this candidate's own poster. Assert on
+            // the id itself rather than the whole query string, because the
+            // ampersand between the two arguments is entity-encoded by
+            // esc_url() and that encoding is not what this check is about.
             $check(
-                strpos($withPoster->body, 'name="adct_token_image=1"') === false
-                    && strpos($withPoster->body, '&amp;adct_token_image=' . $attachmentId . '"') !== false,
+                strpos($withPoster->body, ActionTokenImageEndpoint::IMAGE_PARAM . '=' . $attachmentId . '"') !== false,
                 'The token page did not link its own poster id into the OCR control URL.'
             );
             $check(
