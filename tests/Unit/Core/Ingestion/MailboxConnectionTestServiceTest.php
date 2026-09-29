@@ -239,7 +239,7 @@ final class FakeMailboxConnection implements MailboxInterface
         }
     }
 
-    public function uidValidity(): int
+    public function uidValidity(?string $folder = null): int
     {
         return 17;
     }

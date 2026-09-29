@@ -13,6 +13,7 @@ use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
 use ADCT\ParishIntake\Core\Database\CreateSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MailboxSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MigrationRunner;
+use ADCT\ParishIntake\Core\Database\ProcessedMailboxOwnershipSchemaMigration;
 use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
 use ADCT\ParishIntake\Core\Events\EventValidator;
 use ADCT\ParishIntake\Core\Events\IcsCalendar;
@@ -60,6 +61,7 @@ use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
 use ADCT\ParishIntake\Core\Support\SystemClock;
+use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
 use ADCT\ParishIntake\WordPress\Admin\HealthPage;
 use ADCT\ParishIntake\WordPress\Admin\InboundMessagesPage;
@@ -70,6 +72,7 @@ use ADCT\ParishIntake\WordPress\Admin\ParserPage;
 use ADCT\ParishIntake\WordPress\Admin\ParishesPage;
 use ADCT\ParishIntake\WordPress\Admin\SendersPage;
 use ADCT\ParishIntake\WordPress\Admin\SourcesPage;
+use ADCT\ParishIntake\WordPress\Admin\ReviewQueuePage;
 use ADCT\ParishIntake\WordPress\Ai\OpenAiCompatibleProvider;
 use ADCT\ParishIntake\WordPress\Ai\WordPressAiCallGate;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
@@ -102,12 +105,14 @@ use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\OccurrenceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\ReviewQueueRepository;
 use ADCT\ParishIntake\WordPress\Database\Schema;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenRateLimitStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressMailQueueRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
+use ADCT\ParishIntake\WordPress\Database\WordPressProcessedMailboxMessageStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressEventCandidateStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationLogger;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationVersionStore;
@@ -174,6 +179,7 @@ final class Plugin
     private PublicIcsFeed $publicIcsFeed;
     private MailboxesPage $mailboxesPage;
     private InboundMessagesPage $inboundMessagesPage;
+    private ?ReviewQueuePage $reviewQueuePage = null;
     private ReviewerNotificationPreference $reviewerNotificationPreference;
 
     private function __construct(string $pluginFile)
@@ -202,6 +208,7 @@ final class Plugin
             $inboundMessages,
             $attachmentRepository
         );
+        $processedMailboxMessages = new WordPressProcessedMailboxMessageStore($database);
         $secrets = new WordPressSecretResolver();
         $directorySnapshots = new CachedDirectorySnapshotProvider(
             $directoryVersions,
@@ -303,6 +310,18 @@ final class Plugin
             ),
             new EventValidator($timezone, $rruleValidator)
         );
+        if (function_exists('add_action')) {
+            $threshold = get_option('adct_parish_intake_ai_threshold', '0.55');
+            if (! is_numeric($threshold) || (float) $threshold < 0 || (float) $threshold > 1) {
+                error_log('[ADCT Parish Intake] Invalid confidence threshold; review queue uses 0.55.');
+            }
+            $confidenceThreshold = is_numeric($threshold) && (float) $threshold >= 0 && (float) $threshold <= 1
+                ? (float) $threshold : 0.55;
+            $this->reviewQueuePage = new ReviewQueuePage(
+                new ReviewQueueRepository($database, $clock, new ReviewQueuePolicy(), $confidenceThreshold),
+                $this->candidatePublisher
+            );
+        }
         $this->eventOccurrenceHooks = new EventOccurrenceHooks(
             $occurrenceMaintenance,
             $clock,
@@ -405,6 +424,7 @@ final class Plugin
             $mailboxes,
             $sources,
             $inboundMessageStore,
+            $processedMailboxMessages,
             $protectedInboundMailStorage,
             new SourceHealthRecorder($sources, $clock),
             new RawMessageInspector(new AuthenticationResultsParser($trustedAuthservIds)),
@@ -446,6 +466,7 @@ final class Plugin
         );
         $retentionCleanupJob = new RetentionCleanupJob(
             $database,
+            $processedMailboxMessages,
             $protectedInboundMailStorage,
             $mailboxes,
             static fn (): RetentionSettings => RetentionSettings::current(),
@@ -647,6 +668,12 @@ final class Plugin
             return;
         }
 
+        if (current_user_can(Capabilities::APPROVE_DEANERY)
+            && isset($_GET['page']) && is_string($_GET['page'])
+            && wp_unslash($_GET['page']) === ReviewQueuePage::PAGE_SLUG) {
+            return;
+        }
+
         wp_safe_redirect(home_url('/'));
         exit;
     }
@@ -686,6 +713,9 @@ final class Plugin
     {
         if (! function_exists('add_action')) {
             return;
+        }
+        if ($this->reviewQueuePage === null) {
+            throw new \LogicException('The review queue was not initialized.');
         }
 
         $this->reviewerNotificationPreference->registerHooks();
@@ -731,6 +761,18 @@ final class Plugin
             2
         );
         add_filter(
+            'rest_request_before_callbacks',
+            [$this->eventOccurrenceHooks, 'beginRestWrite'],
+            10,
+            3
+        );
+        add_filter(
+            'rest_request_after_callbacks',
+            [$this->eventOccurrenceHooks, 'endRestWrite'],
+            10,
+            3
+        );
+        add_filter(
             'rest_post_dispatch',
             [$this->eventOccurrenceHooks, 'filterRestResponse'],
             10,
@@ -750,6 +792,7 @@ final class Plugin
         add_action('admin_menu', [$this->sourcesPage, 'registerMenu']);
         add_action('admin_menu', [$this->mailboxesPage, 'registerMenu']);
         add_action('admin_menu', [$this->inboundMessagesPage, 'registerMenu']);
+        add_action('admin_menu', [$this->reviewQueuePage, 'registerMenu']);
         add_action('admin_menu', [$this->outboundMailPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
         add_action('admin_menu', [$this->healthPage, 'registerMenu']);
@@ -771,6 +814,7 @@ final class Plugin
             'admin_post_adct_pi_reprocess_inbound_messages',
             [$this->inboundMessagesPage, 'handleReprocess']
         );
+        add_action('admin_post_adct_pi_review_bulk', [$this->reviewQueuePage, 'handleBulk']);
         add_action('admin_post_adct_pi_test_mailbox', [$this->mailboxesPage, 'handleTestConnection']);
         add_action(
             'admin_post_adct_pi_create_mailbox_processed_folder',
@@ -839,6 +883,7 @@ final class Plugin
                 new ActionTokenRateLimitSchemaMigration(new DbDeltaSchemaInstaller($database)),
                 new ConfirmationEmailPreviewSchemaMigration($database),
                 new ApprovalNoticesMigration(new DbDeltaSchemaInstaller($database)),
+                new ProcessedMailboxOwnershipSchemaMigration(new DbDeltaSchemaInstaller($database)),
             ],
             new WordPressMigrationVersionStore(),
             new WordPressMigrationLogger()

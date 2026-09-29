@@ -297,6 +297,64 @@ final class ImapMailboxTest extends TestCase
         self::assertStringNotContainsString('UID COPY', implode('', $transport->writes));
     }
 
+    public function testMoveWithReceiptReturnsTheDestinationUidValidityAndUid(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake('UIDPLUS MOVE')
+            . "A0003 OK SELECT completed\r\n"
+            . "A0004 OK [COPYUID 99 77 150] MOVE completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        $receipt = $mailbox->moveWithReceipt(77, 'Processed');
+
+        self::assertNotNull($receipt);
+        self::assertSame(99, $receipt->destinationUidValidity);
+        self::assertSame(150, $receipt->destinationUid);
+    }
+
+    public function testMoveWithReceiptDoesNotClaimOwnershipWithoutCopyUid(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake('UIDPLUS MOVE')
+            . "A0003 OK SELECT completed\r\nA0004 OK MOVE completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        self::assertNull($mailbox->moveWithReceipt(77, 'Processed'));
+    }
+
+    public function testCopyFallbackReturnsItsExactDestinationUidMapping(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake('UIDPLUS')
+            . "A0003 OK SELECT completed\r\n"
+            . "A0004 OK [COPYUID 99 77 150] COPY completed\r\n"
+            . "A0005 OK STORE completed\r\n"
+            . "A0006 OK EXPUNGE completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        $receipt = $mailbox->moveWithReceipt(77, 'Processed');
+
+        self::assertNotNull($receipt);
+        self::assertSame(99, $receipt->destinationUidValidity);
+        self::assertSame(150, $receipt->destinationUid);
+    }
+
+    public function testMoveWithReceiptRejectsACopyUidForAnotherSourceMessage(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake('UIDPLUS MOVE')
+            . "A0003 OK SELECT completed\r\n"
+            . "A0004 OK [COPYUID 99 78 150] MOVE completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        $this->expectException(ProtocolError::class);
+        $mailbox->moveWithReceipt(77, 'Processed');
+    }
+
     public function testUsesUidExpungeFallbackWhenMoveIsUnavailableButUidplusExists(): void
     {
         $transport = new ScriptedTransport(
