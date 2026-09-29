@@ -71,6 +71,36 @@ final class BulletinMastheadYearTest extends TestCase
     }
 
     /**
+     * #128 taught the rule stage that a year stated in the document is authoritative:
+     * it must not be rolled forward just because the day has already gone by. #132 then
+     * added "end of <Month>" on top of that, and rebasing the two silently replaced
+     * #128's two-branch check with a single "$date >= referenceDate" test, which
+     * re-rolled exactly the case #128 exists for.
+     *
+     * These go through BulletinBlockSplitter's bare "<Month> <year>" context line
+     * rather than a masthead. A masthead also sets the reference date to that same
+     * month, so the stated year and the reference year agree and the regression is
+     * invisible -- verified, not assumed. Only the context line pins the year while
+     * the reference date stays at the received date, which is what makes the two
+     * branches disagree.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function statedYearIsNotRolledForwardProvider(): array
+    {
+        return [
+            'past year, "end of" wording' => ["PARISH BULLETIN\n\nSeptember 2025\n\nReturns due end of September.", '2025-09-30'],
+            'future year, "end of" wording' => ["PARISH BULLETIN\n\nJanuary 2027\n\nReturns due end of January.", '2027-01-31'],
+        ];
+    }
+
+    #[DataProvider('statedYearIsNotRolledForwardProvider')]
+    public function testStatedYearIsNotRolledForwardToTheNextYear(string $body, string $expected): void
+    {
+        self::assertSame($expected, self::eventDate($body, '', '2026-10-15 08:00:00'));
+    }
+
+    /**
      * A month and year in the body works too, not just in the subject.
      *
      * @return array<string, array{string, string}>

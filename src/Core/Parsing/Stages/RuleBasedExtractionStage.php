@@ -883,11 +883,10 @@ final class RuleBasedExtractionStage implements StageInterface
         int $day,
         int $month,
         ?string $yearText,
-        DateTimeImmutable $referenceDate,
-        ?int $yearContext = null
+        DateTimeImmutable $referenceDate
     ): ?DateTimeImmutable {
         return $yearText === null
-            ? $this->nextMonthDay($day, $month, $referenceDate, $yearContext)
+            ? $this->nextMonthDay($day, $month, $referenceDate)
             : $this->makeDate($this->normalizeYear($yearText), $month, $day);
     }
 
