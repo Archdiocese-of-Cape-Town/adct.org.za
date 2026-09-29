@@ -1785,6 +1785,20 @@ foreach ([$approverTable, $contactTable, $venueTable, $sourceTable, $parishTable
     }
 }
 
+// The confirmation job claims the oldest parsed message whose outcome has not
+// been recorded yet, so a message left behind by a run that failed before it
+// reached that check would be claimed in place of this run's fixture. Clearing
+// the undecided parsed messages makes the check depend only on the data this
+// run creates. Messages the confirmation job has already decided, and every
+// other status, are left alone: later checks assert on those.
+$pendingConfirmationCleared = $wpdb->query(
+    "DELETE FROM {$inboundMessageTable} WHERE status = 'parsed' AND confirmation_status IS NULL"
+);
+
+if ($pendingConfirmationCleared === false) {
+    $fail('Pending synthetic confirmation messages from an earlier run could not be cleared.');
+}
+
 $firstDeaneryImport = $importService->importDeaneries($seedDeaneriesCsv);
 $firstParishImport = $importService->importParishes($seedParishesCsv);
 
@@ -3866,6 +3880,14 @@ $confirmationMailGuard = static function ($pre, $arguments) use (
     return true;
 };
 add_filter('pre_wp_mail', $confirmationMailGuard, 10, 2);
+
+// The confirmation job is due-limited, so without clearing its state the hook
+// silently declines to run whenever a previous harness run left a recent
+// `last_run_at` behind. That made this check pass only on a virgin database
+// and fail on every re-run, with the message rows still NULL. The check
+// depends on the job actually running, so the state it depends on is reset
+// here. RepeatMatchingCheck does the same for the same reason.
+delete_option('adct_pi_job_state_queue_confirmation_previews');
 
 try {
     do_action('adct_pi_job_queue_confirmation_previews');

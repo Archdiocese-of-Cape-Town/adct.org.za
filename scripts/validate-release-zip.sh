@@ -43,6 +43,7 @@ for required_file in \
     assets/events-block.js \
     assets/events.css \
     assets/ocr.js \
+    assets/ocr-settings.js \
     assets/ocr.css \
     templates/single-adct_event.php \
     vendor-prefixed/autoload.php

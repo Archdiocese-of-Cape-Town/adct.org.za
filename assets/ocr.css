@@ -17,11 +17,10 @@
 }
 
 .adct-ocr__status {
+    display: block;
     margin: 0.5em 0;
     font-style: italic;
-}
-
-.adct-ocr__status--error {
+}.adct-ocr__status--error {
     font-style: normal;
     color: #8a1f11;
 }
@@ -51,4 +50,82 @@
     margin: 0.5em 0 0;
     font-size: 0.9em;
     color: #50575e;
+}
+
+/* The reading settings. Collapsed-looking but always visible: they sit under
+ * the button as a quiet block, because a reviewer who does not need them should
+ * be able to ignore them, and one who does should be able to find them without
+ * hunting for a disclosure the plugin has to script.
+ */
+
+.adct-ocr__settings {
+    margin: 0.75em 0 0;
+    padding: 0.5em 0.75em 0.75em;
+    border: 1px solid #dcdcde;
+    background: #fbfbfc;
+}
+
+.adct-ocr__settings-legend {
+    padding: 0 0.25em;
+    font-weight: 600;
+}
+
+.adct-ocr__settings-help {
+    margin: 0 0 0.5em;
+    font-size: 0.9em;
+    color: #50575e;
+}
+
+.adct-ocr__field {
+    display: block;
+    margin-bottom: 0.5em;
+}
+
+.adct-ocr__settings-label {
+    display: block;
+    margin-bottom: 0.15em;
+    font-size: 0.9em;
+}
+
+.adct-ocr__settings-select {
+    max-width: 100%;
+}
+
+/* The slider is given a real height and a visible track. Left to its own
+ * devices a range input is a few pixels tall and very hard to grab accurately
+ * on a touch screen, which is most of what this gets used on.
+ */
+
+.adct-ocr__settings-slider {
+    display: block;
+    width: 100%;
+    max-width: 20em;
+    height: 1.75em;
+    margin: 0;
+    cursor: pointer;
+    accent-color: #2271b1;
+}
+
+.adct-ocr__settings-value {
+    display: inline-block;
+    margin-top: 0.15em;
+    font-size: 0.9em;
+    color: #50575e;
+}
+
+.adct-ocr__settings-readout {
+    margin: 0.5em 0 0;
+    font-size: 0.9em;
+    font-style: italic;
+    color: #50575e;
+}
+
+/* On a narrow screen the slider and its label stack, so the thumb stays a
+ * comfortable size rather than being squeezed into a column of text.
+ */
+
+@media screen and (max-width: 480px) {
+    .adct-ocr__settings-slider {
+        max-width: none;
+    }
 }

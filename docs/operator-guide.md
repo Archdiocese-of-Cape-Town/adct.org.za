@@ -261,6 +261,15 @@ Clicking the button runs OCR **in the reviewer's own browser** ([ADR 0017](decis
 - **Accuracy is not guaranteed.** OCR misreads names, dates and times, and it can miss text entirely. Treat the result as a first draft: check the details against the poster and the email before approving. If the text comes back empty or looks wrong, ignore it and type the details manually.
 - Posters larger than 15 MB, and formats the browser cannot read (HEIC/HEIF photographs from some phones), are not offered. Convert to JPEG and resend if that is the only copy.
 
+#### The two settings under the button
+
+Under the **Read text from image** button there are two controls. **You do not need to touch either one** — the defaults behave exactly as described above, and most posters read fine. Reach for them only when the text comes back obviously wrong.
+
+- **How the page is laid out.** If the poster comes back with the lines jumbled, half a line missing, or words running together, the poster's design is being read with the wrong assumption. Pick a different entry and the poster is read again automatically. **Start here when there is text but it is in the wrong order.** Try **Several separate blocks** (the default) first; **One column of text** suits a tall list; **A single block of text** suits a square poster with one paragraph; **One line of text** suits a banner; **One word at a time** and **One character at a time** suit shop signs and single-word notices; **As sparse as possible** suits a poster with a few scattered words. The setting is a label only — the underlying numbers are internal and do not need to be looked up.
+- **Hide less certain lines.** This is a slider from 0 to 100, at **0** by default. Moving it up hides every line the OCR engine was less sure about, which is a quick way to strip out noise. It re-draws the text immediately from the reading already in the browser, so it costs nothing and does not re-read the poster. Use it when the result is padded with nonsense; keep it at **0** when you would rather see everything and judge for yourself.
+
+Both controls change only what is on screen. Neither is remembered between page loads, nothing is sent to the site, and the result is still only ever a first draft to check against the poster. Changing the layout makes the browser read the image again, so it takes a moment.
+
 This is separate from the queue-based OCR in E8.3, which is not built.
 
 ### Configure keys and password constants

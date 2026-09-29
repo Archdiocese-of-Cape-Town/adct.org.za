@@ -41,8 +41,23 @@ use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
 final class OcrImageCheck
 {
     private const SCRIPT_MARKER = 'assets/ocr.js';
+    private const SETTINGS_SCRIPT_MARKER = 'assets/ocr-settings.js';
     private const STYLE_MARKER = 'assets/ocr.css';
-    private const CONTROL_MARKER = 'data-adct-ocr';
+    /**
+     * The trailing spaces matter. The settings panel adds
+     * `data-adct-ocr-layout`, `data-adct-ocr-confidence`,
+     * `data-adct-ocr-confidence-readout`, `data-adct-ocr-settings` and
+     * `data-adct-ocr-readout`, and every one of those starts with either
+     * `data-adct-ocr` or `data-adct-ocr-confidence`. Counting a bare attribute
+     * name would count the settings panel as a second control, and would count
+     * the confidence readout as a second slider. The DOM selectors the scripts
+     * use (`[data-adct-ocr]`, `[data-adct-ocr-confidence]`) are exact attribute
+     * matches and were never at risk; only these substring counts were.
+     */
+    private const CONTROL_MARKER = 'data-adct-ocr ';
+    private const LAYOUT_MARKER = 'data-adct-ocr-layout';
+    private const CONFIDENCE_MARKER = 'data-adct-ocr-confidence ';
+    private const CONFIDENCE_READOUT_MARKER = 'data-adct-ocr-confidence-readout';
 
     public static function run(callable $fail, string $pluginFile): void
     {
@@ -76,7 +91,8 @@ final class OcrImageCheck
         );
         $ocr = new OcrControl(
             plugins_url(self::SCRIPT_MARKER, $pluginFile),
-            plugins_url(self::STYLE_MARKER, $pluginFile)
+            plugins_url(self::STYLE_MARKER, $pluginFile),
+            plugins_url(self::SETTINGS_SCRIPT_MARKER, $pluginFile)
         );
         $imageEndpoint = new ActionTokenImageEndpoint(
             $tokens,
@@ -168,6 +184,10 @@ final class OcrImageCheck
                 'A page with no OCR control still loaded the OCR module.'
             );
             $check(
+                strpos($withoutPoster->body, self::SETTINGS_SCRIPT_MARKER) === false,
+                'A page with no OCR control still loaded the OCR settings module.'
+            );
+            $check(
                 strpos($withoutPoster->body, self::STYLE_MARKER) === false,
                 'A page with no OCR control still loaded the OCR stylesheet.'
             );
@@ -221,6 +241,32 @@ final class OcrImageCheck
                 strpos($withPoster->body, 'data-target="adct_edit_description"') !== false,
                 'The token page OCR control did not target the description field.'
             );
+            self::checkThatTheTargetResolves($check, $withPoster->body);
+
+            // The settings panel is part of the control: without it the two
+            // scripts load but nothing on the page can drive them.
+            $check(
+                substr_count($withPoster->body, self::LAYOUT_MARKER) === 1,
+                'The token page did not render exactly one OCR layout selector.'
+            );
+            $check(
+                substr_count($withPoster->body, self::CONFIDENCE_MARKER) === 1,
+                'The token page did not render exactly one OCR confidence slider.'
+            );
+            $check(
+                substr_count($withPoster->body, self::CONFIDENCE_READOUT_MARKER) === 1,
+                'The token page did not render exactly one OCR confidence readout.'
+            );
+
+            // Document order matters: both scripts are deferred, and the OCR
+            // module reads the layout list while it starts up. Swapped, the
+            // module would silently fall back to the default layout.
+            $settingsAt = strpos($withPoster->body, self::SETTINGS_SCRIPT_MARKER);
+            $moduleAt = strpos($withPoster->body, self::SCRIPT_MARKER);
+            $check(
+                $settingsAt !== false && $moduleAt !== false && $settingsAt < $moduleAt,
+                'The settings module must load before the OCR module.'
+            );
             // The control must point at this candidate's own poster. Assert on
             // the id itself rather than the whole query string, because the
             // ampersand between the two arguments is entity-encoded by
@@ -238,9 +284,18 @@ final class OcrImageCheck
                 strpos($withPoster->body, $email) === false,
                 'The token page leaked the submitter email address.'
             );
+            // Anchor on the query parameter rather than the bare id. A bare
+            // `$otherAttachmentId . '"'` is a false positive waiting to happen:
+            // these ids are small sequential integers, so `5"` also occurs
+            // inside legitimate markup such as the confidence slider's
+            // `step="5"`. The other candidate's id only means anything as an
+            // image reference, so look for the parameter carrying it.
             $check(
                 strpos($withPoster->body, $otherStorageName) === false
-                    && strpos($withPoster->body, $otherAttachmentId . '"') === false,
+                    && strpos(
+                        $withPoster->body,
+                        ActionTokenImageEndpoint::IMAGE_PARAM . '=' . $otherAttachmentId
+                    ) === false,
                 'The token page pointed at another candidate’s poster.'
             );
 
@@ -315,6 +370,40 @@ final class OcrImageCheck
         }
     }
 
+    /**
+     * The `data-target` on the control must name a form field that exists on
+     * the same page, spelled the way a browser can find it.
+     *
+     * The unit suite covers the resolver itself; this exists because a control
+     * whose target never resolved still rendered perfectly good HTML, and the
+     * recognised text was thrown away instead of reaching the reviewer. Assert
+     * that the value appears as an `id` or a `name` on a real form control,
+     * which is what `getElementById` / `getElementsByName` look for.
+     */
+    private static function checkThatTheTargetResolves(callable $check, string $body): void
+    {
+        if (preg_match('/data-target="([^"]+)"/', $body, $matches) !== 1) {
+            $check(false, 'The OCR control did not carry a data-target at all.');
+
+            return;
+        }
+
+        $target = $matches[1];
+        $found = preg_match(
+            '/<(?:input|textarea|select)\b[^>]*\b(?:id|name)="' . preg_quote($target, '/') . '"[^>]*>/i',
+            $body
+        ) === 1;
+
+        $check(
+            $found,
+            sprintf(
+                'The OCR control targets "%s", but the page has no input, textarea or select'
+                . ' with that id or name, so the recognised text would be discarded.',
+                $target
+            )
+        );
+    }
+
     private static function insertMessage(
         \wpdb $database,
         string $messages,
@@ -348,11 +437,21 @@ final class OcrImageCheckHandler implements ActionTokenActionHandlerInterface
 
     public function preview(ActionTokenBinding $binding): ?ActionTokenPreview
     {
+        // The form fields matter to this check. The production handler supplies
+        // the editable fields, which is what gives the description textarea its
+        // `name`; a preview without them renders a page whose OCR control has
+        // nowhere to write, so the check would be asserting against a page that
+        // cannot occur in production.
         return new ActionTokenPreview(
             'Parish Mass',
             'Review and approve this fictional event.',
             'Approve',
-            ['St Mary fictional parish']
+            ['St Mary fictional parish'],
+            true,
+            [
+                'title' => 'Parish Mass',
+                'description' => '',
+            ]
         );
     }
 

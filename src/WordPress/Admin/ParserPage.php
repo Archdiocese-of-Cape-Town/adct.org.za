@@ -114,7 +114,8 @@ final class ParserPage
         if ($this->ocrControl === null) {
             $this->ocrControl = new OcrControl(
                 plugins_url('assets/ocr.js', $this->pluginFile),
-                plugins_url('assets/ocr.css', $this->pluginFile)
+                plugins_url('assets/ocr.css', $this->pluginFile),
+                plugins_url('assets/ocr-settings.js', $this->pluginFile)
             );
         }
 
