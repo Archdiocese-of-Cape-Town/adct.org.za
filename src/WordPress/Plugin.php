@@ -13,6 +13,7 @@ use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
 use ADCT\ParishIntake\Core\Database\CreateSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MailboxSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MigrationRunner;
+use ADCT\ParishIntake\Core\Database\ProcessedMailboxOwnershipSchemaMigration;
 use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
 use ADCT\ParishIntake\Core\Events\EventValidator;
 use ADCT\ParishIntake\Core\Events\IcsCalendar;
@@ -23,11 +24,14 @@ use ADCT\ParishIntake\Core\Events\RRuleValidator;
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
 use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
+use ADCT\ParishIntake\Core\Directory\SenderLearningService;
+use ADCT\ParishIntake\Core\Directory\SenderParishSuggester;
 use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
 use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\Core\Jobs\FrameworkHeartbeatJob;
 use ADCT\ParishIntake\Core\Jobs\InboundMessageProcessingJob;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
+use ADCT\ParishIntake\Core\Jobs\ConfirmationEmailPreviewJob;
 use ADCT\ParishIntake\Core\Jobs\MailQueueSenderJob;
 use ADCT\ParishIntake\Core\Jobs\OccurrenceExpansionJob;
 use ADCT\ParishIntake\Core\Ingestion\Imap\ImapMailbox;
@@ -35,6 +39,7 @@ use ADCT\ParishIntake\Core\Ingestion\MimeMessageParser;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxConnectionConfig;
 use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
 use ADCT\ParishIntake\Core\Ingestion\AuthenticationResultsParser;
+use ADCT\ParishIntake\Core\Ingestion\InboundHeaderBlockParser;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettings;
 use ADCT\ParishIntake\Core\Ingestion\MailboxConnectionTestService;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
@@ -45,9 +50,11 @@ use ADCT\ParishIntake\Core\Mail\MailQueueConfiguration;
 use ADCT\ParishIntake\Core\Mail\MailQueueDispatcher;
 use ADCT\ParishIntake\Core\Mail\MailQueueService;
 use ADCT\ParishIntake\Core\Mail\MailQueueStats;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailPreviewService;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
+use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
@@ -56,6 +63,9 @@ use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
 use ADCT\ParishIntake\Core\Support\SystemClock;
+use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
+use ADCT\ParishIntake\WordPress\Pdf\PrinsFrankPdfTextExtractor;
+use ADCT\ParishIntake\WordPress\Pdf\WordPressAttachmentExtractionStore;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
 use ADCT\ParishIntake\WordPress\Admin\HealthPage;
 use ADCT\ParishIntake\WordPress\Admin\InboundMessagesPage;
@@ -66,17 +76,28 @@ use ADCT\ParishIntake\WordPress\Admin\ParserPage;
 use ADCT\ParishIntake\WordPress\Admin\ParishesPage;
 use ADCT\ParishIntake\WordPress\Admin\SendersPage;
 use ADCT\ParishIntake\WordPress\Admin\SourcesPage;
+use ADCT\ParishIntake\WordPress\Admin\ReviewQueuePage;
 use ADCT\ParishIntake\WordPress\Ai\OpenAiCompatibleProvider;
 use ADCT\ParishIntake\WordPress\Ai\WordPressAiCallGate;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
+use ADCT\ParishIntake\WordPress\Auth\ConfirmationDecisionHandler;
+use ADCT\ParishIntake\WordPress\Auth\ApprovalDecisionHandler;
+use ADCT\ParishIntake\WordPress\Auth\ApprovalEditHandler;
+use ADCT\ParishIntake\WordPress\Approval\ApprovalNoticeJob;
+use ADCT\ParishIntake\WordPress\Approval\ApprovalRecipients;
+use ADCT\ParishIntake\WordPress\Approval\ReviewerNotificationPreference;
+use ADCT\ParishIntake\WordPress\Auth\WordPressConfirmationActionLinkProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRateLimitKeyProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRenewalDelivery;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleCapabilityStore;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleVersionStore;
 use ADCT\ParishIntake\WordPress\Database\ActionTokenRateLimitSchemaMigration;
+use ADCT\ParishIntake\WordPress\Database\ApprovalNoticesMigration;
+use ADCT\ParishIntake\WordPress\Database\ConfirmationEmailPreviewSchemaMigration;
 use ADCT\ParishIntake\WordPress\Database\DbDeltaSchemaInstaller;
 use ADCT\ParishIntake\WordPress\Database\MailQueueGroupKeyMigration;
 use ADCT\ParishIntake\WordPress\Database\OccurrenceParishNullableMigration;
+use ADCT\ParishIntake\WordPress\Database\SenderSuggestionMigration;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
@@ -89,12 +110,14 @@ use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\OccurrenceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\ReviewQueueRepository;
 use ADCT\ParishIntake\WordPress\Database\Schema;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenRateLimitStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressMailQueueRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
+use ADCT\ParishIntake\WordPress\Database\WordPressProcessedMailboxMessageStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressEventCandidateStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationLogger;
 use ADCT\ParishIntake\WordPress\Database\WordPressMigrationVersionStore;
@@ -110,6 +133,8 @@ use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
 use ADCT\ParishIntake\WordPress\Jobs\HealthAlerts;
+use ADCT\ParishIntake\WordPress\Jobs\RetentionCleanupJob;
+use ADCT\ParishIntake\WordPress\Jobs\RetentionSettings;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailQueueImmediateDispatch;
@@ -120,9 +145,11 @@ use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
 use ADCT\ParishIntake\WordPress\Events\PublicEventPage;
+use ADCT\ParishIntake\WordPress\Events\EventTypeKeywords;
 use ADCT\ParishIntake\WordPress\Events\PublicEventListing;
 use ADCT\ParishIntake\WordPress\Events\PublicIcsFeed;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
+use ADCT\ParishIntake\WordPress\Ingestion\WordPressConfirmationEmailJobSource;
 use ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance;
 use ADCT\ParishIntake\WordPress\Publishing\WordPressPublicationStore;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
@@ -159,6 +186,8 @@ final class Plugin
     private PublicIcsFeed $publicIcsFeed;
     private MailboxesPage $mailboxesPage;
     private InboundMessagesPage $inboundMessagesPage;
+    private ?ReviewQueuePage $reviewQueuePage = null;
+    private ReviewerNotificationPreference $reviewerNotificationPreference;
 
     private function __construct(string $pluginFile)
     {
@@ -184,15 +213,17 @@ final class Plugin
         $inboundMessageStore = new WordPressInboundMessageStore(
             $database,
             $inboundMessages,
-            $attachmentRepository
+            $attachmentRepository,
+            static fn (): RetentionSettings => RetentionSettings::current()
         );
+        $processedMailboxMessages = new WordPressProcessedMailboxMessageStore($database);
         $secrets = new WordPressSecretResolver();
         $directorySnapshots = new CachedDirectorySnapshotProvider(
             $directoryVersions,
             new WordPressDirectorySnapshotCache(),
             new WordPressDirectorySnapshotLoader($parishes, $venues, $contacts)
         );
-        $this->pipelineFactory = new PipelineFactory($clock, $directorySnapshots);
+        $this->pipelineFactory = new PipelineFactory($clock, $directorySnapshots, new EventTypeKeywords());
         $this->parserPage = new ParserPage(
             $this->schema,
             $this->pipelineFactory,
@@ -201,7 +232,8 @@ final class Plugin
             new WordPressAiCallGate(
                 new WordPressActionTokenRateLimitStore($database),
                 $clock
-            )
+            ),
+            new AttachmentRepository($database)
         );
         $sourceRegistryService = new SourceRegistryService($sources, $clock);
         $this->mailboxesPage = new MailboxesPage(
@@ -218,8 +250,14 @@ final class Plugin
             $clock
         );
         $contactService = new ContactService($contacts, $clock);
+        $senderLearningService = new SenderLearningService(
+            $contactService,
+            new SenderParishSuggester($directorySnapshots)
+        );
         $venueAdministrationService = new VenueAdministrationService($venues, $clock);
         $approvalRouteResolver = new ApprovalRouteResolver(new ApprovalRouteRepository($database));
+        $approvalRecipients = new ApprovalRecipients($approvalRouteResolver);
+        $this->reviewerNotificationPreference = new ReviewerNotificationPreference();
         $this->sourcesPage = new SourcesPage($sources, $sourceRegistryService, $parishes);
         $this->deaneriesPage = new DeaneriesPage(
             $deaneries,
@@ -272,7 +310,8 @@ final class Plugin
             $venues,
             new EventValidator($timezone, $rruleValidator),
             new RRulePresetMapper($rruleValidator),
-            $timezone
+            $timezone,
+            $clock
         );
         $occurrenceMaintenance = new WordPressEventOccurrenceMaintenance(
             $occurrences,
@@ -293,6 +332,18 @@ final class Plugin
             ),
             new EventValidator($timezone, $rruleValidator)
         );
+        if (function_exists('add_action')) {
+            $threshold = get_option('adct_parish_intake_ai_threshold', '0.55');
+            if (! is_numeric($threshold) || (float) $threshold < 0 || (float) $threshold > 1) {
+                error_log('[ADCT Parish Intake] Invalid confidence threshold; review queue uses 0.55.');
+            }
+            $confidenceThreshold = is_numeric($threshold) && (float) $threshold >= 0 && (float) $threshold <= 1
+                ? (float) $threshold : 0.55;
+            $this->reviewQueuePage = new ReviewQueuePage(
+                new ReviewQueueRepository($database, $clock, new ReviewQueuePolicy(), $confidenceThreshold),
+                $this->candidatePublisher
+            );
+        }
         $this->eventOccurrenceHooks = new EventOccurrenceHooks(
             $occurrenceMaintenance,
             $clock,
@@ -346,6 +397,25 @@ final class Plugin
             new WordPressActionTokenRateLimitKeyProvider()
         );
         $this->actionTokenHandlers = new ActionTokenHandlerRegistry();
+        foreach ([\ADCT\ParishIntake\Core\Auth\ActionTokenPurpose::CONFIRM,
+            \ADCT\ParishIntake\Core\Auth\ActionTokenPurpose::DENY] as $purpose) {
+            $this->actionTokenHandlers->register(new ConfirmationDecisionHandler(
+                $purpose,
+                $database,
+                $approvalRouteResolver,
+                $this->candidatePublisher,
+                $clock
+            ));
+        }
+        foreach ([\ADCT\ParishIntake\Core\Auth\ActionTokenPurpose::APPROVE_EVENT,
+            \ADCT\ParishIntake\Core\Auth\ActionTokenPurpose::REJECT_EVENT] as $purpose) {
+            $this->actionTokenHandlers->register(new ApprovalDecisionHandler(
+                $purpose, $database, $approvalRecipients, $this->candidatePublisher, $this->mailQueue, $clock
+            ));
+        }
+        $this->actionTokenHandlers->register(new ApprovalEditHandler(
+            $database, $approvalRecipients, $clock
+        ));
         $this->actionTokenEndpoint = new ActionTokenEndpoint(
             $this->actionTokenService,
             $this->actionTokenHandlers,
@@ -355,10 +425,28 @@ final class Plugin
                 new WordPressActionTokenRenewalDelivery($this->mailQueue)
             )
         );
+        $confirmationPreviewJob = new ConfirmationEmailPreviewJob(
+            new WordPressConfirmationEmailJobSource(
+                $database,
+                $contacts,
+                new ProtectedInboundMailStorage(),
+                new InboundHeaderBlockParser(),
+                $timezone
+            ),
+            new ConfirmationEmailPreviewService(
+                $this->actionTokenService,
+                new WordPressConfirmationActionLinkProvider(),
+                $this->mailQueue,
+                $mailQueueRepository,
+                new \ADCT\ParishIntake\Core\Mail\ConfirmationEmailRenderer($timezone)
+            ),
+            $clock
+        );
         $mailboxPollingJob = new MailboxPollingJob(
             $mailboxes,
             $sources,
             $inboundMessageStore,
+            $processedMailboxMessages,
             $protectedInboundMailStorage,
             new SourceHealthRecorder($sources, $clock),
             new RawMessageInspector(new AuthenticationResultsParser($trustedAuthservIds)),
@@ -394,6 +482,42 @@ final class Plugin
             new WordPressEventCandidateStore(new EventCandidateRepository($database)),
             new WordPressInboundMessageProcessingFailureLogger(),
             $directorySnapshots,
+            $clock,
+            $senderLearningService,
+            pdfTextEnrichment: new PdfTextEnrichmentService(
+                new WordPressAttachmentExtractionStore(
+                    new AttachmentRepository($database),
+                    $clock
+                ),
+                new PrinsFrankPdfTextExtractor(),
+                $protectedInboundMailStorage
+            )
+        );
+        // This is the only scheduled retention path; processed mail is deleted only by exact stored move receipts.
+        $retentionCleanupJob = new RetentionCleanupJob(
+            $database,
+            $processedMailboxMessages,
+            $protectedInboundMailStorage,
+            $mailboxes,
+            static fn (): RetentionSettings => RetentionSettings::current(),
+            static fn (MailboxSettings $settings): string => $secrets->resolve(
+                SecretRegistry::IMAP_PASSWORD,
+                $settings->secretScope()
+            ),
+            static function (MailboxSettings $settings, string $password): MailboxInterface {
+                return new ImapMailbox(new MailboxConnectionConfig(
+                    host: $settings->host,
+                    port: $settings->port,
+                    encryption: $settings->encryption,
+                    username: $settings->username,
+                    password: $password,
+                    folders: [
+                        'inbox' => $settings->inboxFolder,
+                        'processed' => $settings->processedFolder,
+                    ],
+                    maxMessageSizeBytes: $settings->maxMessageSizeBytes
+                ));
+            },
             $clock
         );
         $this->inboundMessagesPage = new InboundMessagesPage(
@@ -407,7 +531,13 @@ final class Plugin
             [
                 new FrameworkHeartbeatJob(),
                 $mailboxPollingJob,
+                $confirmationPreviewJob,
+                new ApprovalNoticeJob(
+                    $database, $approvalRecipients, $this->actionTokenService,
+                    $this->mailQueue, $mailQueueRepository, $clock
+                ),
                 $inboundMessageProcessingJob,
+                $retentionCleanupJob,
                 new OccurrenceExpansionJob($occurrenceMaintenance, $clock, $timezone),
                 $mailQueueSenderJob,
             ],
@@ -577,6 +707,12 @@ final class Plugin
             return;
         }
 
+        if (current_user_can(Capabilities::APPROVE_DEANERY)
+            && isset($_GET['page']) && is_string($_GET['page'])
+            && wp_unslash($_GET['page']) === ReviewQueuePage::PAGE_SLUG) {
+            return;
+        }
+
         wp_safe_redirect(home_url('/'));
         exit;
     }
@@ -617,12 +753,21 @@ final class Plugin
         if (! function_exists('add_action')) {
             return;
         }
+        if ($this->reviewQueuePage === null) {
+            throw new \LogicException('The review queue was not initialized.');
+        }
 
+        $this->reviewerNotificationPreference->registerHooks();
         add_filter('query_vars', [$this->actionTokenEndpoint, 'registerQueryVars']);
         add_action('template_redirect', [$this->actionTokenEndpoint, 'handleRequest'], 0);
         add_action('template_redirect', [$this->publicIcsFeed, 'handleRequest'], 1);
         add_action('init', [$this->publicEventPage, 'register'], 12);
         add_action('init', [$this->eventPostType, 'register'], 5);
+        $typeKeywords = new EventTypeKeywords();
+        add_action(EventPostType::TAXONOMY . '_add_form_fields', [$typeKeywords, 'renderAddField']);
+        add_action(EventPostType::TAXONOMY . '_edit_form_fields', [$typeKeywords, 'renderEditField']);
+        add_action('created_' . EventPostType::TAXONOMY, [$typeKeywords, 'save']);
+        add_action('edited_' . EventPostType::TAXONOMY, [$typeKeywords, 'save']);
         add_action('init', [$this->publicEventListing, 'register'], 10);
         add_action('rest_api_init', [$this->publicEventListing, 'registerRestRoute']);
         add_action('wp_enqueue_scripts', [$this->publicEventListing, 'styles']);
@@ -656,6 +801,18 @@ final class Plugin
             2
         );
         add_filter(
+            'rest_request_before_callbacks',
+            [$this->eventOccurrenceHooks, 'beginRestWrite'],
+            10,
+            3
+        );
+        add_filter(
+            'rest_request_after_callbacks',
+            [$this->eventOccurrenceHooks, 'endRestWrite'],
+            10,
+            3
+        );
+        add_filter(
             'rest_post_dispatch',
             [$this->eventOccurrenceHooks, 'filterRestResponse'],
             10,
@@ -666,7 +823,11 @@ final class Plugin
         add_action('admin_notices', [$this->eventOccurrenceHooks, 'renderFailureNotice']);
         add_filter('manage_adct_event_posts_columns', [$this->eventEditor, 'filterColumns']);
         add_action('manage_adct_event_posts_custom_column', [$this->eventEditor, 'renderColumn'], 10, 2);
+        add_action('restrict_manage_posts', [$this->eventEditor, 'renderListFilters']);
+        add_action('pre_get_posts', [$this->eventEditor, 'filterListQuery']);
+        add_filter('posts_where', [$this->eventEditor, 'filterNextDateWhere'], 10, 2);
         add_filter('rest_pre_insert_adct_event', [$this->eventEditor, 'validateRestRequest'], 10, 2);
+        add_action('rest_after_insert_adct_event', [$this->eventEditor, 'markRestFeaturedChoice'], 10, 2);
         add_filter('show_admin_bar', [$this, 'hideAdminBarForPortalRoles']);
         add_action('admin_menu', [$this->parserPage, 'registerMenu']);
         add_action('admin_menu', [$this->deaneriesPage, 'registerMenu']);
@@ -675,6 +836,7 @@ final class Plugin
         add_action('admin_menu', [$this->sourcesPage, 'registerMenu']);
         add_action('admin_menu', [$this->mailboxesPage, 'registerMenu']);
         add_action('admin_menu', [$this->inboundMessagesPage, 'registerMenu']);
+        add_action('admin_menu', [$this->reviewQueuePage, 'registerMenu']);
         add_action('admin_menu', [$this->outboundMailPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
         add_action('admin_menu', [$this->healthPage, 'registerMenu']);
@@ -696,6 +858,7 @@ final class Plugin
             'admin_post_adct_pi_reprocess_inbound_messages',
             [$this->inboundMessagesPage, 'handleReprocess']
         );
+        add_action('admin_post_adct_pi_review_bulk', [$this->reviewQueuePage, 'handleBulk']);
         add_action('admin_post_adct_pi_test_mailbox', [$this->mailboxesPage, 'handleTestConnection']);
         add_action(
             'admin_post_adct_pi_create_mailbox_processed_folder',
@@ -762,6 +925,10 @@ final class Plugin
                 new OccurrenceParishNullableMigration($database),
                 new MailQueueGroupKeyMigration($database),
                 new ActionTokenRateLimitSchemaMigration(new DbDeltaSchemaInstaller($database)),
+                new ConfirmationEmailPreviewSchemaMigration($database),
+                new ApprovalNoticesMigration(new DbDeltaSchemaInstaller($database)),
+                new ProcessedMailboxOwnershipSchemaMigration(new DbDeltaSchemaInstaller($database)),
+                new SenderSuggestionMigration(new DbDeltaSchemaInstaller($database)),
             ],
             new WordPressMigrationVersionStore(),
             new WordPressMigrationLogger()

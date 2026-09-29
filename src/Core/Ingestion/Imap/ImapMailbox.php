@@ -5,13 +5,19 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Core\Ingestion\Imap;
 
 use ADCT\ParishIntake\Core\Ingestion\MailboxCheckpoint;
+use ADCT\ParishIntake\Core\Ingestion\MailboxMoveReceipt;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSearchCriteria;
 use ADCT\ParishIntake\Core\Ingestion\RawMailMessage;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
+use ADCT\ParishIntake\Core\Ports\MailboxMoveReceiptProviderInterface;
+use ADCT\ParishIntake\Core\Ports\ProcessedMailRetentionInterface;
 use DateTimeImmutable;
 use InvalidArgumentException;
 
-final class ImapMailbox implements MailboxInterface
+final class ImapMailbox implements
+    MailboxInterface,
+    MailboxMoveReceiptProviderInterface,
+    ProcessedMailRetentionInterface
 {
     private ImapProtocolClient $client;
 
@@ -64,12 +70,12 @@ final class ImapMailbox implements MailboxInterface
         $this->client->requireOkay($result, 'The requested mailbox folder could not be created.');
     }
 
-    public function uidValidity(): int
+    public function uidValidity(?string $folder = null): int
     {
-        $this->selectFolder($this->inboxFolder());
+        $this->selectFolder($folder ?? $this->inboxFolder());
 
         if ($this->selectedUidValidity === null) {
-            throw new ProtocolError('The mail server did not return the inbox UIDVALIDITY value.');
+            throw new ProtocolError('The mail server did not return the folder UIDVALIDITY value.');
         }
 
         return $this->selectedUidValidity;
@@ -77,7 +83,12 @@ final class ImapMailbox implements MailboxInterface
 
     public function search(MailboxSearchCriteria $criteria): array
     {
-        $this->selectFolder($this->inboxFolder());
+        return $this->searchFolder($criteria, $criteria->folder ?? $this->inboxFolder());
+    }
+
+    public function searchFolder(MailboxSearchCriteria $criteria, string $folder): array
+    {
+        $this->selectFolder($folder);
         $searchKeys = [];
 
         if ($criteria->unseen) {
@@ -88,12 +99,24 @@ final class ImapMailbox implements MailboxInterface
             $searchKeys[] = 'SINCE ' . $criteria->since->format('d-M-Y');
         }
 
+        if ($criteria->before !== null) {
+            $searchKeys[] = 'BEFORE ' . $criteria->before->format('d-M-Y');
+        }
+
         if ($criteria->afterUid !== null) {
             if ($criteria->afterUid === MailboxCheckpoint::MAX_UID) {
                 return [];
             }
 
-            $searchKeys[] = 'UID ' . ($criteria->afterUid + 1) . ':*';
+            $startUid = $criteria->afterUid + 1;
+
+            if ($criteria->beforeUid !== null) {
+                $searchKeys[] = 'UID ' . $startUid . ':' . $criteria->beforeUid;
+            } else {
+                $searchKeys[] = 'UID ' . $startUid . ':*';
+            }
+        } elseif ($criteria->beforeUid !== null) {
+            $searchKeys[] = 'UID 1:' . $criteria->beforeUid;
         }
 
         if ($searchKeys === []) {
@@ -186,6 +209,11 @@ final class ImapMailbox implements MailboxInterface
 
     public function move(int $uid, string $folder): void
     {
+        $this->moveWithReceipt($uid, $folder);
+    }
+
+    public function moveWithReceipt(int $uid, string $folder): ?MailboxMoveReceipt
+    {
         $this->validateUid($uid);
         $this->selectFolder($this->inboxFolder());
         $destination = $this->quoteFolder($folder);
@@ -194,11 +222,12 @@ final class ImapMailbox implements MailboxInterface
             $result = $this->client->execute(sprintf('UID MOVE %d %s', $uid, $destination));
             $this->client->requireOkay($result, 'The message could not be moved to the requested folder.');
 
-            return;
+            return $this->copyUidReceipt($result, $uid);
         }
 
         $copyResult = $this->client->execute(sprintf('UID COPY %d %s', $uid, $destination));
         $this->client->requireOkay($copyResult, 'The message could not be copied to the requested folder.');
+        $receipt = $this->copyUidReceipt($copyResult, $uid);
 
         $storeResult = $this->client->execute(sprintf('UID STORE %d +FLAGS.SILENT (\\Deleted)', $uid));
         $this->client->requireOkay($storeResult, 'The source message could not be marked for removal.');
@@ -208,6 +237,49 @@ final class ImapMailbox implements MailboxInterface
             : 'EXPUNGE';
         $expungeResult = $this->client->execute($expunge);
         $this->client->requireOkay($expungeResult, 'The source message could not be removed after copying.');
+
+        return $receipt;
+    }
+
+    public function delete(int $uid, string $folder): void
+    {
+        $this->validateUid($uid);
+        if (! $this->client->supports('UIDPLUS')) {
+            throw new ProtocolError('The mail server must support UIDPLUS to remove messages safely from the processed folder.');
+        }
+
+        $this->selectFolder($folder);
+        $storeResult = $this->client->execute(sprintf('UID STORE %d +FLAGS.SILENT (\\Deleted)', $uid));
+        $this->client->requireOkay($storeResult, 'The message could not be marked for deletion.');
+
+        $expunge = sprintf('UID EXPUNGE %d', $uid);
+        $expungeResult = $this->client->execute($expunge);
+        $this->client->requireOkay($expungeResult, 'The message could not be removed from the folder.');
+    }
+
+    public function uidNext(string $folder): int
+    {
+        $quotedFolder = $this->quoteFolder($folder);
+        $result = $this->client->execute(sprintf('STATUS %s (UIDNEXT)', $quotedFolder));
+        $this->client->requireOkay($result, 'The mailbox folder UIDNEXT value could not be read.');
+
+        foreach ($result->responses as $response) {
+            $line = rtrim($response, "\r\n");
+
+            if (preg_match('/\bUIDNEXT\b\s+(\d+)\b/i', $line, $matches) !== 1) {
+                continue;
+            }
+
+            $uidNext = filter_var($matches[1], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+
+            if (! is_int($uidNext)) {
+                break;
+            }
+
+            return $uidNext;
+        }
+
+        throw new ProtocolError('The mail server did not return the folder UIDNEXT value.');
     }
 
     public function markSeen(int $uid): void
@@ -216,6 +288,75 @@ final class ImapMailbox implements MailboxInterface
         $this->selectFolder($this->inboxFolder());
         $result = $this->client->execute(sprintf('UID STORE %d +FLAGS.SILENT (\\Seen)', $uid));
         $this->client->requireOkay($result, 'The message could not be marked as read.');
+    }
+
+    public function nextOldProcessedUid(DateTimeImmutable $before, int $afterUid): array
+    {
+        if ($afterUid < 0 || $afterUid >= MailboxCheckpoint::MAX_UID) {
+            throw new InvalidArgumentException('The Processed folder UID cursor is invalid.');
+        }
+        $this->selectFolder($this->processedFolder());
+        $validity = $this->selectedUidValidity;
+        if ($validity === null) {
+            throw new ProtocolError('The Processed folder did not return UIDVALIDITY.');
+        }
+        // BEFORE uses the server's INTERNALDATE, by calendar day. Keep the entire cutoff day.
+        $result = $this->client->execute(
+            'UID SEARCH BEFORE ' . $before->format('d-M-Y')
+            . ($afterUid > 0 ? ' UID ' . ($afterUid + 1) . ':*' : '')
+        );
+        $this->client->requireOkay($result, 'The Processed folder could not be searched.');
+        $uids = $this->parseSearchUids($result->responses);
+        $uids = array_values(array_filter($uids, static fn (int $uid): bool => $uid > $afterUid));
+        return ['validity' => $validity, 'uid' => $uids === [] ? null : min($uids)];
+    }
+
+    public function deleteOldProcessedUid(int $uid, int $expectedValidity): void
+    {
+        $this->validateUid($uid);
+        $this->selectFolder($this->processedFolder());
+        if ($this->selectedUidValidity === null || $this->selectedUidValidity !== $expectedValidity) {
+            throw new ProtocolError('The Processed folder UID identity changed; nothing was deleted.');
+        }
+        if (! $this->client->supports('UIDPLUS')) {
+            throw new ProtocolError('Safe Processed-folder cleanup requires UIDPLUS; no messages were deleted.');
+        }
+        $marked = $this->client->execute(sprintf('UID STORE %d +FLAGS.SILENT (\\Deleted)', $uid));
+        $this->client->requireOkay($marked, 'The old Processed message could not be marked for deletion.');
+        $removed = $this->client->execute(sprintf('UID EXPUNGE %d', $uid));
+        $this->client->requireOkay($removed, 'The old Processed message could not be removed.');
+    }
+
+    /** @param list<string> $responses
+     * @return list<int>
+     */
+    private function parseSearchUids(array $responses): array
+    {
+        $uids = [];
+        foreach ($responses as $response) {
+            if (preg_match('/^\*\s+SEARCH(?:\s+(.*))?$/i', rtrim($response, "\r\n"), $matches) !== 1) {
+                continue;
+            }
+            foreach (preg_split('/\s+/', trim($matches[1] ?? '')) ?: [] as $value) {
+                if ($value === '') {
+                    continue;
+                }
+                $uid = filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+                if (! is_int($uid)) {
+                    throw new ProtocolError('The mail server returned an invalid Processed message UID.');
+                }
+                $uids[] = $uid;
+            }
+        }
+        return $uids;
+    }
+
+    private function processedFolder(): string
+    {
+        if (! isset($this->config->folders['processed'])) {
+            throw new InvalidArgumentException('A Processed folder must be configured for retention.');
+        }
+        return $this->config->folders['processed'];
     }
 
     public function close(): void
@@ -329,6 +470,53 @@ final class ImapMailbox implements MailboxInterface
         $this->client->requireOkay($result, 'The requested mailbox folder could not be opened.');
         $this->selectedUidValidity = $this->uidValidityFromResponses($result->responses);
         $this->selectedFolder = $folder;
+    }
+
+    private function copyUidReceipt(ImapCommandResult $result, int $sourceUid): ?MailboxMoveReceipt
+    {
+        if (
+            preg_match(
+                '/\[COPYUID\s+([0-9]+)\s+([0-9:,]+)\s+([0-9:,]+)\]/i',
+                $result->completion,
+                $matches
+            ) !== 1
+        ) {
+            return null;
+        }
+
+        $uidValidity = $this->singleUidSetValue($matches[1]);
+        $mappedSourceUid = $this->singleUidSetValue($matches[2]);
+        $destinationUid = $this->singleUidSetValue($matches[3]);
+
+        if ($uidValidity === null || $mappedSourceUid !== $sourceUid || $destinationUid === null) {
+            throw new ProtocolError('The mail server returned an invalid COPYUID mapping for the moved message.');
+        }
+
+        return new MailboxMoveReceipt($uidValidity, $destinationUid);
+    }
+
+    private function singleUidSetValue(string $uidSet): ?int
+    {
+        if (preg_match('/\A([1-9][0-9]*)(?::([1-9][0-9]*))?\z/D', $uidSet, $matches) !== 1) {
+            return null;
+        }
+
+        $first = filter_var(
+            $matches[1],
+            FILTER_VALIDATE_INT,
+            ['options' => ['min_range' => 1, 'max_range' => MailboxCheckpoint::MAX_UID]]
+        );
+        $last = filter_var(
+            $matches[2] ?? $matches[1],
+            FILTER_VALIDATE_INT,
+            ['options' => ['min_range' => 1, 'max_range' => MailboxCheckpoint::MAX_UID]]
+        );
+
+        if (! is_int($first) || ! is_int($last) || $first !== $last) {
+            return null;
+        }
+
+        return $first;
     }
 
     /**

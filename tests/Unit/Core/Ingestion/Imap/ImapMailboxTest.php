@@ -20,6 +20,56 @@ use PHPUnit\Framework\TestCase;
 
 final class ImapMailboxTest extends TestCase
 {
+    public function testProcessedCleanupUsesOnlyServerSideUidsAndTargetedExpunge(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake('UIDPLUS')
+            . "* OK [UIDVALIDITY 123] valid\r\nA0003 OK SELECT completed\r\n"
+            . "* SEARCH 42 17\r\nA0004 OK SEARCH completed\r\n"
+            . "A0005 OK STORE completed\r\nA0006 OK EXPUNGE completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+        self::assertSame(
+            ['validity' => 123, 'uid' => 17],
+            $mailbox->nextOldProcessedUid(new DateTimeImmutable('2026-09-01 UTC'), 0)
+        );
+        $mailbox->deleteOldProcessedUid(17, 123);
+        self::assertSame("A0003 SELECT \"Processed\"\r\n", $transport->writes[2]);
+        self::assertSame("A0004 UID SEARCH BEFORE 01-Sep-2026\r\n", $transport->writes[3]);
+        self::assertSame("A0005 UID STORE 17 +FLAGS.SILENT (\\Deleted)\r\n", $transport->writes[4]);
+        self::assertSame("A0006 UID EXPUNGE 17\r\n", $transport->writes[5]);
+    }
+
+    public function testProcessedCleanupRefusesMailboxWideExpungeWithoutUidplus(): void
+    {
+        $transport = new ScriptedTransport(
+            "* OK ready\r\nA0001 OK login\r\n* CAPABILITY IMAP4rev1\r\nA0002 OK capabilities\r\n"
+            . "* OK [UIDVALIDITY 123] valid\r\nA0003 OK SELECT completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+        $this->expectException(ProtocolError::class);
+        try {
+            $mailbox->deleteOldProcessedUid(17, 123);
+        } finally {
+            self::assertCount(3, $transport->writes);
+        }
+    }
+
+    public function testProcessedCleanupRefusesAChangedUidValidity(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake('UIDPLUS')
+            . "* OK [UIDVALIDITY 456] valid\r\nA0003 OK SELECT completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+        $this->expectException(ProtocolError::class);
+        try {
+            $mailbox->deleteOldProcessedUid(17, 123);
+        } finally {
+            self::assertCount(3, $transport->writes);
+        }
+    }
+
     public function testSearchParsesUntaggedResultsAndBuildsSupportedCriteria(): void
     {
         $transport = new ScriptedTransport(
@@ -56,6 +106,23 @@ final class ImapMailboxTest extends TestCase
 
         self::assertSame([9, 10, 12], $mailbox->search(MailboxSearchCriteria::afterUid(8)));
         self::assertSame("A0004 UID SEARCH UID 9:*\r\n", $transport->writes[3]);
+    }
+
+    public function testSearchUsesAnUpperUidBoundWhenProvided(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake()
+            . "* OK [UIDVALIDITY 55771] UIDs valid\r\n"
+            . "A0003 OK SELECT completed\r\n"
+            . "* SEARCH 11 12 15\r\nA0004 OK SEARCH completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        self::assertSame(
+            [11, 12, 15],
+            $mailbox->searchFolder(new MailboxSearchCriteria(afterUid: 10, beforeUid: 15), 'Processed')
+        );
+        self::assertSame("A0004 UID SEARCH UID 11:15\r\n", $transport->writes[3]);
     }
 
     public function testReturnsUidValidityFromTheSelectedInbox(): void
@@ -280,6 +347,64 @@ final class ImapMailboxTest extends TestCase
         self::assertStringNotContainsString('UID COPY', implode('', $transport->writes));
     }
 
+    public function testMoveWithReceiptReturnsTheDestinationUidValidityAndUid(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake('UIDPLUS MOVE')
+            . "A0003 OK SELECT completed\r\n"
+            . "A0004 OK [COPYUID 99 77 150] MOVE completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        $receipt = $mailbox->moveWithReceipt(77, 'Processed');
+
+        self::assertNotNull($receipt);
+        self::assertSame(99, $receipt->destinationUidValidity);
+        self::assertSame(150, $receipt->destinationUid);
+    }
+
+    public function testMoveWithReceiptDoesNotClaimOwnershipWithoutCopyUid(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake('UIDPLUS MOVE')
+            . "A0003 OK SELECT completed\r\nA0004 OK MOVE completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        self::assertNull($mailbox->moveWithReceipt(77, 'Processed'));
+    }
+
+    public function testCopyFallbackReturnsItsExactDestinationUidMapping(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake('UIDPLUS')
+            . "A0003 OK SELECT completed\r\n"
+            . "A0004 OK [COPYUID 99 77 150] COPY completed\r\n"
+            . "A0005 OK STORE completed\r\n"
+            . "A0006 OK EXPUNGE completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        $receipt = $mailbox->moveWithReceipt(77, 'Processed');
+
+        self::assertNotNull($receipt);
+        self::assertSame(99, $receipt->destinationUidValidity);
+        self::assertSame(150, $receipt->destinationUid);
+    }
+
+    public function testMoveWithReceiptRejectsACopyUidForAnotherSourceMessage(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake('UIDPLUS MOVE')
+            . "A0003 OK SELECT completed\r\n"
+            . "A0004 OK [COPYUID 99 78 150] MOVE completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        $this->expectException(ProtocolError::class);
+        $mailbox->moveWithReceipt(77, 'Processed');
+    }
+
     public function testUsesUidExpungeFallbackWhenMoveIsUnavailableButUidplusExists(): void
     {
         $transport = new ScriptedTransport(
@@ -310,6 +435,39 @@ final class ImapMailboxTest extends TestCase
         $mailbox->move(77, 'Processed');
 
         self::assertSame("A0006 EXPUNGE\r\n", $transport->writes[5]);
+    }
+
+    public function testDeleteRequiresUidplusToAvoidAnUnsafeMailboxExpungeFallback(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake()
+            . "A0003 OK SELECT completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        try {
+            $mailbox->delete(77, 'Processed');
+            self::fail('Expected the processed-folder deletion to fail closed without UIDPLUS.');
+        } catch (ProtocolError $exception) {
+            self::assertStringContainsString('UIDPLUS', $exception->getMessage());
+        }
+
+        self::assertCount(2, $transport->writes);
+        self::assertStringNotContainsString('EXPUNGE', implode('', $transport->writes));
+        self::assertStringNotContainsString('UID STORE', implode('', $transport->writes));
+    }
+
+    public function testUidNextReadsTheFolderHighWatermark(): void
+    {
+        $transport = new ScriptedTransport(
+            $this->successfulHandshake()
+            . "* STATUS \"Processed\" (UIDNEXT 901)\r\n"
+            . "A0003 OK STATUS completed\r\n"
+        );
+        $mailbox = new ImapMailbox($this->config(), $transport);
+
+        self::assertSame(901, $mailbox->uidNext('Processed'));
+        self::assertSame("A0003 STATUS \"Processed\" (UIDNEXT)\r\n", $transport->writes[2]);
     }
 
     public function testMarksMessageSeen(): void

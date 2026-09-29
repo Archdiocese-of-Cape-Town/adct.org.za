@@ -359,6 +359,60 @@ TEXT));
         self::assertStringNotContainsString($sensitiveText, $provider->capturedInput);
     }
 
+    public function testFlagsPossibleUnheadedEventAfterSkippedSectionWithoutExposingText(): void
+    {
+        $provider = new CapturingAiProvider();
+        $outcome = (new PipelineFactory())->create([
+            'ai_enabled' => true,
+            'ai_threshold' => 1.1,
+            'ai_provider' => $provider,
+        ])->parseAll(self::message(
+            "MASS INTENTIONS\nFictional Person Alpha\n\n"
+            . "Parish braai on Sunday 11 October 2026 at 12:00 at Fictional Hall."
+        ));
+
+        self::assertCount(0, $outcome->getCandidates());
+        self::assertContains(
+            'possible_missed_event_after_skipped_section: 1',
+            $outcome->getNotes()
+        );
+        self::assertContains(
+            'possible_missed_event_after_skipped_section: 1',
+            $outcome->getPrimaryResult()->getNotes()
+        );
+        self::assertSame('mass_intentions', $outcome->getBlocks()[0]['reason']);
+        self::assertStringNotContainsString(
+            'Fictional Person Alpha',
+            json_encode($outcome->toArray(), JSON_THROW_ON_ERROR)
+        );
+        self::assertStringNotContainsString(
+            'Parish braai',
+            json_encode($outcome->toArray(), JSON_THROW_ON_ERROR)
+        );
+        self::assertStringNotContainsString('Parish braai', $provider->capturedInput);
+    }
+
+    public function testDoesNotFlagPersonalIntentionAfterBlankLine(): void
+    {
+        $outcome = (new PipelineFactory())->create()->parseAll(self::message(
+            "MASS INTENTIONS\nFictional Person Alpha\n\n"
+            . "For the intentions of Fictional Person Beta at Mass on Sunday 11 October 2026 at 12:00."
+        ));
+
+        self::assertCount(0, $outcome->getCandidates());
+        self::assertSame([], array_values(array_filter(
+            $outcome->getNotes(),
+            static fn (string $note): bool => str_starts_with(
+                $note,
+                'possible_missed_event_after_skipped_section: '
+            )
+        )));
+        self::assertStringNotContainsString(
+            'Fictional Person Beta',
+            json_encode($outcome->toArray(), JSON_THROW_ON_ERROR)
+        );
+    }
+
     public function testSkippedTextIsAbsentFromOutcomeAndAiProviderInput(): void
     {
         $sensitiveText = 'Fictional Person Alpha has a fictional health concern.';

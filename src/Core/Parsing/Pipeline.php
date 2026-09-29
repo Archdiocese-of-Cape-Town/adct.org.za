@@ -100,6 +100,18 @@ final class Pipeline
             $primaryResult = $candidates[0];
         }
 
+        foreach ($notes as $note) {
+            if (str_starts_with($note, 'possible_missed_event_after_skipped_section: ')) {
+                $primaryResult->addNote($note);
+
+                foreach ($candidates as $candidate) {
+                    if ($candidate !== $primaryResult) {
+                        $candidate->addNote($note);
+                    }
+                }
+            }
+        }
+
         $blockMetadata = $split->getBlockMetadata();
 
         if ($candidateLimitExceeded) {
@@ -141,6 +153,7 @@ final class Pipeline
             $blockContext = $block->getContext();
             $this->context->setRuntimeValue('block_context', $blockContext);
             $this->context->setRuntimeValue('block_title', $blockTitle);
+            $this->context->setRuntimeValue('block_source_text', $block->getSourceText());
 
             foreach (['shared_signature_text', 'shared_quoted_text'] as $key) {
                 if (isset($blockContext[$key]) && is_string($blockContext[$key])) {

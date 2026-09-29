@@ -16,6 +16,8 @@ final class ListingSelection
     public readonly array $types;
     public readonly ?int $parish;
     public readonly ?int $deanery;
+    public readonly bool $collapse;
+    public readonly bool $pin;
 
     /** @param array<string, mixed> $input */
     public function __construct(array $input, string $defaultPeriod = 'upcoming')
@@ -26,6 +28,8 @@ final class ListingSelection
         $this->page = self::id($input['adct_page'] ?? '1', 100);
         $this->parish = self::optionalId($input['adct_parish'] ?? '');
         $this->deanery = self::optionalId($input['adct_deanery'] ?? '');
+        $this->collapse = self::toggle($input['adct_collapse'] ?? '');
+        $this->pin = self::toggle($input['adct_pin'] ?? '');
         $values = $input['adct_types'] ?? [];
         if (! is_array($values) || ! array_is_list($values) || count($values) > 20) {
             throw new InvalidArgumentException('Choose at most 20 event types.');
@@ -56,11 +60,26 @@ final class ListingSelection
         if ($this->deanery !== null) {
             $query['adct_deanery'] = $this->deanery;
         }
+        if ($this->collapse) {
+            $query['adct_collapse'] = '1';
+        }
+        if ($this->pin) {
+            $query['adct_pin'] = '1';
+        }
         if ($page > 0 || $this->page > 1) {
             $query['adct_page'] = $page > 0 ? $page : $this->page;
         }
 
         return $query;
+    }
+
+    private static function toggle(mixed $value): bool
+    {
+        if ($value !== '' && $value !== '1') {
+            throw new InvalidArgumentException('Choose a valid event display option.');
+        }
+
+        return $value === '1';
     }
 
     private static function text(mixed $value): string

@@ -82,6 +82,7 @@ final class InboundMessageRepositoryTest extends TestCase
         self::assertSame(['START TRANSACTION', 'UPDATE wp_adct_pi_inbound_messages SET status = %s, error = NULL, updated_at = %s WHERE status = %s AND id IN (%d, %d)', 'COMMIT'], $database->queries);
         self::assertStringContainsString('status = %s AND id IN (%d, %d, %d)', $database->prepared[0]['query']);
         self::assertStringContainsString('ORDER BY id ASC FOR UPDATE', $database->prepared[0]['query']);
+        self::assertStringContainsString('AND raw_path IS NOT NULL', $database->prepared[0]['query']);
         self::assertSame(['failed', 41, 42, 43], $database->prepared[0]['arguments']);
         self::assertSame(
             ['received', '2026-09-25 04:10:00', 'failed', 41, 43],
