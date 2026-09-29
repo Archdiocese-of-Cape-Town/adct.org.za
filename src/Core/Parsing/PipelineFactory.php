@@ -7,6 +7,7 @@ use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\Stages\AiEnrichmentStage;
 use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
 use ADCT\ParishIntake\Core\Parsing\Stages\DirectoryLookupStage;
+use ADCT\ParishIntake\Core\Parsing\Stages\EventTypeClassificationStage;
 use ADCT\ParishIntake\Core\Parsing\Stages\FeaturedSuggestionStage;
 use ADCT\ParishIntake\Core\Parsing\Stages\RecurrenceDetectionStage;
 use ADCT\ParishIntake\Core\Parsing\Stages\RuleBasedExtractionStage;
@@ -14,19 +15,23 @@ use ADCT\ParishIntake\Core\Parsing\Stages\SourceNormalizationStage;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\DirectorySnapshotProviderInterface;
+use ADCT\ParishIntake\Core\Ports\EventTypeKeywordProviderInterface;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 
 final class PipelineFactory
 {
     private ClockInterface $clock;
     private ?DirectorySnapshotProviderInterface $directorySnapshots;
+    private ?EventTypeKeywordProviderInterface $eventTypeKeywords;
 
     public function __construct(
         ?ClockInterface $clock = null,
-        ?DirectorySnapshotProviderInterface $directorySnapshots = null
+        ?DirectorySnapshotProviderInterface $directorySnapshots = null,
+        ?EventTypeKeywordProviderInterface $eventTypeKeywords = null
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->directorySnapshots = $directorySnapshots;
+        $this->eventTypeKeywords = $eventTypeKeywords;
     }
 
     public function create(array $options = []): Pipeline
@@ -60,6 +65,9 @@ final class PipelineFactory
         $stages[] = new FeaturedSuggestionStage();
         $stages[] = new ConfidenceScoringStage();
         $stages[] = new AiEnrichmentStage($provider);
+        $stages[] = new EventTypeClassificationStage(new EventTypeClassifier(
+            $this->eventTypeKeywords?->keywordLists() ?? EventTypeClassifier::DEFAULT_KEYWORDS
+        ));
 
         return new Pipeline($stages, $context, new BulletinBlockSplitter(null, new SectionSkipper($sectionKeywords)));
     }

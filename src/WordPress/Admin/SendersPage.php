@@ -76,7 +76,7 @@ final class SendersPage
                 <div class="notice notice-success is-dismissible"><p>Sender details updated.</p></div>
             <?php endif; ?>
 
-            <p>A sender address can be linked to several parishes. Trust changes apply to every parish link for that address.</p>
+            <p>Pending senders are learned conservatively from the mailbox source or parser parish guess. A sender address can be linked to several parishes, and trust changes apply to every parish link for that address.</p>
 
             <form method="get">
                 <input type="hidden" name="page" value="<?php echo esc_attr(self::PAGE_SLUG); ?>" />
@@ -160,7 +160,11 @@ final class SendersPage
                                         <?php $this->renderStateActionForm('unblock', $email, 'Unblock address'); ?>
                                     <?php else : ?>
                                         <?php if ($trust !== SenderTrust::VERIFIED) : ?>
-                                            <?php $this->renderStateActionForm('verify', $email, 'Verify address'); ?>
+                                            <?php $this->renderStateActionForm(
+                                                'verify',
+                                                $email,
+                                                $trust === SenderTrust::PENDING ? 'Confirm link' : 'Verify address'
+                                            ); ?>
                                         <?php endif; ?>
                                         <?php $this->renderStateActionForm('block', $email, 'Block address', 'secondary'); ?>
                                     <?php endif; ?>

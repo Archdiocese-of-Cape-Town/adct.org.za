@@ -54,6 +54,36 @@ final class ContactService
         );
     }
 
+    public function linkPending(
+        int $parishId,
+        string $email,
+        string $displayName = '',
+        string $roleLabel = '',
+        bool $receivesReminders = false
+    ): SenderLookupResult {
+        $email = EmailAddress::normalize($email);
+        $firstLookup = SenderLookup::fromRows($email, $this->contacts->findByEmail($email));
+
+        if ($firstLookup->trust !== SenderTrust::UNKNOWN || $firstLookup->parishIds !== []) {
+            return $firstLookup;
+        }
+
+        $rows = $this->contacts->findByEmail($email);
+        $secondLookup = SenderLookup::fromRows($email, $rows);
+
+        if ($secondLookup->trust !== SenderTrust::UNKNOWN || $secondLookup->parishIds !== []) {
+            return $secondLookup;
+        }
+
+        return $this->linkPendingIfStillUnknown(
+            $parishId,
+            $email,
+            $displayName,
+            $roleLabel,
+            $receivesReminders
+        );
+    }
+
     public function linkOfficial(int $parishId, string $email): SenderLookupResult
     {
         return $this->linkWithInitialTrust(
@@ -217,15 +247,68 @@ final class ContactService
         string $initialTrust,
         bool $updateExistingLink
     ): SenderLookupResult {
+        $email = EmailAddress::normalize($email);
+        $rows = $this->contacts->findByEmail($email);
+
+        return $this->linkWithInitialTrustFromRows(
+            $parishId,
+            $email,
+            $displayName,
+            $roleLabel,
+            $receivesReminders,
+            $initialTrust,
+            $updateExistingLink,
+            $rows
+        );
+    }
+
+    private function linkPendingIfStillUnknown(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders
+    ): SenderLookupResult {
         if ($parishId < 1) {
             throw new InvalidArgumentException('A parish must be selected for this contact.');
         }
 
-        $email = EmailAddress::normalize($email);
         $displayName = $this->normalizeLabel($displayName);
         $roleLabel = $this->normalizeLabel($roleLabel);
         $timestamp = $this->timestamp();
-        $rows = $this->contacts->findByEmail($email);
+
+        $this->contacts->savePendingLink(
+            $parishId,
+            $email,
+            $displayName,
+            $roleLabel,
+            $receivesReminders,
+            $timestamp
+        );
+
+        return $this->lookup($email);
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $rows
+     */
+    private function linkWithInitialTrustFromRows(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $initialTrust,
+        bool $updateExistingLink,
+        array $rows
+    ): SenderLookupResult {
+        if ($parishId < 1) {
+            throw new InvalidArgumentException('A parish must be selected for this contact.');
+        }
+
+        $displayName = $this->normalizeLabel($displayName);
+        $roleLabel = $this->normalizeLabel($roleLabel);
+        $timestamp = $this->timestamp();
         $trust = $rows === [] ? $initialTrust : $this->trustOf($rows);
         $verifiedAt = $this->verifiedAt($rows, $trust, $timestamp);
         $existingParishLink = $this->findParishLink($rows, $parishId);

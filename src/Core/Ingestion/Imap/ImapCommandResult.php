@@ -12,6 +12,7 @@ final readonly class ImapCommandResult
     public function __construct(
         public string $status,
         public array $responses,
+        public string $completion = '',
     ) {
     }
 }

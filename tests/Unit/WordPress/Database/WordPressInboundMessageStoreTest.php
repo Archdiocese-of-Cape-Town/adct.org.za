@@ -9,11 +9,11 @@ use ADCT\ParishIntake\Core\Ingestion\AuthenticationResult;
 use ADCT\ParishIntake\Core\Ingestion\AuthenticationResults;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingRecord;
-use ADCT\ParishIntake\Core\Retention\RetentionSettings;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
+use ADCT\ParishIntake\WordPress\Jobs\RetentionSettings;
 use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
 
@@ -26,7 +26,7 @@ final class WordPressInboundMessageStoreTest extends TestCase
             $database,
             new InboundMessageRepository($database),
             new AttachmentRepository($database),
-            static fn () => new RetentionSettings(6, 45)
+            static fn () => RetentionSettings::fromValues('0', 45, '0', 30)
         );
         $message = new InboundMessageRecord(
             17,
@@ -42,7 +42,7 @@ final class WordPressInboundMessageStoreTest extends TestCase
 
         $store->store($message, '2026-09-25 04:01:00');
 
-        self::assertContains('2027-03-25 04:00:00', $database->prepared[1]['arguments']);
+        self::assertContains('2026-11-09 04:00:00', $database->prepared[1]['arguments']);
     }
 
     public function testStoresMessageAndAttachmentRowsInOneTransaction(): void

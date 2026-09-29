@@ -12,6 +12,8 @@ use RuntimeException;
 
 final class ParishContactRepository implements ParishContactStoreInterface
 {
+    private const EMAIL_LOCK_WAIT_SECONDS = 5;
+
     public function __construct(
         private DatabaseConnectionInterface $database,
         private ?DirectoryVersionStoreInterface $directoryVersions = null
@@ -24,31 +26,35 @@ final class ParishContactRepository implements ParishContactStoreInterface
             throw new RuntimeException('A parish ID is required when adding an office contact.');
         }
 
-        $table = $this->database->prefix() . 'adct_pi_parish_contacts';
-        $query = $this->database->prepare(
-            "INSERT INTO {$table} "
-            . '(parish_id, email, trust, verified_at, created_at, updated_at) '
-            . "VALUES (%d, %s, 'verified', %s, %s, %s) "
-            . 'ON DUPLICATE KEY UPDATE id = id',
-            $parishId,
-            strtolower(trim($email)),
-            $verifiedAt,
-            $verifiedAt,
-            $verifiedAt
-        );
+        $email = strtolower(trim($email));
 
-        $this->database->clearLastError();
-        $result = $this->database->query($query);
-
-        if ($result === false) {
-            throw new RuntimeException(
-                'The parish office contact could not be saved: ' . $this->database->lastError()
+        return $this->withEmailLock($email, function () use ($parishId, $email, $verifiedAt): bool {
+            $table = $this->database->prefix() . 'adct_pi_parish_contacts';
+            $query = $this->database->prepare(
+                "INSERT INTO {$table} "
+                . '(parish_id, email, trust, verified_at, created_at, updated_at) '
+                . "VALUES (%d, %s, 'verified', %s, %s, %s) "
+                . 'ON DUPLICATE KEY UPDATE id = id',
+                $parishId,
+                $email,
+                $verifiedAt,
+                $verifiedAt,
+                $verifiedAt
             );
-        }
 
-        $this->markDirectoryChanged($result);
+            $this->database->clearLastError();
+            $result = $this->database->query($query);
 
-        return $result > 0;
+            if ($result === false) {
+                throw new RuntimeException(
+                    'The parish office contact could not be saved: ' . $this->database->lastError()
+                );
+            }
+
+            $this->markDirectoryChanged($result);
+
+            return $result > 0;
+        });
     }
 
     public function findByEmail(string $email): array
@@ -120,33 +126,108 @@ final class ParishContactRepository implements ParishContactStoreInterface
         ?string $verifiedAt,
         string $timestamp
     ): void {
-        $this->assertValidLink($parishId, $trust);
-        $table = $this->tableName();
-        $verifiedAtPlaceholder = $verifiedAt === null ? 'NULL' : '%s';
-        $query = "INSERT INTO {$table} "
-            . '(parish_id, email, display_name, role_label, trust, verified_at, receives_reminders, created_at, updated_at) '
-            . "VALUES (%d, %s, %s, %s, %s, {$verifiedAtPlaceholder}, %d, %s, %s) "
-            . 'ON DUPLICATE KEY UPDATE '
-            . 'display_name = VALUES(display_name), role_label = VALUES(role_label), '
-            . 'trust = VALUES(trust), verified_at = VALUES(verified_at), '
-            . 'receives_reminders = VALUES(receives_reminders), updated_at = VALUES(updated_at)';
-        $arguments = [
+        $this->withEmailLock($email, function () use (
             $parishId,
             $email,
             $displayName,
             $roleLabel,
+            $receivesReminders,
             $trust,
-        ];
+            $verifiedAt,
+            $timestamp
+        ): void {
+            $this->assertValidLink($parishId, $trust);
+            $table = $this->tableName();
+            $verifiedAtPlaceholder = $verifiedAt === null ? 'NULL' : '%s';
+            $query = "INSERT INTO {$table} "
+                . '(parish_id, email, display_name, role_label, trust, verified_at, receives_reminders, created_at, updated_at) '
+                . "VALUES (%d, %s, %s, %s, %s, {$verifiedAtPlaceholder}, %d, %s, %s) "
+                . 'ON DUPLICATE KEY UPDATE '
+                . 'display_name = VALUES(display_name), role_label = VALUES(role_label), '
+                . 'trust = VALUES(trust), verified_at = VALUES(verified_at), '
+                . 'receives_reminders = VALUES(receives_reminders), updated_at = VALUES(updated_at)';
+            $arguments = [
+                $parishId,
+                $email,
+                $displayName,
+                $roleLabel,
+                $trust,
+            ];
 
-        if ($verifiedAt !== null) {
-            $arguments[] = $verifiedAt;
+            if ($verifiedAt !== null) {
+                $arguments[] = $verifiedAt;
+            }
+
+            $arguments[] = $receivesReminders ? 1 : 0;
+            $arguments[] = $timestamp;
+            $arguments[] = $timestamp;
+            $result = $this->execute($this->database->prepare($query, ...$arguments), 'save parish contact');
+            $this->markDirectoryChanged($result);
+        });
+    }
+
+    public function savePendingLink(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $timestamp
+    ): int {
+        if ($parishId < 1) {
+            throw new RuntimeException('A parish ID is required when saving a contact.');
         }
 
-        $arguments[] = $receivesReminders ? 1 : 0;
-        $arguments[] = $timestamp;
-        $arguments[] = $timestamp;
-        $result = $this->execute($this->database->prepare($query, ...$arguments), 'save parish contact');
-        $this->markDirectoryChanged($result);
+        $email = strtolower(trim($email));
+
+        return $this->withEmailLock($email, function () use (
+            $parishId,
+            $email,
+            $displayName,
+            $roleLabel,
+            $receivesReminders,
+            $timestamp
+        ): int {
+            $table = $this->tableName();
+            $lockedRows = $this->fetchRows($this->database->prepare(
+                "SELECT id, parish_id, trust FROM {$table} WHERE email = %s FOR UPDATE",
+                $email
+            ));
+
+            foreach ($lockedRows as $row) {
+                if ((string) ($row['trust'] ?? '') !== SenderTrust::UNKNOWN) {
+                    return 0;
+                }
+            }
+
+            $query = "INSERT INTO {$table} "
+                . '(parish_id, email, display_name, role_label, trust, verified_at, receives_reminders, created_at, updated_at) '
+                . 'VALUES (%d, %s, %s, %s, %s, NULL, %d, %s, %s) '
+                . 'ON DUPLICATE KEY UPDATE '
+                . 'display_name = VALUES(display_name), role_label = VALUES(role_label), '
+                . 'trust = VALUES(trust), verified_at = VALUES(verified_at), '
+                . 'receives_reminders = VALUES(receives_reminders), updated_at = VALUES(updated_at)';
+            $savedRows = $this->execute($this->database->prepare(
+                $query,
+                $parishId,
+                $email,
+                $displayName,
+                $roleLabel,
+                SenderTrust::PENDING,
+                $receivesReminders ? 1 : 0,
+                $timestamp,
+                $timestamp
+            ), 'save pending parish contact');
+            $trustRows = $this->execute($this->database->prepare(
+                "UPDATE {$table} SET trust = %s, verified_at = NULL, updated_at = %s WHERE email = %s",
+                SenderTrust::PENDING,
+                $timestamp,
+                $email
+            ), 'update pending sender trust');
+            $this->markDirectoryChanged(max($savedRows, $trustRows));
+
+            return max($savedRows, $trustRows);
+        });
     }
 
     public function updateLink(
@@ -160,28 +241,40 @@ final class ParishContactRepository implements ParishContactStoreInterface
         ?string $verifiedAt,
         string $timestamp
     ): int {
-        if ($contactId < 1) {
-            throw new RuntimeException('A parish contact ID is required.');
-        }
+        return $this->withEmailLock($email, function () use (
+            $contactId,
+            $parishId,
+            $email,
+            $displayName,
+            $roleLabel,
+            $receivesReminders,
+            $trust,
+            $verifiedAt,
+            $timestamp
+        ): int {
+            if ($contactId < 1) {
+                throw new RuntimeException('A parish contact ID is required.');
+            }
 
-        $this->assertValidLink($parishId, $trust);
-        $table = $this->tableName();
-        $verifiedAtPlaceholder = $verifiedAt === null ? 'NULL' : '%s';
-        $query = "UPDATE {$table} SET email = %s, display_name = %s, role_label = %s, "
-            . "trust = %s, verified_at = {$verifiedAtPlaceholder}, receives_reminders = %d, updated_at = %s "
-            . 'WHERE id = %d AND parish_id = %d';
-        $arguments = [$email, $displayName, $roleLabel, $trust];
+            $this->assertValidLink($parishId, $trust);
+            $table = $this->tableName();
+            $verifiedAtPlaceholder = $verifiedAt === null ? 'NULL' : '%s';
+            $query = "UPDATE {$table} SET email = %s, display_name = %s, role_label = %s, "
+                . "trust = %s, verified_at = {$verifiedAtPlaceholder}, receives_reminders = %d, updated_at = %s "
+                . 'WHERE id = %d AND parish_id = %d';
+            $arguments = [$email, $displayName, $roleLabel, $trust];
 
-        if ($verifiedAt !== null) {
-            $arguments[] = $verifiedAt;
-        }
+            if ($verifiedAt !== null) {
+                $arguments[] = $verifiedAt;
+            }
 
-        array_push($arguments, $receivesReminders ? 1 : 0, $timestamp, $contactId, $parishId);
+            array_push($arguments, $receivesReminders ? 1 : 0, $timestamp, $contactId, $parishId);
 
-        $result = $this->execute($this->database->prepare($query, ...$arguments), 'update parish contact');
-        $this->markDirectoryChanged($result);
+            $result = $this->execute($this->database->prepare($query, ...$arguments), 'update parish contact');
+            $this->markDirectoryChanged($result);
 
-        return $result;
+            return $result;
+        });
     }
 
     public function deleteLink(int $contactId, int $parishId): int
@@ -209,26 +302,33 @@ final class ParishContactRepository implements ParishContactStoreInterface
         ?string $verifiedAt,
         string $timestamp
     ): int {
-        if (! SenderTrust::isValid($trust)) {
-            throw new RuntimeException('The sender trust state is not valid.');
-        }
+        return $this->withEmailLock($email, function () use (
+            $trust,
+            $verifiedAt,
+            $timestamp,
+            $email
+        ): int {
+            if (! SenderTrust::isValid($trust)) {
+                throw new RuntimeException('The sender trust state is not valid.');
+            }
 
-        $table = $this->tableName();
-        $verifiedAtPlaceholder = $verifiedAt === null ? 'NULL' : '%s';
-        $query = "UPDATE {$table} SET trust = %s, verified_at = {$verifiedAtPlaceholder}, updated_at = %s "
-            . 'WHERE email = %s';
-        $arguments = [$trust];
+            $table = $this->tableName();
+            $verifiedAtPlaceholder = $verifiedAt === null ? 'NULL' : '%s';
+            $query = "UPDATE {$table} SET trust = %s, verified_at = {$verifiedAtPlaceholder}, updated_at = %s "
+                . 'WHERE email = %s';
+            $arguments = [$trust];
 
-        if ($verifiedAt !== null) {
-            $arguments[] = $verifiedAt;
-        }
+            if ($verifiedAt !== null) {
+                $arguments[] = $verifiedAt;
+            }
 
-        array_push($arguments, $timestamp, $email);
+            array_push($arguments, $timestamp, $email);
 
-        $result = $this->execute($this->database->prepare($query, ...$arguments), 'update sender trust');
-        $this->markDirectoryChanged($result);
+            $result = $this->execute($this->database->prepare($query, ...$arguments), 'update sender trust');
+            $this->markDirectoryChanged($result);
 
-        return $result;
+            return $result;
+        });
     }
 
     /**
@@ -289,6 +389,59 @@ final class ParishContactRepository implements ParishContactStoreInterface
     private function tableName(): string
     {
         return $this->database->prefix() . 'adct_pi_parish_contacts';
+    }
+
+    private function emailLockName(string $email): string
+    {
+        return 'adct_pi_pc_' . substr(hash('sha256', strtolower(trim($email))), 0, 40);
+    }
+
+    private function withEmailLock(string $email, callable $callback): mixed
+    {
+        $lockName = $this->emailLockName($email);
+
+        if (! $this->acquireNamedLock($lockName)) {
+            throw new RuntimeException('The parish contact database lock is unavailable.');
+        }
+
+        try {
+            return $callback();
+        } finally {
+            $this->releaseNamedLock($lockName);
+        }
+    }
+
+    private function acquireNamedLock(string $lockName): bool
+    {
+        $row = $this->fetchRow($this->database->prepare(
+            'SELECT GET_LOCK(%s, %d) AS acquired',
+            $lockName,
+            self::EMAIL_LOCK_WAIT_SECONDS
+        ));
+
+        if ($row === null || ! array_key_exists('acquired', $row) || $row['acquired'] === null) {
+            throw new RuntimeException('The parish contact database lock failed.');
+        }
+
+        $acquired = (int) $row['acquired'];
+
+        if ($acquired !== 0 && $acquired !== 1) {
+            throw new RuntimeException('The parish contact database lock returned an invalid result.');
+        }
+
+        return $acquired === 1;
+    }
+
+    private function releaseNamedLock(string $lockName): void
+    {
+        $row = $this->fetchRow($this->database->prepare(
+            'SELECT RELEASE_LOCK(%s) AS released',
+            $lockName
+        ));
+
+        if ($row === null || (int) ($row['released'] ?? 0) !== 1) {
+            throw new RuntimeException('The parish contact database lock could not be released.');
+        }
     }
 
     /**

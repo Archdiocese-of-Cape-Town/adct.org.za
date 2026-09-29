@@ -239,9 +239,14 @@ final class FakeMailboxConnection implements MailboxInterface
         }
     }
 
-    public function uidValidity(): int
+    public function uidValidity(?string $folder = null): int
     {
         return 17;
+    }
+
+    public function uidNext(string $folder): int
+    {
+        return 1;
     }
 
     public function search(MailboxSearchCriteria $criteria): array
@@ -249,6 +254,11 @@ final class FakeMailboxConnection implements MailboxInterface
         $this->searchCriteria[] = $criteria;
 
         return $this->unseen;
+    }
+
+    public function searchFolder(MailboxSearchCriteria $criteria, string $folder): array
+    {
+        return $this->search($criteria);
     }
 
     public function fetch(int $uid): \ADCT\ParishIntake\Core\Ingestion\RawMailMessage
@@ -259,6 +269,11 @@ final class FakeMailboxConnection implements MailboxInterface
     public function move(int $uid, string $folder): void
     {
         throw new \LogicException('The connection test must not move messages.');
+    }
+
+    public function delete(int $uid, string $folder): void
+    {
+        throw new \LogicException('The connection test must not delete messages.');
     }
 
     public function markSeen(int $uid): void
