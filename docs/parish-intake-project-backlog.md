@@ -214,19 +214,14 @@ flowchart LR
 ## Deferred parser work
 
 Parser defects found by re-parsing a real September 2026 archdiocesan newsletter
-(the original is kept out of this repository under POPIA). Four were fixed as a
-stacked PR chain; three items from those issues were deliberately deferred:
+(the original is kept out of this repository under POPIA). They were fixed as a
+stacked PR chain; two items from those issues were deliberately deferred:
 
 - **Deadline typing.** #132 resolves "end of September" and similar phrases to the
   last day of the month, but a deadline is still published as though it were an
   attendable event. Giving it its own field or type needs a data-model and
   publishing change, so it is a separate issue rather than part of a parser fix.
   Tracked in [#132](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/132).
-- **Dotted time ranges.** `10.00-12:00am` has never parsed correctly: the leading
-  `\b` in the time pattern cannot match after the dot, so only the `12:00am`
-  fragment is read and it normalises to `00:00`. #128 assumed this form worked; it
-  does not. Tracked in
-  [#153](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/153).
 - **Rejection notes for parish-name fragments.** #129 stops a sentence fragment
   being read as a parish name and silently falls back to the sender's real parish.
   Recording a note for each rejected fragment was considered and left out, because
