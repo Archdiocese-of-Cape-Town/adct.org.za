@@ -92,7 +92,7 @@ docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scr
 2. **Tests first for bugs**, and every feature ships with tests. **Never remove or weaken a test because the implementation fails it.** If an expectation really is wrong, change it in a separate commit that explains why ([testing](testing.md)).
 3. **PHP 8.2 compatible.** No 8.3+ syntax or functions (e.g. typed class constants, `json_validate`). No `ext-imap`.
 4. **Core stays WordPress-free.** Code under `src/Core` (once #20 lands) must not call WordPress functions; use the ports (interfaces) and inject adapters.
-5. **Portable SQL** that works on MySQL 8 and MariaDB 10.11, through `$wpdb` with prepared statements; schema changes only through versioned migrations.
+5. **Portable SQL** that works on MySQL 8 and MariaDB 10.11, through `$wpdb` with prepared statements. Before the first non-prerelease GitHub Release, change the canonical fresh-install schema and test a fresh installation; a new migration is not required solely for disposable test databases. Preserve the existing migrations and tests. Data that must survive always requires a safe, tested migration, and after the first release every schema change uses a versioned migration ([ADR 0016](decisions/0016-pre-release-schema-changes.md)).
 6. **Shared-hosting limits** ([hosting environment](hosting-environment.md)): jobs default to a 60 s / 100-item budget with a 180 s lock lease and a checkpoint after each item; the runner's constructor and per-run arguments configure the budgets. No command line (no WP-CLI) is needed for any operation; all plugin email goes through the mail queue.
 7. **Privacy (POPIA), and the repository is public:** never commit real parish emails, bulletins, posters, personal names, phone numbers, personal email addresses or secrets. Fixtures must be anonymised ([parser findings](parser-samples.md#fixture-guidance)). Secrets come from `wp-config.php` constants.
 8. **Security:** capabilities + nonces on every admin action; escape output; action links are GET-shows-page / POST-acts with hashed single-use tokens ([ADR 0004](decisions/0004-trust-and-confirmation-model.md)).
@@ -105,6 +105,7 @@ docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scr
 - Tests added or updated; unit tests pass in CI on PHP 8.2–8.4 and the separate WordPress integration job passes on PHP 8.2 using the built zip.
 - No new WordPress calls in the core; lint clean.
 - Docs updated where affected; no personal data or secrets in the diff.
+- For schema changes, verify the built zip installs the expected tables, columns and indexes on a fresh database. Upgrade tests remain required when preserving existing data or changing a released schema ([ADR 0016](decisions/0016-pre-release-schema-changes.md)).
 - The plugin still activates and the existing **Parish Intake → Manual parser** screen still works (check in the Playground preview once #27 is in).
 
 ## First build session

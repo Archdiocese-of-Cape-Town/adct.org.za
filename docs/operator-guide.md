@@ -246,11 +246,11 @@ The values above are placeholders; replace them with the site's credentials and 
 
 ## Check database installation and upgrade (staging)
 
-Do this on a staging site with a recent database backup; do not change schema options on the live site.
+Do this on an isolated staging site with a recent database backup; do not change schema options on the live site. Before the first non-prerelease GitHub Release, use a **new disposable database** for fresh-install checks when a schema change has no historical upgrade path. Do not reset a staging copy whose data must be retained; ask for a tested, data-preserving migration instead ([ADR 0016](decisions/0016-pre-release-schema-changes.md)).
 
-1. On a fresh staging install, activate the plugin and use the site's database manager to confirm `adct_pi_db_version` is `4` and that the 16 `adct_pi_*` tables in [the data model](data-model.md) exist. Confirm `adct_pi_occurrences.parish_id` is nullable; `adct_pi_venues` has the aliases, coordinates, default, status and source-parish columns; `adct_pi_sources` has its registry and health columns; and `adct_pi_mailboxes` has its source link and connection settings.
-2. On a staging copy of a v3 installation, update/activate the new plugin and visit a WordPress admin page to run the v3-to-v4 upgrade. Confirm the option is `4`, `adct_pi_occurrences.parish_id` is nullable, the venue/source/mailbox tables exist, and no database-upgrade error notice is shown.
-3. Confirm `wp_adct_parish_intake_items` and its row count are unchanged, then open **Parish Intake → Manual parser** and verify that recent stored parses still appear.
+1. On a fresh, isolated staging install, activate the plugin and use the site's database manager to confirm `adct_pi_db_version` matches the [current schema version](data-model.md), and that the documented `adct_pi_*` tables and indexes exist (currently 17 tables at version 7). Confirm `adct_pi_occurrences.parish_id` is nullable and the venue, source, mailbox, mail-queue and rate-limit tables have the documented columns and indexes.
+2. If checking a **supported** upgrade path on a staging copy with data to retain, make a backup, update/activate the plugin and visit a WordPress admin page. Verify the expected schema version, required columns and indexes, unchanged row counts and no database-upgrade error notice. Never force the version option forward or treat a pre-release version number alone as proof that a changed canonical schema was applied.
+3. Confirm the prototype `wp_adct_parish_intake_items` table and its row count are unchanged, then open **Parish Intake → Manual parser** and verify that recent stored parses still appear when testing an existing installation.
 
 ## Keep scheduled jobs running
 
