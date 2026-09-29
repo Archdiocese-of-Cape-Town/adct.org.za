@@ -273,6 +273,9 @@ final class DateParsingTest extends TestCase
             'dotted pm time' => ['6.30pm', '18:30'],
             'dotted am time with space' => ['8.30 am', '08:30'],
             'range uses its start time' => ['from 9am to 1pm', '09:00'],
+            'bare dotted time without a meridiem' => ['10.00', '10:00'],
+            'bare dotted time with a leading zero' => ['08.30', '08:30'],
+            'bare colon time inside a dotted range is not read on its own' => ['10.00-12:00am', '10:00'],
         ];
     }
 
@@ -290,6 +293,70 @@ final class DateParsingTest extends TestCase
 
         self::assertSame('09:00', $result['fields']['event_time'] ?? null);
         self::assertSame('13:00', $result['fields']['event_end_time'] ?? null);
+    }
+
+    /**
+     * @return array<string, array{string, string, string, string}>
+     */
+    public static function dashSeparatedTimeRanges(): array
+    {
+        return [
+            'dotted start with colon end and a meridiem' => ['10.00-12:00am', '10:00', '12:00'],
+            'dotted start and dotted end sharing a meridiem' => ['8.30-10.00am', '08:30', '10:00'],
+            'dotted range in 24-hour form' => ['10.00-12.00', '10:00', '12:00'],
+            'bare hours sharing a pm meridiem' => ['7-9pm', '19:00', '21:00'],
+            'bare hours sharing an am meridiem' => ['7-9am', '07:00', '09:00'],
+            'colon range sharing a meridiem' => ['09:00-13:00pm', '09:00', '13:00'],
+            'dotted range with spaces around the dash' => ['10.00 – 12.00', '10:00', '12:00'],
+            'dotted range joined by an en dash' => ['8.30–10.00am', '08:30', '10:00'],
+            'time range written with the word to' => ['from 10.00 to 12.00', '10:00', '12:00'],
+            'a meridiem on the start carries to the end' => ['10.00am-12.00', '10:00', '12:00'],
+        ];
+    }
+
+    #[DataProvider('dashSeparatedTimeRanges')]
+    public function testExtractsDashSeparatedTimeRanges(
+        string $text,
+        string $expectedStart,
+        string $expectedEnd
+    ): void {
+        $result = self::parse('The workshop runs from ' . $text . '.');
+
+        self::assertSame($expectedStart, $result['fields']['event_time'] ?? null);
+        self::assertSame($expectedEnd, $result['fields']['event_end_time'] ?? null);
+    }
+
+    public function testAPmCrossingTimeRangeKeepsBothMeridiems(): void
+    {
+        $result = self::parse('The vigil runs from 9pm-1am.');
+
+        self::assertSame('21:00', $result['fields']['event_time'] ?? null);
+        self::assertSame('01:00', $result['fields']['event_end_time'] ?? null);
+        self::assertStringContainsString('end', strtolower(implode(' ', $result['notes'])));
+    }
+
+    public function testADateRangeIsNotReadAsATimeRange(): void
+    {
+        $result = self::parse('The retreat runs on 5-6 October 2026.');
+
+        self::assertSame('2026-10-05', $result['fields']['event_date'] ?? null);
+        self::assertSame('2026-10-06', $result['fields']['event_end_date'] ?? null);
+        self::assertArrayNotHasKey('event_time', $result['fields']);
+    }
+
+    public function testAScriptureVerseRangeIsNotReadAsATimeRange(): void
+    {
+        $result = self::parse('The service is based on Romans 8:10-12 and begins at 18:00.');
+
+        self::assertSame('18:00', $result['fields']['event_time'] ?? null);
+        self::assertArrayNotHasKey('event_end_time', $result['fields']);
+    }
+
+    public function testATimeRangeInsideAScriptureVerseRangeIsStillIgnored(): void
+    {
+        $result = self::parse('Read Psalms 119:105-108 at the start of the service.');
+
+        self::assertArrayNotHasKey('event_time', $result['fields']);
     }
 
     public function testSingleDatesAndTimesOmitEndFields(): void
