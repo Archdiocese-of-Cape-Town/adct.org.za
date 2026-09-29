@@ -826,6 +826,131 @@ final class RuleBasedExtractionStage implements StageInterface
     }
 
     /**
+     * Resolves "end of this month", "end of September" and "end of September 2026"
+     * to the last day of the month, never the first.
+     *
+     * A named month with no year is read against the bulletin month context where one
+     * is known, so "end of September" in a September bulletin means this year rather
+     * than rolling forward a whole year. "Next month" is relative to the reference
+     * date.
+     *
+     * @param array<int, array{0: string, 1: int}|null> $match
+     */
+    private function resolveEndOfMonth(
+        array $match,
+        DateTimeImmutable $referenceDate,
+        ?string $monthContext,
+        ?int $yearContext
+    ): ?DateTimeImmutable {
+        $monthText = $this->capturedValue($match, 'month');
+        $month = $monthText === null ? null : $this->monthNumber($monthText);
+
+        if ($month === null) {
+            return $this->resolveRelativeMonth($match, $referenceDate, $monthContext, $yearContext);
+        }
+
+        $year = $this->capturedValue($match, 'year');
+
+        if ($year !== null) {
+            return $this->lastDayOfMonth((int) $this->normalizeYear($year), $month);
+        }
+
+        $contextMonth = $monthContext === null ? null : $this->monthNumber($monthContext);
+
+        if ($contextMonth !== null) {
+            $year = $yearContext ?? (int) $referenceDate->format('Y');
+            $date = $this->lastDayOfMonth($year, $month);
+
+            if ($date !== null && $date >= $referenceDate) {
+                return $date;
+            }
+        }
+
+        return $this->lastDayOfMonth((int) $referenceDate->format('Y'), $month);
+    }
+
+    /**
+     * "end of this month" and "end of next month" carry no month name of their own.
+     *
+     * @param array<int, array{0: string, 1: int}|null> $match
+     */
+    private function resolveRelativeMonth(
+        array $match,
+        DateTimeImmutable $referenceDate,
+        ?string $monthContext,
+        ?int $yearContext
+    ): ?DateTimeImmutable {
+        $whole = strtolower($match[0][0] ?? '');
+
+        if (str_contains($whole, 'next')) {
+            $anchor = $monthContext === null ? null : $this->monthNumber($monthContext);
+
+            if ($anchor !== null) {
+                $year = $yearContext ?? (int) $referenceDate->format('Y');
+
+                if ($anchor === 12) {
+                    return $this->lastDayOfMonth($year + 1, 1);
+                }
+
+                return $this->lastDayOfMonth($year, $anchor + 1);
+            }
+
+            return $referenceDate->modify('last day of next month');
+        }
+
+        $contextMonth = $monthContext === null ? null : $this->monthNumber($monthContext);
+        $month = $contextMonth ?? (int) $referenceDate->format('n');
+        $year = $yearContext ?? (int) $referenceDate->format('Y');
+        $date = $this->lastDayOfMonth($year, $month);
+
+        if ($date === null) {
+            return null;
+        }
+
+        // "the month" is the calendar month the reference date falls in, so it never
+        // needs rolling forward. Guard anyway so a stale bulletin date cannot produce
+        // a deadline that has already passed.
+        if (str_contains($whole, 'this') && $date < $referenceDate) {
+            return $this->lastDayOfMonth($year + 1, $month);
+        }
+
+        return $date;
+    }
+
+    private function lastDayOfMonth(int $year, int $month): ?DateTimeImmutable
+    {
+        if ($year < 1 || $month < 1 || $month > 12) {
+            return null;
+        }
+
+        // Deliberately not cal_days_in_month(): that lives in ext-calendar, which the
+        // hosting environment is not required to have. "last day of month" is
+        // calendar-correct for February, so it needs no leap-year special case.
+        $lastDay = DateTimeImmutable::createFromFormat(
+            '!Y-m',
+            sprintf('%04d-%02d', $year, $month),
+            new DateTimeZone(self::LOCAL_TIMEZONE)
+        );
+
+        if (! $lastDay instanceof DateTimeImmutable) {
+            return null;
+        }
+
+        return $lastDay->modify('last day of this month')->setTime(0, 0);
+    }
+
+    private function resolveMonthDay(
+        int $day,
+        int $month,
+        ?string $yearText,
+        DateTimeImmutable $referenceDate
+    ): ?DateTimeImmutable {
+        return $yearText === null
+            ? $this->nextMonthDay($day, $month, $referenceDate)
+            : $this->makeDate($this->normalizeYear($yearText), $month, $day);
+    }
+
+    /**
      * @return array{date: string, end_date: null, weekday_mismatch: bool, end_before_start: false, next_weekday_ambiguous: null}|null
      */
     private function extractContextualDate(
