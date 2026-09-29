@@ -6,6 +6,7 @@ namespace ADCT\ParishIntake\Tests\Unit\Core\Jobs;
 
 use ADCT\ParishIntake\Core\Directory\DirectorySnapshot;
 use ADCT\ParishIntake\Core\Directory\ContactService;
+use ADCT\ParishIntake\Core\Directory\SenderParishSuggester;
 use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use ADCT\ParishIntake\Core\Directory\SenderLearningService;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingFailure;
@@ -22,10 +23,6 @@ use ADCT\ParishIntake\Core\Ports\EventCandidateStoreInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingFailureLoggerInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingStoreInterface;
-use ADCT\ParishIntake\Core\Ports\SourceStoreInterface;
-use ADCT\ParishIntake\Core\Sources\Source;
-use ADCT\ParishIntake\Core\Sources\SourceRole;
-use ADCT\ParishIntake\Core\Sources\SourceType;
 use ADCT\ParishIntake\Core\Pdf\PdfExtractionLimits;
 use ADCT\ParishIntake\Core\Pdf\PdfExtractionResult;
 use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
@@ -154,7 +151,7 @@ final class InboundMessageProcessingJobTest extends TestCase
         );
     }
 
-    public function testUnknownSendersCreatePendingContactsWhenTheSourceParishIsKnown(): void
+    public function testUnknownSendersCreateUnlinkedPendingContactsWithSuggestionOnly(): void
     {
         $clock = new ProcessingClock();
         $directory = new ProcessingDirectorySnapshotProvider(new DirectorySnapshot([], [], []));
@@ -163,10 +160,10 @@ final class InboundMessageProcessingJobTest extends TestCase
         $candidates = new ProcessingCandidateStore();
         $failureLogger = new ProcessingFailureLogger();
         $contactStore = new ProcessingLearningContactStore();
-        $senderLearning = new SenderLearningService(new ContactService($contactStore, $clock));
-        $sourceStore = new ProcessingSourceStore([
-            17 => new Source(17, 11, SourceType::EMAIL, 'mailbox@example.test', SourceRole::OFFICIAL),
-        ]);
+        $senderLearning = new SenderLearningService(
+            new ContactService($contactStore, $clock),
+            new SenderParishSuggester($directory)
+        );
         $job = new InboundMessageProcessingJob(
             $messages,
             $storage,
@@ -178,7 +175,6 @@ final class InboundMessageProcessingJobTest extends TestCase
             $failureLogger,
             $directory,
             $clock,
-            $sourceStore,
             $senderLearning
         );
 
@@ -193,8 +189,58 @@ final class InboundMessageProcessingJobTest extends TestCase
 
         self::assertSame('parsed', $messages->statuses[self::MESSAGE_ID]);
         self::assertSame(SenderTrust::PENDING, $contactStore->rows[1]['trust']);
-        self::assertSame(11, $contactStore->rows[1]['parish_id']);
+        self::assertSame(0, $contactStore->rows[1]['parish_id']);
+        self::assertNull($contactStore->rows[1]['suggested_parish_id']);
+        self::assertNull($contactStore->rows[1]['suggestion_source']);
+        self::assertNull($contactStore->rows[1]['verified_at']);
         self::assertSame('sender@example.test', $contactStore->rows[1]['email']);
+        self::assertCount(1, $candidates->candidates[self::MESSAGE_ID] ?? []);
+    }
+
+    public function testStoredAndDecodedFromMismatchFailsBeforeCandidateOrContactWrites(): void
+    {
+        $clock = new ProcessingClock();
+        $directory = new ProcessingDirectorySnapshotProvider(new DirectorySnapshot([], [], []));
+        $messages = new ProcessingMessageStore();
+        $storage = new ProcessingFileStorage();
+        $candidates = new ProcessingCandidateStore();
+        $failureLogger = new ProcessingFailureLogger();
+        $contactStore = new ProcessingLearningContactStore();
+        $senderLearning = new SenderLearningService(
+            new ContactService($contactStore, $clock),
+            new SenderParishSuggester($directory)
+        );
+        $job = new InboundMessageProcessingJob(
+            $messages,
+            $storage,
+            new MimeMessageParser(),
+            static function () use ($clock, $directory): Pipeline {
+                return (new PipelineFactory($clock, $directory))->create();
+            },
+            $candidates,
+            $failureLogger,
+            $directory,
+            $clock,
+            $senderLearning
+        );
+
+        $messages->add($this->message(senderEmail: 'stored@example.test'));
+        $storage->files['private-message.eml'] = $this->validEmail();
+
+        $job->processNext(null);
+
+        self::assertSame('failed', $messages->statuses[self::MESSAGE_ID]);
+        self::assertSame([], $contactStore->rows);
+        self::assertSame([], $candidates->candidates[self::MESSAGE_ID] ?? []);
+        self::assertSame(0, $candidates->replaceCalls);
+        self::assertSame(
+            [[
+                'message_id' => self::MESSAGE_ID,
+                'context' => InboundMessageProcessingFailure::CONTEXT_SENDER_LEARNING,
+                'failure_class' => RuntimeException::class,
+            ]],
+            $failureLogger->failures
+        );
     }
 
     public function testUnexpectedProcessingFailureLogsOnlySafeDiagnosticDetails(): void
@@ -788,6 +834,29 @@ final class ProcessingLearningContactStore implements \ADCT\ParishIntake\Core\Po
         ));
     }
 
+    public function savePendingSender(
+        string $email,
+        ?int $suggestedParishId,
+        ?string $source,
+        string $timestamp
+    ): void {
+        $id = $this->nextId++;
+        $this->rows[$id] = [
+            'id' => $id,
+            'parish_id' => 0,
+            'email' => strtolower(trim($email)),
+            'display_name' => '',
+            'role_label' => '',
+            'receives_reminders' => 0,
+            'trust' => SenderTrust::PENDING,
+            'verified_at' => null,
+            'suggested_parish_id' => $suggestedParishId,
+            'suggestion_source' => $source,
+            'created_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ];
+    }
+
     public function findLink(int $contactId, int $parishId): ?array
     {
         $row = $this->rows[$contactId] ?? null;
@@ -891,38 +960,5 @@ final class ProcessingLearningContactStore implements \ADCT\ParishIntake\Core\Po
         }
 
         return $updated;
-    }
-}
-
-final class ProcessingSourceStore implements \ADCT\ParishIntake\Core\Ports\SourceStoreInterface
-{
-    /**
-     * @param array<int, Source> $sources
-     */
-    public function __construct(private array $sources)
-    {
-    }
-
-    public function findSource(int $sourceId): ?Source
-    {
-        return $this->sources[$sourceId] ?? null;
-    }
-
-    public function findForParish(int $parishId): array
-    {
-        return [];
-    }
-
-    public function saveSource(Source $source, string $timestamp): Source
-    {
-        return $source;
-    }
-
-    public function registerOfficialEmailSourceIfMissing(
-        int $parishId,
-        string $email,
-        string $timestamp
-    ): bool {
-        return false;
     }
 }

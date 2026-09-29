@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Core\Jobs;
 
 use ADCT\ParishIntake\Core\Directory\DirectoryLookup;
+use ADCT\ParishIntake\Core\Directory\EmailAddress;
 use ADCT\ParishIntake\Core\Directory\SenderLearningService;
 use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingFailure;
@@ -21,7 +22,6 @@ use ADCT\ParishIntake\Core\Ports\EventCandidateStoreInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingFailureLoggerInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingStoreInterface;
-use ADCT\ParishIntake\Core\Ports\SourceStoreInterface;
 use Closure;
 use DateTimeZone;
 use InvalidArgumentException;
@@ -55,7 +55,6 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
         private InboundMessageProcessingFailureLoggerInterface $failureLogger,
         DirectorySnapshotProviderInterface $directorySnapshots,
         private ClockInterface $clock,
-        private ?SourceStoreInterface $sources = null,
         private ?SenderLearningService $senderLearning = null,
         private ?PdfTextEnrichmentService $pdfTextEnrichment = null
     ) {
@@ -184,6 +183,11 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
             }
 
             $parsedMessage = $parsedMessage->withReceivedAt($message->receivedAt);
+
+            if ($this->senderLearning !== null && ! $message->isAutoReply) {
+                $this->assertStoredAndDecodedSenderMatch($message, $parsedMessage);
+            }
+
             $parsedMessage = $this->appendPdfText($message, $parsedMessage);
             $pipeline = ($this->pipelineFactory)();
 
@@ -203,7 +207,7 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
 
             if ($this->senderLearning !== null && ! $message->isAutoReply && $outcome->getCandidates() !== []) {
                 try {
-                    $this->learnUnknownSender($message, $parsedMessage, $outcome);
+                    $this->learnUnknownSender($parsedMessage, $outcome);
                 } catch (Throwable $failure) {
                     throw new InboundMessageProcessingFailure(
                         'The sender could not be learned safely. Reprocess the message, and contact support if this continues.',
@@ -269,29 +273,37 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
     }
 
     private function learnUnknownSender(
-        InboundMessageProcessingRecord $message,
         Message $parsedMessage,
         ParseOutcome $outcome
     ): void {
-        $senderEmail = trim((string) $parsedMessage->getSenderEmail());
-
-        if ($senderEmail === '' || filter_var($senderEmail, FILTER_VALIDATE_EMAIL) === false) {
-            return;
-        }
-
-        $sourceParishId = $this->sourceParishId($message->sourceId);
-        $this->senderLearning->learnUnknownSender($senderEmail, $sourceParishId, $outcome);
+        $this->senderLearning->learnUnknownSender($parsedMessage, $outcome);
     }
 
-    private function sourceParishId(int $sourceId): ?int
+    private function assertStoredAndDecodedSenderMatch(
+        InboundMessageProcessingRecord $message,
+        Message $parsedMessage
+    ): void
     {
-        if ($this->sources === null) {
-            return null;
+        try {
+            $storedSender = EmailAddress::normalize((string) $message->senderEmail);
+            $decodedSender = EmailAddress::normalize($parsedMessage->getSenderEmail());
+
+            if ($storedSender === $decodedSender) {
+                return;
+            }
+        } catch (Throwable $failure) {
+            throw new InboundMessageProcessingFailure(
+                'The sender could not be learned safely. Reprocess the message after checking its sender.',
+                InboundMessageProcessingFailure::CONTEXT_SENDER_LEARNING,
+                $failure
+            );
         }
 
-        $source = $this->sources->findSource($sourceId);
-
-        return $source?->parishId;
+        throw new InboundMessageProcessingFailure(
+            'The sender could not be learned safely. Reprocess the message after checking its sender.',
+            InboundMessageProcessingFailure::CONTEXT_SENDER_LEARNING,
+            new RuntimeException('The stored sender and decoded From address do not agree.')
+        );
     }
 
     private function nextMessage(): ?InboundMessageProcessingRecord
@@ -342,7 +354,8 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
     }
 
     private function senderIsBlocked(InboundMessageProcessingRecord $message): bool
-    {        $email = trim((string) $message->senderEmail);
+    {
+        $email = trim((string) $message->senderEmail);
 
         if ($email === '' || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
             return false;

@@ -25,6 +25,7 @@ use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
 use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
 use ADCT\ParishIntake\Core\Directory\SenderLearningService;
+use ADCT\ParishIntake\Core\Directory\SenderParishSuggester;
 use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
 use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\Core\Jobs\FrameworkHeartbeatJob;
@@ -96,6 +97,7 @@ use ADCT\ParishIntake\WordPress\Database\ConfirmationEmailPreviewSchemaMigration
 use ADCT\ParishIntake\WordPress\Database\DbDeltaSchemaInstaller;
 use ADCT\ParishIntake\WordPress\Database\MailQueueGroupKeyMigration;
 use ADCT\ParishIntake\WordPress\Database\OccurrenceParishNullableMigration;
+use ADCT\ParishIntake\WordPress\Database\SenderSuggestionMigration;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
@@ -246,7 +248,10 @@ final class Plugin
             $clock
         );
         $contactService = new ContactService($contacts, $clock);
-        $senderLearningService = new SenderLearningService($contactService);
+        $senderLearningService = new SenderLearningService(
+            $contactService,
+            new SenderParishSuggester($directorySnapshots)
+        );
         $venueAdministrationService = new VenueAdministrationService($venues, $clock);
         $approvalRouteResolver = new ApprovalRouteResolver(new ApprovalRouteRepository($database));
         $approvalRecipients = new ApprovalRecipients($approvalRouteResolver);
@@ -467,7 +472,6 @@ final class Plugin
             new WordPressInboundMessageProcessingFailureLogger(),
             $directorySnapshots,
             $clock,
-            $sources,
             $senderLearningService,
             pdfTextEnrichment: new PdfTextEnrichmentService(
                 new WordPressAttachmentExtractionStore(
@@ -903,6 +907,7 @@ final class Plugin
                 new ConfirmationEmailPreviewSchemaMigration($database),
                 new ApprovalNoticesMigration(new DbDeltaSchemaInstaller($database)),
                 new ProcessedMailboxOwnershipSchemaMigration(new DbDeltaSchemaInstaller($database)),
+                new SenderSuggestionMigration(new DbDeltaSchemaInstaller($database)),
             ],
             new WordPressMigrationVersionStore(),
             new WordPressMigrationLogger()

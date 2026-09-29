@@ -11,6 +11,8 @@ interface ParishContactStoreInterface
      */
     public function findByEmail(string $email): array;
 
+    public function savePendingSender(string $email, ?int $suggestedParishId, ?string $source, string $timestamp): void;
+
     /**
      * @return array<string, mixed>|null
      */

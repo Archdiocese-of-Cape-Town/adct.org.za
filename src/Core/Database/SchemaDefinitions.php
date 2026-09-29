@@ -103,6 +103,8 @@ CREATE TABLE {table_prefix}adct_pi_parish_contacts (
     display_name varchar(191) NULL,
     role_label varchar(191) NULL,
     trust varchar(20) NOT NULL DEFAULT 'unknown',
+    suggested_parish_id bigint(20) unsigned NULL,
+    suggestion_source varchar(20) NULL,
     verified_at datetime NULL,
     wp_user_id bigint(20) unsigned NULL,
     last_seen_at datetime NULL,

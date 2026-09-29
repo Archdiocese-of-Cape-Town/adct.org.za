@@ -92,9 +92,11 @@ final class MigrationRunnerTest extends TestCase
 
     public static function migrationPathCases(): iterable
     {
-        yield 'fresh 0 to v9' => [0, 9, [1, 2, 3, 4, 5, 6, 7, 8, 9]];
-        yield 'legacy upgrade 6 to v9' => [6, 9, [7, 8, 9]];
-        yield 'installed upgrade 8 to v9' => [8, 9, [9]];
+        yield 'fresh 0 to v10' => [0, 10, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]];
+        yield 'legacy upgrade 6 to v10' => [6, 10, [7, 8, 9, 10]];
+        yield 'installed upgrade 7 to v10' => [7, 10, [8, 9, 10]];
+        yield 'installed upgrade 8 to v10' => [8, 10, [9, 10]];
+        yield 'installed upgrade 9 to v10' => [9, 10, [10]];
     }
 
     public function testVersionIsWrittenOnlyAfterItsMigrationSucceeds(): void
@@ -169,11 +171,11 @@ final class MigrationRunnerTest extends TestCase
     public function testMigrationVersionGapCannotAdvanceTheStoredHighWater(): void
     {
         $steps = [];
-        for ($version = 1; $version <= 8; ++$version) {
+        for ($version = 1; $version <= 9; ++$version) {
             $steps[] = new RecordingMigrationStep($version);
         }
-        $steps[] = new RecordingMigrationStep(10);
-        $store = new FakeMigrationVersionStore(8);
+        $steps[] = new RecordingMigrationStep(11);
+        $store = new FakeMigrationVersionStore(9);
 
         try {
             new MigrationRunner($steps, $store, new FakeMigrationLogger());
@@ -182,7 +184,7 @@ final class MigrationRunnerTest extends TestCase
             self::assertStringContainsString('contiguous', $failure->getMessage());
         }
 
-        self::assertSame(8, $store->getVersion());
+        self::assertSame(9, $store->getVersion());
         self::assertSame([], $store->writtenVersions);
     }
 }
