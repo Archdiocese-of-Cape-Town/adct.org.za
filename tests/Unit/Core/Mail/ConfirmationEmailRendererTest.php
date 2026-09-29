@@ -15,6 +15,41 @@ use PHPUnit\Framework\TestCase;
 
 final class ConfirmationEmailRendererTest extends TestCase
 {
+    public function testPublishedChangePreviewNamesTheExistingEventAndChangeKind(): void
+    {
+        foreach ([
+            'update' => 'This will update: Parish market',
+            'cancellation' => 'This will cancel: Parish market',
+            'postponement' => 'This will postpone: Parish market',
+        ] as $kind => $label) {
+            $candidate = new ConfirmationEmailCandidate(
+                101,
+                ['title' => 'Parish market', 'event_date' => '2026-10-17', 'event_time' => '10:00'],
+                [],
+                0.9,
+                [],
+                $kind,
+                'Parish market'
+            );
+            $batch = new ConfirmationEmailBatch(
+                901, 4, 'sender@example.test', 'Example Sender', 'Event notice',
+                new DateTimeImmutable('2026-10-01 12:00:00', new DateTimeZone('Africa/Johannesburg')),
+                null, SenderTrust::UNKNOWN, SenderTrust::UNKNOWN, false, null, [$candidate]
+            );
+            $links = new ConfirmationEmailActionLinks(
+                'https://adct.example.test/action?token=all',
+                [101 => [
+                    'approve' => 'https://adct.example.test/action?token=approve',
+                    'deny' => 'https://adct.example.test/action?token=deny',
+                    'edit' => 'https://adct.example.test/action?token=edit',
+                ]]
+            );
+            $content = (new ConfirmationEmailRenderer())->render($batch, $links);
+            self::assertStringContainsString($label, $content->html);
+            self::assertStringContainsString($label, $content->text);
+        }
+    }
+
     public function testHtmlAndPlainTextRenderEveryCandidateAndEscapeUntrustedValues(): void
     {
         $candidate = new ConfirmationEmailCandidate(
@@ -87,7 +122,7 @@ final class ConfirmationEmailRendererTest extends TestCase
         self::assertStringContainsString('aria-label="please check"', $content->html);
         self::assertStringContainsString('color:#704f00;">Please check</span>', $content->html);
         self::assertStringContainsString('(please check)', $content->text);
-        self::assertStringContainsString('Approve all (not active)', $content->text);
-        self::assertStringContainsString('clicking one will not approve, deny, edit, or publish', $content->text);
+        self::assertStringContainsString('Confirm all:', $content->text);
+        self::assertStringContainsString('the Edit link is not active yet', $content->text);
     }
 }

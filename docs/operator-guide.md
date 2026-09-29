@@ -35,13 +35,23 @@ Parish Intake adds these WordPress roles and capabilities:
 | Intake reviewer (`adct_pi_intake_reviewer`) | Review, reports and event management. |
 | Editor | Review, reports and event management. The Parish Intake review access is **provisional** and the project owner may change it. |
 | Parish contact (`parish_contact`) | Read only; cannot use `wp-admin` or the admin bar. |
-| Deanery approver (`deanery_approver`) | Deanery approval only; cannot use `wp-admin` or the admin bar. |
+| Deanery approver (`deanery_approver`) | Deanery approval only; can open their scoped Review queue in `wp-admin`, but not other admin screens or the admin bar. |
 
 Assign a role from **Users → All Users → Edit** (or while adding a user). Role changes are additive: upgrades add missing Parish Intake capabilities and do not replace other capabilities already assigned to a role.
 
 A deanery approver must also have an active assignment to one or more deaneries. Manage these assignments from **Parish Intake → Deaneries**; a role without an active assignment cannot approve deanery items, so do not attempt direct database edits. An archdiocese reviewer with the `adct_pi_review` capability can approve items from any deanery, including parishes with no deanery.
 
-The parish portal, magic-link sign-in and its long-session policy are separate later work. The directory screens manage deanery assignments, but parish contacts and deanery approvers still do not gain a `wp-admin` interface.
+The parish portal, magic-link sign-in and its long-session policy are separate later work. Parish contacts still cannot use `wp-admin`; assigned deanery approvers can open only their Review queue.
+
+### Review incoming events
+
+Reviewers open **Parish Intake → Review queue**. Assigned deanery approvers can open the **Review queue** top-level menu; they see only candidates for parishes in their active deaneries. The menu badge counts all their awaiting-approval candidates, including flagged ones. Use the sender, parish or event-title search to narrow results; counts then reflect that search. **Awaiting approval** is a scoped all-items view, while **Unknown senders** and **Low confidence** are disjoint priority categories (unknown sender takes precedence). **Failed** includes expired items, failed previews, unusual states and approvals still awaiting publication; **Awaiting submitter** includes unsent drafts and is read-only. **Recently published** and **Recent decisions** show only the past 30 days. **Recent changes** stays empty until #71 implements verified-contact instant changes; ordinary approved updates are not shown as instant changes.
+
+Select up to 25 pending items to approve or reject. The first decision wins; subsequent attempts cannot overwrite it, and the row displays the deciding address and UTC time. If publishing fails after an approval is recorded, the item stays in the queue's **Failed** category, and the same approver can select it again to retry publication without another decision or audit record. Dean retries are matched to the active deanery assignment, even when its email differs from the WordPress account email. Fix invalid event details before retrying. Ambiguous matches and pending duplicates cannot be bulk-approved: they need manual match resolution in the future candidate editor (#61); an undecided item still in awaiting approval can instead be rejected. The candidate link opens a bounded read-only preview, not an editor.
+
+If a future parser supplies skipped-section notes, the queue shows only a generic warning and the count of potentially missed sections, never the skipped source text. Those notes will start flowing from #98; this screen does not invent missing parser findings.
+
+Reviewers may assign selected *undecided awaiting-approval* candidates to an active parish. This updates the candidate and approval route, **not** the sender's trust; verify or link the sender separately on **Parish Intake → Senders**. If the candidate has a venue from a different parish, assignment stops until the venue is resolved. A deanery approver cannot reassign a parish. Each successful decision or assignment creates a candidate audit record. Nothing on this screen sends email or changes the live site without an operator's action.
 
 ### Create and edit events
 
@@ -53,7 +63,7 @@ Under **Events → All Events**, use the Parish, Next date, Recurring, Featured 
 
 Occurrences use the inclusive site-local date window from today through the same date one year later. A leap-day window anniversary ends on February 28; a yearly February 29 event has no instance in non-leap years. UNTIL includes its boundary. DTSTART is retained and counts as the first RRULE occurrence even if it does not match its filters. COUNT is applied before exclusions; additional dates do not consume COUNT and can be later than UNTIL; excluded dates remove matching RRULE or additional-date starts. Negative BYDAY ordinals count backward from the end of the month or year: `-1SU` is the last Sunday and `-1FR` the last Friday. A missing fifth weekday in a month is skipped, not moved into the next month. These are provisional, reversible expansion defaults. The daily **Occurrence expansion** job refreshes the window in bounded batches and resumes from a saved checkpoint; use **Parish Intake → Scheduled jobs → Run now** to retry it manually.
 
-The status flag is separate from WordPress's Draft/Published post status: it records Scheduled, Cancelled or Postponed. Publishing an event makes the post public; changing it away from Published or deleting it removes its occurrence rows. Cancelled occurrences remain stored and are marked cancelled; postponed occurrences remain stored and are not marked cancelled, while the event's Postponed status remains available for display. If occurrence rebuilding fails, the previous rows are preserved; the REST save reports an error, or the event editor shows an admin notice with a retry/contact instruction. A failed REST create has still saved the event and its error includes the event ID; update that saved event instead of repeating the create request. Contact name, email and phone are private event metadata, available only to users who can edit the event and never exposed by the public REST API. The starter event types (Social, Spiritual, Formation, Liturgy/Mass, Youth, Outreach, Fundraising, Meeting and Other) are **provisional**. Administrators and Editors can manage terms under **Events → Event Types**; event editors can assign existing terms. The occurrence row stores the lowest type ID for compatibility, but public listing filters match **any** assigned type.
+The status flag is separate from WordPress's Draft/Published post status: it records Scheduled, Cancelled or Postponed. Publishing an event makes the post public; changing it away from Published or deleting it removes its occurrence rows. Cancelled occurrences remain stored and are marked cancelled; postponed occurrences remain stored and are not marked cancelled, while the event's Postponed status remains available for display. If occurrence rebuilding fails, the previous rows are preserved; the REST save reports an error, or the event editor shows an admin notice with a retry/contact instruction. A failed REST create has still saved the event and its error includes the event ID; update that saved event instead of repeating the create request. Contact name, email and phone are private event metadata, available only to users who can edit the event and never exposed by the public REST API. The starter event types (Social, Spiritual, Formation, Liturgy/Mass, Youth, Outreach, Fundraising, Meeting, Pilgrimage and Other) are **provisional**. Administrators and Editors can manage terms under **Events → Event Types**; event editors can assign existing terms. Edit a type's **Classification keywords** there, one word or phrase per line (up to 25 phrases, at most 100 bytes each and 3 KB total). A blank list disables automatic matching for that type; new custom types can have keywords too. The next parsed message uses the edited list without a deployment. The parser compares whole words/phrases in each event's cleaned title and body, weights title matches twice, and chooses a unique highest-scoring type. Ties and no match use Other with low *type* confidence (0.2); general parser confidence remains independent. Keyword matches are not copied into public event descriptions or diagnostic notes. Review the proposed type before approval: automatic types are assigned to new events, but subsequent automatically typed updates do not replace a type already chosen on the event. If several types are assigned, the occurrence row stores the lowest term ID for index compatibility; public listing filters match any assigned type.
 
 ### Public event listing
 Visitors can subscribe to the public calendar at `https://<site>/?adct_ics=1`, or to one parish with `&parish=<parish ID>` or one event type with `&type=<event type ID or slug>` (both may be combined). The feed uses Africa/Johannesburg time, a rolling year of published events, recurrence rules and cancellations. To keep shared hosting safe, a feed with more than 500 distinct events returns a temporary error rather than an incomplete calendar; use a parish or type feed. Subscribe links in the event listing await reconciliation with the separately developed listing filters (#116).
@@ -69,6 +79,8 @@ An Administrator or Intake manager with the `adct_pi_manage_directory` capabilit
 Edit a deanery to assign several approvers. Select an existing WordPress user or create a new account, then set the approval email, label, per-item or daily-digest notifications, reminders and active status. The approval email is separate from the WordPress account email. A newly created account receives a random password and **no WordPress new-user notification or other email**. Existing users keep their other WordPress roles when `deanery_approver` is added. Deactivating an assignment preserves its row; the role is removed only when that user has no other active deanery assignments.
 
 A parish in an inactive deanery, a parish with no deanery, or a parish whose deanery has no active approver is clearly marked **Reviewers only**. Its events remain reviewable by archdiocese reviewers; they never wait for a dean to be set up.
+
+After a submitter confirms, run **Parish Intake → Scheduled jobs → Queue approver decisions and digests** if you need to send notices before the next scheduled run. Each eligible deanery approver and reviewer receives at most one grouped email of up to 20 events per run; a reviewer can switch between grouped notices and a daily digest on their WordPress profile, while deanery assignments set that preference for deans. A digest is sent at most once per local day; new items after it was queued wait for the next day. Links show the preview on GET, and only pressing the POST button records a decision. The first approver wins; later visitors see who decided and when. The Edit link lets an approver correct title, date, time and description without publishing; parish or venue corrections and ambiguous matches need manual attention. Rejection may include a short reason for the submitter. The submitter gets a queued live link after successful publication. All mail passes through the same capped outbound queue without attachments.
 
 ## Manage the parish directory
 
@@ -152,6 +164,7 @@ The admin banner remains visible while Test mode is on. A message to a non-allow
 
 The **Queue event confirmation previews** job runs every 10 minutes. For each parsed inbound message with draft event candidates, it composes one HTML and plain-text email containing every draft candidate, then enqueues that message through the outbound queue. It addresses a safe sender or a verified, safe Reply-To. The preview uses table-based email markup, highlights uncertain details, and replies with sanitized `In-Reply-To` and `References` headers when the original Message-ID is valid.
 
+The **Manual parser** is diagnostic-only: it saves the test parse in the legacy prototype table, but does not create an inbound-message/candidate record, issue action tokens or enqueue confirmation email. Only the background jobs process stored inbox mail for confirmation.
 The Mailboxes screen's **Recent message screening and confirmation** summary shows the latest confirmation outcome without displaying the sender, subject, raw headers or message body:
 
 - **Queued for delivery** means the outbound queue accepted the message; delivery may still be pending.
@@ -226,6 +239,14 @@ The screen shows verdicts and their configured trust status, not raw headers or 
 
 Raw mail and accepted attachments are kept in a private uploads subdirectory protected by `.htaccess` deny rules and an `index.php` guard. Attachment storage is provisional: PDF, JPEG, PNG, WebP, HEIC and HEIF files are accepted only when the declared MIME type matches the file signature and the file is no larger than 15 MiB. Other attachments are not stored; their metadata and skip reason appear as a warning on the Mailboxes screen. Messages over the mailbox's configured size limit are recorded as skipped, moved to a `Too large` folder created by the poller, and listed with an administrator-visible warning. For processing failures, use the Inbox's stored reason, fix the issue, then reprocess that message there; check Scheduled jobs if the bounded run itself fails.
 
+### Configure retention cleanup
+
+Retention cleanup is **off by default**. On **Parish Intake → Settings**, the raw-data and Processed-folder options are separate switches with separate day limits, and action-token cleanup plus audit-log cleanup have their own off-by-default switches. Enable them only when the parish no longer needs the original `.eml` files, attachment files or mailbox copies for review. When enabled, the daily retention job deletes only data that is past retention and keeps the message/candidate metadata needed for idempotency, failed retries and health checks.
+
+Raw-data retention removes the stored raw message, attachment files and normalized body text after the configured age, but only once the per-message `retention_until` floor written at ingest has also passed, so shortening the setting later does not make existing rows disappear sooner. The underlying message row stays in place, including candidate, audit and attachment metadata for terminal rows. Messages still waiting for review or retry keep their raw file and body text. Processed-folder pruning removes only UIDs recorded from successful plugin moves with an exact IMAP `COPYUID` mapping and matching mailbox identity and UIDVALIDITY. Pre-existing or untracked old messages are never deleted; if the server does not provide an exact mapping, that copy remains in the folder. Ownership records are kept across daily runs so a message is still eligible when it ages past the configured limit. Both cleanup modes are irreversible; if you need to keep evidence for audit or reprocessing, leave them disabled or choose a longer retention period. Invalid settings are shown as a warning on the settings page, and cleanup never runs when the configuration is unsafe.
+
+Safe IMAP deletion also requires server UIDPLUS support. If UIDPLUS is unavailable, cleanup fails closed, leaves processed-folder mail in place and records a job error.
+
 **PDF posters.** When a message carries a PDF attachment, the plugin reads its text layer in pure PHP and feeds it to the parser, so a notice sent only as a PDF still produces candidates. It stops at 15 MB, 10 pages or 10 seconds, reads at most 3 PDFs per message, and does not do OCR. A PDF that produces no text — a scan, an oversized file, too many pages, a slow or damaged file — is listed as a **PDF posters that could not be read** warning on the **Parish Intake → Manual parser** screen, with the reason for each. Enter those events by hand; the email around them was still processed, so any event described in the text of the email already appears normally. A scanned poster can only be read once optional OCR lands (E8.3).
 
 ### Configure keys and password constants
@@ -248,7 +269,7 @@ The values above are placeholders; replace them with the site's credentials and 
 
 Do this on an isolated staging site with a recent database backup; do not change schema options on the live site. Before the first non-prerelease GitHub Release, use a **new disposable database** for fresh-install checks when a schema change has no historical upgrade path. Do not reset a staging copy whose data must be retained; ask for a tested, data-preserving migration instead ([ADR 0016](decisions/0016-pre-release-schema-changes.md)).
 
-1. On a fresh, isolated staging install, activate the plugin and use the site's database manager to confirm `adct_pi_db_version` matches the [current schema version](data-model.md), and that the documented `adct_pi_*` tables and indexes exist (currently 17 tables at version 7). Confirm `adct_pi_occurrences.parish_id` is nullable and the venue, source, mailbox, mail-queue and rate-limit tables have the documented columns and indexes.
+1. On a fresh, isolated staging install, activate the plugin and use the site's database manager to confirm `adct_pi_db_version` matches the [current schema version](data-model.md), and that the documented `adct_pi_*` tables and indexes exist (currently 19 tables at version 9). Confirm `adct_pi_occurrences.parish_id` is nullable and the venue, source, mailbox, mail-queue, rate-limit, approval-notice and processed-mail-ownership tables have the documented columns and indexes.
 2. If checking a **supported** upgrade path on a staging copy with data to retain, make a backup, update/activate the plugin and visit a WordPress admin page. Verify the expected schema version, required columns and indexes, unchanged row counts and no database-upgrade error notice. Never force the version option forward or treat a pre-release version number alone as proof that a changed canonical schema was applied.
 3. Confirm the prototype `wp_adct_parish_intake_items` table and its row count are unchanged, then open **Parish Intake → Manual parser** and verify that recent stored parses still appear when testing an existing installation.
 
@@ -284,23 +305,11 @@ To start a registered job manually, an Administrator or Intake manager can open 
 
 ## Uninstall and data retention
 
-Open **Parish Intake → Data retention** to set how long private inbound
-email files are kept (1–120 months; default 12 for newly received messages)
-and how long copies in each active mailbox's Processed folder are kept
-(1–3650 days; default 90). Changing the file setting does not rewrite
-deadlines on already received messages. The daily **Remove expired private
-data** job runs in bounded batches, resuming from its checkpoint; use
-**Parish Intake → Scheduled jobs** to check failures and retry. It removes
-old raw messages and attachments only after their deadline and once their
-processing has stopped; no published events or event change history are
-deleted. An expired failed message with a removed raw file cannot be
-reprocessed. Tokens expire and are removed 30 days later; audit entries
-are removed after 24 months.
-
-The Processed-folder cleanup requires the mailbox server to support
-UIDPLUS. If a mailbox does not support it, the job stops with an error
-instead of risking deletion of unrelated mail. Check the mailbox setting
-and server capabilities before retrying; never use the plugin against a
-live mailbox as a dry-run test.
+Use **Parish Intake → Settings** to configure retention; all cleanup
+options are off by default. The daily `retention_cleanup` job runs in
+bounded batches and appears under **Parish Intake → Scheduled jobs**.
+See [Configure retention cleanup](#configure-retention-cleanup) above for
+the day limits, per-message deadline, receipt ownership, and UIDPLUS
+requirements. Never use the plugin against a live mailbox as a dry-run test.
 
 Uninstalling the plugin removes its custom roles and Parish Intake capabilities from the built-in Administrator and Editor roles. It does **not** drop Parish Intake tables or delete plugin data. Data deletion requires a separate owner decision.

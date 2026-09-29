@@ -71,6 +71,31 @@ final class CandidatePublisherTest extends TestCase
         yield 'rejected' => [['status' => 'rejected']];
     }
 
+    #[DataProvider('manualReviewMatches')]
+    public function testCandidatesRequiringManualMatchReviewCannotBePublished(array $reviewFields): void
+    {
+        $row = $this->candidate();
+        $fields = json_decode($row['fields'], true, 512, JSON_THROW_ON_ERROR);
+        $row['fields'] = json_encode(array_merge($fields, $reviewFields), JSON_THROW_ON_ERROR);
+        $store = new RecordingPublicationStore($row);
+
+        try {
+            $this->publisher($store)->publish(7);
+            self::fail('A candidate requiring manual match review must not be published.');
+        } catch (DomainException $failure) {
+            self::assertStringContainsString('manual review', $failure->getMessage());
+        }
+
+        self::assertNull($store->publication);
+    }
+
+    public static function manualReviewMatches(): iterable
+    {
+        yield 'ambiguous match' => [['match_review_required' => true]];
+        yield 'pending candidate match' => [['matched_candidate_id' => 42]];
+        yield 'invalid review flag' => [['match_review_required' => 'false']];
+    }
+
     public function testRetryUsesPublishedCandidateLink(): void
     {
         $row = $this->candidate();
