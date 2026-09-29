@@ -49,11 +49,9 @@ $venue = $event['venue'];
 
         <section class="adct-event__actions" aria-label="Calendar options">
             <a class="button" href="<?php echo esc_url($event['calendar_url']); ?>">Download ICS</a>
-            <?php if ($event['google_calendar_url'] !== null) : ?>
-                <a class="button button-primary" href="<?php echo esc_url($event['google_calendar_url']); ?>" target="_blank" rel="noopener noreferrer">
-                    Add to Google Calendar
-                </a>
-            <?php endif; ?>
+            <a class="button button-primary" href="<?php echo esc_url($event['google_calendar_url']); ?>" target="_blank" rel="noopener noreferrer">
+                Add to Google Calendar
+            </a>
         </section>
 
         <section class="adct-event__details" aria-label="Event details">

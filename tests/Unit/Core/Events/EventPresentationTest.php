@@ -45,6 +45,15 @@ final class EventPresentationTest extends TestCase
             true,
             null
         );
+        $allDayWithoutEnd = EventPresentation::googleCalendarUrl(
+            'All day event without an end',
+            'Public details',
+            '',
+            new DateTimeImmutable('2026-10-02T00:00:00+02:00'),
+            null,
+            true,
+            null
+        );
         $multiDayAllDay = EventPresentation::googleCalendarUrl(
             'Multi day event',
             'Public details',
@@ -57,6 +66,7 @@ final class EventPresentationTest extends TestCase
 
         parse_str((string) parse_url($timed, PHP_URL_QUERY), $timedQuery);
         parse_str((string) parse_url($allDay, PHP_URL_QUERY), $allDayQuery);
+        parse_str((string) parse_url($allDayWithoutEnd, PHP_URL_QUERY), $allDayWithoutEndQuery);
         parse_str((string) parse_url($multiDayAllDay, PHP_URL_QUERY), $multiDayQuery);
 
         self::assertSame('TEMPLATE', $timedQuery['action'] ?? null);
@@ -66,8 +76,51 @@ final class EventPresentationTest extends TestCase
         self::assertSame('20261002T160000Z/20261002T170000Z', $timedQuery['dates'] ?? null);
         self::assertSame('RRULE:FREQ=WEEKLY;COUNT=5', $timedQuery['recur'] ?? null);
         self::assertSame('20261002/20261003', $allDayQuery['dates'] ?? null);
+        self::assertSame('20261002/20261003', $allDayWithoutEndQuery['dates'] ?? null);
         self::assertSame('20261002/20261004', $multiDayQuery['dates'] ?? null);
         self::assertArrayNotHasKey('recur', $allDayQuery);
+    }
+
+    public function testGoogleCalendarUrlIncludesTimedAndAllDayRecurrenceExceptionsAndAdditions(): void
+    {
+        $timed = EventPresentation::googleCalendarUrl(
+            'Recurring timed event',
+            'Public details',
+            '',
+            new DateTimeImmutable('2026-10-02T18:00:00+02:00'),
+            new DateTimeImmutable('2026-10-02T19:00:00+02:00'),
+            false,
+            'FREQ=WEEKLY;COUNT=5',
+            ['2026-10-09T18:00'],
+            ['2026-10-10T18:00']
+        );
+        $allDay = EventPresentation::googleCalendarUrl(
+            'Recurring all-day event',
+            'Public details',
+            '',
+            new DateTimeImmutable('2026-10-02T00:00:00+02:00'),
+            new DateTimeImmutable('2026-10-02T00:00:00+02:00'),
+            true,
+            'FREQ=DAILY;COUNT=5',
+            ['2026-10-03T00:00'],
+            ['2026-10-04T00:00']
+        );
+
+        parse_str((string) parse_url($timed, PHP_URL_QUERY), $timedQuery);
+        parse_str((string) parse_url($allDay, PHP_URL_QUERY), $allDayQuery);
+
+        self::assertSame(
+            "RRULE:FREQ=WEEKLY;COUNT=5\n"
+                . "EXDATE;TZID=Africa/Johannesburg:20261009T180000\n"
+                . 'RDATE;TZID=Africa/Johannesburg:20261010T180000',
+            $timedQuery['recur'] ?? null
+        );
+        self::assertSame(
+            "RRULE:FREQ=DAILY;COUNT=5\n"
+                . "EXDATE;VALUE=DATE:20261003\n"
+                . 'RDATE;VALUE=DATE:20261004',
+            $allDayQuery['recur'] ?? null
+        );
     }
 
     public function testMapUrlUsesCoordinatesOrAddress(): void

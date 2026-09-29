@@ -98,7 +98,7 @@ final class PublicEventPage
      *     contact: array{name: string, email: string, phone: string},
      *     poster: array{url: string, width: int, height: int, alt: string}|null,
      *     calendar_url: string,
-     *     google_calendar_url: string|null,
+     *     google_calendar_url: string,
      *     json_ld: array<string, mixed>,
      *     status_banner: string,
      *     status_class: string
@@ -225,7 +225,7 @@ final class PublicEventPage
     }
 
     /**
-     * @return array{name: string, address: string, suburb: string}
+     * @return array{name: string, address: string, suburb: string, latitude: float|null, longitude: float|null}
      */
     private function venueData(?int $venueId): array
     {
@@ -330,11 +330,7 @@ final class PublicEventPage
         string $rrule,
         array $exdates,
         array $rdates
-    ): ?string {
-        if ($rrule !== '' && ($exdates !== [] || $rdates !== [])) {
-            return null;
-        }
-
+    ): string {
         return EventPresentation::googleCalendarUrl(
             wp_strip_all_tags($title),
             wp_strip_all_tags($description),
@@ -342,7 +338,9 @@ final class PublicEventPage
             $startLocal,
             $endLocal,
             $allDay,
-            $rrule === '' ? null : $rrule
+            $rrule === '' ? null : $rrule,
+            $exdates,
+            $rdates
         );
     }
 
