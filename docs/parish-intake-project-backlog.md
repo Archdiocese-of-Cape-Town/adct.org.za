@@ -14,7 +14,7 @@ Each phase ends with something usable. Don't start a later phase's issues until 
 
 ### Phase 0 – Foundations
 Tooling and structure so everything after it is safe to build.
-**Exit criteria:** CI runs unit and fixture tests on PHP 8.2–8.4. Every PR gets a "Preview in WordPress Playground" button built from the CI zip. The domain core is separated from WordPress. The new schema is installed by migrations. The known date-parsing bugs are fixed with tests. Hosting unknowns are answered.
+**Exit criteria:** CI runs unit and fixture tests on PHP 8.2–8.4. Every PR gets a "Preview in WordPress Playground" button built from the CI zip. The domain core is separated from WordPress. The new schema installs on a fresh database and existing upgrade paths remain tested; future upgrade paths follow the pre-release boundary in [ADR 0016](decisions/0016-pre-release-schema-changes.md). The known date-parsing bugs are fixed with tests. Hosting unknowns are answered.
 
 ### Phase 1 – MVP email loop
 **Exit criteria (the MVP demo):**

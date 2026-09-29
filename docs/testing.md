@@ -4,6 +4,8 @@ Tests protect the project from breaking as more people and sessions work on it.
 
 **Rule: never remove or weaken a test just because the implementation fails it.** Fix the implementation. If a test's expectation really is wrong, change it in its own commit that explains why (e.g. "fixture expected US date order; SA uses DD/MM").
 
+For pre-release schema changes, test the built zip on an isolated **fresh** WordPress database and assert the changed tables, columns and indexes; do not add a historical upgrade test solely for a disposable test installation. Keep existing migration tests. If existing data must survive, test its migration as well, even before release. After the first non-prerelease GitHub Release, test both fresh installs and upgrades for every schema change ([ADR 0016](decisions/0016-pre-release-schema-changes.md)). Never rebuild a live or persistent database to avoid writing a migration.
+
 ## Test layers
 
 | Layer | What | Where it runs | When |
@@ -114,7 +116,7 @@ All of these use the **same zip that CI builds**. The plugin bundles prefixed Co
 There is no permanent staging site. Before the first launch (and optionally before big releases):
 - Create a temporary xneelo instance (e.g. a subdomain with its own database) with the release zip and a separate test mailbox (e.g. `events-test@adct.org.za`).
 - Before connecting SMTP or testing confirmations, enable **Parish Intake → Outbound email → Test mode**, add only the test mailbox address/domain to the allow-list, and confirm the conspicuous admin banner appears. Verify a non-allow-listed fixture is shown as suppressed and is not delivered; test mode restricts Parish Intake queue mail only.
-- Release checklist: install zip → run migrations → send test emails (single event, bulletin, poster PDF, recurring event) → confirm via the emailed links → approve as a dean and as a reviewer → make a change as a verified contact and revert it → check the events page and ICS feed → check the health dashboard, that the 2-hourly xneelo cron and the external pinger both trigger jobs within the time budget, and that the mail queue respects the hourly cap.
+- Release checklist: install zip on a fresh separate database → verify the automatically installed schema and record its version for the first non-prerelease release → send test emails (single event, bulletin, poster PDF, recurring event) → confirm via the emailed links → approve as a dean and as a reviewer → make a change as a verified contact and revert it → check the events page and ICS feed → check the health dashboard, that the 2-hourly xneelo cron and the external pinger both trigger jobs within the time budget, and that the mail queue respects the hourly cap. For later releases, also verify a data-preserving upgrade from the supported release baseline.
 - Remove the instance afterwards. Launch starts with a few pilot parishes.
 
 ## Running tests locally

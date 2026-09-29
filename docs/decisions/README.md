@@ -19,6 +19,7 @@ Short records of important decisions: what was decided, why, and what follows fr
 | [0013](0013-built-in-pure-php-imap-client.md) | Built-in pure-PHP IMAP client | Accepted |
 | [0014](0014-mail-mime-parser-4-x.md) | MIME parser 4.x to keep wide transitive constraints | Accepted |
 | [0015](0015-pure-php-pdf-text-extraction.md) | Pure-PHP PDF text extraction with hard limits | Accepted |
+| [0016](0016-pre-release-schema-changes.md) | Pre-release schema changes on disposable installations; migrations after first release | Accepted |
 
 Template:
 
