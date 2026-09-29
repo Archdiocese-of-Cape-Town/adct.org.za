@@ -610,13 +610,20 @@ final class RuleBasedExtractionStage implements StageInterface
 
     private function extractFirstTime(string $text): ?string
     {
+        $citations = $this->scriptureCitationSpans($text);
+
         preg_match_all(
             '~\b(?:\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2})\b~i',
             $text,
-            $matches
+            $matches,
+            PREG_OFFSET_CAPTURE
         );
 
-        foreach ($matches[0] as $match) {
+        foreach ($matches[0] as [$match, $offset]) {
+            if ($this->isScriptureCitation($citations, $offset, strlen($match))) {
+                continue;
+            }
+
             $time = $this->normalizeTime($match);
 
             if ($time !== null) {
@@ -625,6 +632,53 @@ final class RuleBasedExtractionStage implements StageInterface
         }
 
         return null;
+    }
+
+    /**
+     * Locates scripture citations in the text. A citation is a capitalised word
+     * followed by a chapter number, a colon and a verse, optionally continuing into a
+     * verse range. Anchoring on the word before the chapter — rather than on a list of
+     * book names — is what keeps this rule based on the shape of a citation, so a book
+     * this has never seen is still recognised.
+     *
+     * @return list<array{start: int, end: int}>
+     */
+    private function scriptureCitationSpans(string $text): array
+    {
+        $spans = [];
+
+        preg_match_all(
+            '~(?<![:\w])(?<book>[A-Z][A-Za-z]{1,20}(?:\s+[A-Z][A-Za-z]{1,20}){0,2})\s+'
+            . '(?<chapter>\d{1,3}):(?<verse>\d{1,3})\b(?:'
+            . '\s*[\-–—]\s*\d{1,3}\b'
+            . ')?~u',
+            $text,
+            $matches,
+            PREG_OFFSET_CAPTURE
+        );
+
+        foreach ($matches[0] as [$citation, $offset]) {
+            $spans[] = [
+                'start' => $offset,
+                'end' => $offset + strlen($citation),
+            ];
+        }
+
+        return $spans;
+    }
+
+    /**
+     * @param list<array{start: int, end: int}> $citations
+     */
+    private function isScriptureCitation(array $citations, int $offset, int $length): bool
+    {
+        foreach ($citations as $citation) {
+            if ($offset >= $citation['start'] && ($offset + $length) <= $citation['end']) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function normalizeTime(string $time): ?string
