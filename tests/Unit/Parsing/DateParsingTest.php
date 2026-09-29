@@ -186,6 +186,64 @@ final class DateParsingTest extends TestCase
         self::assertSame('2026-10-06', $result['fields']['event_end_date'] ?? null);
     }
 
+    #[DataProvider('replacementNotices')]
+    public function testChangeNoticeUsesReplacementSchedule(
+        string $body,
+        string $date,
+        string $time
+    ): void {
+        $result = self::parse($body, '2026-10-01', 'Postponement: parish market');
+
+        self::assertSame($date, $result['fields']['event_date'] ?? null);
+        self::assertSame($time, $result['fields']['event_time'] ?? null);
+        self::assertArrayNotHasKey('event_end_date', $result['fields']);
+        self::assertArrayNotHasKey('event_end_time', $result['fields']);
+    }
+
+    public static function replacementNotices(): iterable
+    {
+        yield 'postponement' => [
+            'The market originally set for 10 October 2026 at 09:00 is postponed to 17 October 2026 at 10:00.',
+            '2026-10-17',
+            '10:00',
+        ];
+        yield 'rescheduled date and time' => [
+            'Previously 10 October 2026 at 09:00; rescheduled to 17 October 2026 at 10:00.',
+            '2026-10-17',
+            '10:00',
+        ];
+    }
+
+    public function testUnrelatedTwoDateNoticeStillUsesFirstDateAndTime(): void
+    {
+        $result = self::parse(
+            'The market is on 10 October 2026 at 09:00. Registration closes 17 October 2026 at 10:00.'
+        );
+
+        self::assertSame('2026-10-10', $result['fields']['event_date'] ?? null);
+        self::assertSame('09:00', $result['fields']['event_time'] ?? null);
+    }
+
+    public function testChangeNoticeWithoutReplacementDateDoesNotInventOne(): void
+    {
+        $result = self::parse('The market on 10 October 2026 at 09:00 is postponed to a later date.');
+
+        self::assertSame('2026-10-10', $result['fields']['event_date'] ?? null);
+        self::assertSame('09:00', $result['fields']['event_time'] ?? null);
+        self::assertTrue($result['reprocess_needed']);
+        self::assertTrue($result['fields']['replacement_schedule_unresolved']);
+        self::assertStringContainsString('replacement date', implode(' ', $result['notes']));
+    }
+
+    public function testTimeOnlyRescheduleUsesReplacementTimeWithoutInventingADate(): void
+    {
+        $result = self::parse('The market on 10 October 2026 at 09:00 is rescheduled to 10:00.');
+
+        self::assertSame('2026-10-10', $result['fields']['event_date'] ?? null);
+        self::assertSame('10:00', $result['fields']['event_time'] ?? null);
+        self::assertArrayNotHasKey('replacement_schedule_unresolved', $result['fields']);
+    }
+
     public function testDottedDateIsNotMistakenForATime(): void
     {
         $result = self::parse('Sat 15.06.24', '2024-06-01');

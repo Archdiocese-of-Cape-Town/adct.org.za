@@ -10,14 +10,14 @@ use PHPUnit\Framework\TestCase;
 
 final class SenderSuggestionMigrationTest extends TestCase
 {
-    public function testVersionSevenAddsSeparateUnverifiedParishSuggestions(): void
+    public function testVersionTenAddsSeparateUnverifiedParishSuggestions(): void
     {
         $installer = new SenderSuggestionSchemaInstaller();
         $migration = new SenderSuggestionMigration($installer);
 
         $migration->apply();
 
-        self::assertSame(7, $migration->version());
+        self::assertSame(10, $migration->version());
         self::assertCount(1, $installer->statements);
         self::assertStringContainsString(
             'CREATE TABLE {table_prefix}adct_pi_parish_contacts',

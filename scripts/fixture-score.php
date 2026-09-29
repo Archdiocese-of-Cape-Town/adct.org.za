@@ -5,6 +5,7 @@ declare(strict_types=1);
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Tests\Support\FixtureDirectorySnapshotLoader;
 use ADCT\ParishIntake\Tests\Support\EmailFixtureLoader;
+use ADCT\ParishIntake\Tests\Support\EmailFixtureResult;
 use ADCT\ParishIntake\Tests\Support\FixtureComparator;
 
 require dirname(__DIR__) . '/vendor/autoload.php';
@@ -46,10 +47,7 @@ foreach ($paths as $path) {
     $outcome = (new PipelineFactory(null, $directorySnapshots))
         ->create()
         ->parseAll($loader->load($path));
-    $actual = array_merge(
-        $outcome->getPrimaryResult()->toArray(),
-        $outcome->toArray()
-    );
+    $actual = EmailFixtureResult::actual($expected, $outcome);
     $checks = FixtureComparator::compare($expected, $actual);
     $correct = count(array_filter($checks, static fn (array $check): bool => $check['matches']));
     $count = count($checks);

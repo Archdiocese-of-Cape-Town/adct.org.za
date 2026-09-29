@@ -77,7 +77,12 @@ final class SendersPage
             <?php endif; ?>
 
             <p>A sender address can be linked to several parishes. Trust changes apply to every parish link for that address.</p>
-            <p><a href="<?php echo esc_url($this->pageUrl(['trust' => SenderTrust::PENDING])); ?>">Unknown senders (pending confirmation)</a> — parish guesses are suggestions only; check the address and parish before confirming. New events still require dean or reviewer approval.</p>
+            <p>
+                <a href="<?php echo esc_url($this->pageUrl(['trust' => SenderTrust::PENDING])); ?>">Pending senders</a>
+                are unverified. Parish guesses are suggestions only; check the address and choose the correct parish
+                before confirming. Printed bulletin addresses are not learned automatically. New events still require
+                dean or archdiocesan reviewer approval.
+            </p>
 
             <form method="get">
                 <input type="hidden" name="page" value="<?php echo esc_attr(self::PAGE_SLUG); ?>" />
@@ -190,7 +195,7 @@ final class SendersPage
                                                 </label>
                                                 <button type="submit" class="button button-primary">Confirm sender</button>
                                             </form>
-                                        <?php elseif ($trust !== SenderTrust::VERIFIED && ! in_array(0, array_map(static fn (array $link): int => (int) $link['parish_id'], $links), true)) : ?>
+                                        <?php elseif ($trust !== SenderTrust::VERIFIED) : ?>
                                             <?php $this->renderStateActionForm('verify', $email, 'Verify address'); ?>
                                         <?php endif; ?>
                                         <?php $this->renderStateActionForm('block', $email, 'Block address', 'secondary'); ?>

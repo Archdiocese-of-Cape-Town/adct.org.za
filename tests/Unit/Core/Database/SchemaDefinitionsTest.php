@@ -6,6 +6,7 @@ namespace ADCT\ParishIntake\Tests\Unit\Core\Database;
 
 use ADCT\ParishIntake\Core\Database\CreateSchemaMigration;
 use ADCT\ParishIntake\Core\Database\MailboxSchemaMigration;
+use ADCT\ParishIntake\Core\Database\ProcessedMailboxOwnershipSchemaMigration;
 use ADCT\ParishIntake\Core\Database\SchemaDefinitions;
 use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
 use ADCT\ParishIntake\Core\Ports\SchemaInstallerInterface;
@@ -144,6 +145,29 @@ final class SchemaDefinitionsTest extends TestCase
             'max_message_size_bytes bigint(20) unsigned NOT NULL DEFAULT 31457280',
             'active tinyint(1) NOT NULL DEFAULT 1',
             'UNIQUE KEY source_id (source_id)',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $installer->statements[0]);
+        }
+    }
+
+    public function testProcessedMailboxOwnershipMigrationAddsVersionNineTable(): void
+    {
+        $installer = new RecordingSchemaInstaller();
+        $migration = new ProcessedMailboxOwnershipSchemaMigration($installer);
+
+        $migration->apply();
+
+        self::assertSame(9, $migration->version());
+        self::assertCount(1, $installer->statements);
+
+        foreach ([
+            'CREATE TABLE {table_prefix}adct_pi_processed_mail_ownership',
+            'mailbox_identity char(64) NOT NULL',
+            'processed_folder varchar(191) NOT NULL',
+            'uid_validity bigint(20) unsigned NOT NULL',
+            'internal_date datetime NOT NULL',
+            'UNIQUE KEY owned_message (source_id,mailbox_identity,uid_validity,uid)',
+            'KEY retention_lookup (source_id,mailbox_identity,uid_validity,internal_date,uid)',
         ] as $fragment) {
             self::assertStringContainsString($fragment, $installer->statements[0]);
         }

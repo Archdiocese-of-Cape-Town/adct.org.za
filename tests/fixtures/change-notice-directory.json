@@ -1,0 +1,22 @@
+{
+  "parishes": [
+    {
+      "id": 101,
+      "name": "Example Parish",
+      "slug": "example-parish",
+      "area": "Example District",
+      "church": "Example Church",
+      "suburb": "Fictionalville",
+      "aliases": [],
+      "status": "active"
+    }
+  ],
+  "venues": [],
+  "contacts": [
+    {
+      "parish_id": 101,
+      "email": "events@example.test",
+      "trust": "verified"
+    }
+  ]
+}

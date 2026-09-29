@@ -108,7 +108,11 @@ final class WordPressPublicationStore implements PublicationStoreInterface
                 }
                 $eventId = $saved;
 
-                if ($publication->eventType !== null) {
+                $fields = json_decode((string) ($row['fields'] ?? '{}'), true, 512, JSON_THROW_ON_ERROR);
+                $automaticType = is_array($fields) && ($fields['event_type_source'] ?? null) === 'keyword';
+                $existingTerms = $eventId !== null && $before !== null
+                    ? $before['event_type_term_ids'] : [];
+                if ($publication->eventType !== null && (! $automaticType || $existingTerms === [])) {
                     $term = get_term_by('slug', $publication->eventType, EventPostType::TAXONOMY);
                     if (! $term instanceof \WP_Term) {
                         $term = get_term_by('name', $publication->eventType, EventPostType::TAXONOMY);

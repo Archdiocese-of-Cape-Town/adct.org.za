@@ -34,6 +34,15 @@ interface ParishContactStoreInterface
         string $timestamp
     ): void;
 
+    public function savePendingLink(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $timestamp
+    ): int;
+
     public function updateLink(
         int $contactId,
         int $parishId,

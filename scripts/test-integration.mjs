@@ -7,9 +7,14 @@ import { resolveWpEnvHome, stopWpEnvAfterTests } from './wp-env-home.mjs';
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 const releaseZip = join(repositoryRoot, 'dist', 'adct-parish-intake.zip');
+const npmCli = process.env.npm_execpath;
 
 if (!existsSync(releaseZip)) {
   throw new Error('Build dist/adct-parish-intake.zip before running WordPress integration tests.');
+}
+
+if (!npmCli) {
+  throw new Error('Run this harness with `npm run test:integration` or `composer test:integration`.');
 }
 
 const wpEnvHome = resolveWpEnvHome(repositoryRoot);
@@ -21,7 +26,9 @@ if (!existsSync(wpEnvCli)) {
 }
 
 const isolatedConfig = prepareIsolatedWpEnvConfig(repositoryRoot, wpEnvHome);
+const wpEnvConfigDirectory = isolatedConfig.configDirectory;
 console.log(`Using isolated wp-env project ${isolatedConfig.projectHash}.`);
+
 const environment = {
   ...process.env,
   WP_ENV_HOME: wpEnvHome,
@@ -32,7 +39,7 @@ function runWpEnv(args) {
     process.execPath,
     [wpEnvCli, ...args],
     {
-      cwd: isolatedConfig.configDirectory,
+      cwd: wpEnvConfigDirectory,
       env: environment,
       stdio: 'inherit',
     }

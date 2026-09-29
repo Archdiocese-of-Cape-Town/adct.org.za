@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Tests\Unit\Core\Jobs;
 
-use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\DirectorySnapshot;
+use ADCT\ParishIntake\Core\Directory\ContactService;
+use ADCT\ParishIntake\Core\Directory\SenderParishSuggester;
+use ADCT\ParishIntake\Core\Directory\SenderTrust;
+use ADCT\ParishIntake\Core\Directory\SenderLearningService;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingFailure;
 use ADCT\ParishIntake\Core\Jobs\InboundMessageProcessingJob;
 use ADCT\ParishIntake\Core\Jobs\JobStepResult;
@@ -20,7 +23,12 @@ use ADCT\ParishIntake\Core\Ports\EventCandidateStoreInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingFailureLoggerInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingStoreInterface;
-use ADCT\ParishIntake\Core\Ports\ParishContactStoreInterface;
+use ADCT\ParishIntake\Core\Pdf\PdfExtractionLimits;
+use ADCT\ParishIntake\Core\Pdf\PdfExtractionResult;
+use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
+use ADCT\ParishIntake\Core\Pdf\StoredPdfAttachment;
+use ADCT\ParishIntake\Core\Ports\AttachmentExtractionStoreInterface;
+use ADCT\ParishIntake\Core\Ports\PdfTextExtractorInterface;
 use DateTimeImmutable;
 use DateTimeZone;
 use PHPUnit\Framework\TestCase;
@@ -111,35 +119,6 @@ final class InboundMessageProcessingJobTest extends TestCase
         );
     }
 
-    public function testMismatchedStoredAndDecodedFromFailsBeforeCandidatesOrContactLearning(): void
-    {
-        $contactStore = $this->createMock(ParishContactStoreInterface::class);
-        $contactStore->expects($this->never())->method('findByEmail');
-        $contactStore->expects($this->never())->method('savePendingSender');
-        $contacts = new ContactService($contactStore, new ProcessingClock());
-        $fixture = $this->fixture(new DirectorySnapshot([], [], []), contacts: $contacts);
-        $fixture['messages']->add($this->message(senderEmail: 'stored@example.test'));
-        $fixture['storage']->files['private-message.eml'] = $this->validEmail();
-
-        $fixture['job']->processNext(null);
-
-        self::assertSame('failed', $fixture['messages']->statuses[self::MESSAGE_ID]);
-        self::assertSame(
-            'The sender could not be learned safely. Reprocess the message after checking its sender.',
-            $fixture['messages']->errors[self::MESSAGE_ID]
-        );
-        self::assertSame([], $fixture['candidates']->candidates[self::MESSAGE_ID] ?? []);
-        self::assertSame(0, $fixture['candidates']->replaceCalls);
-        self::assertSame(
-            [[
-                'message_id' => self::MESSAGE_ID,
-                'context' => InboundMessageProcessingFailure::CONTEXT_SENDER_LOOKUP,
-                'failure_class' => RuntimeException::class,
-            ]],
-            $fixture['failureLogger']->failures
-        );
-    }
-
     public function testBlockedMessageTransitionFailureIsLoggedBeforeItIsMarkedFailed(): void
     {
         $snapshot = new DirectorySnapshot([], [], [[
@@ -169,6 +148,98 @@ final class InboundMessageProcessingJobTest extends TestCase
         self::assertStringNotContainsString(
             'Private message detail',
             json_encode($fixture['failureLogger']->failures, JSON_THROW_ON_ERROR)
+        );
+    }
+
+    public function testUnknownSendersCreateUnlinkedPendingContactsWithSuggestionOnly(): void
+    {
+        $clock = new ProcessingClock();
+        $directory = new ProcessingDirectorySnapshotProvider(new DirectorySnapshot([], [], []));
+        $messages = new ProcessingMessageStore();
+        $storage = new ProcessingFileStorage();
+        $candidates = new ProcessingCandidateStore();
+        $failureLogger = new ProcessingFailureLogger();
+        $contactStore = new ProcessingLearningContactStore();
+        $senderLearning = new SenderLearningService(
+            new ContactService($contactStore, $clock),
+            new SenderParishSuggester($directory)
+        );
+        $job = new InboundMessageProcessingJob(
+            $messages,
+            $storage,
+            new MimeMessageParser(),
+            static function () use ($clock, $directory): Pipeline {
+                return (new PipelineFactory($clock, $directory))->create();
+            },
+            $candidates,
+            $failureLogger,
+            $directory,
+            $clock,
+            $senderLearning
+        );
+
+        $messages->add($this->message(senderEmail: 'sender@example.test'));
+        $storage->files['private-message.eml'] = str_replace(
+            'notices@example.test',
+            'sender@example.test',
+            $this->validEmail()
+        );
+
+        $job->processNext(null);
+
+        self::assertSame('parsed', $messages->statuses[self::MESSAGE_ID]);
+        self::assertSame(SenderTrust::PENDING, $contactStore->rows[1]['trust']);
+        self::assertSame(0, $contactStore->rows[1]['parish_id']);
+        self::assertNull($contactStore->rows[1]['suggested_parish_id']);
+        self::assertNull($contactStore->rows[1]['suggestion_source']);
+        self::assertNull($contactStore->rows[1]['verified_at']);
+        self::assertSame('sender@example.test', $contactStore->rows[1]['email']);
+        self::assertCount(1, $candidates->candidates[self::MESSAGE_ID] ?? []);
+    }
+
+    public function testStoredAndDecodedFromMismatchFailsBeforeCandidateOrContactWrites(): void
+    {
+        $clock = new ProcessingClock();
+        $directory = new ProcessingDirectorySnapshotProvider(new DirectorySnapshot([], [], []));
+        $messages = new ProcessingMessageStore();
+        $storage = new ProcessingFileStorage();
+        $candidates = new ProcessingCandidateStore();
+        $failureLogger = new ProcessingFailureLogger();
+        $contactStore = new ProcessingLearningContactStore();
+        $senderLearning = new SenderLearningService(
+            new ContactService($contactStore, $clock),
+            new SenderParishSuggester($directory)
+        );
+        $job = new InboundMessageProcessingJob(
+            $messages,
+            $storage,
+            new MimeMessageParser(),
+            static function () use ($clock, $directory): Pipeline {
+                return (new PipelineFactory($clock, $directory))->create();
+            },
+            $candidates,
+            $failureLogger,
+            $directory,
+            $clock,
+            $senderLearning
+        );
+
+        $messages->add($this->message(senderEmail: 'stored@example.test'));
+        $storage->files['private-message.eml'] = $this->validEmail();
+
+        $job->processNext(null);
+
+        self::assertSame('failed', $messages->statuses[self::MESSAGE_ID]);
+        self::assertSame([], $contactStore->rows);
+        self::assertSame([], $candidates->candidates[self::MESSAGE_ID] ?? []);
+        self::assertSame(0, $candidates->replaceCalls);
+        self::assertSame(
+            [[
+                'message_id' => self::MESSAGE_ID,
+                'context' => InboundMessageProcessingFailure::CONTEXT_SENDER_LEARNING,
+                'failure_class' => RuntimeException::class,
+            ]],
+            $failureLogger->failures
         );
     }
 
@@ -290,9 +361,8 @@ final class InboundMessageProcessingJobTest extends TestCase
     private function fixture(
         DirectorySnapshot $snapshot,
         bool $pipelineFactoryThrows = false,
-        ?ContactService $contacts = null
-    ): array
-    {
+        ?PdfTextEnrichmentService $pdfTextEnrichment = null
+    ): array {
         $clock = new ProcessingClock();
         $directory = new ProcessingDirectorySnapshotProvider($snapshot);
         $pipelineFactory = new PipelineFactory($clock, $directory);
@@ -316,7 +386,7 @@ final class InboundMessageProcessingJobTest extends TestCase
             $failureLogger,
             $directory,
             $clock,
-            $contacts
+            pdfTextEnrichment: $pdfTextEnrichment
         );
 
         return [
@@ -327,6 +397,84 @@ final class InboundMessageProcessingJobTest extends TestCase
             'directory' => $directory,
             'failureLogger' => $failureLogger,
         ];
+    }
+
+    public function testAnEventSentOnlyAsAPdfStillProducesACandidate(): void
+    {
+        $fixture = $this->fixture(
+            new DirectorySnapshot([], [], []),
+            pdfTextEnrichment: $this->pdfEnrichment('bulletin.pdf', PdfExtractionResult::extracted(
+                "Parish Retreat Day\nSaturday 17 October 2026 from 9am to 3pm at Example Parish Hall.",
+                1
+            ))
+        );
+        $fixture['messages']->add($this->message());
+        $fixture['storage']->files['private-message.eml'] = $this->emailWithoutAnEvent();
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame('parsed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        self::assertNotSame([], $fixture['candidates']->candidates[self::MESSAGE_ID] ?? []);
+        self::assertStringContainsString(
+            'Parish Retreat Day',
+            $fixture['messages']->bodies[self::MESSAGE_ID]
+        );
+    }
+
+    public function testAnUnreadablePdfDoesNotStopTheEmailBeingParsed(): void
+    {
+        $fixture = $this->fixture(
+            new DirectorySnapshot([], [], []),
+            pdfTextEnrichment: $this->pdfEnrichment('scan.pdf', PdfExtractionResult::noTextLayer(1))
+        );
+        $fixture['messages']->add($this->message());
+        $fixture['storage']->files['private-message.eml'] = $this->validEmail();
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame('parsed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        self::assertCount(1, $fixture['candidates']->candidates[self::MESSAGE_ID]);
+    }
+
+    public function testMessagesAreProcessedWhenPdfEnrichmentIsNotConfigured(): void
+    {
+        $fixture = $this->fixture(new DirectorySnapshot([], [], []));
+        $fixture['messages']->add($this->message());
+        $fixture['storage']->files['private-message.eml'] = $this->validEmail();
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame('parsed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        self::assertCount(1, $fixture['candidates']->candidates[self::MESSAGE_ID]);
+    }
+
+    private function pdfEnrichment(string $filename, PdfExtractionResult $result): PdfTextEnrichmentService
+    {
+        return new PdfTextEnrichmentService(
+            new ProcessingAttachmentExtractionStore([
+                new StoredPdfAttachment(1, $filename, 'a.pdf', 'pending', 'none'),
+            ]),
+            new ProcessingPdfTextExtractor($result),
+            new ProcessingFileStorage(attachmentPaths: ['a.pdf' => '/var/private/a.pdf']),
+            PdfExtractionLimits::defaults()
+        );
+    }
+
+    private function emailWithoutAnEvent(): string
+    {
+        return implode("\r\n", [
+            'From: Example Parish Office <notices@example.test>',
+            'To: intake@example.test',
+            'Date: Fri, 25 Sep 2026 04:00:00 +0000',
+            'Message-ID: <processing-test@example.test>',
+            'Subject: Example Parish community supper',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=UTF-8',
+            '',
+            'Parish: Example Parish',
+            'The programme for the coming month is attached as a PDF.',
+            '',
+        ]);
     }
 
     private function message(
@@ -490,10 +638,17 @@ final class ProcessingMessageStore implements InboundMessageProcessingStoreInter
 
 final class ProcessingFileStorage implements InboundMailStorageReaderInterface
 {
-    /** @var array<string, string> */
-    public array $files = [];
-
     public int $readCount = 0;
+
+    /**
+     * @param array<string, string> $files
+     * @param array<string, string>|null $attachmentPaths
+     */
+    public function __construct(
+        public array $files = [],
+        public ?array $attachmentPaths = null,
+    ) {
+    }
 
     public function readRawMessage(string $relativePath): string
     {
@@ -504,6 +659,16 @@ final class ProcessingFileStorage implements InboundMailStorageReaderInterface
         }
 
         return $this->files[$relativePath];
+    }
+
+    public function resolveAttachmentPath(string $relativePath): string
+    {
+        if ($this->attachmentPaths === null) {
+            throw new RuntimeException('The processing job must not read attachments directly.');
+        }
+
+        return $this->attachmentPaths[$relativePath]
+            ?? throw new RuntimeException('The stored inbound attachment is missing.');
     }
 
     public function storeRawMessage(string $rawMessage): string
@@ -520,12 +685,47 @@ final class ProcessingFileStorage implements InboundMailStorageReaderInterface
     {
         throw new RuntimeException('The processing job must not delete stored files.');
     }
+}
 
-        public function resolveAttachmentPath(string $relativePath): string
-        {
-            throw new RuntimeException('The processing job must not resolve attachment paths in tests.');
-        }
+final class ProcessingAttachmentExtractionStore implements AttachmentExtractionStoreInterface
+{
+    /** @var array<int, PdfExtractionResult> */
+    public array $recorded = [];
+
+    /**
+     * @param list<StoredPdfAttachment> $attachments
+     */
+    public function __construct(private readonly array $attachments)
+    {
     }
+
+    public function findPendingPdfsForMessage(int $messageId): array
+    {
+        return $this->attachments;
+    }
+
+    public function recordResult(int $attachmentId, PdfExtractionResult $result): void
+    {
+        $this->recorded[$attachmentId] = $result;
+    }
+}
+
+final class ProcessingPdfTextExtractor implements PdfTextExtractorInterface
+{
+    /** @var list<string> */
+    public array $requestedPaths = [];
+
+    public function __construct(private readonly PdfExtractionResult $result)
+    {
+    }
+
+    public function extract(string $absolutePath, PdfExtractionLimits $limits): PdfExtractionResult
+    {
+        $this->requestedPaths[] = $absolutePath;
+
+        return $this->result;
+    }
+}
 
 final class ProcessingCandidateStore implements EventCandidateStoreInterface
 {
@@ -614,5 +814,151 @@ final class ProcessingClock implements ClockInterface
             '2026-09-25T05:00:00+02:00',
             new DateTimeZone('Africa/Johannesburg')
         );
+    }
+}
+
+final class ProcessingLearningContactStore implements \ADCT\ParishIntake\Core\Ports\ParishContactStoreInterface
+{
+    /**
+     * @var array<int, array<string, mixed>>
+     */
+    public array $rows = [];
+
+    private int $nextId = 1;
+
+    public function findByEmail(string $email): array
+    {
+        return array_values(array_filter(
+            $this->rows,
+            static fn (array $row): bool => $row['email'] === strtolower(trim($email))
+        ));
+    }
+
+    public function savePendingSender(
+        string $email,
+        ?int $suggestedParishId,
+        ?string $source,
+        string $timestamp
+    ): void {
+        $id = $this->nextId++;
+        $this->rows[$id] = [
+            'id' => $id,
+            'parish_id' => 0,
+            'email' => strtolower(trim($email)),
+            'display_name' => '',
+            'role_label' => '',
+            'receives_reminders' => 0,
+            'trust' => SenderTrust::PENDING,
+            'verified_at' => null,
+            'suggested_parish_id' => $suggestedParishId,
+            'suggestion_source' => $source,
+            'created_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ];
+    }
+
+    public function findLink(int $contactId, int $parishId): ?array
+    {
+        $row = $this->rows[$contactId] ?? null;
+
+        return is_array($row) && (int) $row['parish_id'] === $parishId ? $row : null;
+    }
+
+    public function findForParish(int $parishId): array
+    {
+        return array_values(array_filter(
+            $this->rows,
+            static fn (array $row): bool => (int) $row['parish_id'] === $parishId
+        ));
+    }
+
+    public function saveLink(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $trust,
+        ?string $verifiedAt,
+        string $timestamp
+    ): void {
+        $id = $this->nextId++;
+        $this->rows[$id] = [
+            'id' => $id,
+            'parish_id' => $parishId,
+            'email' => strtolower(trim($email)),
+            'display_name' => $displayName,
+            'role_label' => $roleLabel,
+            'receives_reminders' => $receivesReminders ? 1 : 0,
+            'trust' => $trust,
+            'verified_at' => $verifiedAt,
+            'created_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ];
+    }
+
+    public function savePendingLink(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $timestamp
+    ): int {
+        $id = $this->nextId++;
+        $this->rows[$id] = [
+            'id' => $id,
+            'parish_id' => $parishId,
+            'email' => strtolower(trim($email)),
+            'display_name' => $displayName,
+            'role_label' => $roleLabel,
+            'receives_reminders' => $receivesReminders ? 1 : 0,
+            'trust' => \ADCT\ParishIntake\Core\Directory\SenderTrust::PENDING,
+            'verified_at' => null,
+            'created_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ];
+
+        return 1;
+    }
+
+    public function updateLink(
+        int $contactId,
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $trust,
+        ?string $verifiedAt,
+        string $timestamp
+    ): int {
+        return 0;
+    }
+
+    public function deleteLink(int $contactId, int $parishId): int
+    {
+        return 0;
+    }
+
+    public function setTrustForEmail(
+        string $email,
+        string $trust,
+        ?string $verifiedAt,
+        string $timestamp
+    ): int {
+        $updated = 0;
+        $normalized = strtolower(trim($email));
+
+        foreach ($this->rows as $id => $row) {
+            if ($row['email'] === $normalized) {
+                $this->rows[$id]['trust'] = $trust;
+                $this->rows[$id]['verified_at'] = $verifiedAt;
+                $this->rows[$id]['updated_at'] = $timestamp;
+                ++$updated;
+            }
+        }
+
+        return $updated;
     }
 }

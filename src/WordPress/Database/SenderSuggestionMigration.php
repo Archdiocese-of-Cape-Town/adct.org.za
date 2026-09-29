@@ -15,7 +15,7 @@ final class SenderSuggestionMigration implements MigrationStepInterface
 
     public function version(): int
     {
-        return 7;
+        return 10;
     }
 
     public function apply(): void

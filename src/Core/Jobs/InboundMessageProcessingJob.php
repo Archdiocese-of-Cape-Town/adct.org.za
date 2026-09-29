@@ -6,14 +6,16 @@ namespace ADCT\ParishIntake\Core\Jobs;
 
 use ADCT\ParishIntake\Core\Directory\DirectoryLookup;
 use ADCT\ParishIntake\Core\Directory\EmailAddress;
-use ADCT\ParishIntake\Core\Directory\SenderParishSuggester;
-use ADCT\ParishIntake\Core\Directory\ContactService;
+use ADCT\ParishIntake\Core\Directory\SenderLearningService;
 use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingFailure;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingRecord;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
 use ADCT\ParishIntake\Core\Ingestion\MimeMessageParser;
+use ADCT\ParishIntake\Core\Parsing\Input\Message;
+use ADCT\ParishIntake\Core\Parsing\ParseOutcome;
 use ADCT\ParishIntake\Core\Parsing\Pipeline;
+use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\DirectorySnapshotProviderInterface;
 use ADCT\ParishIntake\Core\Ports\EventCandidateStoreInterface;
@@ -35,7 +37,6 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
     private Closure $pipelineFactory;
 
     private DirectoryLookup $directoryLookup;
-    private SenderParishSuggester $senderSuggester;
 
     /** @var list<int> */
     private array $prioritizedMessageIds = [];
@@ -54,7 +55,8 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
         private InboundMessageProcessingFailureLoggerInterface $failureLogger,
         DirectorySnapshotProviderInterface $directorySnapshots,
         private ClockInterface $clock,
-        private ?ContactService $contacts = null
+        private ?SenderLearningService $senderLearning = null,
+        private ?PdfTextEnrichmentService $pdfTextEnrichment = null
     ) {
         parent::__construct(
             'process_inbound_messages',
@@ -63,7 +65,6 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
         );
         $this->pipelineFactory = Closure::fromCallable($pipelineFactory);
         $this->directoryLookup = new DirectoryLookup($directorySnapshots);
-        $this->senderSuggester = new SenderParishSuggester($directorySnapshots);
     }
 
     /**
@@ -182,24 +183,12 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
             }
 
             $parsedMessage = $parsedMessage->withReceivedAt($message->receivedAt);
-            $senderEmail = null;
 
-            if ($this->contacts !== null && ! $message->isAutoReply) {
-                try {
-                    $senderEmail = EmailAddress::normalize((string) $message->senderEmail);
-                    $parsedEmail = EmailAddress::normalize($parsedMessage->getSenderEmail());
-                    if ($senderEmail !== $parsedEmail) {
-                        throw new RuntimeException('The stored sender and decoded From address do not agree.');
-                    }
-                } catch (Throwable $failure) {
-                    throw new InboundMessageProcessingFailure(
-                        'The sender could not be learned safely. Reprocess the message after checking its sender.',
-                        InboundMessageProcessingFailure::CONTEXT_SENDER_LOOKUP,
-                        $failure
-                    );
-                }
+            if ($this->senderLearning !== null && ! $message->isAutoReply) {
+                $this->assertStoredAndDecodedSenderMatch($message, $parsedMessage);
             }
 
+            $parsedMessage = $this->appendPdfText($message, $parsedMessage);
             $pipeline = ($this->pipelineFactory)();
 
             if (! $pipeline instanceof Pipeline) {
@@ -216,6 +205,18 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
                 );
             }
 
+            if ($this->senderLearning !== null && ! $message->isAutoReply && $outcome->getCandidates() !== []) {
+                try {
+                    $this->learnUnknownSender($parsedMessage, $outcome);
+                } catch (Throwable $failure) {
+                    throw new InboundMessageProcessingFailure(
+                        'The sender could not be learned safely. Reprocess the message, and contact support if this continues.',
+                        InboundMessageProcessingFailure::CONTEXT_SENDER_LEARNING,
+                        $failure
+                    );
+                }
+            }
+
             try {
                 $this->candidates->replaceDraftCandidatesForMessage(
                     $message->id,
@@ -228,19 +229,6 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
                     InboundMessageProcessingFailure::CONTEXT_CANDIDATE_STORAGE,
                     $failure
                 );
-            }
-
-            if ($senderEmail !== null) {
-                try {
-                    [$parishId, $source] = $this->senderSuggester->suggest($parsedMessage, $outcome);
-                    $this->contacts->learnPending($senderEmail, $parishId, $source);
-                } catch (Throwable $failure) {
-                    throw new InboundMessageProcessingFailure(
-                        'The sender could not be learned safely. Reprocess the message after checking its sender.',
-                        InboundMessageProcessingFailure::CONTEXT_SENDER_LOOKUP,
-                        $failure
-                    );
-                }
             }
 
             if ($message->isAutoReply && $outcome->getCandidates() === []) {
@@ -284,6 +272,40 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
         return JobStepResult::continueAt($checkpoint);
     }
 
+    private function learnUnknownSender(
+        Message $parsedMessage,
+        ParseOutcome $outcome
+    ): void {
+        $this->senderLearning->learnUnknownSender($parsedMessage, $outcome);
+    }
+
+    private function assertStoredAndDecodedSenderMatch(
+        InboundMessageProcessingRecord $message,
+        Message $parsedMessage
+    ): void
+    {
+        try {
+            $storedSender = EmailAddress::normalize((string) $message->senderEmail);
+            $decodedSender = EmailAddress::normalize($parsedMessage->getSenderEmail());
+
+            if ($storedSender === $decodedSender) {
+                return;
+            }
+        } catch (Throwable $failure) {
+            throw new InboundMessageProcessingFailure(
+                'The sender could not be learned safely. Reprocess the message after checking its sender.',
+                InboundMessageProcessingFailure::CONTEXT_SENDER_LEARNING,
+                $failure
+            );
+        }
+
+        throw new InboundMessageProcessingFailure(
+            'The sender could not be learned safely. Reprocess the message after checking its sender.',
+            InboundMessageProcessingFailure::CONTEXT_SENDER_LEARNING,
+            new RuntimeException('The stored sender and decoded From address do not agree.')
+        );
+    }
+
     private function nextMessage(): ?InboundMessageProcessingRecord
     {
         if ($this->prioritizedMessageIds === []) {
@@ -301,6 +323,34 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
         }
 
         return null;
+    }
+
+    /**
+     * Fold a PDF attachment's text into the message body so a poster sent as a
+     * PDF is parsed like one pasted into the email.
+     *
+     * Enrichment itself is designed never to fail, so this only guards the
+     * unlikely case of the service itself being misconfigured.
+     */
+    private function appendPdfText(
+        InboundMessageProcessingRecord $message,
+        Message $parsedMessage
+    ): Message {
+        if ($this->pdfTextEnrichment === null) {
+            return $parsedMessage;
+        }
+
+        try {
+            return $this->pdfTextEnrichment->enrich($message->id, $parsedMessage)->message;
+        } catch (Throwable $failure) {
+            $this->logFailure(
+                $message->id,
+                InboundMessageProcessingFailure::CONTEXT_PDF_EXTRACTION,
+                $failure
+            );
+
+            return $parsedMessage;
+        }
     }
 
     private function senderIsBlocked(InboundMessageProcessingRecord $message): bool

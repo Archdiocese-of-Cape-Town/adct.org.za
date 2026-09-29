@@ -5,6 +5,7 @@ use ADCT\ParishIntake\Core\Approval\ApprovalRoute;
 use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;
 use ADCT\ParishIntake\Core\Approval\ApproverSettings;
 use ADCT\ParishIntake\Core\Directory\ContactService;
+use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use ADCT\ParishIntake\Core\Directory\DirectorySnapshot;
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
 use ADCT\ParishIntake\Core\Directory\ImportRow;
@@ -31,6 +32,8 @@ use ADCT\ParishIntake\Core\Mail\MailQueueConfiguration;
 use ADCT\ParishIntake\Core\Mail\MailQueueDispatchStatus;
 use ADCT\ParishIntake\Core\Mail\MailQueueDispatcher;
 use ADCT\ParishIntake\Core\Mail\MailQueueStatus;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailPreviewService;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailRenderer;
 use ADCT\ParishIntake\Core\Mail\OutboundEmail;
 use ADCT\ParishIntake\Core\Ports\DirectorySnapshotProviderInterface;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
@@ -67,7 +70,9 @@ use ADCT\ParishIntake\WordPress\Events\EventPostType;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeRecipientPolicy;
 use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeSettings;
+use ADCT\ParishIntake\WordPress\Auth\WordPressConfirmationActionLinkProvider;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
+use ADCT\ParishIntake\WordPress\Ingestion\WordPressConfirmationEmailJobSource;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
@@ -133,8 +138,8 @@ if (
     $fail('Fresh plugin activation did not default outbound test mode to off with an empty allow-list.');
 }
 
-if ((int) get_option('adct_pi_db_version', 0) !== 7) {
-    $fail('Activation did not set the parish intake schema version to 7.');
+if ((int) get_option('adct_pi_db_version', 0) !== 10) {
+    $fail('Activation did not set the parish intake schema version to 10.');
 }
 
 if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CURRENT_VERSION) {
@@ -235,6 +240,9 @@ if ($actualEventTermSlugs !== $expectedEventTermSlugs) {
     $fail('Repeated event setup created duplicate or missing default event types.');
 }
 
+require_once __DIR__ . '/EventTypeCheck.php';
+EventTypeCheck::run($fail);
+
 foreach (['administrator', 'editor', 'adct_pi_intake_manager', 'adct_pi_intake_reviewer'] as $roleName) {
     $role = get_role($roleName);
 
@@ -248,6 +256,7 @@ foreach (['administrator', 'editor', 'adct_pi_intake_manager', 'adct_pi_intake_r
 global $wpdb;
 $installedTables = (array) $wpdb->get_col('SHOW TABLES');
 $expectedTableSuffixes = [
+    'adct_pi_approval_notices',
     'adct_pi_action_tokens',
     'adct_pi_action_token_rate_limits',
     'adct_pi_attachments',
@@ -263,9 +272,14 @@ $expectedTableSuffixes = [
     'adct_pi_occurrences',
     'adct_pi_parish_contacts',
     'adct_pi_parishes',
+    'adct_pi_processed_mail_ownership',
     'adct_pi_sources',
     'adct_pi_venues',
 ];
+if (count($expectedTableSuffixes) !== 19) {
+    $fail('The schema v10 integration fixture must enumerate all 19 plugin tables.');
+}
+
 $expectedTables = array_map(
     static fn (string $suffix): string => $wpdb->prefix . $suffix,
     $expectedTableSuffixes
@@ -281,7 +295,7 @@ if ($actualTables !== $expectedTables) {
     $missingTables = array_diff($expectedTables, $actualTables);
     $unexpectedTables = array_diff($actualTables, $expectedTables);
     $fail(sprintf(
-        'Schema v6 tables differ. Missing: [%s]; unexpected: [%s].',
+        'Schema v10 tables differ. Missing: [%s]; unexpected: [%s].',
         implode(', ', $missingTables),
         implode(', ', $unexpectedTables)
     ));
@@ -301,6 +315,100 @@ if (
 }
 
 $mailQueueTable = $wpdb->prefix . 'adct_pi_mail_queue';
+$inboundMessageTable = $wpdb->prefix . 'adct_pi_inbound_messages';
+$approvalNoticesTable = $wpdb->prefix . 'adct_pi_approval_notices';
+$processedOwnershipTable = $wpdb->prefix . 'adct_pi_processed_mail_ownership';
+$contactTable = $wpdb->prefix . 'adct_pi_parish_contacts';
+$expectedProcessedOwnershipColumns = [
+    'id',
+    'source_id',
+    'mailbox_identity',
+    'processed_folder',
+    'uid_validity',
+    'uid',
+    'internal_date',
+    'created_at',
+    'updated_at',
+];
+$confirmationSchemaColumns = [
+    [$mailQueueTable, 'thread_headers', 'longtext'],
+    [$mailQueueTable, 'payload_fingerprint', 'char(64)'],
+    [$inboundMessageTable, 'confirmation_status', 'varchar(16)'],
+    [$inboundMessageTable, 'confirmation_reason', 'varchar(64)'],
+];
+$senderSuggestionColumnTypes = [
+    'suggested_parish_id' => 'bigint(20) unsigned',
+    'suggestion_source' => 'varchar(20)',
+];
+$assertSenderSuggestionColumns = static function (string $migrationPath) use (
+    $wpdb,
+    $contactTable,
+    $senderSuggestionColumnTypes,
+    $fail
+): void {
+    foreach ($senderSuggestionColumnTypes as $columnName => $expectedType) {
+        $column = $wpdb->get_row(
+            $wpdb->prepare("SHOW COLUMNS FROM {$contactTable} LIKE %s", $columnName),
+            ARRAY_A
+        );
+
+        if (
+            ! is_array($column)
+            || strtolower((string) ($column['Type'] ?? '')) !== $expectedType
+            || strtoupper((string) ($column['Null'] ?? '')) !== 'YES'
+        ) {
+            $fail('The ' . $migrationPath . ' path did not create nullable sender suggestion column ' . $columnName . '.');
+        }
+    }
+};
+$dropSenderSuggestionColumns = static function (string $migrationPath) use (
+    $wpdb,
+    $contactTable,
+    $senderSuggestionColumnTypes,
+    $fail
+): void {
+    foreach (array_keys($senderSuggestionColumnTypes) as $columnName) {
+        if ($wpdb->query("ALTER TABLE {$contactTable} DROP COLUMN `{$columnName}`") === false) {
+            $fail('The ' . $migrationPath . ' path could not prepare the pre-v10 sender-contact schema.');
+        }
+    }
+};
+
+foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
+    $column = $wpdb->get_row(
+        $wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", $columnName),
+        ARRAY_A
+    );
+
+    if (
+        ! is_array($column)
+        || strtolower((string) ($column['Type'] ?? '')) !== $expectedType
+        || strtoupper((string) ($column['Null'] ?? '')) !== 'YES'
+    ) {
+        $fail('A fresh install did not create the nullable ' . $columnName . ' confirmation-preview column.');
+    }
+}
+
+$approvalNoticeColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$approvalNoticesTable}", 0);
+if ($approvalNoticeColumns !== [
+    'id',
+    'candidate_id',
+    'recipient',
+    'group_key',
+    'notify_mode',
+    'queued_at',
+    'created_at',
+    'updated_at',
+]) {
+    $fail('A fresh install did not create the expected v8 approval-notice table.');
+}
+
+$processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
+if ($processedOwnershipColumns !== $expectedProcessedOwnershipColumns) {
+    $fail('A fresh install did not create the expected v9 processed-mail ownership table.');
+}
+$assertSenderSuggestionColumns('fresh v10 install');
+
 $freshMailQueueIndexRows = (array) $wpdb->get_results(
     $wpdb->prepare("SHOW INDEX FROM {$mailQueueTable} WHERE Key_name = %s", 'recipient_group'),
     ARRAY_A
@@ -333,9 +441,11 @@ if ($forcedNotNull === false) {
 
 $rateLimitTable = $wpdb->prefix . 'adct_pi_action_token_rate_limits';
 $dropRateLimitTableForV3Upgrade = $wpdb->query("DROP TABLE {$rateLimitTable}");
+$dropProcessedOwnershipTableForV3Upgrade = $wpdb->query("DROP TABLE {$processedOwnershipTable}");
+$dropSenderSuggestionColumns('v3-to-v10');
 
-if ($dropRateLimitTableForV3Upgrade === false) {
-    $fail('The v3-to-v6 migration test could not restore the pre-v6 schema.');
+if ($dropRateLimitTableForV3Upgrade === false || $dropProcessedOwnershipTableForV3Upgrade === false) {
+    $fail('The v3-to-v10 migration test could not restore the pre-v6 and pre-v9 schema.');
 }
 
 update_option('adct_pi_db_version', 3, false);
@@ -344,14 +454,18 @@ $occurrenceParishColumn = $wpdb->get_row(
     $wpdb->prepare("SHOW COLUMNS FROM {$occurrencesTable} LIKE %s", 'parish_id'),
     ARRAY_A
 );
+$processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 7
+    (int) get_option('adct_pi_db_version', 0) !== 10
     || ! is_array($occurrenceParishColumn)
     || strtoupper((string) ($occurrenceParishColumn['Null'] ?? '')) !== 'YES'
+    || $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $processedOwnershipTable)) !== $processedOwnershipTable
+    || $processedOwnershipColumns !== $expectedProcessedOwnershipColumns
 ) {
-    $fail('The v3 upgrade did not preserve the nullable occurrences.parish_id column.');
+    $fail('The v3-to-v10 upgrade did not restore the nullable occurrence column and ownership schema.');
 }
+$assertSenderSuggestionColumns('v3-to-v10');
 
 $dropMailQueueIndex = $wpdb->query(
     "ALTER TABLE {$mailQueueTable} DROP INDEX `recipient_group`"
@@ -470,7 +584,7 @@ $preservedQueueRowCount = (int) $wpdb->get_var($wpdb->prepare(
 ));
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 7
+    (int) get_option('adct_pi_db_version', 0) !== 10
     || ! $upgradedMailQueueIndexIsUnique
     || array_values($upgradedMailQueueIndexColumns) !== ['recipient', 'group_key']
     || $preservedQueueRowCount !== 1
@@ -492,11 +606,13 @@ if ($deletedPreservedQueueRows !== 1) {
 }
 
 $droppedRateLimitTable = $wpdb->query("DROP TABLE {$rateLimitTable}");
+$droppedProcessedOwnershipTable = $wpdb->query("DROP TABLE {$processedOwnershipTable}");
 
-if ($droppedRateLimitTable === false) {
-    $fail('The v5-to-v6 migration test could not prepare the pre-v6 schema.');
+if ($droppedRateLimitTable === false || $droppedProcessedOwnershipTable === false) {
+    $fail('The v5-to-v10 migration test could not prepare the pre-v6 and pre-v9 schema.');
 }
 
+$dropSenderSuggestionColumns('v5-to-v10');
 update_option('adct_pi_db_version', 5, false);
 do_action('admin_init');
 $recreatedRateLimitTable = $wpdb->get_var($wpdb->prepare(
@@ -505,6 +621,7 @@ $recreatedRateLimitTable = $wpdb->get_var($wpdb->prepare(
 ));
 $rateLimitColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$rateLimitTable}", 0);
 $rateLimitIndexes = (array) $wpdb->get_results("SHOW INDEX FROM {$rateLimitTable}", ARRAY_A);
+$processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
 $scopeHashIsPrimaryKey = false;
 $windowStartedAtIsIndexed = false;
 
@@ -526,7 +643,7 @@ foreach ($rateLimitIndexes as $index) {
 }
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 7
+    (int) get_option('adct_pi_db_version', 0) !== 10
     || $recreatedRateLimitTable !== $rateLimitTable
     || ! in_array('scope_hash', $rateLimitColumns, true)
     || ! in_array('window_started_at', $rateLimitColumns, true)
@@ -535,66 +652,297 @@ if (
     || count($rateLimitIndexes) !== 2
     || ! $scopeHashIsPrimaryKey
     || ! $windowStartedAtIsIndexed
+    || $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $processedOwnershipTable)) !== $processedOwnershipTable
+    || $processedOwnershipColumns !== $expectedProcessedOwnershipColumns
 ) {
-    $fail('The v5-to-v6 migration did not create the primary-keyed hashed rate-limit table.');
+    $fail('The v5-to-v10 migrations did not create the rate-limit and processed-mail ownership tables.');
+}
+$assertSenderSuggestionColumns('v5-to-v10');
+
+$droppedProcessedOwnershipTableForV6Upgrade = $wpdb->query("DROP TABLE {$processedOwnershipTable}");
+
+if ($droppedProcessedOwnershipTableForV6Upgrade === false) {
+    $fail('The v6-to-v10 migration test could not prepare the pre-v9 schema.');
 }
 
-$parishContactsTable = $wpdb->prefix . 'adct_pi_parish_contacts';
-$legacyV6Email = 'legacy-v6@example.test';
-$legacyV6Timestamp = '2026-09-25 04:00:00';
-$legacyV6Insert = $wpdb->insert(
-    $parishContactsTable,
-    [
-        'parish_id' => 1,
-        'email' => $legacyV6Email,
-        'display_name' => 'Fictional Legacy Contact',
-        'role_label' => 'Event notices',
-        'trust' => 'verified',
-        'verified_at' => $legacyV6Timestamp,
-        'receives_reminders' => 1,
-        'created_at' => $legacyV6Timestamp,
-        'updated_at' => $legacyV6Timestamp,
-    ],
-    ['%d', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s']
-);
-
-if ($legacyV6Insert !== 1) {
-    $fail('The v6-to-v7 migration fixture could not insert its legacy contact.');
-}
+$dropSenderSuggestionColumns('v6-to-v10');
+update_option('adct_pi_db_version', 6, false);
+do_action('admin_init');
+$recreatedProcessedOwnershipTable = $wpdb->get_var($wpdb->prepare(
+    'SHOW TABLES LIKE %s',
+    $processedOwnershipTable
+));
+$processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
 
 if (
-    $wpdb->query("ALTER TABLE {$parishContactsTable} DROP COLUMN suggested_parish_id") === false
-    || $wpdb->query("ALTER TABLE {$parishContactsTable} DROP COLUMN suggestion_source") === false
+    (int) get_option('adct_pi_db_version', 0) !== 10
+    || $recreatedProcessedOwnershipTable !== $processedOwnershipTable
+    || $processedOwnershipColumns !== $expectedProcessedOwnershipColumns
+    || get_option('adct_pi_db_migration_error', '') !== ''
 ) {
-    $fail('The v6-to-v7 migration fixture could not restore the legacy contacts schema.');
+    $fail('The v6-to-v10 migration did not recreate the processed-mail ownership table.');
+}
+$assertSenderSuggestionColumns('v6-to-v10 ownership upgrade');
+
+foreach ($confirmationSchemaColumns as [$table, $columnName]) {
+    if ($wpdb->query("ALTER TABLE {$table} DROP COLUMN `{$columnName}`") === false) {
+        $fail('The v6-to-v10 migration test could not prepare the legacy confirmation-preview schema.');
+    }
+}
+
+if ($wpdb->query("DROP TABLE {$approvalNoticesTable}") === false) {
+    $fail('The v6-to-v10 migration test could not prepare the pre-v8 approval-notice schema.');
+}
+
+if ($wpdb->query("DROP TABLE {$processedOwnershipTable}") === false) {
+    $fail('The v6-to-v10 migration test could not prepare the pre-v9 ownership schema.');
+}
+
+$dropSenderSuggestionColumns('v6-to-v10 full upgrade');
+$legacyPendingSenderEmail = 'legacy-v6-pending@example.test';
+$legacyPendingContactInserted = $wpdb->insert($contactTable, [
+    'parish_id' => 0,
+    'email' => $legacyPendingSenderEmail,
+    'display_name' => 'Migration Fixture',
+    'role_label' => 'Office',
+    'trust' => 'pending',
+    'verified_at' => null,
+    'receives_reminders' => 0,
+    'created_at' => '2026-09-25 00:00:00',
+    'updated_at' => '2026-09-25 00:00:00',
+]);
+if ($legacyPendingContactInserted !== 1) {
+    $fail('The v6-to-v10 contact-preservation fixture could not be created.');
 }
 
 update_option('adct_pi_db_version', 6, false);
 do_action('admin_init');
-$legacyV7Row = $wpdb->get_row($wpdb->prepare(
-    "SELECT parish_id, email, display_name, role_label, trust, verified_at, receives_reminders, "
-    . "suggested_parish_id, suggestion_source FROM {$parishContactsTable} WHERE email = %s LIMIT 1",
-    $legacyV6Email
-), ARRAY_A);
-$v7ContactColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$parishContactsTable}", 0);
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 7
-    || ! is_array($legacyV7Row)
-    || (int) $legacyV7Row['parish_id'] !== 1
-    || $legacyV7Row['email'] !== $legacyV6Email
-    || $legacyV7Row['display_name'] !== 'Fictional Legacy Contact'
-    || $legacyV7Row['role_label'] !== 'Event notices'
-    || $legacyV7Row['trust'] !== 'verified'
-    || $legacyV7Row['verified_at'] !== $legacyV6Timestamp
-    || (int) $legacyV7Row['receives_reminders'] !== 1
-    || $legacyV7Row['suggested_parish_id'] !== null
-    || $legacyV7Row['suggestion_source'] !== null
-    || ! in_array('suggested_parish_id', $v7ContactColumns, true)
-    || ! in_array('suggestion_source', $v7ContactColumns, true)
+    (int) get_option('adct_pi_db_version', 0) !== 10
+    || get_option('adct_pi_db_migration_error', '') !== ''
 ) {
-    $fail('The v6-to-v7 migration did not add nullable suggestions while preserving legacy contact trust and details.');
+    $fail('The v6-to-v10 migrations did not advance the schema version.');
 }
+$assertSenderSuggestionColumns('v6-to-v10 full upgrade');
+$preservedPendingContact = $wpdb->get_row($wpdb->prepare(
+    "SELECT parish_id, email, trust, verified_at, receives_reminders, suggested_parish_id, suggestion_source "
+    . "FROM {$contactTable} WHERE email = %s",
+    $legacyPendingSenderEmail
+), ARRAY_A);
+if (
+    ! is_array($preservedPendingContact)
+    || (int) $preservedPendingContact['parish_id'] !== 0
+    || $preservedPendingContact['email'] !== $legacyPendingSenderEmail
+    || $preservedPendingContact['trust'] !== 'pending'
+    || $preservedPendingContact['verified_at'] !== null
+    || (int) $preservedPendingContact['receives_reminders'] !== 0
+    || $preservedPendingContact['suggested_parish_id'] !== null
+    || $preservedPendingContact['suggestion_source'] !== null
+) {
+    $fail('The v6-to-v10 upgrade did not preserve the existing unlinked pending contact.');
+}
+$deletedLegacyPendingContact = $wpdb->delete($contactTable, [
+    'parish_id' => 0,
+    'email' => $legacyPendingSenderEmail,
+]);
+if ($deletedLegacyPendingContact !== 1) {
+    $fail('The v6-to-v10 contact-preservation fixture could not be removed.');
+}
+
+$recreatedApprovalNoticesTable = $wpdb->get_var($wpdb->prepare(
+    'SHOW TABLES LIKE %s',
+    $approvalNoticesTable
+));
+$approvalNoticeColumns = $recreatedApprovalNoticesTable === $approvalNoticesTable
+    ? (array) $wpdb->get_col("SHOW COLUMNS FROM {$approvalNoticesTable}", 0)
+    : [];
+if (
+    $recreatedApprovalNoticesTable !== $approvalNoticesTable
+    || $approvalNoticeColumns !== [
+        'id',
+        'candidate_id',
+        'recipient',
+        'group_key',
+        'notify_mode',
+        'queued_at',
+        'created_at',
+        'updated_at',
+    ]
+) {
+    $fail('The v6-to-v10 migration did not recreate the expected approval-notice table.');
+}
+
+$recreatedProcessedOwnershipTable = $wpdb->get_var($wpdb->prepare(
+    'SHOW TABLES LIKE %s',
+    $processedOwnershipTable
+));
+$processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
+if (
+    $recreatedProcessedOwnershipTable !== $processedOwnershipTable
+    || $processedOwnershipColumns !== $expectedProcessedOwnershipColumns
+) {
+    $fail('The v6-to-v10 migration did not recreate the expected processed-mail ownership schema.');
+}
+
+foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
+    $column = $wpdb->get_row(
+        $wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", $columnName),
+        ARRAY_A
+    );
+
+    if (
+        ! is_array($column)
+        || strtolower((string) ($column['Type'] ?? '')) !== $expectedType
+        || strtoupper((string) ($column['Null'] ?? '')) !== 'YES'
+    ) {
+        $fail('The v6-to-v10 migrations did not restore the nullable ' . $columnName . ' column.');
+    }
+}
+
+$droppedOwnershipTableForV8Upgrade = $wpdb->query("DROP TABLE {$processedOwnershipTable}");
+if ($droppedOwnershipTableForV8Upgrade === false) {
+    $fail('The installed v8-to-v10 migration test could not prepare the pre-v9 ownership schema.');
+}
+
+$dropSenderSuggestionColumns('v8-to-v10');
+update_option('adct_pi_db_version', 8, false);
+do_action('admin_init');
+
+$recreatedProcessedOwnershipTable = $wpdb->get_var($wpdb->prepare(
+    'SHOW TABLES LIKE %s',
+    $processedOwnershipTable
+));
+$processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
+$approvalNoticeColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$approvalNoticesTable}", 0);
+if (
+    (int) get_option('adct_pi_db_version', 0) !== 10
+    || $recreatedProcessedOwnershipTable !== $processedOwnershipTable
+    || $processedOwnershipColumns !== $expectedProcessedOwnershipColumns
+    || $approvalNoticeColumns !== [
+        'id',
+        'candidate_id',
+        'recipient',
+        'group_key',
+        'notify_mode',
+        'queued_at',
+        'created_at',
+        'updated_at',
+    ]
+    || get_option('adct_pi_db_migration_error', '') !== ''
+) {
+    $fail('The installed v8-to-v10 migration did not add ownership and sender suggestions while preserving v7-v9 schema objects.');
+}
+$assertSenderSuggestionColumns('v8-to-v10');
+
+foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
+    $column = $wpdb->get_row(
+        $wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", $columnName),
+        ARRAY_A
+    );
+
+    if (
+        ! is_array($column)
+        || strtolower((string) ($column['Type'] ?? '')) !== $expectedType
+        || strtoupper((string) ($column['Null'] ?? '')) !== 'YES'
+    ) {
+        $fail('The installed v8-to-v10 migration did not preserve the nullable v7 column ' . $columnName . '.');
+    }
+}
+
+foreach ($confirmationSchemaColumns as [$table, $columnName]) {
+    if ($wpdb->query("ALTER TABLE {$table} DROP COLUMN `{$columnName}`") === false) {
+        $fail('The v6-to-v10 migration test could not prepare the legacy confirmation-preview schema.');
+    }
+}
+
+$dropSenderSuggestionColumns('v6-to-v10 final upgrade');
+update_option('adct_pi_db_version', 6, false);
+do_action('admin_init');
+
+if ((int) get_option('adct_pi_db_version', 0) !== 10) {
+    $fail('The v6-to-v10 migration did not advance the schema version.');
+}
+
+foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
+    $column = $wpdb->get_row(
+        $wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", $columnName),
+        ARRAY_A
+    );
+
+    if (
+        ! is_array($column)
+        || strtolower((string) ($column['Type'] ?? '')) !== $expectedType
+        || strtoupper((string) ($column['Null'] ?? '')) !== 'YES'
+    ) {
+        $fail('The v6-to-v10 migration did not restore the nullable ' . $columnName . ' column.');
+    }
+}
+$assertSenderSuggestionColumns('v6-to-v10 final upgrade');
+
+$droppedApprovalNoticesForV7Upgrade = $wpdb->query("DROP TABLE {$approvalNoticesTable}");
+$droppedOwnershipForV7Upgrade = $wpdb->query("DROP TABLE {$processedOwnershipTable}");
+if ($droppedApprovalNoticesForV7Upgrade === false || $droppedOwnershipForV7Upgrade === false) {
+    $fail('The installed v7-to-v10 migration test could not prepare the pre-v8/v9 schema.');
+}
+$dropSenderSuggestionColumns('v7-to-v10');
+update_option('adct_pi_db_version', 7, false);
+do_action('admin_init');
+$approvalNoticeColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$approvalNoticesTable}", 0);
+$processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
+if (
+    (int) get_option('adct_pi_db_version', 0) !== 10
+    || $approvalNoticeColumns !== [
+        'id',
+        'candidate_id',
+        'recipient',
+        'group_key',
+        'notify_mode',
+        'queued_at',
+        'created_at',
+        'updated_at',
+    ]
+    || $processedOwnershipColumns !== $expectedProcessedOwnershipColumns
+    || get_option('adct_pi_db_migration_error', '') !== ''
+) {
+    $fail('The installed v7-to-v10 migration did not create v8/v9 tables in order.');
+}
+$assertSenderSuggestionColumns('installed v7-to-v10');
+foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
+    $column = $wpdb->get_row(
+        $wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", $columnName),
+        ARRAY_A
+    );
+    if (
+        ! is_array($column)
+        || strtolower((string) ($column['Type'] ?? '')) !== $expectedType
+        || strtoupper((string) ($column['Null'] ?? '')) !== 'YES'
+    ) {
+        $fail('The installed v7-to-v10 migration did not preserve the nullable v7 column ' . $columnName . '.');
+    }
+}
+
+$dropSenderSuggestionColumns('v9-to-v10');
+update_option('adct_pi_db_version', 9, false);
+do_action('admin_init');
+if (
+    (int) get_option('adct_pi_db_version', 0) !== 10
+    || get_option('adct_pi_db_migration_error', '') !== ''
+    || (array) $wpdb->get_col("SHOW COLUMNS FROM {$approvalNoticesTable}", 0) !== [
+        'id',
+        'candidate_id',
+        'recipient',
+        'group_key',
+        'notify_mode',
+        'queued_at',
+        'created_at',
+        'updated_at',
+    ]
+    || (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0) !== $expectedProcessedOwnershipColumns
+) {
+    $fail('The installed v9-to-v10 migration did not preserve the v8/v9 schema objects.');
+}
+$assertSenderSuggestionColumns('installed v9-to-v10');
 
 require_once __DIR__ . '/ActionTokenEndpointCheck.php';
 ActionTokenEndpointCheck::run($fail);
@@ -1179,6 +1527,12 @@ if (has_action($pageHook) === false) {
     $fail('The Manual parser page callback was not registered.');
 }
 
+$manualParserQueueCountBefore = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$mailQueueTable}");
+$manualParserActionTokenTable = $wpdb->prefix . 'adct_pi_action_tokens';
+$manualParserTokenCountBefore = (int) $wpdb->get_var(
+    "SELECT COUNT(*) FROM {$manualParserActionTokenTable}"
+);
+
 ob_start();
 try {
     do_action($pageHook);
@@ -1198,6 +1552,28 @@ if (strpos($manualParserHtml, 'name="body"') === false) {
     $fail('The Manual parser message form did not render.');
 }
 
+update_option('adct_parish_intake_ai_enabled', '1');
+update_option('adct_parish_intake_ai_provider', 'openrouter');
+update_option('adct_parish_intake_openrouter_model', 'paid-example/model');
+ob_start();
+try {
+    do_action($settingsHook);
+} finally {
+    $paidModelSettingsHtml = (string) ob_get_clean();
+}
+if (strpos($paidModelSettingsHtml, 'AI cost warning:') === false
+    || strpos($paidModelSettingsHtml, 'Not marked free:') === false) {
+    $fail('The Settings screen did not prominently warn about a non-free model.');
+}
+$httpAttempts = 0;
+$rejectAiHttp = static function ($preempt, $args, $url) use (&$httpAttempts) {
+    if (str_contains($url, '/chat/completions')) {
+        ++$httpAttempts;
+        return new WP_Error('ai_test_blocked', 'AI HTTP must not run in manual parser.');
+    }
+    return $preempt;
+};
+add_filter('pre_http_request', $rejectAiHttp, 10, 3);
 $previousPost = $_POST;
 $previousRequest = $_REQUEST;
 $_POST = [
@@ -1218,9 +1594,14 @@ try {
     $submittedParserHtml = (string) ob_get_clean();
     $_POST = $previousPost;
     $_REQUEST = $previousRequest;
+    remove_filter('pre_http_request', $rejectAiHttp, 10);
+    update_option('adct_parish_intake_ai_enabled', '0');
+    update_option('adct_parish_intake_ai_provider', 'none');
 }
 
 if (
+    $httpAttempts !== 0
+    ||
     strpos($submittedParserHtml, 'Latest parse outcome') === false
     || strpos($submittedParserHtml, 'candidate_count') === false
     || strpos($submittedParserHtml, 'Youth gathering') === false
@@ -1231,6 +1612,17 @@ if (
     || strpos($submittedParserHtml, $constantTestApiKey) !== false
 ) {
     $fail('The Manual parser did not render candidates and text-free skip metadata for a bulletin.');
+}
+
+$aiGate = new \ADCT\ParishIntake\WordPress\Ai\WordPressAiCallGate(
+    new \ADCT\ParishIntake\WordPress\Database\WordPressActionTokenRateLimitStore(
+        new \ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection()
+    ),
+    new \ADCT\ParishIntake\Core\Support\SystemClock(),
+    2
+);
+if (! $aiGate->reserve() || ! $aiGate->reserve() || $aiGate->reserve()) {
+    $fail('The database-backed daily AI call cap did not atomically reject a third reservation.');
 }
 
 $_POST = [
@@ -1264,6 +1656,49 @@ if (
     || $legacyParserRow['title'] !== 'Youth gathering'
 ) {
     $fail('The legacy Manual parser table did not store the first bulletin candidate.');
+}
+
+$manualParserQueueCountAfter = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$mailQueueTable}");
+$manualParserTokenCountAfter = (int) $wpdb->get_var(
+    "SELECT COUNT(*) FROM {$manualParserActionTokenTable}"
+);
+
+if (
+    $manualParserQueueCountAfter !== $manualParserQueueCountBefore
+    || $manualParserTokenCountAfter !== $manualParserTokenCountBefore
+) {
+    $fail('The Manual parser enqueued a confirmation or issued action tokens during the web request.');
+}
+
+$previousPost = $_POST;
+$previousRequest = $_REQUEST;
+$_POST = [
+    'adct_parish_intake_parse_nonce' => wp_create_nonce('adct_parish_intake_parse'),
+    'adct_parish_intake_parse' => '1',
+    'source_type' => 'manual-test',
+    'source_identifier' => 'skipped-section-integration-test',
+    'sender_email' => 'events@example.test',
+    'subject' => 'Fictional Parish bulletin',
+    'body' => "MASS INTENTIONS\nFictional Person Alpha\n\n"
+        . 'Parish braai on Sunday 11 October 2026 at 12:00 at Fictional Hall.',
+];
+$_REQUEST = $_POST;
+ob_start();
+try {
+    do_action($pageHook);
+} finally {
+    $skippedSectionHtml = (string) ob_get_clean();
+    $_POST = $previousPost;
+    $_REQUEST = $previousRequest;
+}
+
+if (
+    strpos($skippedSectionHtml, 'A skipped private section may contain an event') === false
+    || strpos($skippedSectionHtml, 'possible_missed_event_after_skipped_section: 1') === false
+    || strpos($skippedSectionHtml, 'Fictional Person Alpha') !== false
+    || strpos($skippedSectionHtml, 'Parish braai') !== false
+) {
+    $fail('The Manual parser must flag a possible missed event without exposing skipped text.');
 }
 
 $originalSettingsScreen = $GLOBALS['current_screen'] ?? null;
@@ -1460,6 +1895,41 @@ $firstContactId = (int) $wpdb->get_var($wpdb->prepare(
 
 if ($firstParishId < 1 || $firstContactId < 1) {
     $fail('An imported parish office contact could not be found.');
+}
+
+$lockEmail = 'locked-office@example.invalid';
+$lockName = 'adct_pi_pc_' . substr(hash('sha256', strtolower(trim($lockEmail))), 0, 40);
+$contentionDb = new wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
+$lockAcquired = (string) $contentionDb->get_var($contentionDb->prepare('SELECT GET_LOCK(%s, %d)', $lockName, 0));
+
+if ($lockAcquired !== '1') {
+    $fail('The contention test could not acquire its setup lock.');
+}
+
+try {
+    try {
+        $contactRepository->insertVerifiedIfMissing($firstParishId, $lockEmail, '2026-09-25 00:00:00');
+        $fail('A locked office contact insert unexpectedly succeeded.');
+    } catch (RuntimeException $exception) {
+        if (! str_contains($exception->getMessage(), 'lock')) {
+            $fail('The locked office contact insert failed for the wrong reason: ' . $exception->getMessage());
+        }
+    }
+
+    if ((int) $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM {$contactTable} WHERE parish_id = %d AND email = %s",
+        $firstParishId,
+        $lockEmail
+    )) !== 0) {
+        $fail('A locked office contact insert still created a parish contact row.');
+    }
+} finally {
+    $released = (string) $contentionDb->get_var($contentionDb->prepare('SELECT RELEASE_LOCK(%s)', $lockName));
+    $contentionDb->close();
+
+    if ($released !== '1') {
+        $fail('The contention test lock could not be released.');
+    }
 }
 
 $officialSources = array_values(array_filter(
@@ -1699,6 +2169,7 @@ if (
     get_post_meta($eventPostId, 'exdates', true) !== ['2026-11-06T16:00']
     || get_post_meta($eventPostId, 'rdates', true) !== ['2026-11-13T16:00']
     || ! in_array(get_post_meta($eventPostId, 'featured', true), [true, 1, '1'], true)
+    || get_post_meta($eventPostId, EventEditor::FEATURED_OVERRIDE_META, true) !== '1'
     || (get_post_meta($eventPostId, 'contact', true)['email'] ?? '') !== 'event-contact@example.test'
 ) {
     $_POST = $originalEventPost;
@@ -1795,10 +2266,89 @@ $eventColumns = apply_filters('manage_adct_event_posts_columns', [
     'date' => 'Date',
 ]);
 
-foreach (['event_start', 'event_parish', 'event_type', 'event_status', 'event_featured'] as $column) {
+foreach (['event_start', 'event_next', 'event_parish', 'event_type', 'event_recurring', 'event_status', 'event_featured'] as $column) {
     if (! array_key_exists($column, $eventColumns)) {
         $fail('The event admin list is missing the ' . $column . ' column.');
     }
+}
+ob_start();
+do_action('restrict_manage_posts', EventPostType::POST_TYPE);
+$eventListFilters = (string) ob_get_clean();
+foreach (['adct_pi_parish', 'adct_pi_next', 'adct_pi_recurring', 'adct_pi_featured', 'adct_pi_status'] as $filterName) {
+    if (! str_contains($eventListFilters, 'name="' . $filterName . '"')) {
+        $fail('The event admin list is missing the ' . $filterName . ' filter.');
+    }
+}
+$previousEventScreen = get_current_screen();
+$previousEventGet = $_GET;
+$previousMainQuery = $GLOBALS['wp_the_query'] ?? null;
+$legacyFeaturedValue = false;
+set_current_screen('edit-adct_event');
+try {
+    if (! is_admin()) {
+        $fail('The event admin list filter test could not enter an admin screen.');
+    }
+    $matchingEventIds = static function (array $filters): array {
+        $_GET = $filters;
+        $query = new WP_Query();
+        $GLOBALS['wp_the_query'] = $query;
+        $query->query([
+            'post_type' => EventPostType::POST_TYPE,
+            'post_status' => 'publish',
+            'posts_per_page' => 100,
+        ]);
+        return array_map('intval', wp_list_pluck($query->posts, 'ID'));
+    };
+    $nextEventDate = $wpdb->get_var($wpdb->prepare(
+        "SELECT start_local_date FROM {$wpdb->prefix}adct_pi_occurrences "
+        . 'WHERE event_id = %d ORDER BY start_utc ASC LIMIT 1',
+        $eventPostId
+    ));
+    if (! is_string($nextEventDate)
+        || ! in_array($eventPostId, $matchingEventIds([
+            'adct_pi_parish' => (string) $firstParishId,
+            'adct_pi_next' => $nextEventDate,
+            'adct_pi_recurring' => 'yes',
+            'adct_pi_featured' => 'yes',
+            'adct_pi_status' => 'scheduled',
+        ]), true)) {
+        $fail('Combined event admin list filters hid a matching event.');
+    }
+    foreach ([
+        ['adct_pi_parish' => 'none'],
+        ['adct_pi_recurring' => 'no'],
+        ['adct_pi_featured' => 'no'],
+        ['adct_pi_status' => 'cancelled'],
+        ['adct_pi_next' => '2026-12-25'],
+    ] as $filter) {
+        if (in_array($eventPostId, $matchingEventIds($filter), true)) {
+            $fail('An event admin list filter did not exclude a nonmatching event: ' . wp_json_encode($filter));
+        }
+    }
+    if ($wpdb->update(
+        $wpdb->postmeta,
+        ['meta_value' => '0'],
+        ['post_id' => $eventPostId, 'meta_key' => 'featured'],
+        ['%s'],
+        ['%d', '%s']
+    ) !== 1) {
+        $fail('Could not seed a legacy explicit false featured value.');
+    }
+    $legacyFeaturedValue = true;
+    clean_post_cache($eventPostId);
+    $unfeaturedIds = $matchingEventIds(['adct_pi_featured' => 'no']);
+    $featuredIds = $matchingEventIds(['adct_pi_featured' => 'yes']);
+    if (! in_array($eventPostId, $unfeaturedIds, true)
+        || in_array($eventPostId, $featuredIds, true)) {
+        $fail('The featured admin filter omitted a published event stored with explicit false metadata.');
+    }
+} finally {
+    if ($legacyFeaturedValue) {
+        update_post_meta($eventPostId, 'featured', true);
+    }
+    $_GET = $previousEventGet;
+    $GLOBALS['wp_the_query'] = $previousMainQuery;
+    set_current_screen($previousEventScreen ?? 'front');
 }
 
 $currentEventUserId = get_current_user_id();
@@ -2205,6 +2755,8 @@ if (count($preexistingOccurrenceRows) !== 3) {
 
 $forcedVenueFailureEventId = $occurrenceEventId;
 $failedUpdateStart = $restOccurrenceStart->modify('+3 weeks');
+// Ensure an unintended duplicate rebuild changes second-resolution timestamps.
+sleep(1);
 $failedUpdateRequest = new WP_REST_Request(
     'PATCH',
     '/wp/v2/adct_event/' . $occurrenceEventId
@@ -3044,6 +3596,480 @@ if (
     $fail('The inbound store did not persist automation and structured authentication flags.');
 }
 
+$confirmationSuffix = bin2hex(random_bytes(6));
+$confirmationRecipient = 'confirmation-reply-' . $confirmationSuffix . '@example.test';
+$confirmationSender = 'confirmation-sender-' . $confirmationSuffix . '@example.test';
+$blockedConfirmationSender = 'blocked-confirmation-' . $confirmationSuffix . '@example.test';
+$automatedConfirmationSender = 'list-confirmation-' . $confirmationSuffix . '@example.test';
+$unsafeConfirmationSender = 'unsafe-confirmation-' . $confirmationSuffix;
+$confirmationTimestamp = $clock->now()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+$contactRepository->saveLink(
+    $firstParishId,
+    $confirmationRecipient,
+    'Synthetic preview contact',
+    'Integration fixture',
+    false,
+    SenderTrust::VERIFIED,
+    $confirmationTimestamp,
+    $confirmationTimestamp
+);
+$contactRepository->saveLink(
+    $firstParishId,
+    $blockedConfirmationSender,
+    'Synthetic blocked sender',
+    'Integration fixture',
+    false,
+    SenderTrust::BLOCKED,
+    null,
+    $confirmationTimestamp
+);
+$confirmationStorage = new ProtectedInboundMailStorage();
+$confirmationRawPaths = [];
+$storeParsedConfirmationMessage = static function (
+    string $externalId,
+    string $senderEmail,
+    bool $automated,
+    ?string $rawMessage
+) use (
+    $confirmationStorage,
+    &$confirmationRawPaths,
+    $mailboxSource,
+    $clock,
+    $inboundMessageStore,
+    $integrationTimestamp,
+    $inboundMessageTable,
+    $wpdb,
+    $fail
+): int {
+    $rawPath = null;
+
+    if ($rawMessage !== null) {
+        $rawPath = $confirmationStorage->storeRawMessage($rawMessage);
+        $confirmationRawPaths[] = $rawPath;
+    }
+
+    $stored = $inboundMessageStore->store(
+        new InboundMessageRecord(
+            $mailboxSource->id,
+            $externalId,
+            null,
+            $senderEmail,
+            'Synthetic confirmation sender',
+            'Fictional event notice',
+            $clock->now(),
+            $rawPath,
+            [],
+            InboundMessageRecord::STATUS_RECEIVED,
+            null,
+            $automated
+        ),
+        $integrationTimestamp
+    );
+
+    if ($stored->duplicate) {
+        $fail('A synthetic confirmation message unexpectedly duplicated an existing inbound message.');
+    }
+
+    $updated = $wpdb->update(
+        $inboundMessageTable,
+        ['status' => 'parsed'],
+        ['id' => $stored->messageId],
+        ['%s'],
+        ['%d']
+    );
+
+    if ($updated !== 1) {
+        $fail('A synthetic inbound message could not be marked as parsed for the confirmation job.');
+    }
+
+    return $stored->messageId;
+};
+$confirmationMessageId = '<confirmation-' . $confirmationSuffix . '@example.test>';
+$confirmationRawMessage = implode("\r\n", [
+    'From: ' . $confirmationSender,
+    'Reply-To: ' . $confirmationRecipient,
+    'Message-ID: ' . $confirmationMessageId,
+    'Subject: Fictional event notice',
+]) . "\r\n\r\nFictional event notice body.\r\n";
+$confirmationRawMessageFor = static function (
+    string $senderEmail,
+    string $messageId,
+    bool $automated
+): string {
+    $headers = [
+        'From: ' . $senderEmail,
+        'Message-ID: ' . $messageId,
+        'Subject: Fictional event notice',
+    ];
+
+    if ($automated) {
+        $headers[] = 'Auto-Submitted: auto-replied';
+    }
+
+    return implode("\r\n", $headers) . "\r\n\r\nFictional event notice body.\r\n";
+};
+$confirmationMessageRowId = $storeParsedConfirmationMessage(
+    $confirmationMessageId,
+    $confirmationSender,
+    false,
+    $confirmationRawMessage
+);
+$blockedExternalMessageId = '<blocked-confirmation-' . $confirmationSuffix . '@example.test>';
+$blockedConfirmationMessageId = $storeParsedConfirmationMessage(
+    $blockedExternalMessageId,
+    $blockedConfirmationSender,
+    false,
+    $confirmationRawMessageFor(
+        $blockedConfirmationSender,
+        $blockedExternalMessageId,
+        false
+    )
+);
+$automatedExternalMessageId = '<list-confirmation-' . $confirmationSuffix . '@example.test>';
+$automatedConfirmationMessageId = $storeParsedConfirmationMessage(
+    $automatedExternalMessageId,
+    $automatedConfirmationSender,
+    true,
+    $confirmationRawMessageFor(
+        $automatedConfirmationSender,
+        $automatedExternalMessageId,
+        true
+    )
+);
+$unsafeExternalMessageId = '<noreply-confirmation-' . $confirmationSuffix . '@example.test>';
+$unsafeConfirmationMessageId = $storeParsedConfirmationMessage(
+    $unsafeExternalMessageId,
+    $unsafeConfirmationSender,
+    false,
+    $confirmationRawMessageFor(
+        $unsafeConfirmationSender,
+        $unsafeExternalMessageId,
+        false
+    )
+);
+$confirmationCandidateTable = $wpdb->prefix . 'adct_pi_event_candidates';
+$insertConfirmationCandidate = static function (
+    int $messageId,
+    int $blockIndex,
+    string $title,
+    float $confidence
+) use ($wpdb, $confirmationCandidateTable, $clock, $fail): int {
+    $timestamp = $clock->now()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+    $fields = [
+        'title' => $title,
+        'event_date' => '2026-10-12',
+        'event_time' => '18:30',
+        'venue' => 'St Example Hall',
+        'venue_address' => '1 Example Street',
+        'venue_suburb' => 'Cape Town',
+        'parish_name' => 'Synthetic Example Parish',
+        'description' => 'Fictional integration preview.',
+        'event_type' => 'Community',
+        'contact' => 'Office: office@example.test; Phone: 000 000 0000',
+        'all_day' => false,
+    ];
+    $inserted = $wpdb->insert(
+        $confirmationCandidateTable,
+        [
+            'message_id' => $messageId,
+            'block_index' => $blockIndex,
+            'fields' => json_encode($fields, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            'recurrence' => '[]',
+            'confidence' => $confidence,
+            'notes' => '[]',
+            'status' => 'draft',
+            'created_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ],
+        ['%d', '%d', '%s', '%s', '%f', '%s', '%s', '%s', '%s']
+    );
+
+    if ($inserted !== 1 || (int) $wpdb->insert_id < 1) {
+        $fail('A synthetic event candidate could not be saved for the confirmation job.');
+    }
+
+    return (int) $wpdb->insert_id;
+};
+$confirmationCandidateIds = [
+    $insertConfirmationCandidate(
+        $confirmationMessageRowId,
+        0,
+        'Integration <one>',
+        0.91
+    ),
+    $insertConfirmationCandidate(
+        $confirmationMessageRowId,
+        1,
+        'Integration event two',
+        0.48
+    ),
+];
+$blockedConfirmationCandidateId = $insertConfirmationCandidate(
+    $blockedConfirmationMessageId,
+    0,
+    'Blocked sender event',
+    0.9
+);
+$automatedConfirmationCandidateId = $insertConfirmationCandidate(
+    $automatedConfirmationMessageId,
+    0,
+    'Automated sender event',
+    0.9
+);
+$unsafeConfirmationCandidateId = $insertConfirmationCandidate(
+    $unsafeConfirmationMessageId,
+    0,
+    'No-reply sender event',
+    0.9
+);
+update_option(WordPressTestModeSettings::TEST_MODE_OPTION, WordPressTestModeSettings::MODE_ENABLED, false);
+update_option(WordPressTestModeSettings::ALLOWLIST_OPTION, [$confirmationRecipient], false);
+$confirmationSource = new WordPressConfirmationEmailJobSource(
+    $database,
+    $contactRepository,
+    $confirmationStorage
+);
+$eligibleConfirmationBatch = $confirmationSource->nextPending();
+
+if (
+    $eligibleConfirmationBatch === null
+    || $eligibleConfirmationBatch->messageId !== $confirmationMessageRowId
+    || $eligibleConfirmationBatch->replyToEmail !== $confirmationRecipient
+    || $eligibleConfirmationBatch->replyToTrust !== SenderTrust::VERIFIED
+    || count($eligibleConfirmationBatch->candidates) !== 2
+    || has_action('adct_pi_job_queue_confirmation_previews') === false
+) {
+    $fail('The confirmation job source or scheduled hook was not ready for the synthetic parsed message.');
+}
+
+$confirmationMailAttempts = [];
+$unexpectedConfirmationRecipients = [];
+$confirmationMailGuard = static function ($pre, $arguments) use (
+    &$confirmationMailAttempts,
+    &$unexpectedConfirmationRecipients,
+    $confirmationRecipient
+) {
+    $mailData = is_array($arguments) ? $arguments : [];
+    $rawRecipient = $mailData['to'] ?? null;
+    $recipient = is_string($rawRecipient)
+        ? $rawRecipient
+        : (is_array($rawRecipient) ? implode(',', array_map('strval', $rawRecipient)) : '');
+
+    if ($recipient !== $confirmationRecipient) {
+        $unexpectedConfirmationRecipients[] = $recipient;
+
+        return false;
+    }
+
+    $confirmationMailAttempts[] = $mailData;
+
+    return true;
+};
+add_filter('pre_wp_mail', $confirmationMailGuard, 10, 2);
+
+try {
+    do_action('adct_pi_job_queue_confirmation_previews');
+} finally {
+    remove_filter('pre_wp_mail', $confirmationMailGuard, 10);
+    update_option(WordPressTestModeSettings::TEST_MODE_OPTION, WordPressTestModeSettings::MODE_DISABLED, false);
+    update_option(WordPressTestModeSettings::ALLOWLIST_OPTION, [], false);
+}
+
+$confirmationStatusFor = static function (int $messageId) use ($wpdb, $inboundMessageTable): ?array {
+    $row = $wpdb->get_row($wpdb->prepare(
+        "SELECT confirmation_status, confirmation_reason FROM {$inboundMessageTable} WHERE id = %d LIMIT 1",
+        $messageId
+    ), ARRAY_A);
+
+    return is_array($row) ? $row : null;
+};
+$confirmationStatus = $confirmationStatusFor($confirmationMessageRowId);
+$blockedConfirmationStatus = $confirmationStatusFor($blockedConfirmationMessageId);
+$automatedConfirmationStatus = $confirmationStatusFor($automatedConfirmationMessageId);
+$unsafeConfirmationStatus = $confirmationStatusFor($unsafeConfirmationMessageId);
+$confirmationJobState = get_option('adct_pi_job_state_queue_confirmation_previews', []);
+$confirmationGroupKey = 'confirmation:' . $confirmationMessageRowId;
+$confirmationQueueRow = $wpdb->get_row($wpdb->prepare(
+    "SELECT id, recipient, status, body_html, body_text, thread_headers, payload_fingerprint "
+    . "FROM {$mailQueueTable} WHERE recipient = %s AND group_key = %s LIMIT 1",
+    $confirmationRecipient,
+    $confirmationGroupKey
+), ARRAY_A);
+$confirmationQueueCount = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT COUNT(*) FROM {$mailQueueTable} WHERE group_key = %s",
+    $confirmationGroupKey
+));
+$confirmationActionTokenTable = $wpdb->prefix . 'adct_pi_action_tokens';
+$confirmationTokens = (array) $wpdb->get_results($wpdb->prepare(
+    "SELECT token_hash, purpose, subject_type, subject_id, email FROM {$confirmationActionTokenTable} "
+    . 'WHERE email = %s ORDER BY id ASC',
+    $confirmationRecipient
+), ARRAY_A);
+$confirmationBodyText = is_array($confirmationQueueRow)
+    ? (string) ($confirmationQueueRow['body_text'] ?? '')
+    : '';
+preg_match_all('/\badct_token=([A-Za-z0-9_-]{43})/', $confirmationBodyText, $confirmationTokenMatches);
+$linkedConfirmationHashes = array_map(
+    static fn (string $secret): string => hash('sha256', $secret),
+    $confirmationTokenMatches[1]
+);
+$storedConfirmationHashes = array_map(
+    static fn (array $row): string => (string) ($row['token_hash'] ?? ''),
+    $confirmationTokens
+);
+sort($linkedConfirmationHashes, SORT_STRING);
+sort($storedConfirmationHashes, SORT_STRING);
+$expectedConfirmationBindings = [];
+
+foreach ($confirmationCandidateIds as $candidateId) {
+    foreach (['confirm', 'deny', 'edit'] as $purpose) {
+        $expectedConfirmationBindings[] = $purpose . '|event_candidate|' . $candidateId
+            . '|' . $confirmationRecipient;
+    }
+}
+
+$expectedConfirmationBindings[] = 'confirm|inbound_message|' . $confirmationMessageRowId
+    . '|' . $confirmationRecipient;
+$actualConfirmationBindings = array_map(
+    static fn (array $row): string => (string) ($row['purpose'] ?? '')
+        . '|' . (string) ($row['subject_type'] ?? '')
+        . '|' . (int) ($row['subject_id'] ?? 0)
+        . '|' . (string) ($row['email'] ?? ''),
+    $confirmationTokens
+);
+sort($expectedConfirmationBindings, SORT_STRING);
+sort($actualConfirmationBindings, SORT_STRING);
+$confirmationHeaderLines = is_array($confirmationMailAttempts[0]['headers'] ?? null)
+    ? array_map('strval', $confirmationMailAttempts[0]['headers'])
+    : [(string) ($confirmationMailAttempts[0]['headers'] ?? '')];
+$confirmationHeaderText = implode("\n", $confirmationHeaderLines);
+$storedThreadHeaders = is_array($confirmationQueueRow)
+    ? json_decode((string) ($confirmationQueueRow['thread_headers'] ?? ''), true)
+    : null;
+
+if (
+    $confirmationStatus === null
+    || ($confirmationStatus['confirmation_status'] ?? '') !== 'sent'
+    || ($confirmationStatus['confirmation_reason'] ?? null) !== null
+    || $blockedConfirmationStatus === null
+    || ($blockedConfirmationStatus['confirmation_status'] ?? '') !== 'suppressed'
+    || ($blockedConfirmationStatus['confirmation_reason'] ?? '') !== 'blocked_sender'
+    || $automatedConfirmationStatus === null
+    || ($automatedConfirmationStatus['confirmation_status'] ?? '') !== 'suppressed'
+    || ($automatedConfirmationStatus['confirmation_reason'] ?? '') !== 'automated_or_list'
+    || $unsafeConfirmationStatus === null
+    || ($unsafeConfirmationStatus['confirmation_status'] ?? '') !== 'suppressed'
+    || ($unsafeConfirmationStatus['confirmation_reason'] ?? '') !== 'no_safe_recipient'
+) {
+    $fail('The confirmation job did not record the expected outcomes: '
+        . wp_json_encode([
+            'normal' => $confirmationStatus,
+            'blocked' => $blockedConfirmationStatus,
+            'automated' => $automatedConfirmationStatus,
+            'unsafe' => $unsafeConfirmationStatus,
+            'job_state' => $confirmationJobState,
+        ]));
+}
+
+if (
+    $confirmationQueueRow === null
+    || ($confirmationQueueRow['recipient'] ?? '') !== $confirmationRecipient
+    || ($confirmationQueueRow['status'] ?? '') !== MailQueueStatus::SENT->value
+    || $confirmationQueueCount !== 1
+    || count($confirmationMailAttempts) !== 1
+    || $unexpectedConfirmationRecipients !== []
+) {
+    $fail('The confirmation preview was not delivered exactly once to its verified Reply-To through the intercepted mail adapter.');
+}
+
+if (
+    strpos((string) ($confirmationQueueRow['body_html'] ?? ''), 'Event 1: Integration &lt;one&gt;') === false
+    || strpos((string) ($confirmationQueueRow['body_html'] ?? ''), 'Event 2: Integration event two') === false
+    || strpos($confirmationBodyText, 'Event 1: Integration <one>') === false
+    || strpos($confirmationBodyText, 'Event 2: Integration event two (please check)') === false
+    || strpos((string) ($confirmationQueueRow['body_html'] ?? ''), 'Confirm all') === false
+) {
+    $fail('The confirmation email did not render both candidates and the confirm-all action.');
+}
+
+if (
+    count($confirmationTokenMatches[1]) !== 7
+    || count(array_unique($confirmationTokenMatches[1])) !== 7
+    || $linkedConfirmationHashes !== $storedConfirmationHashes
+    || $actualConfirmationBindings !== $expectedConfirmationBindings
+) {
+    $fail('The preview links did not map to seven distinct purpose, subject and email-bound action tokens.');
+}
+
+if (
+    ! is_array($storedThreadHeaders)
+    || ($storedThreadHeaders['in_reply_to'] ?? null) !== $confirmationMessageId
+    || ($storedThreadHeaders['references'] ?? null) !== $confirmationMessageId
+    || strpos($confirmationHeaderText, 'In-Reply-To: ' . $confirmationMessageId) === false
+    || strpos($confirmationHeaderText, 'References: ' . $confirmationMessageId) === false
+    || preg_match('/\A[a-f0-9]{64}\z/D', (string) ($confirmationQueueRow['payload_fingerprint'] ?? '')) !== 1
+) {
+    $fail('The queued confirmation email did not persist safe thread headers and its idempotency fingerprint.');
+}
+
+foreach ([
+    $blockedConfirmationMessageId => $blockedConfirmationCandidateId,
+    $automatedConfirmationMessageId => $automatedConfirmationCandidateId,
+    $unsafeConfirmationMessageId => $unsafeConfirmationCandidateId,
+] as $messageId => $candidateId) {
+    $suppressedQueueCount = (int) $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM {$mailQueueTable} WHERE group_key = %s",
+        'confirmation:' . $messageId
+    ));
+    $suppressedTokenCount = (int) $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM {$confirmationActionTokenTable} "
+        . 'WHERE subject_type = %s AND subject_id = %d',
+        'event_candidate',
+        $candidateId
+    ));
+
+    if ($suppressedQueueCount !== 0 || $suppressedTokenCount !== 0) {
+        $fail('A blocked, automated, or unsafe sender was queued or given candidate action tokens.');
+    }
+}
+
+$wpdb->query($wpdb->prepare(
+    "UPDATE {$inboundMessageTable} SET confirmation_status = NULL, confirmation_reason = NULL WHERE id = %d",
+    $confirmationMessageRowId
+));
+$retryBatch = $confirmationSource->nextPending();
+
+if ($retryBatch === null || $retryBatch->messageId !== $confirmationMessageRowId) {
+    $fail('The confirmation preview could not be loaded for the idempotent retry integration check.');
+}
+
+$retryPreviewService = new ConfirmationEmailPreviewService(
+    Plugin::actionTokenService(),
+    new WordPressConfirmationActionLinkProvider(),
+    Plugin::mailer(),
+    new WordPressMailQueueRepository($database),
+    new ConfirmationEmailRenderer()
+);
+$retryResult = $retryPreviewService->enqueuePreview($retryBatch);
+$confirmationSource->recordResult($retryBatch->messageId, $retryResult, $clock->now());
+$confirmationQueueCountAfterRetry = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT COUNT(*) FROM {$mailQueueTable} WHERE group_key = %s",
+    $confirmationGroupKey
+));
+$confirmationTokensAfterRetry = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT COUNT(*) FROM {$confirmationActionTokenTable} WHERE email = %s",
+    $confirmationRecipient
+));
+
+if (
+    $retryResult->outcome->value !== 'sent'
+    || $confirmationQueueCountAfterRetry !== 1
+    || $confirmationTokensAfterRetry !== 7
+    || count($confirmationMailAttempts) !== 1
+) {
+    $fail('An idempotent confirmation retry created a duplicate message, action tokens, or delivery.');
+}
+
 $secondaryMailboxEmail = 'intake-mailbox-secondary@example.test';
 $secondaryMailboxSource = $sourceRepository->findGlobalEmailSource($secondaryMailboxEmail);
 $secondaryMailboxSource = $sourceRegistry->save(new Source(
@@ -3134,8 +4160,12 @@ if (
     || strpos($mailboxesListHtml, 'Message size 16000001 bytes') === false
     || strpos($mailboxesListHtml, 'Skipped attachments') === false
     || strpos($mailboxesListHtml, 'unsupported MIME type') === false
-    || strpos($mailboxesListHtml, 'Recent message screening') === false
+    || strpos($mailboxesListHtml, 'Recent message screening and confirmation') === false
     || strpos($mailboxesListHtml, 'No confirmation: automated or list mail detected.') === false
+    || strpos($mailboxesListHtml, 'Confirmation: accepted by the mail transport.') === false
+    || strpos($mailboxesListHtml, 'Confirmation: suppressed: sender is blocked.') === false
+    || strpos($mailboxesListHtml, 'Confirmation: suppressed: automated or list mail.') === false
+    || strpos($mailboxesListHtml, 'Confirmation: suppressed: no safe confirmation address.') === false
     || strpos($mailboxesListHtml, 'SPF: PASS (unverified claim)') === false
     || strpos($mailboxesListHtml, 'DMARC: FAIL (unverified claim)') === false
     || strpos($mailboxesListHtml, 'Review flag: reported DMARC fail') === false
@@ -3155,6 +4185,57 @@ if (
 }
 
 delete_option($mailboxPasswordOption);
+
+$confirmationQueueCleanup = $confirmationQueueRow === null
+    ? false
+    : $wpdb->delete(
+        $mailQueueTable,
+        ['id' => (int) $confirmationQueueRow['id']],
+        ['%d']
+    );
+$confirmationTokenCleanup = $wpdb->delete(
+    $confirmationActionTokenTable,
+    ['email' => $confirmationRecipient],
+    ['%s']
+);
+
+if ($confirmationQueueCleanup !== 1 || $confirmationTokenCleanup !== 7) {
+    $fail('The confirmation integration fixtures could not be removed from the queue and token tables.');
+}
+
+foreach ([
+    $confirmationMessageRowId,
+    $blockedConfirmationMessageId,
+    $automatedConfirmationMessageId,
+    $unsafeConfirmationMessageId,
+] as $messageId) {
+    $deletedCandidates = $wpdb->delete(
+        $confirmationCandidateTable,
+        ['message_id' => $messageId],
+        ['%d']
+    );
+    $deletedMessage = $wpdb->delete(
+        $inboundMessageTable,
+        ['id' => $messageId],
+        ['%d']
+    );
+
+    if ($deletedCandidates < 1 || $deletedMessage !== 1) {
+        $fail('The confirmation integration inbound fixtures could not be removed.');
+    }
+}
+
+foreach ($confirmationRawPaths as $rawPath) {
+    $confirmationStorage->delete($rawPath);
+}
+
+foreach ([$confirmationRecipient, $blockedConfirmationSender] as $email) {
+    foreach ($contactRepository->findByEmail($email) as $contact) {
+        if ($contactRepository->deleteLink((int) $contact['id'], (int) $contact['parish_id']) !== 1) {
+            $fail('A synthetic confirmation integration contact could not be removed.');
+        }
+    }
+}
 
 $inboundTable = $wpdb->prefix . 'adct_pi_inbound_messages';
 $attachmentsTable = $wpdb->prefix . 'adct_pi_attachments';
@@ -3233,16 +4314,15 @@ $processingJob = new InboundMessageProcessingJob(
     new WordPressEventCandidateStore(new EventCandidateRepository($mailboxDatabase)),
     new WordPressInboundMessageProcessingFailureLogger(),
     $processingDirectory,
-    $processingClock,
-    $contactService
+    $processingClock
 );
 $processingRunner = new JobRunner(
     new WordPressJobLock(),
     $jobStateStore,
     $processingClock
 );
-$runPrioritizedMessage = static function (?int $messageId = null) use ($processingJob, $processingRunner, $reprocessMessageId) {
-    $processingJob->prioritizeMessageIds([$messageId ?? $reprocessMessageId]);
+$runPrioritizedMessage = static function () use ($processingJob, $processingRunner, $reprocessMessageId) {
+    $processingJob->prioritizeMessageIds([$reprocessMessageId]);
 
     try {
         return $processingRunner->run($processingJob, true);
@@ -3321,19 +4401,10 @@ $parsedMessageRow = $wpdb->get_row($wpdb->prepare(
     $reprocessMessageId
 ), ARRAY_A);
 $candidateRowsAfterParse = (array) $wpdb->get_results($wpdb->prepare(
-    "SELECT id, block_index, status FROM {$candidateTable} WHERE message_id = %d ORDER BY block_index ASC",
+    "SELECT id, block_index, status, fields FROM {$candidateTable} WHERE message_id = %d ORDER BY block_index ASC",
     $reprocessMessageId
 ), ARRAY_A);
 $candidateCountAfterParse = count($candidateRowsAfterParse);
-$learnedInboundSender = $contactRepository->findByEmail('reprocess-notices@example.test');
-if (
-    count($learnedInboundSender) !== 1
-    || (int) $learnedInboundSender[0]['parish_id'] !== 0
-    || $learnedInboundSender[0]['trust'] !== 'pending'
-    || $learnedInboundSender[0]['verified_at'] !== null
-) {
-    $fail('An unknown From address was not learned as one unlinked pending contact.');
-}
 
 if (
     $parsedRun->status->value !== 'completed'
@@ -3348,6 +4419,7 @@ if (
     || ! AuthenticationResults::fromJson($parsedMessageRow['auth_results'])->hasReportedDmarcFailure()
     || $candidateCountAfterParse !== 1
     || ($candidateRowsAfterParse[0]['status'] ?? null) !== 'draft'
+    || ! isset(json_decode($candidateRowsAfterParse[0]['fields'] ?? '{}', true)['event_type'])
 ) {
     $fail('Reprocessing did not parse the same stored message into one reviewable draft candidate.');
 }
@@ -3380,9 +4452,6 @@ $candidateRowsAfterResume = (array) $wpdb->get_results($wpdb->prepare(
     "SELECT id, block_index, status FROM {$candidateTable} WHERE message_id = %d ORDER BY block_index ASC",
     $reprocessMessageId
 ), ARRAY_A);
-if (count($contactRepository->findByEmail('reprocess-notices@example.test')) !== 1) {
-    $fail('An interrupted intake retry duplicated the pending sender contact.');
-}
 $attachmentAfterProcessing = $wpdb->get_row($wpdb->prepare(
     "SELECT id, status, storage_path, content_hash FROM {$attachmentsTable} WHERE message_id = %d LIMIT 1",
     $reprocessMessageId
@@ -3400,63 +4469,6 @@ if (
     || $mailQueueCountBeforeProcessing !== $mailQueueCountAfterProcessing
 ) {
     $fail('Resuming a stored message duplicated candidates or changed attachments, mailbox checkpoints or queued mail.');
-}
-
-$mismatchStoredEmail = 'stored-from@example.test';
-$mismatchDecodedEmail = 'decoded-from@example.test';
-$mismatchExternalId = '<sender-mismatch-' . bin2hex(random_bytes(8)) . '@example.test>';
-$mismatchRawMessage = implode("\r\n", [
-    'From: Fictional Decoded Sender <' . $mismatchDecodedEmail . '>',
-    'To: events@example.test',
-    'Date: Fri, 25 Sep 2026 04:00:00 +0000',
-    'Message-ID: ' . $mismatchExternalId,
-    'Subject: Fictional sender mismatch community supper',
-    'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset=UTF-8',
-    '',
-    'Parish: Example Parish',
-    'Please join us for a community supper on 13 October 2026 at 18:30 at Example Parish Hall.',
-    '',
-]);
-$mismatchRawPath = $processingStorage->storeRawMessage($mismatchRawMessage);
-$mismatchStoreResult = $inboundMessageStore->store(
-    new InboundMessageRecord(
-        $mailboxSource->id,
-        $mismatchExternalId,
-        hash('sha256', $mismatchRawMessage),
-        $mismatchStoredEmail,
-        'Fictional Stored Sender',
-        'Fictional sender mismatch community supper',
-        new DateTimeImmutable('2026-09-25 04:00:00 UTC'),
-        $mismatchRawPath
-    ),
-    $integrationTimestamp
-);
-
-if ($mismatchStoreResult->messageId < 1) {
-    $fail('The sender mismatch integration fixture could not be stored.');
-}
-
-$mismatchRun = $runPrioritizedMessage($mismatchStoreResult->messageId);
-$mismatchRow = $wpdb->get_row($wpdb->prepare(
-    "SELECT id, status, error FROM {$inboundTable} WHERE id = %d LIMIT 1",
-    $mismatchStoreResult->messageId
-), ARRAY_A);
-$mismatchCandidateCount = (int) $wpdb->get_var($wpdb->prepare(
-    "SELECT COUNT(*) FROM {$candidateTable} WHERE message_id = %d",
-    $mismatchStoreResult->messageId
-));
-
-if (
-    $mismatchRun->status->value !== 'completed'
-    || ! is_array($mismatchRow)
-    || $mismatchRow['status'] !== InboundMessageRecord::STATUS_FAILED
-    || $mismatchRow['error'] !== 'The sender could not be learned safely. Reprocess the message after checking its sender.'
-    || $mismatchCandidateCount !== 0
-    || $contactRepository->findByEmail($mismatchStoredEmail) !== []
-    || $contactRepository->findByEmail($mismatchDecodedEmail) !== []
-) {
-    $fail('A stored/decoded From mismatch was not failed before candidate persistence or contact learning.');
 }
 
 $originalGet = $_GET;
@@ -3478,12 +4490,9 @@ if (
 }
 
 $processingStorage->delete($reprocessRawPath);
-$processingStorage->delete($mismatchRawPath);
 $wpdb->delete($candidateTable, ['message_id' => $reprocessMessageId], ['%d']);
-$wpdb->delete($candidateTable, ['message_id' => $mismatchStoreResult->messageId], ['%d']);
 $wpdb->delete($attachmentsTable, ['message_id' => $reprocessMessageId], ['%d']);
 $wpdb->delete($inboundTable, ['id' => $reprocessMessageId], ['%d']);
-$wpdb->delete($inboundTable, ['id' => $mismatchStoreResult->messageId], ['%d']);
 delete_option('adct_pi_job_state_process_inbound_messages');
 
 if ($wpdb->query($wpdb->prepare(
@@ -3811,6 +4820,8 @@ $sharedSenderEmail = 'sender@example.test';
 $contactService->link($firstParishId, $sharedSenderEmail, 'Sample Sender', 'Secretary', true);
 $contactService->link($secondParishId, $sharedSenderEmail, 'Sample Sender', 'Secretary', true);
 $contactService->block($sharedSenderEmail);
+$pendingSenderEmail = 'pending-' . bin2hex(random_bytes(6)) . '@example.test';
+$contactService->learnPending($pendingSenderEmail, $firstParishId, 'signature');
 $sharedSenderLinks = $wpdb->get_results($wpdb->prepare(
     "SELECT parish_id, trust FROM {$contactTable} WHERE email = %s ORDER BY parish_id ASC",
     $sharedSenderEmail
@@ -3828,6 +4839,24 @@ if (
     || $sharedSenderParishIds !== $expectedSharedSenderParishIds
 ) {
     $fail('Blocking a shared sender did not update both parish contact links.');
+}
+
+$pendingSenderRow = $wpdb->get_row($wpdb->prepare(
+    "SELECT parish_id, trust, verified_at, receives_reminders, suggested_parish_id, suggestion_source "
+    . "FROM {$contactTable} WHERE email = %s LIMIT 1",
+    $pendingSenderEmail
+), ARRAY_A);
+
+if (
+    ! is_array($pendingSenderRow)
+    || (int) ($pendingSenderRow['parish_id'] ?? -1) !== 0
+    || ($pendingSenderRow['trust'] ?? '') !== 'pending'
+    || $pendingSenderRow['verified_at'] !== null
+    || (int) ($pendingSenderRow['receives_reminders'] ?? 1) !== 0
+    || (int) ($pendingSenderRow['suggested_parish_id'] ?? 0) !== $firstParishId
+    || ($pendingSenderRow['suggestion_source'] ?? '') !== 'signature'
+) {
+    $fail('An unknown sender was not saved as an unlinked pending contact with a suggestion-only parish guess.');
 }
 
 $senderAddressRows = $contactRepository->findSenderAddresses(['search' => $sharedSenderEmail], 20, 0);
@@ -4028,26 +5057,6 @@ if (strpos($noDeaneryParishHtml, '<strong>Reviewers only.</strong>') === false) 
 }
 
 $sendersSlug = 'adct-parish-intake-senders';
-$pendingSenderEmail = 'unlinked-sender@example.test';
-$contactService->learnPending(' UNLINKED-SENDER@example.test ', $firstParishId, 'signature');
-$contactService->learnPending($pendingSenderEmail, $secondParishId, 'body');
-$pendingSenderRows = $contactRepository->findByEmail($pendingSenderEmail);
-if (
-    count($pendingSenderRows) !== 1
-    || (int) $pendingSenderRows[0]['parish_id'] !== 0
-    || (int) $pendingSenderRows[0]['suggested_parish_id'] !== $firstParishId
-    || $pendingSenderRows[0]['trust'] !== 'pending'
-) {
-    $fail('The pending sender lost its original suggestion or gained an unconfirmed parish link.');
-}
-$pendingSenderDisplay = $contactRepository->findSenderLinksByEmails([$pendingSenderEmail]);
-if (
-    count($pendingSenderDisplay) !== 1
-    || (int) $pendingSenderDisplay[0]['suggested_parish_id'] !== $firstParishId
-    || $pendingSenderDisplay[0]['suggestion_source'] !== 'signature'
-) {
-    $fail('The sender registry did not expose the pending suggestion separately from verified links.');
-}
 $sendersItems = array_values(array_filter(
     $GLOBALS['submenu'][$parentSlug] ?? [],
     static fn ($item): bool => is_array($item) && ($item[2] ?? null) === $sendersSlug
@@ -4090,8 +5099,8 @@ if ($missingSendersContent !== []) {
         . implode(', ', $missingSendersContent) . ').');
 }
 
-$previousGet = $_GET;
-$_GET = ['page' => $sendersSlug, 'trust' => 'pending', 'search' => $pendingSenderEmail];
+$_GET = ['page' => $sendersSlug];
+$_GET['search'] = $pendingSenderEmail;
 ob_start();
 try {
     do_action($sendersPageHook);
@@ -4099,50 +5108,55 @@ try {
     $pendingSendersHtml = (string) ob_get_clean();
     $_GET = $previousGet;
 }
+
 if (
-    strpos($pendingSendersHtml, 'Suggested parish (not verified)') === false
+    strpos($pendingSendersHtml, $pendingSenderEmail) === false
+    || strpos($pendingSendersHtml, 'Pending') === false
+    || strpos($pendingSendersHtml, 'Suggested parish (not verified)') === false
+    || strpos($pendingSendersHtml, 'Confirm link to parish') === false
     || strpos($pendingSendersHtml, 'Confirm sender') === false
     || strpos($pendingSendersHtml, 'Block address') === false
-    || strpos($pendingSendersHtml, 'name="sender_nonce"') === false
-    || strpos($pendingSendersHtml, $pendingSenderEmail) === false
 ) {
-    $fail('Unknown Senders did not show its suggested parish and nonce-protected confirmation/block actions.');
+    $fail('The Senders page did not render the suggestion-only pending sender and explicit confirm/block actions.');
+}
+$senderNonceMatches = [];
+$confirmNonceIsValid = preg_match(
+    '/name="sender_nonce" value="([^"]+)"/',
+    $pendingSendersHtml,
+    $senderNonceMatches
+) === 1
+    && wp_verify_nonce(
+        (string) ($senderNonceMatches[1] ?? ''),
+        'adct_pi_sender_confirm_' . $pendingSenderEmail
+    ) !== false;
+if (! $confirmNonceIsValid) {
+    $fail('The pending sender confirmation form did not render an email-bound valid nonce.');
 }
 
-$confirmationNonce = wp_create_nonce('adct_pi_sender_confirm_' . $pendingSenderEmail);
-if (
-    strpos($pendingSendersHtml, 'value="' . esc_attr($confirmationNonce) . '"') === false
-    || has_action('admin_post_adct_pi_sender_action') === false
-) {
-    $fail('The sender confirmation form did not render its email-bound nonce or register its admin-post handler.');
+$deaneryApproverRole = get_role('deanery_approver');
+if ($deaneryApproverRole === null || $deaneryApproverRole->has_cap(Capabilities::MANAGE_DIRECTORY)) {
+    $fail('The deanery approver role gained directory-management capability for sender confirmation.');
 }
-
-$previousUserId = get_current_user_id();
-wp_set_current_user($approverUserIds[0]);
-if (current_user_can(Capabilities::MANAGE_DIRECTORY)) {
-    $fail('A deanery approver unexpectedly gained directory-management privileges.');
-}
-wp_set_current_user($previousUserId);
 
 $contactService->confirmPending($secondParishId, $pendingSenderEmail);
-$contactService->confirmPending($secondParishId, strtoupper($pendingSenderEmail));
-$confirmedRows = $contactRepository->findByEmail($pendingSenderEmail);
+$confirmedPendingSender = $contactService->lookup($pendingSenderEmail);
+$confirmedPendingLinks = $contactRepository->findByEmail($pendingSenderEmail);
 if (
-    count($confirmedRows) !== 1
-    || (int) $confirmedRows[0]['parish_id'] !== $secondParishId
-    || $confirmedRows[0]['trust'] !== 'verified'
-    || $confirmedRows[0]['verified_at'] === null
+    $confirmedPendingSender->trust !== SenderTrust::VERIFIED
+    || $confirmedPendingSender->parishIds !== [$secondParishId]
+    || count($confirmedPendingLinks) !== 1
+    || (int) ($confirmedPendingLinks[0]['parish_id'] ?? 0) !== $secondParishId
+    || ($confirmedPendingLinks[0]['trust'] ?? '') !== SenderTrust::VERIFIED
+    || ! is_string($confirmedPendingLinks[0]['verified_at'] ?? null)
 ) {
-    $fail('Admin confirmation did not reconcile the unlinked row into the chosen verified parish.');
+    $fail('Explicit confirmation did not link and verify the administrator-selected parish instead of the suggestion.');
 }
-$contactService->link($firstParishId, $pendingSenderEmail);
-$contactService->block($pendingSenderEmail);
-$contactService->learnPending($pendingSenderEmail, $firstParishId, 'parser');
-if (
-    count($contactRepository->findByEmail($pendingSenderEmail)) !== 2
-    || $contactService->lookup($pendingSenderEmail)->trust !== 'blocked'
-) {
-    $fail('A repeated or spoofed From address changed a blocked multi-parish contact.');
+$deletedConfirmedSender = $contactRepository->deleteLink(
+    (int) ($confirmedPendingLinks[0]['id'] ?? 0),
+    $secondParishId
+);
+if ($deletedConfirmedSender !== 1) {
+    $fail('The confirmed-sender integration fixture could not be removed.');
 }
 
 update_option(
@@ -4435,6 +5449,14 @@ PublicationCheck::run($fail);
 require_once __DIR__ . '/RetentionCheck.php';
 RetentionCheck::run($fail);
 require WP_CONTENT_DIR . '/test-harness/IcsFeedCheck.php';
+require_once __DIR__ . '/RepeatMatchingCheck.php';
+RepeatMatchingCheck::run($fail, $icsSource->id, $firstParishId);
+require_once __DIR__ . '/ConfirmationDecisionCheck.php';
+ConfirmationDecisionCheck::run($fail);
+require_once __DIR__ . '/ApprovalDecisionCheck.php';
+ApprovalDecisionCheck::run($fail);
+require_once __DIR__ . '/ReviewQueueCheck.php';
+ReviewQueueCheck::run($fail);
 
 foreach (['administrator', 'editor'] as $roleName) {
     $role = get_role($roleName);
@@ -4448,6 +5470,7 @@ foreach (['administrator', 'editor'] as $roleName) {
 }
 
 require WP_CONTENT_DIR . '/test-harness/EventsListingCheck.php';
+require WP_CONTENT_DIR . '/test-harness/HealthCheck.php';
 
 if (! defined('WP_UNINSTALL_PLUGIN')) {
     define('WP_UNINSTALL_PLUGIN', $pluginBasename);
@@ -4480,4 +5503,4 @@ foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
     }
 }
 
-WP_CLI::success('Release ZIP activation, schema v7/v3-to-v7/v4-to-v5/v5-to-v6/v6-to-v7 migrations, hashed action-token storage and renewal limits, GET preview and nonce-protected single-use POST behavior, fresh and upgraded mail queue unique indexes with duplicate preservation, occurrence expansion/save/REST/job behavior, mailbox settings and safe password rendering, polling, inbound processing and Inbox reprocessing without candidate, attachment, checkpoint, email or privacy regressions, outbound-mail job registration, inbound-message de-duplication/skip notices, login-priority delivery ahead of 200 queued digests through intercepted wp_mail, mail group idempotency and atomic hourly-cap claims, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
+WP_CLI::success('Installed release ZIP checks passed: schema v10 fresh and upgrade paths, v7 confirmation fields, v8 approval notices, v9 processed-mail ownership and v10 sender suggestions, action-token, approval/review-queue and confirmation flows, bounded inbound parsing and safe reprocessing, mailbox retention safety, event and directory administration, and public output.');

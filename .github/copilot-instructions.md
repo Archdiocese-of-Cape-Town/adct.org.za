@@ -21,7 +21,7 @@ docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli php tests/parser_smoke_test
 - Add tests with every change. For bugs, write the failing test first.
 - Target **PHP 8.2** (production is 8.2.33 on xneelo shared hosting). CI also runs 8.3 and 8.4. There is no `ext-imap`.
 - `src/Core` (after issue #20) must not call WordPress functions. Use interfaces (ports) and inject adapters.
-- SQL must work on both MySQL 8 and MariaDB 10.11. Use `$wpdb->prepare`. Change the schema only through versioned migrations.
+- SQL must work on both MySQL 8 and MariaDB 10.11. Use `$wpdb->prepare`. Before the first non-prerelease GitHub Release, update the canonical fresh-install schema and fresh-install tests without a new upgrade migration only for disposable test databases; keep existing migrations/tests. Persistent data needs a tested, data-preserving migration even before release. After the first release, every schema change needs a versioned migration (ADR 0016).
 - Hosting limits:
   - 90 s PHP limit, so jobs have a ~60 s budget with a lock and checkpoint.
   - Cron runs at most every 2 hours (ADR 0010).

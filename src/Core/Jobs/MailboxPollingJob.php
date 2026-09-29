@@ -23,7 +23,9 @@ use ADCT\ParishIntake\Core\Ports\InboundMailStorageInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageStoreInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxCheckpointStoreInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
+use ADCT\ParishIntake\Core\Ports\MailboxMoveReceiptProviderInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxSettingsStoreInterface;
+use ADCT\ParishIntake\Core\Ports\ProcessedMailboxMessageStoreInterface;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use Closure;
 use DateTimeImmutable;
@@ -76,6 +78,7 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
         private MailboxSettingsStoreInterface $mailboxes,
         private MailboxCheckpointStoreInterface $checkpoints,
         private InboundMessageStoreInterface $messages,
+        private ProcessedMailboxMessageStoreInterface $processedMessages,
         private InboundMailStorageInterface $storage,
         private SourceHealthRecorder $healthRecorder,
         private RawMessageInspector $inspector,
@@ -415,7 +418,7 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
 
         if ($this->messages->findDuplicate($settings->sourceId, $externalId, $contentHash) !== null) {
             $mailbox->ensureFolder($settings->processedFolder);
-            $mailbox->move($uid, $settings->processedFolder);
+            $this->moveToProcessedFolder($settings, $mailbox, $uid, $rawMessage->internalDate);
             $this->advanceCheckpoint($settings->sourceId, $checkpoint, $uid);
 
             return null;
@@ -428,6 +431,7 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
             $uidValidity,
             $uid,
             $rawMessage->raw,
+            $rawMessage->internalDate,
             $inspected,
             $externalId,
             $contentHash,
@@ -445,6 +449,7 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
         int $uidValidity,
         int $uid,
         string $raw,
+        DateTimeImmutable $internalDate,
         InspectedInboundMail $inspected,
         string $externalId,
         string $contentHash,
@@ -503,7 +508,7 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
             }
 
             $mailbox->ensureFolder($settings->processedFolder);
-            $mailbox->move($uid, $settings->processedFolder);
+            $this->moveToProcessedFolder($settings, $mailbox, $uid, $internalDate);
             $this->advanceCheckpoint($settings->sourceId, $checkpoint, $uid);
 
             return $stored->duplicate ? null : $inspected->receivedAt;
@@ -519,6 +524,30 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
             }
 
             throw $failure;
+        }
+    }
+
+    private function moveToProcessedFolder(
+        MailboxSettings $settings,
+        MailboxInterface $mailbox,
+        int $uid,
+        DateTimeImmutable $internalDate
+    ): void {
+        if (! $mailbox instanceof MailboxMoveReceiptProviderInterface) {
+            $mailbox->move($uid, $settings->processedFolder);
+
+            return;
+        }
+
+        $receipt = $mailbox->moveWithReceipt($uid, $settings->processedFolder);
+
+        if ($receipt !== null) {
+            $this->processedMessages->recordMoved(
+                $settings,
+                $receipt,
+                $internalDate,
+                $this->clock->now()
+            );
         }
     }
 
