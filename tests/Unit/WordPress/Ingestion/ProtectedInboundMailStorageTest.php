@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Ingestion;
 
+use ADCT\ParishIntake\Core\Ingestion\PermanentInboundHeaderReadException;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
@@ -33,7 +34,7 @@ final class ProtectedInboundMailStorageTest extends TestCase
 
             $path = $this->directory . DIRECTORY_SEPARATOR . $filename;
 
-            if (is_file($path)) {
+            if (is_file($path) || is_link($path)) {
                 unlink($path);
             }
         }
@@ -83,6 +84,32 @@ final class ProtectedInboundMailStorageTest extends TestCase
         $storage->delete('../private/example.eml');
     }
 
+    public function testReadsOnlyTheBoundedRawHeaderBlock(): void
+    {
+        $storage = new ProtectedInboundMailStorage($this->directory);
+        $rawPath = $storage->storeRawMessage(
+            "From: notices@example.test\r\n"
+            . "Message-ID: <notice@example.test>\r\n"
+            . "\r\n"
+            . str_repeat('body content', 100)
+        );
+
+        self::assertSame(
+            "From: notices@example.test\r\nMessage-ID: <notice@example.test>\r\n",
+            $storage->readHeaderBlock($rawPath)
+        );
+    }
+
+    public function testMissingPrivateRawMessageIsARecognizedPermanentHeaderFailure(): void
+    {
+        $storage = new ProtectedInboundMailStorage($this->directory);
+        $rawPath = $storage->storeRawMessage("From: notices@example.test\r\n\r\nExample message.");
+        $storage->delete($rawPath);
+
+        $this->expectException(PermanentInboundHeaderReadException::class);
+        $storage->readHeaderBlock($rawPath);
+    }
+
     public function testReadsOnlyExistingProtectedRawEmailFiles(): void
     {
         $storage = new ProtectedInboundMailStorage($this->directory);
@@ -104,6 +131,7 @@ final class ProtectedInboundMailStorageTest extends TestCase
         $storage->readRawMessage($relativePath);
     }
 
+
     public function testCommentedDenyRuleDoesNotCountAsDirectoryProtection(): void
     {
         self::assertTrue(mkdir($this->directory, 0700, true));
@@ -117,5 +145,26 @@ final class ProtectedInboundMailStorageTest extends TestCase
         $rules = (string) file_get_contents($this->directory . DIRECTORY_SEPARATOR . '.htaccess');
 
         self::assertMatchesRegularExpression('/^[\t ]*Require all denied[\t ]*$/mi', $rules);
+    }
+
+    public function testDeleteIsIdempotentButRefusesSymlinkEvenWithValidName(): void
+    {
+        $storage = new ProtectedInboundMailStorage($this->directory);
+        $file = $storage->storeRawMessage('anonymised sample');
+        $storage->delete($file);
+        $storage->delete($file);
+        self::assertFileDoesNotExist($this->directory . DIRECTORY_SEPARATOR . $file);
+
+        $target = $storage->storeRawMessage('keep this file');
+        $link = str_repeat('a', 64) . '.eml';
+        if (! @symlink($this->directory . DIRECTORY_SEPARATOR . $target, $this->directory . DIRECTORY_SEPARATOR . $link)) {
+            self::markTestSkipped('Creating a test-only symlink requires filesystem permission.');
+        }
+        try {
+            $this->expectException(RuntimeException::class);
+            $storage->delete($link);
+        } finally {
+            self::assertFileExists($this->directory . DIRECTORY_SEPARATOR . $target);
+        }
     }
 }

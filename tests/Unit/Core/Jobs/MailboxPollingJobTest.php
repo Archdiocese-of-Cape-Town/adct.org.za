@@ -10,6 +10,7 @@ use ADCT\ParishIntake\Core\Ingestion\Imap\MessageTooLarge;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageStoreResult;
 use ADCT\ParishIntake\Core\Ingestion\MailboxCheckpoint;
+use ADCT\ParishIntake\Core\Ingestion\MailboxMoveReceipt;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettings;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSearchCriteria;
 use ADCT\ParishIntake\Core\Ingestion\MessageContentHasher;
@@ -22,7 +23,9 @@ use ADCT\ParishIntake\Core\Ports\InboundMailStorageInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageStoreInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxCheckpointStoreInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
+use ADCT\ParishIntake\Core\Ports\MailboxMoveReceiptProviderInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxSettingsStoreInterface;
+use ADCT\ParishIntake\Core\Ports\ProcessedMailboxMessageStoreInterface;
 use ADCT\ParishIntake\Core\Ports\SourceHealthStoreInterface;
 use ADCT\ParishIntake\Core\Sources\Source;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
@@ -50,6 +53,20 @@ final class MailboxPollingJobTest extends TestCase
         self::assertSame(2, $fixture['checkpoints']->checkpoints[self::SOURCE_ID]->lastUid);
         self::assertSame([], $server->inbox);
         self::assertSame([1, 2], $server->movedTo['Processed']);
+        self::assertSame([1001, 1002], array_column($fixture['processedMessages']->records, 'uid'));
+    }
+
+    public function testSuccessfulMoveWithoutCopyUidIsNotRecordedAsOwned(): void
+    {
+        $server = new PollingMailboxServer();
+        $server->inbox[1] = $this->rawMessage('without-copyuid@example.test', 'No exact destination UID mapping.');
+        $server->includeCopyUidReceipt = false;
+        $fixture = $this->fixture($server);
+
+        $this->finish($fixture['job']);
+
+        self::assertSame([], $fixture['processedMessages']->records);
+        self::assertSame([1], $server->movedTo['Processed']);
     }
 
     public function testMailboxWithoutAPreviousCheckIsDueImmediately(): void
@@ -410,6 +427,7 @@ final class MailboxPollingJobTest extends TestCase
      *     job: MailboxPollingJob,
      *     messages: PollingMessageStore,
      *     checkpoints: PollingCheckpointStore,
+     *     processedMessages: PollingProcessedMailboxMessageStore,
      *     storage: PollingFileStorage,
      *     health: PollingHealthStore
      * }
@@ -424,6 +442,7 @@ final class MailboxPollingJobTest extends TestCase
     ): array {
         $messages ??= new PollingMessageStore();
         $checkpoints ??= new PollingCheckpointStore();
+        $processedMessages = new PollingProcessedMailboxMessageStore();
         $storage = new PollingFileStorage();
         $health ??= new PollingHealthStore();
         $clock = new PollingClock();
@@ -432,6 +451,7 @@ final class MailboxPollingJobTest extends TestCase
             $mailboxes,
             $checkpoints,
             $messages,
+            $processedMessages,
             $storage,
             new SourceHealthRecorder($health, $clock),
             new RawMessageInspector(),
@@ -452,6 +472,7 @@ final class MailboxPollingJobTest extends TestCase
             'job' => $job,
             'messages' => $messages,
             'checkpoints' => $checkpoints,
+            'processedMessages' => $processedMessages,
             'storage' => $storage,
             'health' => $health,
         ];
@@ -536,6 +557,9 @@ final class PollingMailboxSettingsStore implements MailboxSettingsStoreInterface
 final class PollingMailboxServer
 {
     public int $uidValidity = 12345;
+    public int $processedUidValidity = 23456;
+    public int $nextProcessedUid = 1000;
+    public bool $includeCopyUidReceipt = true;
     public ?int $uidValidityAfterOversizedFetch = null;
     public int $connectionCount = 0;
     public int $searchCount = 0;
@@ -549,7 +573,7 @@ final class PollingMailboxServer
     public bool $failNextSearch = false;
 }
 
-final class PollingMailbox implements MailboxInterface
+final class PollingMailbox implements MailboxInterface, MailboxMoveReceiptProviderInterface
 {
     public function __construct(
         private PollingMailboxServer $server,
@@ -569,9 +593,16 @@ final class PollingMailbox implements MailboxInterface
         }
     }
 
-    public function uidValidity(): int
+    public function uidValidity(?string $folder = null): int
     {
         return $this->server->uidValidity;
+    }
+
+    public function uidNext(string $folder): int
+    {
+        $uids = array_map('intval', array_keys($this->server->inbox));
+
+        return $uids === [] ? 1 : max($uids) + 1;
     }
 
     public function search(MailboxSearchCriteria $criteria): array
@@ -595,6 +626,11 @@ final class PollingMailbox implements MailboxInterface
         sort($uids, SORT_NUMERIC);
 
         return $uids;
+    }
+
+    public function searchFolder(MailboxSearchCriteria $criteria, string $folder): array
+    {
+        return $this->search($criteria);
     }
 
     public function fetch(int $uid): RawMailMessage
@@ -643,12 +679,80 @@ final class PollingMailbox implements MailboxInterface
         $this->server->movedTo[$folder][] = $uid;
     }
 
+    public function moveWithReceipt(int $uid, string $folder): ?MailboxMoveReceipt
+    {
+        $this->move($uid, $folder);
+
+        if (! $this->server->includeCopyUidReceipt) {
+            return null;
+        }
+
+        return new MailboxMoveReceipt(
+            $this->server->processedUidValidity,
+            ++$this->server->nextProcessedUid
+        );
+    }
+
+    public function delete(int $uid, string $folder): void
+    {
+        if ($this->server->failNextMove) {
+            $this->server->failNextMove = false;
+            throw new RuntimeException('The scripted delete failed.');
+        }
+
+        if (! array_key_exists($uid, $this->server->inbox)) {
+            throw new RuntimeException('The scripted message was already deleted.');
+        }
+
+        unset($this->server->inbox[$uid]);
+        $this->server->movedTo[$folder] ??= [];
+        $this->server->movedTo[$folder][] = $uid;
+    }
+
     public function markSeen(int $uid): void
     {
         throw new RuntimeException('The poller must not mark messages seen.');
     }
 
     public function close(): void
+    {
+    }
+}
+
+final class PollingProcessedMailboxMessageStore implements ProcessedMailboxMessageStoreInterface
+{
+    /**
+     * @var list<array{uid: int, uid_validity: int, internal_date: DateTimeImmutable}>
+     */
+    public array $records = [];
+
+    public function recordMoved(
+        MailboxSettings $settings,
+        MailboxMoveReceipt $receipt,
+        DateTimeImmutable $internalDate,
+        DateTimeImmutable $recordedAt
+    ): void {
+        $this->records[] = [
+            'uid' => $receipt->destinationUid,
+            'uid_validity' => $receipt->destinationUidValidity,
+            'internal_date' => $internalDate,
+        ];
+    }
+
+    public function findExpired(
+        MailboxSettings $settings,
+        int $uidValidity,
+        DateTimeImmutable $cutoff,
+        int $limit
+    ): array {
+        return [];
+    }
+
+    public function discardStale(MailboxSettings $settings, int $currentUidValidity): void
+    {
+    }
+
+    public function deleteOwned(MailboxSettings $settings, int $uidValidity, int $uid): void
     {
     }
 }

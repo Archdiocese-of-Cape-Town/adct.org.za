@@ -135,7 +135,7 @@ final class ImapProtocolClient
             $line = rtrim($response, "\r\n");
 
             if (preg_match('/^' . preg_quote($tag, '/') . '\s+(OK|NO|BAD)\b/i', $line, $statusMatch) === 1) {
-                return new ImapCommandResult(strtoupper($statusMatch[1]), $responses);
+                return new ImapCommandResult(strtoupper($statusMatch[1]), $responses, $line);
             }
 
             $responses[] = $response;

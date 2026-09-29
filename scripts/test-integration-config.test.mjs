@@ -24,6 +24,7 @@ writeFileSync(
     port: 18088,
     mappings: {
       'wp-content/test-packages': './dist',
+      'wp-content/test-harness-fixtures': './tests/fixtures',
     },
   }, null, 2)}\n`
 );
@@ -52,6 +53,10 @@ test('reuses a stable config path and project hash for the same home', () => {
   assert.equal(
     generatedConfig.mappings['wp-content/test-packages'],
     join(repositoryRoot, 'dist')
+  );
+  assert.equal(
+    generatedConfig.mappings['wp-content/test-harness-fixtures'],
+    join(repositoryRoot, 'tests', 'fixtures')
   );
   assert.equal(existsSync(wpEnvHome), false);
 });

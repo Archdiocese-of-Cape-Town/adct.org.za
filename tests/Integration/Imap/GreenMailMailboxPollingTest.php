@@ -13,6 +13,7 @@ use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxEncryption;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageStoreResult;
 use ADCT\ParishIntake\Core\Ingestion\MailboxCheckpoint;
+use ADCT\ParishIntake\Core\Ingestion\MailboxMoveReceipt;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSearchCriteria;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettings;
 use ADCT\ParishIntake\Core\Ingestion\MessageContentHasher;
@@ -28,6 +29,7 @@ use ADCT\ParishIntake\Core\Ports\JobStateStoreInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxCheckpointStoreInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxSettingsStoreInterface;
+use ADCT\ParishIntake\Core\Ports\ProcessedMailboxMessageStoreInterface;
 use ADCT\ParishIntake\Core\Ports\SourceHealthStoreInterface;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use ADCT\ParishIntake\Core\Sources\SourceHealthState;
@@ -205,6 +207,7 @@ final class GreenMailMailboxPollingTest extends TestCase
             new GreenMailPollingMailboxSettingsStore($settings),
             $checkpoints,
             $messages,
+            new GreenMailProcessedMailboxMessageStore(),
             $files,
             new SourceHealthRecorder($health, new SystemClock()),
             new RawMessageInspector(),
@@ -613,5 +616,33 @@ final class GreenMailPollingJobStateStore implements JobStateStoreInterface
     public function save(string $jobId, JobState $state): void
     {
         $this->states[$jobId] = $state;
+    }
+}
+
+final class GreenMailProcessedMailboxMessageStore implements ProcessedMailboxMessageStoreInterface
+{
+    public function recordMoved(
+        MailboxSettings $settings,
+        MailboxMoveReceipt $receipt,
+        \DateTimeImmutable $internalDate,
+        \DateTimeImmutable $recordedAt
+    ): void {
+    }
+
+    public function findExpired(
+        MailboxSettings $settings,
+        int $uidValidity,
+        \DateTimeImmutable $cutoff,
+        int $limit
+    ): array {
+        return [];
+    }
+
+    public function discardStale(MailboxSettings $settings, int $currentUidValidity): void
+    {
+    }
+
+    public function deleteOwned(MailboxSettings $settings, int $uidValidity, int $uid): void
+    {
     }
 }

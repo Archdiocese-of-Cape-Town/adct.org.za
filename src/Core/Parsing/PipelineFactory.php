@@ -8,6 +8,7 @@ use ADCT\ParishIntake\Core\Parsing\Stages\AiEnrichmentStage;
 use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
 use ADCT\ParishIntake\Core\Parsing\Stages\DirectoryLookupStage;
 use ADCT\ParishIntake\Core\Parsing\Stages\EventTypeClassificationStage;
+use ADCT\ParishIntake\Core\Parsing\Stages\FeaturedSuggestionStage;
 use ADCT\ParishIntake\Core\Parsing\Stages\RecurrenceDetectionStage;
 use ADCT\ParishIntake\Core\Parsing\Stages\RuleBasedExtractionStage;
 use ADCT\ParishIntake\Core\Parsing\Stages\SourceNormalizationStage;
@@ -61,6 +62,7 @@ final class PipelineFactory
         }
 
         $stages[] = new RecurrenceDetectionStage($this->clock);
+        $stages[] = new FeaturedSuggestionStage();
         $stages[] = new ConfidenceScoringStage();
         $stages[] = new AiEnrichmentStage($provider);
         $stages[] = new EventTypeClassificationStage(new EventTypeClassifier(
