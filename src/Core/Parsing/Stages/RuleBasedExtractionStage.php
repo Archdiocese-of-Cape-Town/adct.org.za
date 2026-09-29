@@ -408,10 +408,22 @@ final class RuleBasedExtractionStage implements StageInterface
         }
 
         $relativePatterns = [
-            'this_weekday' => '~\bthis\s+(?<weekday>' . self::WEEKDAY_PATTERN . ')\b~i',
-            'next_weekday' => '~\bnext\s+(?<weekday>' . self::WEEKDAY_PATTERN . ')\b~i',
+            // "this coming <weekday>" and "coming <weekday>" are the same rule as
+            // "this <weekday>": a parish writes both, and the word "coming" in
+            // between must not stop the date resolving.
+            //
+            // At least one qualifier is required. Making both optional would turn a
+            // bare weekday into a date, which collides with recurrence phrases such as
+            // "every Tuesday" and with "on or after 29 September".
+            'this_weekday' => '~\b(?:(?:this|coming)\s+)+(?<weekday>' . self::WEEKDAY_PATTERN . ')\b~i',
+            'next_weekday' => '~\bnext\s+(?:coming\s+)?(?<weekday>' . self::WEEKDAY_PATTERN . ')\b~i',
             'tomorrow' => '~\btomorrow\b~i',
             'tonight' => '~\btonight\b~i',
+            // "end of ..." is a deadline phrasing, but it is the only date information
+            // the line carries, so it is resolved here. Typed as a deadline
+            // separately -- see the note in docs/parish-intake-project-backlog.md.
+            'end_of_month' => '~\b(?:end|close)\s+(?:of\s+)?(?:the\s+)?(?:(?<month>' . self::MONTH_PATTERN . ')\.?(?:,?\s+(?<year>\d{4}))?|month|this\s+month|next\s+month)\b~iu',
+            'first_of_month' => '~\b(?:the\s+)?first\s+of\s+(?<month>' . self::MONTH_PATTERN . ')\.?(?:,?\s+(?<year>\d{4}))?\b~iu',
         ];
 
         foreach ($relativePatterns as $type => $pattern) {
@@ -465,6 +477,16 @@ final class RuleBasedExtractionStage implements StageInterface
             } elseif ($candidate['type'] === 'tonight') {
                 $date = $referenceDate;
                 $weekdayMismatch = false;
+            } elseif ($candidate['type'] === 'end_of_month') {
+                $date = $this->resolveEndOfMonth($match, $referenceDate, $monthContext, $yearContext);
+                $weekdayMismatch = false;
+            } elseif ($candidate['type'] === 'first_of_month') {
+                $monthText = $this->capturedValue($match, 'month');
+                $month = $this->monthNumber($monthText ?? '');
+                $date = $month === null
+                    ? null
+                    : $this->resolveMonthDay(1, $month, $this->capturedValue($match, 'year'), $referenceDate);
+                $weekdayMismatch = false;
             } else {
                 $monthText = $this->capturedValue($match, 'month');
                 $month = $monthText !== null && ctype_digit($monthText)
@@ -515,6 +537,131 @@ final class RuleBasedExtractionStage implements StageInterface
         }
 
         return null;
+    }
+
+    /**
+     * Resolves "end of this month", "end of September" and "end of September 2026"
+     * to the last day of the month, never the first.
+     *
+     * A named month with no year is read against the bulletin month context where one
+     * is known, so "end of September" in a September bulletin means this year rather
+     * than rolling forward a whole year. "Next month" is relative to the reference
+     * date.
+     *
+     * @param array<int, array{0: string, 1: int}|null> $match
+     */
+    private function resolveEndOfMonth(
+        array $match,
+        DateTimeImmutable $referenceDate,
+        ?string $monthContext,
+        ?int $yearContext
+    ): ?DateTimeImmutable {
+        $monthText = $this->capturedValue($match, 'month');
+        $month = $monthText === null ? null : $this->monthNumber($monthText);
+
+        if ($month === null) {
+            return $this->resolveRelativeMonth($match, $referenceDate, $monthContext, $yearContext);
+        }
+
+        $year = $this->capturedValue($match, 'year');
+
+        if ($year !== null) {
+            return $this->lastDayOfMonth((int) $this->normalizeYear($year), $month);
+        }
+
+        $contextMonth = $monthContext === null ? null : $this->monthNumber($monthContext);
+
+        if ($contextMonth !== null) {
+            $year = $yearContext ?? (int) $referenceDate->format('Y');
+            $date = $this->lastDayOfMonth($year, $month);
+
+            if ($date !== null && $date >= $referenceDate) {
+                return $date;
+            }
+        }
+
+        return $this->lastDayOfMonth((int) $referenceDate->format('Y'), $month);
+    }
+
+    /**
+     * "end of this month" and "end of next month" carry no month name of their own.
+     *
+     * @param array<int, array{0: string, 1: int}|null> $match
+     */
+    private function resolveRelativeMonth(
+        array $match,
+        DateTimeImmutable $referenceDate,
+        ?string $monthContext,
+        ?int $yearContext
+    ): ?DateTimeImmutable {
+        $whole = strtolower($match[0][0] ?? '');
+
+        if (str_contains($whole, 'next')) {
+            $anchor = $monthContext === null ? null : $this->monthNumber($monthContext);
+
+            if ($anchor !== null) {
+                $year = $yearContext ?? (int) $referenceDate->format('Y');
+
+                if ($anchor === 12) {
+                    return $this->lastDayOfMonth($year + 1, 1);
+                }
+
+                return $this->lastDayOfMonth($year, $anchor + 1);
+            }
+
+            return $referenceDate->modify('last day of next month');
+        }
+
+        $contextMonth = $monthContext === null ? null : $this->monthNumber($monthContext);
+        $month = $contextMonth ?? (int) $referenceDate->format('n');
+        $year = $yearContext ?? (int) $referenceDate->format('Y');
+        $date = $this->lastDayOfMonth($year, $month);
+
+        if ($date === null) {
+            return null;
+        }
+
+        // "the month" is the calendar month the reference date falls in, so it never
+        // needs rolling forward. Guard anyway so a stale bulletin date cannot produce
+        // a deadline that has already passed.
+        if (str_contains($whole, 'this') && $date < $referenceDate) {
+            return $this->lastDayOfMonth($year + 1, $month);
+        }
+
+        return $date;
+    }
+
+    private function lastDayOfMonth(int $year, int $month): ?DateTimeImmutable
+    {
+        if ($year < 1 || $month < 1 || $month > 12) {
+            return null;
+        }
+
+        // Deliberately not cal_days_in_month(): that lives in ext-calendar, which the
+        // hosting environment is not required to have. "last day of month" is
+        // calendar-correct for February, so it needs no leap-year special case.
+        $lastDay = DateTimeImmutable::createFromFormat(
+            '!Y-m',
+            sprintf('%04d-%02d', $year, $month),
+            new DateTimeZone(self::LOCAL_TIMEZONE)
+        );
+
+        if (! $lastDay instanceof DateTimeImmutable) {
+            return null;
+        }
+
+        return $lastDay->modify('last day of this month')->setTime(0, 0);
+    }
+
+    private function resolveMonthDay(
+        int $day,
+        int $month,
+        ?string $yearText,
+        DateTimeImmutable $referenceDate
+    ): ?DateTimeImmutable {
+        return $yearText === null
+            ? $this->nextMonthDay($day, $month, $referenceDate)
+            : $this->makeDate($this->normalizeYear($yearText), $month, $day);
     }
 
     /**
