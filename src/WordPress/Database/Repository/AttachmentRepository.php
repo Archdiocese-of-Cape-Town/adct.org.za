@@ -66,4 +66,74 @@ final class AttachmentRepository extends AbstractRepository
             max(1, min(50, $limit))
         ));
     }
+
+    /**
+     * The most recently received browser-readable images (ADR 0017).
+     *
+     * These are the posters the pipeline cannot read, so the Manual parser
+     * screen offers on-demand client-side OCR for them.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function findRecentImages(int $limit = 5): array
+    {
+        return $this->fetchRows($this->database->prepare(
+            'SELECT id, message_id, filename, mime_type, size_bytes, storage_path, updated_at FROM '
+            . $this->tableName()
+            . ' WHERE mime_type IN (%s, %s, %s) AND storage_path IS NOT NULL AND storage_path <> %s'
+            . ' ORDER BY id DESC LIMIT %d',
+            'image/jpeg',
+            'image/png',
+            'image/webp',
+            '',
+            max(1, min(50, $limit))
+        ));
+    }
+
+    /**
+     * One stored attachment by id, for the browser-readable image endpoints of
+     * ADR 0017.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findStoredById(int $attachmentId): ?array
+    {
+        if ($attachmentId < 1) {
+            throw new InvalidArgumentException('An attachment ID must be positive.');
+        }
+
+        $rows = $this->fetchRows($this->database->prepare(
+            'SELECT id, message_id, filename, mime_type, size_bytes, storage_path, status'
+            . ' FROM ' . $this->tableName()
+            . ' WHERE id = %d',
+            $attachmentId
+        ));
+
+        return $rows[0] ?? null;
+    }
+
+    /**
+     * The stored, browser-readable images of one message, oldest first.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function findStoredImagesForMessage(int $messageId): array
+    {
+        if ($messageId < 1) {
+            throw new InvalidArgumentException('A message ID must be positive.');
+        }
+
+        return $this->fetchRows($this->database->prepare(
+            'SELECT id, message_id, filename, mime_type, size_bytes, storage_path, status'
+            . ' FROM ' . $this->tableName()
+            . ' WHERE message_id = %d AND mime_type IN (%s, %s, %s)'
+            . ' AND storage_path IS NOT NULL AND storage_path <> %s'
+            . ' ORDER BY id ASC',
+            $messageId,
+            'image/jpeg',
+            'image/png',
+            'image/webp',
+            ''
+        ));
+    }
 }

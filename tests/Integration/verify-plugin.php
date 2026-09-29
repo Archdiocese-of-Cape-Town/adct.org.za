@@ -5461,6 +5461,8 @@ require_once __DIR__ . '/ApprovalDecisionCheck.php';
 ApprovalDecisionCheck::run($fail);
 require_once __DIR__ . '/ReviewQueueCheck.php';
 ReviewQueueCheck::run($fail);
+require_once __DIR__ . '/OcrImageCheck.php';
+OcrImageCheck::run($fail, $pluginFile);
 
 foreach (['administrator', 'editor'] as $roleName) {
     $role = get_role($roleName);

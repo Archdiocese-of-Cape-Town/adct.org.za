@@ -21,6 +21,7 @@ docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli php tests/parser_smoke_test
 - Add tests with every change. For bugs, write the failing test first.
 - Target **PHP 8.2** (production is 8.2.33 on xneelo shared hosting). CI also runs 8.3 and 8.4. There is no `ext-imap`.
 - `src/Core` (after issue #20) must not call WordPress functions. Use interfaces (ports) and inject adapters.
+- No constructor may call a WordPress function. `scripts/check-release-bootstrap.php` boots the plugin under plain PHP, so a `plugins_url()` or unguarded `get_option()` in a constructor is a fatal error at install time. Resolve WordPress-dependent collaborators lazily, on first use.
 - SQL must work on both MySQL 8 and MariaDB 10.11. Use `$wpdb->prepare`. Before the first non-prerelease GitHub Release, update the canonical fresh-install schema and fresh-install tests without a new upgrade migration only for disposable test databases; keep existing migrations/tests. Persistent data needs a tested, data-preserving migration even before release. After the first release, every schema change needs a versioned migration (ADR 0016).
 - Hosting limits:
   - 90 s PHP limit, so jobs have a ~60 s budget with a lock and checkpoint.
@@ -31,6 +32,7 @@ docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli php tests/parser_smoke_test
 - Security:
   - Check capabilities and nonces on every admin action; escape all output.
   - Emailed action links: a GET shows a page, only a POST acts; tokens are hashed, single-use and expire.
+- OCR is **client-side only** (ADR 0017). Image posters are served read-only to an already-authorised browser, tesseract.js runs there, and the extracted text is never posted back or stored. Server-side/queue OCR is E8.3 and is not approved.
 - Dates and times: `Africa/Johannesburg`, day-first dates (`12/10/2026` is 12 October). Inject a clock instead of reading "now".
 - One issue per PR, with `Closes #N`. Update the related docs in the same PR.
 - Ask the project owner before: changing an accepted ADR, adding a paid service or a non-pure-PHP dependency, or anything that sends real email or touches the live site.

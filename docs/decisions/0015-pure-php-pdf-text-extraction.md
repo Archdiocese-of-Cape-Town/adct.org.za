@@ -14,7 +14,7 @@ Parish event notices are often a one-page PDF poster attached to a short email. 
 - Persist the text and the outcome on the existing attachment row (`extracted_text`, `extraction_method`, `status`) and append the text to the message body as a clearly marked section, so the rest of the pipeline is unchanged. No migration is needed: the new status values fit the existing columns.
 - Treat every PDF failure as non-fatal. A missing file, an unreadable PDF, a timeout or a database error is recorded as a status on the row and surfaced to the operator; the email around it is still parsed and still processed. A PDF never fails its message.
 - At most 3 PDFs are read per message, so one mail carrying a dozen attachments cannot consume the job budget.
-- Do not add OCR. A scanned PDF is recorded as `no_text_layer` and listed on the Manual parser screen as operator work, which stays consistent with ADR 0005's offline-first posture.
+- Do not add server-side OCR. A scanned PDF is recorded as `no_text_layer` and listed on the Manual parser screen as operator work, which stays consistent with ADR 0005's offline-first posture. (ADR 0017 later scoped this prohibition to server-side OCR and permitted opt-in, on-demand client-side OCR. This decision and the PDF handling below are otherwise unchanged.)
 
 ## Consequences
 - Notices sent only as a text-layer PDF now produce a candidate and reach the submitter's preview, closing the silent-loss gap.

@@ -113,6 +113,18 @@ All of these use the **same zip that CI builds**. The plugin bundles prefixed Co
 
 **Pending for E4.2:** visually inspect the confirmation preview in Outlook, Gmail and on a mobile device using a temporary InstaWP/TasteWP site with Test mode enabled and only a dedicated test inbox allow-listed. No external site or mailbox was provisioned and no email was sent as part of this implementation; the local HTML/plain-text snapshots and intercepted WordPress integration delivery do not replace this client-rendering check.
 
+## Client-side OCR test cases
+
+Covered automatically by `OcrImageCheck` (integration, real database) plus unit tests for `PreviewableImage`, `CandidateSourceImageResolver`, both image endpoints and `OcrControl`:
+
+- A candidate whose message has no previewable image renders **no** OCR button and does not load `assets/ocr.js` or `assets/ocr.css` at all.
+- A candidate with a poster renders exactly one `data-adct-ocr` control pointing at the description field, and the page links both assets.
+- Serving a poster leaks nothing: the rendered page contains the attachment id in its own image URL but no storage name, no submitter email and no other candidate's id.
+- The attachment row is byte-identical after OCR is offered — `extracted_text` stays null, `extraction_method` stays `none`, and no row is added or removed.
+- `ActionTokenImageEndpoint::allowedImage()` returns the token's own poster, and null for another candidate's poster, a non-existent id, and a HEIC/PDF. Reading the image does **not** consume the token.
+
+**Still to check by hand, in a browser** (ADR 0017): that clicking the button loads tesseract.js from jsDelivr and fills the description field; that typed text is never overwritten; that an empty result or a failed/blocked CDN request leaves the field for manual entry and shows a clear message; and that the reviewer's approval still publishes only what they confirmed. These need a real browser and network access, so no automated check asserts them.
+
 ## Pre-launch check on a temporary staging instance
 
 There is no permanent staging site. Before the first launch (and optionally before big releases):

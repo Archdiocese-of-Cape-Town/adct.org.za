@@ -1,0 +1,54 @@
+/* On-demand client-side OCR controls (ADR 0017).
+ *
+ * The token pages render outside the WordPress theme, so these rules are
+ * self-contained and do not depend on admin or theme styles.
+ */
+
+.adct-ocr {
+    margin: 1em 0;
+}
+
+.adct-ocr__preview {
+    display: block;
+    max-width: 100%;
+    max-height: 40em;
+    margin-bottom: 0.5em;
+    border: 1px solid #c3c4c7;
+}
+
+.adct-ocr__status {
+    margin: 0.5em 0;
+    font-style: italic;
+}
+
+.adct-ocr__status--error {
+    font-style: normal;
+    color: #8a1f11;
+}
+
+.adct-ocr__status--done {
+    font-style: normal;
+    color: #1a4f1a;
+}
+
+.adct-ocr__result {
+    margin: 0.5em 0;
+    padding: 0.5em 0.75em;
+    border-left: 4px solid #2271b1;
+    background: #f6f7f7;
+}
+
+.adct-ocr__result-heading {
+    margin: 0 0 0.25em;
+    font-weight: 600;
+}
+
+.adct-ocr__result p {
+    white-space: pre-wrap;
+}
+
+.adct-ocr__notice {
+    margin: 0.5em 0 0;
+    font-size: 0.9em;
+    color: #50575e;
+}

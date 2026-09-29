@@ -98,6 +98,12 @@ use ADCT\ParishIntake\WordPress\Database\DbDeltaSchemaInstaller;
 use ADCT\ParishIntake\WordPress\Database\MailQueueGroupKeyMigration;
 use ADCT\ParishIntake\WordPress\Database\OccurrenceParishNullableMigration;
 use ADCT\ParishIntake\WordPress\Database\SenderSuggestionMigration;
+use ADCT\ParishIntake\WordPress\Attachments\ActionTokenImageEndpoint;
+use ADCT\ParishIntake\WordPress\Attachments\AttachmentImageEndpoint;
+use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
+use ADCT\ParishIntake\WordPress\Attachments\WordPressCandidateSourceMessage;
+use ADCT\ParishIntake\WordPress\Attachments\WordPressPreviewableImageRepository;
+use ADCT\ParishIntake\Core\Attachments\CandidateSourceImageResolver;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
@@ -164,6 +170,33 @@ final class Plugin
     private ActionTokenService $actionTokenService;
     private ActionTokenHandlerRegistry $actionTokenHandlers;
     private ActionTokenEndpoint $actionTokenEndpoint;
+
+    /**
+     * Collaborators for {@see self::actionTokenEndpoint()}, built eagerly because
+     * they are plain PHP. Only the endpoint itself is deferred, since it renders
+     * OCR markup and therefore needs `plugins_url()`.
+     *
+     * @var array{renewals: ActionTokenRenewalService, images: ActionTokenImageEndpoint}
+     */
+    private array $actionTokenEndpointDependencies;
+
+    /**
+     * Built on first use so that construction stays free of WordPress functions.
+     */
+    private function actionTokenEndpoint(): ActionTokenEndpoint
+    {
+        if (! isset($this->actionTokenEndpoint)) {
+            $this->actionTokenEndpoint = new ActionTokenEndpoint(
+                $this->actionTokenService,
+                $this->actionTokenHandlers,
+                $this->actionTokenEndpointDependencies['renewals'],
+                $this->actionTokenEndpointDependencies['images'],
+                $this->ocrControl()
+            );
+        }
+
+        return $this->actionTokenEndpoint;
+    }
     private PipelineFactory $pipelineFactory;
     private ParserPage $parserPage;
     private HttpClientInterface $httpClient;
@@ -188,6 +221,27 @@ final class Plugin
     private InboundMessagesPage $inboundMessagesPage;
     private ?ReviewQueuePage $reviewQueuePage = null;
     private ReviewerNotificationPreference $reviewerNotificationPreference;
+    private ?OcrControl $ocrControl = null;
+    private AttachmentImageEndpoint $attachmentImageEndpoint;
+
+    /**
+     * The shared OCR markup renderer, built on first use.
+     *
+     * `plugins_url()` is only called from here rather than in the constructor,
+     * because the constructor also runs under the release bootstrap check,
+     * which loads the plugin outside WordPress.
+     */
+    private function ocrControl(): OcrControl
+    {
+        if ($this->ocrControl === null) {
+            $this->ocrControl = new OcrControl(
+                plugins_url('assets/ocr.js', $this->pluginFile),
+                plugins_url('assets/ocr.css', $this->pluginFile)
+            );
+        }
+
+        return $this->ocrControl;
+    }
 
     private function __construct(string $pluginFile)
     {
@@ -224,6 +278,11 @@ final class Plugin
             new WordPressDirectorySnapshotLoader($parishes, $venues, $contacts)
         );
         $this->pipelineFactory = new PipelineFactory($clock, $directorySnapshots, new EventTypeKeywords());
+        $previewableImages = new WordPressPreviewableImageRepository($attachmentRepository);
+        $this->attachmentImageEndpoint = new AttachmentImageEndpoint(
+            $previewableImages,
+            new ProtectedInboundMailStorage()
+        );
         $this->parserPage = new ParserPage(
             $this->schema,
             $this->pipelineFactory,
@@ -233,7 +292,9 @@ final class Plugin
                 new WordPressActionTokenRateLimitStore($database),
                 $clock
             ),
-            new AttachmentRepository($database)
+            $attachmentRepository,
+            $this->pluginFile,
+            $this->attachmentImageEndpoint
         );
         $sourceRegistryService = new SourceRegistryService($sources, $clock);
         $this->mailboxesPage = new MailboxesPage(
@@ -416,15 +477,22 @@ final class Plugin
         $this->actionTokenHandlers->register(new ApprovalEditHandler(
             $database, $approvalRecipients, $clock
         ));
-        $this->actionTokenEndpoint = new ActionTokenEndpoint(
-            $this->actionTokenService,
-            $this->actionTokenHandlers,
-            new ActionTokenRenewalService(
+        $this->actionTokenEndpointDependencies = [
+            'renewals' => new ActionTokenRenewalService(
                 $this->actionTokenService,
                 $actionTokenRateLimiter,
                 new WordPressActionTokenRenewalDelivery($this->mailQueue)
-            )
-        );
+            ),
+            'images' => new ActionTokenImageEndpoint(
+                $this->actionTokenService,
+                new CandidateSourceImageResolver(
+                    $previewableImages,
+                    new WordPressCandidateSourceMessage(new EventCandidateRepository($database))
+                ),
+                $previewableImages,
+                $protectedInboundMailStorage
+            ),
+        ];
         $confirmationPreviewJob = new ConfirmationEmailPreviewJob(
             new WordPressConfirmationEmailJobSource(
                 $database,
@@ -758,8 +826,8 @@ final class Plugin
         }
 
         $this->reviewerNotificationPreference->registerHooks();
-        add_filter('query_vars', [$this->actionTokenEndpoint, 'registerQueryVars']);
-        add_action('template_redirect', [$this->actionTokenEndpoint, 'handleRequest'], 0);
+        add_filter('query_vars', [$this->actionTokenEndpoint(), 'registerQueryVars']);
+        add_action('template_redirect', [$this->actionTokenEndpoint(), 'handleRequest'], 0);
         add_action('template_redirect', [$this->publicIcsFeed, 'handleRequest'], 1);
         add_action('init', [$this->publicEventPage, 'register'], 12);
         add_action('init', [$this->eventPostType, 'register'], 5);
@@ -870,6 +938,14 @@ final class Plugin
         add_action('admin_post_adct_pi_directory_import_preview', [$this->parishesPage, 'handleImportPreview']);
         add_action('admin_post_adct_pi_directory_import_confirm', [$this->parishesPage, 'handleImportConfirm']);
         add_action('admin_post_adct_pi_directory_export', [$this->parishesPage, 'handleExport']);
+        add_action(
+            'admin_post_' . AttachmentImageEndpoint::ACTION,
+            [$this->attachmentImageEndpoint, 'handleRequest']
+        );
+        add_action(
+            'admin_enqueue_scripts',
+            [$this->parserPage, 'enqueueOcrAssets']
+        );
         add_action('admin_post_adct_pi_sender_action', [$this->sendersPage, 'handleAction']);
         add_action('admin_post_adct_pi_run_job', [$this->scheduledJobsPage, 'handleRunNow']);
         add_action('admin_notices', [$this, 'renderMigrationNotice']);
