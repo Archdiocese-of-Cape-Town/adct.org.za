@@ -5,13 +5,15 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Core\Ingestion\Imap;
 
 use ADCT\ParishIntake\Core\Ingestion\MailboxCheckpoint;
+use ADCT\ParishIntake\Core\Ingestion\MailboxMoveReceipt;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSearchCriteria;
 use ADCT\ParishIntake\Core\Ingestion\RawMailMessage;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
+use ADCT\ParishIntake\Core\Ports\MailboxMoveReceiptProviderInterface;
 use DateTimeImmutable;
 use InvalidArgumentException;
 
-final class ImapMailbox implements MailboxInterface
+final class ImapMailbox implements MailboxInterface, MailboxMoveReceiptProviderInterface
 {
     private ImapProtocolClient $client;
 
@@ -203,6 +205,11 @@ final class ImapMailbox implements MailboxInterface
 
     public function move(int $uid, string $folder): void
     {
+        $this->moveWithReceipt($uid, $folder);
+    }
+
+    public function moveWithReceipt(int $uid, string $folder): ?MailboxMoveReceipt
+    {
         $this->validateUid($uid);
         $this->selectFolder($this->inboxFolder());
         $destination = $this->quoteFolder($folder);
@@ -211,11 +218,12 @@ final class ImapMailbox implements MailboxInterface
             $result = $this->client->execute(sprintf('UID MOVE %d %s', $uid, $destination));
             $this->client->requireOkay($result, 'The message could not be moved to the requested folder.');
 
-            return;
+            return $this->copyUidReceipt($result, $uid);
         }
 
         $copyResult = $this->client->execute(sprintf('UID COPY %d %s', $uid, $destination));
         $this->client->requireOkay($copyResult, 'The message could not be copied to the requested folder.');
+        $receipt = $this->copyUidReceipt($copyResult, $uid);
 
         $storeResult = $this->client->execute(sprintf('UID STORE %d +FLAGS.SILENT (\\Deleted)', $uid));
         $this->client->requireOkay($storeResult, 'The source message could not be marked for removal.');
@@ -225,6 +233,8 @@ final class ImapMailbox implements MailboxInterface
             : 'EXPUNGE';
         $expungeResult = $this->client->execute($expunge);
         $this->client->requireOkay($expungeResult, 'The source message could not be removed after copying.');
+
+        return $receipt;
     }
 
     public function delete(int $uid, string $folder): void
@@ -387,6 +397,53 @@ final class ImapMailbox implements MailboxInterface
         $this->client->requireOkay($result, 'The requested mailbox folder could not be opened.');
         $this->selectedUidValidity = $this->uidValidityFromResponses($result->responses);
         $this->selectedFolder = $folder;
+    }
+
+    private function copyUidReceipt(ImapCommandResult $result, int $sourceUid): ?MailboxMoveReceipt
+    {
+        if (
+            preg_match(
+                '/\[COPYUID\s+([0-9]+)\s+([0-9:,]+)\s+([0-9:,]+)\]/i',
+                $result->completion,
+                $matches
+            ) !== 1
+        ) {
+            return null;
+        }
+
+        $uidValidity = $this->singleUidSetValue($matches[1]);
+        $mappedSourceUid = $this->singleUidSetValue($matches[2]);
+        $destinationUid = $this->singleUidSetValue($matches[3]);
+
+        if ($uidValidity === null || $mappedSourceUid !== $sourceUid || $destinationUid === null) {
+            throw new ProtocolError('The mail server returned an invalid COPYUID mapping for the moved message.');
+        }
+
+        return new MailboxMoveReceipt($uidValidity, $destinationUid);
+    }
+
+    private function singleUidSetValue(string $uidSet): ?int
+    {
+        if (preg_match('/\A([1-9][0-9]*)(?::([1-9][0-9]*))?\z/D', $uidSet, $matches) !== 1) {
+            return null;
+        }
+
+        $first = filter_var(
+            $matches[1],
+            FILTER_VALIDATE_INT,
+            ['options' => ['min_range' => 1, 'max_range' => MailboxCheckpoint::MAX_UID]]
+        );
+        $last = filter_var(
+            $matches[2] ?? $matches[1],
+            FILTER_VALIDATE_INT,
+            ['options' => ['min_range' => 1, 'max_range' => MailboxCheckpoint::MAX_UID]]
+        );
+
+        if (! is_int($first) || ! is_int($last) || $first !== $last) {
+            return null;
+        }
+
+        return $first;
     }
 
     /**

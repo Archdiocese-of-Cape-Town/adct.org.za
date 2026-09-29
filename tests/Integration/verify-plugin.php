@@ -133,8 +133,8 @@ if (
     $fail('Fresh plugin activation did not default outbound test mode to off with an empty allow-list.');
 }
 
-if ((int) get_option('adct_pi_db_version', 0) !== 6) {
-    $fail('Activation did not set the parish intake schema version to 6.');
+if ((int) get_option('adct_pi_db_version', 0) !== 7) {
+    $fail('Activation did not set the parish intake schema version to 7.');
 }
 
 if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CURRENT_VERSION) {
@@ -263,6 +263,7 @@ $expectedTableSuffixes = [
     'adct_pi_occurrences',
     'adct_pi_parish_contacts',
     'adct_pi_parishes',
+    'adct_pi_processed_mail_ownership',
     'adct_pi_sources',
     'adct_pi_venues',
 ];
@@ -281,7 +282,7 @@ if ($actualTables !== $expectedTables) {
     $missingTables = array_diff($expectedTables, $actualTables);
     $unexpectedTables = array_diff($actualTables, $expectedTables);
     $fail(sprintf(
-        'Schema v6 tables differ. Missing: [%s]; unexpected: [%s].',
+        'Schema v7 tables differ. Missing: [%s]; unexpected: [%s].',
         implode(', ', $missingTables),
         implode(', ', $unexpectedTables)
     ));
@@ -332,10 +333,12 @@ if ($forcedNotNull === false) {
 }
 
 $rateLimitTable = $wpdb->prefix . 'adct_pi_action_token_rate_limits';
+$processedOwnershipTable = $wpdb->prefix . 'adct_pi_processed_mail_ownership';
 $dropRateLimitTableForV3Upgrade = $wpdb->query("DROP TABLE {$rateLimitTable}");
+$dropProcessedOwnershipTableForV3Upgrade = $wpdb->query("DROP TABLE {$processedOwnershipTable}");
 
-if ($dropRateLimitTableForV3Upgrade === false) {
-    $fail('The v3-to-v6 migration test could not restore the pre-v6 schema.');
+if ($dropRateLimitTableForV3Upgrade === false || $dropProcessedOwnershipTableForV3Upgrade === false) {
+    $fail('The v3-to-v7 migration test could not restore the pre-v7 schema.');
 }
 
 update_option('adct_pi_db_version', 3, false);
@@ -346,9 +349,10 @@ $occurrenceParishColumn = $wpdb->get_row(
 );
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 6
+    (int) get_option('adct_pi_db_version', 0) !== 7
     || ! is_array($occurrenceParishColumn)
     || strtoupper((string) ($occurrenceParishColumn['Null'] ?? '')) !== 'YES'
+    || $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $processedOwnershipTable)) !== $processedOwnershipTable
 ) {
     $fail('The v3 upgrade did not preserve the nullable occurrences.parish_id column.');
 }
@@ -470,7 +474,7 @@ $preservedQueueRowCount = (int) $wpdb->get_var($wpdb->prepare(
 ));
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 6
+    (int) get_option('adct_pi_db_version', 0) !== 7
     || ! $upgradedMailQueueIndexIsUnique
     || array_values($upgradedMailQueueIndexColumns) !== ['recipient', 'group_key']
     || $preservedQueueRowCount !== 1
@@ -492,9 +496,10 @@ if ($deletedPreservedQueueRows !== 1) {
 }
 
 $droppedRateLimitTable = $wpdb->query("DROP TABLE {$rateLimitTable}");
+$droppedProcessedOwnershipTable = $wpdb->query("DROP TABLE {$processedOwnershipTable}");
 
-if ($droppedRateLimitTable === false) {
-    $fail('The v5-to-v6 migration test could not prepare the pre-v6 schema.');
+if ($droppedRateLimitTable === false || $droppedProcessedOwnershipTable === false) {
+    $fail('The v5-to-v7 migration test could not prepare the pre-v6 schema.');
 }
 
 update_option('adct_pi_db_version', 5, false);
@@ -505,6 +510,7 @@ $recreatedRateLimitTable = $wpdb->get_var($wpdb->prepare(
 ));
 $rateLimitColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$rateLimitTable}", 0);
 $rateLimitIndexes = (array) $wpdb->get_results("SHOW INDEX FROM {$rateLimitTable}", ARRAY_A);
+$processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
 $scopeHashIsPrimaryKey = false;
 $windowStartedAtIsIndexed = false;
 
@@ -526,7 +532,7 @@ foreach ($rateLimitIndexes as $index) {
 }
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 6
+    (int) get_option('adct_pi_db_version', 0) !== 7
     || $recreatedRateLimitTable !== $rateLimitTable
     || ! in_array('scope_hash', $rateLimitColumns, true)
     || ! in_array('window_started_at', $rateLimitColumns, true)
@@ -535,8 +541,34 @@ if (
     || count($rateLimitIndexes) !== 2
     || ! $scopeHashIsPrimaryKey
     || ! $windowStartedAtIsIndexed
+    || $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $processedOwnershipTable)) !== $processedOwnershipTable
+    || ! in_array('mailbox_identity', $processedOwnershipColumns, true)
+    || ! in_array('uid_validity', $processedOwnershipColumns, true)
+    || ! in_array('uid', $processedOwnershipColumns, true)
+    || ! in_array('internal_date', $processedOwnershipColumns, true)
 ) {
-    $fail('The v5-to-v6 migration did not create the primary-keyed hashed rate-limit table.');
+    $fail('The v5-to-v7 migrations did not create the rate-limit and processed-mail ownership tables.');
+}
+
+$droppedProcessedOwnershipTableForV6Upgrade = $wpdb->query("DROP TABLE {$processedOwnershipTable}");
+
+if ($droppedProcessedOwnershipTableForV6Upgrade === false) {
+    $fail('The v6-to-v7 migration test could not prepare the pre-v7 schema.');
+}
+
+update_option('adct_pi_db_version', 6, false);
+do_action('admin_init');
+$recreatedProcessedOwnershipTable = $wpdb->get_var($wpdb->prepare(
+    'SHOW TABLES LIKE %s',
+    $processedOwnershipTable
+));
+
+if (
+    (int) get_option('adct_pi_db_version', 0) !== 7
+    || $recreatedProcessedOwnershipTable !== $processedOwnershipTable
+    || get_option('adct_pi_db_migration_error', '') !== ''
+) {
+    $fail('The v6-to-v7 migration did not create the processed-mail ownership table.');
 }
 
 require_once __DIR__ . '/ActionTokenEndpointCheck.php';
@@ -4312,4 +4344,4 @@ foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
     }
 }
 
-WP_CLI::success('Release ZIP activation, schema v6/v3-to-v6/v4-to-v5/v5-to-v6 migrations, hashed action-token storage and renewal limits, GET preview and nonce-protected single-use POST behavior, fresh and upgraded mail queue unique indexes with duplicate preservation, occurrence expansion/save/REST/job behavior, mailbox settings and safe password rendering, polling, inbound processing and Inbox reprocessing without candidate, attachment, checkpoint, email or privacy regressions, outbound-mail job registration, inbound-message de-duplication/skip notices, login-priority delivery ahead of 200 queued digests through intercepted wp_mail, mail group idempotency and atomic hourly-cap claims, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
+WP_CLI::success('Release ZIP activation, schema v7/v3-to-v7/v4-to-v5/v5-to-v7/v6-to-v7 migrations, hashed action-token storage and renewal limits, GET preview and nonce-protected single-use POST behavior, fresh and upgraded mail queue unique indexes with duplicate preservation, occurrence expansion/save/REST/job behavior, mailbox settings and safe password rendering, polling, inbound processing and Inbox reprocessing without candidate, attachment, checkpoint, email or privacy regressions, outbound-mail job registration, inbound-message de-duplication/skip notices, login-priority delivery ahead of 200 queued digests through intercepted wp_mail, mail group idempotency and atomic hourly-cap claims, event post type/taxonomy/default-term seeding, event metadata validation, REST privacy/role authorization and namespaced capability cleanup, settings and parser safeguards, venue schema/import/backfill/default/lookup/deactivation and parish Venues tab, source registry/import/health checks and official-source switching with the parish Sources tab, deanery routes and role assignments, directory CSV imports, parish contacts, Deaneries and Senders admin screens, and Manual parser integration checks passed.');
