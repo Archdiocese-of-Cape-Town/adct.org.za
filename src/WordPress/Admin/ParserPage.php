@@ -49,7 +49,7 @@ final class ParserPage
 
     /**
      * Loads the OCR module on the Manual parser screen, and only when that
-     * screen actually has a control to bind to (ADR 0017).
+     * screen actually has a control to bind to (ADR 0018).
      *
      * `admin_enqueue_scripts` runs on every admin page, so the screen is
      * checked first: the poster query must not run site-wide.
@@ -107,7 +107,7 @@ final class ParserPage
 
     /**
      * The on-demand OCR control, built once per request from the plugin's own
-     * asset URLs (ADR 0017).
+     * asset URLs (ADR 0018).
      */
     private function ocr(): OcrControl
     {

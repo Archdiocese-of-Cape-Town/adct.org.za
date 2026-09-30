@@ -443,7 +443,7 @@ final class ActionTokenEndpoint
      * The extracted text is appended to the description box as a suggestion to
      * check before confirming. It is never sent back to the server as OCR
      * output: whatever the reviewer finally submits is their own edit, and
-     * nothing about the image is stored (ADR 0017).
+     * nothing about the image is stored (ADR 0018).
      */
     private function renderOcrControl(string $token): string
     {

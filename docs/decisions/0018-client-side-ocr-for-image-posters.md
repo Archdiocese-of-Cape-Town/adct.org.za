@@ -1,7 +1,8 @@
-# ADR 0017: Opt-in client-side OCR for image posters
+# ADR 0018: Opt-in client-side OCR for image posters
 
 - Status: Accepted
 - Date: 2026-09-26
+- Numbering: first drafted as ADR 0017 and renumbered to 0018 before merge, because ADR 0017 was taken by [the library-first protocol and format handling decision](0017-library-first-protocol-and-format-handling.md) in the meantime. Only the number changed; the decision, its date and its content are the ones accepted on 2026-09-26.
 
 ## Context
 Real samples showed that about **1 in 4 posters are image-only**. The rule-based parser has no text to work with, so those notices produce no candidate and become manual operator work. The existing plan for this is E8.3 (#75), a server-side OCR provider behind the provisional `OcrProviderInterface`.

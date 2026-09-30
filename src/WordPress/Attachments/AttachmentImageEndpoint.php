@@ -10,7 +10,7 @@ use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
 use Throwable;
 
 /**
- * Streams one stored inbound image to a logged-in reviewer (ADR 0017).
+ * Streams one stored inbound image to a logged-in reviewer (ADR 0018).
  *
  * The private storage directory stays deny-all: this is the single, capability
  * checked way an image reaches a browser, and it only ever reads a file that

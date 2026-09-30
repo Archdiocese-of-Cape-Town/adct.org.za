@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Attachments;
 
 /**
- * Renders the shared on-demand OCR control (ADR 0017).
+ * Renders the shared on-demand OCR control (ADR 0018).
  *
  * Both surfaces that show a poster to a human — the admin parser page and the
  * emailed action-token page — render their control here, so the markup, the
@@ -65,7 +65,7 @@ final class OcrControl
      *
      * Neither tag is a reason to reach the network on page load. Both point at
      * the plugin's own files, and tesseract.js itself is still only fetched
-     * when someone presses the button (ADR 0017).
+     * when someone presses the button (ADR 0018).
      */
     public function headTags(): string
     {
@@ -136,7 +136,7 @@ final class OcrControl
      *
      * Nothing here is persisted or transmitted: the values live in the form
      * controls until the page is closed, exactly as the recognised text does
-     * (ADR 0017).
+     * (ADR 0018).
      */
     private function settingsPanel(string $targetId): string
     {

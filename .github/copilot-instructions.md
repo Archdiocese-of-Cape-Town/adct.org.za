@@ -32,7 +32,7 @@ docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli php tests/parser_smoke_test
 - Security:
   - Check capabilities and nonces on every admin action; escape all output.
   - Emailed action links: a GET shows a page, only a POST acts; tokens are hashed, single-use and expire.
-- OCR is **client-side only** (ADR 0017). Image posters are served read-only to an already-authorised browser, tesseract.js runs there, and the extracted text is never posted back or stored. Server-side/queue OCR is E8.3 and is not approved.
+- OCR is **client-side only** (ADR 0018). Image posters are served read-only to an already-authorised browser, tesseract.js runs there, and the extracted text is never posted back or stored. Server-side/queue OCR is E8.3 and is not approved.
 - Dates and times: `Africa/Johannesburg`, day-first dates (`12/10/2026` is 12 October). Inject a clock instead of reading "now".
 - One issue per PR, with `Closes #N`. Update the related docs in the same PR.
 - Ask the project owner before: changing an accepted ADR, adding a paid service or a non-pure-PHP dependency, or anything that sends real email or touches the live site.

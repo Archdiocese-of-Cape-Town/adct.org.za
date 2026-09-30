@@ -68,7 +68,7 @@ final class AttachmentRepository extends AbstractRepository
     }
 
     /**
-     * The most recently received browser-readable images (ADR 0017).
+     * The most recently received browser-readable images (ADR 0018).
      *
      * These are the posters the pipeline cannot read, so the Manual parser
      * screen offers on-demand client-side OCR for them.
@@ -92,7 +92,7 @@ final class AttachmentRepository extends AbstractRepository
 
     /**
      * One stored attachment by id, for the browser-readable image endpoints of
-     * ADR 0017.
+     * ADR 0018.
      *
      * @return array<string, mixed>|null
      */

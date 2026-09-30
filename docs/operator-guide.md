@@ -253,7 +253,7 @@ Safe IMAP deletion also requires server UIDPLUS support. If UIDPLUS is unavailab
 
 An email that carries only a **photo or image poster** (JPEG, PNG or WebP) has no text for the parser, so it produces no candidate until someone types the event in. Where a stored image is available, the plugin now shows it next to the edit form, on the **Manual parser** screen and on the emailed approval page, with a **Read text from image** button.
 
-Clicking the button runs OCR **in the reviewer's own browser** ([ADR 0017](decisions/0017-client-side-ocr-for-image-posters.md)) and puts the text into the description box. Practical notes for operators:
+Clicking the button runs OCR **in the reviewer's own browser** ([ADR 0018](decisions/0018-client-side-ocr-for-image-posters.md)) and puts the text into the description box. Practical notes for operators:
 
 - **Nothing is stored.** The recognised text stays on the screen; it is never sent back to the site and is never written to the database. Whatever the reviewer saves is the edited text they approved, exactly as if they had typed it. Nothing needs to be purged, and no personal data is captured beyond what the reviewer chooses to save.
 - **The first click is slow** (a few seconds to tens of seconds) because the OCR library and its language data are downloaded on demand from jsDelivr. Later clicks reuse the browser's cache. The page sends **no parish content** to that CDN; it does make the request, so jsDelivr sees the reviewer's IP address and timing, which the project owner has judged acceptable. A locked-down or offline workstation may block the request, in which case the button reports the failure and the reviewer types the event as before.

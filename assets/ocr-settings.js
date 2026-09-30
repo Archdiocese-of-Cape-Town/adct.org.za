@@ -1,5 +1,5 @@
 /**
- * The tunable settings of the on-demand OCR control (ADR 0017, extended).
+ * The tunable settings of the on-demand OCR control (ADR 0018, extended).
  *
  * Split out of ocr.js and written as plain ES5 with no DOM access so the
  * decisions that matter — which page-segmentation mode a poster is read with,

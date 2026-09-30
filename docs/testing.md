@@ -128,7 +128,7 @@ Covered automatically by `OcrImageCheck` (integration, real database) plus unit 
 - The attachment row is byte-identical after OCR is offered — `extracted_text` stays null, `extraction_method` stays `none`, and no row is added or removed.
 - `ActionTokenImageEndpoint::allowedImage()` returns the token's own poster, and null for another candidate's poster, a non-existent id, and a HEIC/PDF. Reading the image does **not** consume the token.
 
-**Still to check by hand, in a browser** (ADR 0017): that clicking the button loads tesseract.js from jsDelivr and fills the description field; that typed text is never overwritten; that an empty result or a failed/blocked CDN request leaves the field for manual entry and shows a clear message; and that the reviewer's approval still publishes only what they confirmed. These need a real browser and network access, so no automated check asserts them.
+**Still to check by hand, in a browser** (ADR 0018): that clicking the button loads tesseract.js from jsDelivr and fills the description field; that typed text is never overwritten; that an empty result or a failed/blocked CDN request leaves the field for manual entry and shows a clear message; and that the reviewer's approval still publishes only what they confirmed. These need a real browser and network access, so no automated check asserts them.
 
 ## Pre-launch check on a temporary staging instance
 

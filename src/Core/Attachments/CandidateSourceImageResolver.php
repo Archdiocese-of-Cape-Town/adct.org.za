@@ -9,7 +9,7 @@ use ADCT\ParishIntake\Core\Ports\CandidateSourceMessageInterface;
 use ADCT\ParishIntake\Core\Ports\PreviewableImageRepositoryInterface;
 
 /**
- * Finds the poster image behind an emailed action-token page (ADR 0017).
+ * Finds the poster image behind an emailed action-token page (ADR 0018).
  *
  * The action-token pages are public, so there is no capability to check and the
  * live token is the only authorisation. Resolving strictly through the token's

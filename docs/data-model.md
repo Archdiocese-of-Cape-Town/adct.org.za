@@ -176,7 +176,7 @@ A stored PDF's `extraction_method` and `status` are set during processing (ADR 0
 
 The Inbox shows received, extracting, parsed, failed and ignored messages to users with intake review permission. Its Ignored filter also includes oversize messages stored with the legacy `skipped` status. It does not select `body_text`, `raw_path`, raw headers or attachments. A failed message can be requeued only after an authorized, nonce-protected admin action; reprocessing uses the same row and protected raw file, preserves attachments and mailbox checkpoints, and does not publish events or send email.
 
-Browser OCR writes nothing here (ADR 0017). tesseract.js runs in the reviewer's browser and populates the description field on screen; the text is never posted back, so `extracted_text` and `extraction_method` are left exactly as ingestion and PDF extraction set them (an image keeps `none`), and the schema stays at version 10 with no migration. The only new server-side effect of showing a poster is that `WordPressPreviewableImageRepository` reads the existing row — selecting the fields needed to validate and serve it — without modifying it.
+Browser OCR writes nothing here (ADR 0018). tesseract.js runs in the reviewer's browser and populates the description field on screen; the text is never posted back, so `extracted_text` and `extraction_method` are left exactly as ingestion and PDF extraction set them (an image keeps `none`), and the schema stays at version 10 with no migration. The only new server-side effect of showing a poster is that `WordPressPreviewableImageRepository` reads the existing row — selecting the fields needed to validate and serve it — without modifying it.
 
 ### `adct_pi_event_candidates`
 | Column | Notes |

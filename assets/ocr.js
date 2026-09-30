@@ -1,5 +1,5 @@
 /**
- * On-demand, client-side OCR for parish poster images (ADR 0017).
+ * On-demand, client-side OCR for parish poster images (ADR 0018).
  *
  * Shared by the Manual parser screen and by the emailed action-token pages, so
  * it must not depend on any `wp.*` global: the token pages are rendered without
@@ -8,7 +8,7 @@
  * Nothing here runs until a person clicks. tesseract.js is roughly 12 MB with
  * its language data, so there is deliberately no preload, no worker start and no
  * CDN request on page load. The recognised text is shown in the page and then
- * discarded: it is never posted back to the server (ADR 0017).
+ * discarded: it is never posted back to the server (ADR 0018).
  *
  * The reading settings live in ocr-settings.js, which is loaded first and holds
  * the pure decisions. This file is the plumbing: it finds the controls, keeps a

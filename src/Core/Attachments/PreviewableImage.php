@@ -8,7 +8,7 @@ use InvalidArgumentException;
 
 /**
  * A stored inbound attachment that a browser can display and that on-demand
- * client-side OCR can read (ADR 0017).
+ * client-side OCR can read (ADR 0018).
  *
  * Only the raster formats a browser can decode are previewable. PDF is handled
  * by the server-side text extraction of ADR 0015, and HEIC/HEIF are on the

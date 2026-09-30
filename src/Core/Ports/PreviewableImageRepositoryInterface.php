@@ -8,7 +8,7 @@ use ADCT\ParishIntake\Core\Attachments\PreviewableImage;
 
 /**
  * Reads stored inbound images that may be shown to a browser for on-demand
- * client-side OCR (ADR 0017).
+ * client-side OCR (ADR 0018).
  *
  * Implementations must only return rows whose file is actually stored, is no
  * larger than the attachment storage cap, and has a browser-readable image type.

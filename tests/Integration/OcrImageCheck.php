@@ -1,7 +1,7 @@
 <?php
 
 /**
- * Integration checks for the on-demand client-side OCR surfaces of ADR 0017.
+ * Integration checks for the on-demand client-side OCR surfaces of ADR 0018.
  *
  * The unit suite covers the gate logic in isolation. This check proves the
  * wiring holds against a real database and a real page render: an approval link
@@ -339,7 +339,7 @@ final class OcrImageCheck
                 'The token page pointed at another candidate’s poster.'
             );
 
-            // The point of ADR 0017: the browser does the OCR, so the page
+            // The point of ADR 0018: the browser does the OCR, so the page
             // render must leave the row exactly as it found it.
             $after = $wpdb->get_row(
                 $wpdb->prepare(

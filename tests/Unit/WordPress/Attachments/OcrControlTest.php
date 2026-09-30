@@ -427,7 +427,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Attachments {
             $html = $this->control()->render('https://adct.org.za/image', 'target');
 
             // No hidden input: nothing the reviewer picks is submitted with the
-            // decision, and nothing is written anywhere (ADR 0017).
+            // decision, and nothing is written anywhere (ADR 0018).
             self::assertStringNotContainsString('type="hidden"', $html);
         }
 

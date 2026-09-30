@@ -13,7 +13,7 @@ use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
 use Throwable;
 
 /**
- * Streams the poster image behind an emailed action-token page (ADR 0017).
+ * Streams the poster image behind an emailed action-token page (ADR 0018).
  *
  * These pages are public, so there is no capability to check and the live
  * action token is the authorisation. The requested image must be the one
