@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Core\Parsing\Stages;
 
+use ADCT\ParishIntake\Core\Parsing\Confidence\FieldEvidence;
 use ADCT\ParishIntake\Core\Parsing\Contracts\StageInterface;
 use ADCT\ParishIntake\Core\Parsing\EventTypeClassifier;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
@@ -49,7 +50,10 @@ final class EventTypeClassificationStage implements StageInterface
         $result->setField('event_type', $type['slug']);
         $result->setField('event_type_confidence', $type['confidence']);
         $result->setField('event_type_source', 'keyword');
-        $result->addStrategy('event_type_keywords');
-        return $result;
+                $result->recordFieldEvidence('event_type', new FieldEvidence(
+                    $type['confidence'] >= 0.5 ? FieldEvidence::DIRECTORY_TEXT : FieldEvidence::INFERRED
+                ));
+                $result->addStrategy('event_type_keywords');
+                return $result;
     }
 }

@@ -6,17 +6,26 @@ namespace ADCT\ParishIntake\Core\Mail;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use InvalidArgumentException;
 
 final class ConfirmationEmailRenderer
 {
-    private const LOW_CONFIDENCE_THRESHOLD = 0.55;
+    /**
+     * A field scoring below this is highlighted for the submitter. Defaults to the pipeline's own
+     * default so an unconfigured install highlights the same fields the pipeline flags.
+     */
+    public const DEFAULT_FIELD_THRESHOLD = 0.60;
 
     private DateTimeZone $timezone;
+    private float $fieldThreshold;
 
-    public function __construct(?DateTimeZone $timezone = null)
+    public function __construct(?DateTimeZone $timezone = null, ?float $fieldThreshold = null)
     {
         $this->timezone = $timezone ?? new DateTimeZone('Africa/Johannesburg');
+        $this->fieldThreshold = $fieldThreshold !== null && is_finite($fieldThreshold)
+            ? max(0.0, min(1.0, $fieldThreshold))
+            : self::DEFAULT_FIELD_THRESHOLD;
     }
 
     public function render(
@@ -93,7 +102,7 @@ final class ConfirmationEmailRenderer
             $html[] = '</td></tr>';
             $html[] = '<tr><td style="padding:8px 18px 16px;font-size:13px;line-height:1.5;color:#596773;">'
                 . 'Parser confidence: ' . number_format($candidate->confidence * 100, 0) . '%'
-                . ($candidate->confidence < self::LOW_CONFIDENCE_THRESHOLD
+                . ($candidate->confidence < $this->lowConfidenceThreshold()
                     ? ' — please review all details carefully.'
                     : '')
                 . '</td></tr>';
@@ -106,14 +115,14 @@ final class ConfirmationEmailRenderer
 
             $text[] = 'Event ' . $number . ': ' . $card['title']
                 . ($card['title_uncertain'] ? ' (please check)' : '');
-            $text[] = 'Date: ' . $card['date'];
-            $text[] = 'Time: ' . $card['time'];
-            $text[] = 'Location: ' . $card['location'];
-            $text[] = 'Parish: ' . $card['parish'];
-            $text[] = 'Description: ' . $card['description'];
-            $text[] = 'Event type: ' . $card['event_type'];
-            $text[] = 'Contact: ' . $card['contact'];
-            $text[] = 'Recurrence: ' . $card['recurrence'];
+            $text[] = $this->textFieldRow('Date', $card['date'], $card['date_uncertain']);
+            $text[] = $this->textFieldRow('Time', $card['time'], $card['time_uncertain']);
+            $text[] = $this->textFieldRow('Location', $card['location'], $card['location_uncertain']);
+            $text[] = $this->textFieldRow('Parish', $card['parish'], $card['parish_uncertain']);
+            $text[] = $this->textFieldRow('Description', $card['description'], $card['description_uncertain']);
+            $text[] = $this->textFieldRow('Event type', $card['event_type'], $card['event_type_uncertain']);
+            $text[] = $this->textFieldRow('Contact', $card['contact'], $card['contact_uncertain']);
+            $text[] = $this->textFieldRow('Recurrence', $card['recurrence'], $card['recurrence_uncertain']);
             $text[] = 'Review notes: ' . $card['notes'];
             $text[] = 'Parser confidence: ' . number_format($candidate->confidence * 100, 0) . '%';
             $text[] = 'Confirm: ' . $candidateLinks['approve'];
@@ -178,8 +187,9 @@ final class ConfirmationEmailRenderer
     private function candidateCard(ConfirmationEmailCandidate $candidate): array
     {
         $fields = $candidate->fields;
-        $notes = implode(' ', $candidate->notes);
-        $lowConfidence = $candidate->confidence < self::LOW_CONFIDENCE_THRESHOLD;
+                $fieldScores = $candidate->fieldScores();
+                $notes = implode(' ', $candidate->notes);
+        $lowConfidence = $candidate->confidence < $this->lowConfidenceThreshold();
         $title = $this->displayValue($fields['title'] ?? null, 512);
         $allDay = ($fields['all_day'] ?? false) === true
             || in_array(strtolower((string) ($fields['all_day'] ?? '')), ['1', 'yes', 'true'], true);
@@ -208,32 +218,42 @@ final class ConfirmationEmailRenderer
             ? 'No extraction notes.'
             : $this->displayValue(implode(' ', $candidate->notes), 2000);
         $dateUncertain = $date === 'Not identified'
-            || $this->containsAny($notes, ['weekday does not match', 'ambiguous', 'verify the date'])
-            || (bool) ($candidate->recurrence['anchor_inferred'] ?? false);
-        $timeUncertain = ! $allDay && $time === 'Not identified'
-            || $this->containsAny($notes, ['end time', 'verify the time']);
-        $locationUncertain = $locationParts === [];
-        $parishUncertain = $parish === 'Not identified';
-        $descriptionUncertain = $description === 'Not identified';
-        $eventTypeUncertain = $eventType === 'Not identified';
-        $contactUncertain = $contact === 'Not identified';
-        $recurrenceUncertain = $this->containsAny($notes, ['recurrence', 'repeats', 'schedule'])
-            || (bool) ($candidate->recurrence['ambiguous'] ?? false);
+                    || $this->fieldWeak($fieldScores, 'event_date')
+                    || $this->containsAny($notes, ['weekday does not match', 'ambiguous', 'verify the date'])
+                    || (bool) ($candidate->recurrence['anchor_inferred'] ?? false);
+                $timeUncertain = (! $allDay && $time === 'Not identified')
+                    || $this->fieldWeak($fieldScores, 'event_time')
+                    || $this->containsAny($notes, ['end time', 'verify the time']);
+                $locationUncertain = $locationParts === [] || $this->fieldWeak($fieldScores, 'venue');
+                $parishUncertain = $parish === 'Not identified' || $this->fieldWeak($fieldScores, 'parish_name');
+                $descriptionUncertain = $description === 'Not identified'
+                    || $this->fieldWeak($fieldScores, 'description');
+                $eventTypeUncertain = $eventType === 'Not identified'
+                    || $this->fieldWeak($fieldScores, 'event_type');
+                $contactUncertain = $contact === 'Not identified' || $this->fieldWeak($fieldScores, 'contact');
+                $recurrenceUncertain = $this->fieldWeak($fieldScores, 'recurrence')
+                    || $this->containsAny($notes, ['recurrence', 'repeats', 'schedule'])
+                    || (bool) ($candidate->recurrence['ambiguous'] ?? false);
 
-        if ($lowConfidence) {
-            $dateUncertain = true;
-            $timeUncertain = true;
-            $locationUncertain = true;
-            $parishUncertain = true;
-            $descriptionUncertain = true;
-            $eventTypeUncertain = true;
-            $contactUncertain = true;
-            $recurrenceUncertain = $recurrenceUncertain || $candidate->recurrence !== [];
-        }
+                if ($lowConfidence && $fieldScores === []) {
+                    // Only when no per-field evidence exists. Once the parser reports a score per field,
+                    // a weak overall score should not blank out fields the parser did support, or the
+                    // submitter is asked to re-check detail that is in fact the best-evidenced part.
+                    $dateUncertain = true;
+                    $timeUncertain = true;
+                    $locationUncertain = true;
+                    $parishUncertain = true;
+                    $descriptionUncertain = true;
+                    $eventTypeUncertain = true;
+                    $contactUncertain = true;
+                    $recurrenceUncertain = $recurrenceUncertain || $candidate->recurrence !== [];
+                }
 
         return [
             'title' => $title === 'Not identified' ? 'Title not identified — please check' : $title,
-            'title_uncertain' => $title === 'Not identified' || $lowConfidence,
+            'title_uncertain' => $title === 'Not identified'
+                || $this->fieldWeak($fieldScores, 'title')
+                || ($lowConfidence && $fieldScores === []),
             'date' => $date,
             'date_uncertain' => $dateUncertain,
             'time' => $time,
@@ -381,8 +401,29 @@ final class ConfirmationEmailRenderer
         return $value;
     }
 
-    private function containsAny(string $value, array $needles): bool
-    {
+    /**
+         * Whether the named field scored below the field threshold.
+         *
+         * A field with no recorded score is *not* treated as weak: absence of evidence about a field
+         * is not evidence that the field is doubtful, and the "not identified" checks already cover
+         * the case where the parser produced nothing at all.
+         *
+         * @param array<string, array{score: float, origin: string, flags: list<string>}> $fieldScores
+         */
+        private function fieldWeak(array $fieldScores, string $field): bool
+        {
+            $entry = $fieldScores[$field] ?? null;
+
+            return $entry !== null && $entry['score'] < $this->fieldThreshold;
+        }
+
+        private function lowConfidenceThreshold(): float
+        {
+            return ReviewQueuePolicy::DEFAULT_CONFIDENCE_THRESHOLD;
+        }
+
+        private function containsAny(string $value, array $needles): bool
+        {
         foreach ($needles as $needle) {
             if (stripos($value, $needle) !== false) {
                 return true;
@@ -392,9 +433,13 @@ final class ConfirmationEmailRenderer
         return false;
     }
 
+    private function textFieldRow(string $label, string $value, bool $uncertain): string
+    {        $background = $uncertain ? '#fff4d6' : '#ffffff';
+        return $label . ': ' . $value . ($uncertain ? ' (please check)' : '');
+    }
+
     private function renderFieldRow(string $label, string $value, bool $uncertain): string
-    {
-        $background = $uncertain ? '#fff4d6' : '#ffffff';
+    {        $background = $uncertain ? '#fff4d6' : '#ffffff';
         $labelColor = $uncertain ? '#704f00' : '#46525c';
 
         return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"'

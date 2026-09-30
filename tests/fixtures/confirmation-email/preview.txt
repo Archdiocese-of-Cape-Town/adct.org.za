@@ -5,14 +5,14 @@ Highlighted details may be uncertain or missing. Confirm and Deny links now open
 Every new event still needs approval by a dean or an Archdiocese reviewer.
 
 Event 1: Parish Harvest <script>alert("x")</script> (please check)
-Date: 12 October 2026
-Time: 6:30 pm to 7:45 pm
-Location: St <Example> Hall, 1 Example & Main Street, Cape Town
-Parish: St Example Parish
+Date: 12 October 2026 (please check)
+Time: 6:30 pm to 7:45 pm (please check)
+Location: St <Example> Hall, 1 Example & Main Street, Cape Town (please check)
+Parish: St Example Parish (please check)
 Description: A & B
-Bring <b>a chair</b>
-Event type: Fundraising
-Contact: Office: office@example.test; Phone: 000 000 0000
+Bring <b>a chair</b> (please check)
+Event type: Fundraising (please check)
+Contact: Office: office@example.test; Phone: 000 000 0000 (please check)
 Recurrence: One-time event
 Review notes: The stated weekday does not match the parsed event date; verify it.
 Parser confidence: 48%

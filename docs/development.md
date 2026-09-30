@@ -84,6 +84,7 @@ docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scr
 | `tests/Integration/` | WP-CLI integration checks against the plugin installed from the release zip; separate from `composer test`. |
 | `.wp-env.json` | Isolated wp-env configuration that exposes the built zip and integration tests without mapping/activating the raw plugin checkout. |
 | `data/seed/` | Deaneries and parishes CSVs for the directory import and preview sample data |
+| `src/Core/Parsing/Confidence/` | `FieldEvidence` (how each value was obtained) and `CandidateScorer` (turns evidence into the per-field and overall scores) |
 | `docs/` | Design, decisions (ADRs), backlog, testing |
 
 ## Rules for every change
@@ -98,6 +99,17 @@ docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scr
 8. **Security:** capabilities + nonces on every admin action; escape output; action links are GET-shows-page / POST-acts with hashed single-use tokens ([ADR 0004](decisions/0004-trust-and-confirmation-model.md)).
 9. **Docs in the same PR** when behaviour or design changes. New design decisions become an ADR in `docs/decisions/`.
 10. Commit messages: short imperative summary line, then a body explaining why.
+
+## Confidence settings
+
+Two thresholds are editable under **Parish Intake → Settings**; both are safe to change on a live site and take effect on the next parse.
+
+| Option | Default | Effect |
+|---|---|---|
+| `adct_parish_intake_confidence_threshold` | `0.55` | Overall candidate score below which a parse is routed to human review instead of publishing. |
+| `adct_parish_intake_field_confidence_threshold` | `0.60` | Per-field score below which a value is marked as uncertain in the submitter's preview email and in the review queue. |
+
+The review threshold is deliberately independent of the AI-enrichment threshold, so enabling or disabling AI does not move the point at which a candidate is routed to a person. Lowering a threshold sends more candidates to reviewers and lengthens queues; raising it does the reverse. See [architecture](architecture.md#confidence-scoring) for the scoring model.
 
 ## Definition of done (per PR)
 

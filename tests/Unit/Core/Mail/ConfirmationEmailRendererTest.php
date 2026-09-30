@@ -125,4 +125,140 @@ final class ConfirmationEmailRendererTest extends TestCase
         self::assertStringContainsString('Confirm all:', $content->text);
         self::assertStringContainsString('the Edit link is not active yet', $content->text);
     }
+
+    /**
+     * Issue #130: a field the parser invented must be marked for checking, while fields it actually
+     * read from the notice must not be swept up by the weak overall score.
+     */
+    public function testFabricatedFieldIsMarkedWhileWellEvidencedFieldsAreNot(): void
+    {
+        $candidate = new ConfirmationEmailCandidate(
+            101,
+            [
+                'title' => 'Community supper',
+                'event_date' => '2026-10-12',
+                'event_end_date' => null,
+                'event_time' => '18:30',
+                'event_end_time' => null,
+                'venue' => 'Example Parish Hall',
+                'venue_address' => null,
+                'venue_suburb' => null,
+                'parish_name' => 'Example Parish',
+                'description' => 'Bring a chair.',
+                'event_type' => 'Meeting',
+                'contact' => null,
+                'all_day' => false,
+            ],
+            [],
+            0.42,
+            [],
+            'new',
+            null,
+            [
+                'score' => 0.42,
+                'coverage' => 0.8,
+                'fields' => [
+                    'title' => ['score' => 0.98, 'origin' => 'explicit', 'flags' => []],
+                    'event_date' => ['score' => 0.98, 'origin' => 'explicit', 'flags' => []],
+                    'event_time' => ['score' => 0.92, 'origin' => 'context', 'flags' => []],
+                    'venue' => ['score' => 0.96, 'origin' => 'directory_text', 'flags' => []],
+                    'parish_name' => [
+                        'score' => 0.0,
+                        'origin' => 'unsupported',
+                        'flags' => ['unanchored_parish_match'],
+                    ],
+                    'description' => ['score' => 0.98, 'origin' => 'explicit', 'flags' => []],
+                    'event_type' => ['score' => 0.85, 'origin' => 'inferred', 'flags' => []],
+                ],
+            ]
+        );
+
+        $content = (new ConfirmationEmailRenderer())->render(
+            $this->batch([$candidate]),
+            $this->links()
+        );
+
+        self::assertStringContainsString('Parish: Example Parish (please check)', $content->text);
+        self::assertStringNotContainsString('Date: 12 October 2026 (please check)', $content->text);
+        self::assertStringNotContainsString('Description: Bring a chair. (please check)', $content->text);
+        self::assertStringNotContainsString('Time: 6:30 pm (please check)', $content->text);
+        // The 0.42 overall score is below the review threshold, but must not blank out good fields.
+        self::assertStringContainsString('please review all details carefully', $content->html);
+    }
+
+    public function testFieldWithoutARecordedScoreIsNotMarked(): void
+    {
+        $candidate = new ConfirmationEmailCandidate(
+            101,
+            [
+                'title' => 'Community supper',
+                'event_date' => '2026-10-12',
+                'event_end_date' => null,
+                'event_time' => '18:30',
+                'event_end_time' => null,
+                'venue' => 'Example Parish Hall',
+                'venue_address' => null,
+                'venue_suburb' => null,
+                'parish_name' => 'Example Parish',
+                'description' => null,
+                'event_type' => null,
+                'contact' => null,
+                'all_day' => false,
+            ],
+            [],
+            0.95,
+            [],
+            'new',
+            null,
+            [
+                'score' => 0.95,
+                'coverage' => 0.8,
+                'fields' => [
+                    'title' => ['score' => 0.98, 'origin' => 'explicit', 'flags' => []],
+                ],
+            ]
+        );
+
+        $content = (new ConfirmationEmailRenderer())->render(
+            $this->batch([$candidate]),
+            $this->links()
+        );
+
+        // A high overall score, and no recorded score for the parish: not marked.
+        self::assertStringNotContainsString('Parish: Example Parish (please check)', $content->text);
+        // Fields with no evidence and no value still read as "not identified", as before.
+        self::assertStringContainsString('Description: Not identified', $content->text);
+    }
+
+    private function batch(array $candidates): ConfirmationEmailBatch
+    {
+        return new ConfirmationEmailBatch(
+            901,
+            4,
+            'sender@example.test',
+            'Example Sender',
+            'Event notice',
+            new DateTimeImmutable('2026-10-01 12:00:00', new DateTimeZone('Africa/Johannesburg')),
+            null,
+            SenderTrust::UNKNOWN,
+            SenderTrust::UNKNOWN,
+            false,
+            null,
+            $candidates
+        );
+    }
+
+    private function links(): ConfirmationEmailActionLinks
+    {
+        return new ConfirmationEmailActionLinks(
+            'https://adct.example.test/action?token=all',
+            [
+                101 => [
+                    'approve' => 'https://adct.example.test/action?token=approve',
+                    'deny' => 'https://adct.example.test/action?token=deny',
+                    'edit' => 'https://adct.example.test/action?token=edit',
+                ],
+            ]
+        );
+    }
 }
