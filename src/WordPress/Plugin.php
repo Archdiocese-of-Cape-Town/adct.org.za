@@ -925,6 +925,10 @@ final class Plugin
      */
     private function confidenceOption(string $option, float $default): float
     {
+        if (! function_exists('get_option')) {
+            return $default;
+        }
+
         $value = get_option($option, (string) $default);
 
         if (! is_numeric($value) || (float) $value < 0.0 || (float) $value > 1.0) {

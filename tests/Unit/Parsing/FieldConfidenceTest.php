@@ -7,6 +7,7 @@ namespace ADCT\ParishIntake\Tests\Unit\Parsing;
 use ADCT\ParishIntake\Core\Parsing\Confidence\CandidateScorer;
 use ADCT\ParishIntake\Core\Parsing\Confidence\FieldEvidence;
 use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -40,9 +41,7 @@ final class FieldConfidenceTest extends TestCase
             self::assertSame(0.98, $score['fields']['event_date']['score']);
         }
 
-    /**
-     * @dataProvider originScores
-     */
+    #[DataProvider('originScores')]
     public function testEachOriginScoresOnItsDocumentedValue(string $origin, float $expected): void
     {
         self::assertSame($expected, (new CandidateScorer())->scoreField('title', $origin));
