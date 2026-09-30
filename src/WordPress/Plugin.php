@@ -534,7 +534,8 @@ final class Plugin
                 $confirmationPreviewJob,
                 new ApprovalNoticeJob(
                     $database, $approvalRecipients, $this->actionTokenService,
-                    $this->mailQueue, $mailQueueRepository, $clock
+                    $this->mailQueue, $mailQueueRepository, $clock,
+                    self::approvalDigestHour()
                 ),
                 $inboundMessageProcessingJob,
                 $retentionCleanupJob,
@@ -962,6 +963,49 @@ final class Plugin
 
             return new MailQueueConfiguration();
         }
+    }
+
+    /**
+     * Local hour (Africa/Johannesburg) from which daily approval digests may
+     * be sent. Earlier arrivals wait for a later cron run on the same day.
+     */
+    private static function approvalDigestHour(): int
+    {
+        if (! defined('ADCT_PI_APPROVAL_DIGEST_HOUR')) {
+            return ApprovalNoticeJob::DEFAULT_DIGEST_HOUR;
+        }
+
+        $configuredHour = constant('ADCT_PI_APPROVAL_DIGEST_HOUR');
+
+        if (
+            ! is_int($configuredHour)
+            && (
+                ! is_string($configuredHour)
+                || preg_match('/\A\d+\z/D', $configuredHour) !== 1
+            )
+        ) {
+            self::logInvalidDigestHour();
+
+            return ApprovalNoticeJob::DEFAULT_DIGEST_HOUR;
+        }
+
+        $hour = (int) $configuredHour;
+
+        if ($hour < 0 || $hour > 23) {
+            self::logInvalidDigestHour();
+
+            return ApprovalNoticeJob::DEFAULT_DIGEST_HOUR;
+        }
+
+        return $hour;
+    }
+
+    private static function logInvalidDigestHour(): void
+    {
+        error_log(
+            '[ADCT Parish Intake] ADCT_PI_APPROVAL_DIGEST_HOUR must be an integer from 0 to 23;'
+            . ' using default ' . ApprovalNoticeJob::DEFAULT_DIGEST_HOUR . '.'
+        );
     }
 
     private static function logInvalidMailQueueCap(): void

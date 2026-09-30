@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Approval;
 
+use ADCT\ParishIntake\Core\Approval\Approver;
 use ADCT\ParishIntake\Core\Auth\ActionTokenBinding;
 use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 use ADCT\ParishIntake\Core\Auth\ActionTokenService;
@@ -24,6 +25,13 @@ use RuntimeException;
 final class ApprovalNoticeJob extends AbstractJob implements JobRunLifecycleInterface
 {
     private const BATCH_SIZE = 20;
+
+    /**
+     * Digest mail is held back until this hour so that "daily" means one
+     * message a day, even when cron happens to run soon after an arrival.
+     */
+    public const DEFAULT_DIGEST_HOUR = 7;
+
     private array $notifiedThisRun = [];
 
     public function __construct(
@@ -32,9 +40,21 @@ final class ApprovalNoticeJob extends AbstractJob implements JobRunLifecycleInte
         private readonly ActionTokenService $tokens,
         private readonly MailerInterface $mailer,
         private readonly MailQueueRepositoryInterface $queue,
-        private readonly ClockInterface $clock
+        private readonly ClockInterface $clock,
+        private readonly int $digestHour = self::DEFAULT_DIGEST_HOUR
     ) {
+        if ($digestHour < 0 || $digestHour > 23) {
+            throw new \InvalidArgumentException('The digest hour must be between 0 and 23.');
+        }
         parent::__construct('queue_approval_notices', 'Queue approver decisions and digests', 600);
+    }
+
+    /**
+     * Whether digest mail may go out at the given local time.
+     */
+    public function digestOpen(\DateTimeImmutable $localNow): bool
+    {
+        return (int) $localNow->format('G') >= $this->digestHour;
     }
 
     public function beginRun(): void
@@ -69,7 +89,8 @@ final class ApprovalNoticeJob extends AbstractJob implements JobRunLifecycleInte
         }
         $grouped = [];
         $deferred = false;
-        $today = $this->clock->now()->setTimezone(new DateTimeZone('Africa/Johannesburg'))->format('Ymd');
+        $localNow = $this->clock->now()->setTimezone(new DateTimeZone('Africa/Johannesburg'));
+        $today = $localNow->format('Ymd');
         foreach ($candidates as $candidate) {
             $id = (int) $candidate['id'];
             $fields = json_decode((string) ($candidate['fields'] ?? ''), true);
@@ -91,11 +112,17 @@ final class ApprovalNoticeJob extends AbstractJob implements JobRunLifecycleInte
                     continue;
                 }
                 $mode = $recipient['mode'];
+                if ($mode === Approver::NOTIFY_DIGEST && ! $this->digestOpen($localNow)) {
+                    // Too early for today's digest. Leave the candidate unnotified
+                    // so a later run picks it up once the digest hour has passed.
+                    $deferred = true;
+                    continue;
+                }
                 $recipientHash = substr(hash('sha256', $email), 0, 24);
-                $key = $mode === 'digest'
+                $key = $mode === Approver::NOTIFY_DIGEST
                     ? 'approval-digest:' . $today . ':' . $recipientHash
                     : ($grouped[$email]['key'] ?? 'approval:' . $id . ':' . $recipientHash);
-                if ($mode === 'digest' && $this->queue->findByRecipientAndGroupKey($email, $key) !== null) {
+                if ($mode === Approver::NOTIFY_DIGEST && $this->queue->findByRecipientAndGroupKey($email, $key) !== null) {
                     continue;
                 }
                 $grouped[$email] = ['key' => $key, 'mode' => $mode];
@@ -193,7 +220,7 @@ final class ApprovalNoticeJob extends AbstractJob implements JobRunLifecycleInte
                 $text .= "\n";
                 $html .= '</section>';
             }
-            $digest = $notices[0]['notify_mode'] === 'digest';
+            $digest = $notices[0]['notify_mode'] === Approver::NOTIFY_DIGEST;
             $this->mailer->enqueue(new OutboundEmail(
                 $email, $digest ? 'Your daily event approvals' : 'Events awaiting your approval',
                 $html, $text,
