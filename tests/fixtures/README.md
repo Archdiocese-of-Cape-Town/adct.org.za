@@ -79,12 +79,14 @@ score percentage falling is expected while a pre-existing fixture's row falling 
 
 Skipped-section text must never appear in expected output, and no `source_snippet` may carry it.
 
-## Provenance: the real class of input each stand-in models
+## Provenance: the real class of input each fixture covers
 
 These come from the sample review in [`docs/parser-samples.md`](../../docs/parser-samples.md) §"What
-the samples are": 8 bulletins, 2 text-layer posters, 3 image-only posters.
+the samples are": 8 bulletins, 2 text-layer posters, 3 image-only posters. Every row below is currently
+served by an invented fixture, but a row may equally be served by one **derived** from a real sample in
+reduced, anonymised form — record nothing beyond the generic class of input named in the left column.
 
-| Real class of input (from the private review) | Stand-in fixture(s) here |
+| Real class of input (from the private review) | Fixture(s) covering it |
 |---|---|
 | Weekly parish bulletin, 2–3 columns, text layer | `bulletin-multi-event-skip-sections`, `bulletin-numbered-events`, `bulletin-all-non-event-sections`, `pdfs/two-column-bulletin.pdf`, `pdfs/three-column-bulletin.pdf` |
 | Multi-church parish bulletin naming venues | `multi-church-bulletin` |
@@ -104,17 +106,23 @@ the samples are": 8 bulletins, 2 text-layer posters, 3 image-only posters.
 | Date/time formats parishes actually write | `real-format-dotted-date`, `real-format-ordinal-and-bare-time`, `real-format-after-mass-time` |
 | Administrative / non-event mail | `admin-notice` |
 
-A real example that needs content the synthetic route cannot reach — a specific column quirk, a provider's
-real-world header shape, an unusual layout — is worth deriving from the original, because a hand-built
-stand-in will smooth over exactly the oddity the test exists to catch. Such a fixture is still committed
-anonymised, and the real class of input is recorded in the table above without identifying anyone.
+A real example whose layout the synthetic route cannot reproduce faithfully — a specific column quirk, a
+provider's real-world header shape, an unusual poster design — should be **derived from the original**
+rather than hand-built, because an invented stand-in smooths over exactly the oddity the test exists to
+catch. Such a fixture is committed in reduced, anonymised form, and its class of input is the row it
+occupies in the table above — never anything that identifies a parish, person or household.
 
 ## Anonymisation rules
 
 [`docs/fixture-anonymisation.md`](../../docs/fixture-anonymisation.md) is the binding guide. In short:
 
-1. **Invented identities only.** Parish names (`Example Parish`, `St Fictional`), addresses
-   `example.test` / `example.org`, and phone numbers strictly in the `021 555 01xx` range.
+These rules apply to every fixture, invented or derived. "Reduced" is the operative word: keep what the test
+needs — layout, column structure, header shape, wording pattern — and replace the rest.
+
+1. **Replace identifying details.** Parish names (`Example Parish`, `St Fictional`), addresses
+   `example.test` / `example.org`, and phone numbers strictly in the `021 555 01xx` range. A derived
+   fixture's parish name is replaced even though the church address is itself public, because in a public
+   repository the pairing identifies the source of a real sample.
 2. **Remove** personal names, private addresses, medical detail, Mass-intention detail, bank/account
    and card details — never partially, not even a prefix or a masked fragment.
 3. **Keep sensitive headings** (`Sick list`, `Mass intentions`, `Banking details`) with obviously
@@ -145,6 +153,7 @@ Run through this before committing:
       name, phone number, street address, bank number and identifying phrase.
 - [ ] Every email address is `example.test` or `example.org`; every phone number is `021 555 01xx`.
 - [ ] No partial, masked or truncated real identifier survives anywhere.
+- [ ] No `Received` chain in the headers, and the `Message-ID` is on an `example.test` domain.
 - [ ] Every sensitive heading the skip tests need is present, backed by invented placeholder names.
 - [ ] `From` is present and `Date` carries an explicit timezone.
 - [ ] Skipped-section text appears in **no** expected output and in no `source_snippet`.
@@ -153,8 +162,9 @@ Run through this before committing:
       behind after its issue was fixed.
 - [ ] The expectation is not weakened to match a bug; a wrong expectation changed in its own commit
       with a written reason.
-- [ ] Provenance row added to the table above if the fixture models a new class of input.
-- [ ] For a **real-derived** fixture only: a person verified the anonymisation before publication.
+- [ ] Provenance row added to the table above if the fixture covers a new class of input.
+- [ ] For a **derived** fixture only: the committed files were opened and read, not just the working copy
+      — `git diff --cached` inspected in full — and a person verified the anonymisation before merge.
 
 ## Rules for contributors
 
