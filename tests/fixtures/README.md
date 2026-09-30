@@ -69,7 +69,8 @@ Parser fixture mismatch: my-new-case
 Keep a tracked fixture and update its expectation **when the referenced issue is fixed**. Never delete
 a failing fixture, and never weaken an expectation to match current behaviour without its own commit
 explaining why. The current set of tracked failures is listed in
-[`docs/testing.md`](../../docs/testing.md) §"Tracked fixture failures".
+[`docs/testing.md`](../../docs/testing.md) §"Tracked fixture failures", which also explains why the overall
+score percentage falling is expected while a pre-existing fixture's row falling is a real regression.
 
 Skipped-section text must never appear in expected output, and no `source_snippet` may carry it.
 

@@ -109,9 +109,25 @@ expectation and delete the `known_failures` entry in the same change; the fixtur
 | `unheaded-event-after-sick-list` | [#98](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/98) | event after the skipped section is dropped entirely |
 | `unheaded-event-after-deceased` | [#98](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/98) | event after the skipped section is dropped entirely |
 
+Five of these nine share a cause: the value is dropped **silently**, with no error and no flag
+([#167](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/167)). Fixing the individual format
+bugs does not close that gap, because the next unrecognised format will fail the same way.
+
 Current `composer fixture-score` baseline: **348/373 fields correct (93%)**, with 10 tracked failures
-above. Adding a tracked fixture deliberately lowers this number, so compare per-fixture rows rather
-than the total; a drop in a **pre-existing** fixture's score is a regression.
+above.
+
+**A falling total is expected. A falling pre-existing row is a regression.** The total percentage is the
+number people look at first, and it will read as a regression even when nothing is wrong, because every
+tracked fixture deliberately lowers it — each asserts the *correct* behaviour for a parser that is still
+broken, so it scores low on purpose. Judge a change by the per-fixture rows instead:
+
+- **Regression** — a fixture that scored 100% before now scores less, or a fixture that passed now reports
+  an *untracked* mismatch and fails the build. Fix the code; never adjust the expectation.
+- **Not a regression** — the total drops because a new fixture was added to the ledger, or because a
+  tracked fixture gained a tracked failure. Both are visible in the table above.
+
+When a tracked issue is fixed, its fixture goes back to 100%, the total *rises*, and the matching row is
+deleted from the ledger in the same change.
 
 ## Inbound-mail screening fixtures
 
