@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-28
-- Supersedes: 0012 (the version line only; the rest of 0012 still stands)
+- Supersedes: 0012 (the version line only; the HTML tokenizer choice was later superseded by 0017)
 
 ## Context
 `zbateson/mail-mime-parser` 3.0.7, the version pinned in `composer.lock`, was delisted from Packagist. `composer validate` does not report this, but any contributor running `composer update` hits a hard failure naming an exact-version match that no longer resolves.
@@ -15,7 +15,7 @@ Upstream's 4.0.0 release notes list no API breaking changes.
 
 ## Decision
 - Move to `zbateson/mail-mime-parser` 4.0.6 and constrain it as `^4.0` in `composer.json`.
-- Keep every other aspect of ADR 0012: the same Core `Ingestion\MimeMessageParser` service boundary, the same pure-PHP-only requirement, the same Strauss prefixing into `vendor-prefixed/`, and the same ban on `ext-imap` and `ext-dom`.
+- Keep the other listed aspects of ADR 0012: the same Core `Ingestion\MimeMessageParser` service boundary, the same pure-PHP-only requirement, the same Strauss prefixing into `vendor-prefixed/`, and the same ban on `ext-imap` and `ext-dom`. The separate HTML tokenizer choice was later superseded by ADR 0017.
 - Leave `MimeMessageParser` and `RawMessageInspector` source unchanged. Both resolve the parser class by name and use only methods that are present in 4.x.
 
 ## Consequences

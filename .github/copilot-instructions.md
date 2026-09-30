@@ -20,6 +20,7 @@ docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli php tests/parser_smoke_test
 - **Never remove, skip or weaken a test to make it pass.** Fix the code. If an expectation really is wrong, change it in its own commit that explains why.
 - Add tests with every change. For bugs, write the failing test first.
 - Target **PHP 8.2** (production is 8.2.33 on xneelo shared hosting). CI also runs 8.3 and 8.4. There is no `ext-imap`.
+- Prefer maintained, compatible pure-PHP libraries for common protocols and formats rather than handwritten parsers or clients (ADR 0017). Evaluate licenses, security maintenance, host extensions, resource limits and release prefixing; document exceptions in an ADR. The current handwritten IMAP client and HTML tokenizer are pending replacement, not patterns for new code.
 - `src/Core` (after issue #20) must not call WordPress functions. Use interfaces (ports) and inject adapters.
 - SQL must work on both MySQL 8 and MariaDB 10.11. Use `$wpdb->prepare`. Before the first non-prerelease GitHub Release, update the canonical fresh-install schema and fresh-install tests without a new upgrade migration only for disposable test databases; keep existing migrations/tests. Persistent data needs a tested, data-preserving migration even before release. After the first release, every schema change needs a versioned migration (ADR 0016).
 - Hosting limits:
