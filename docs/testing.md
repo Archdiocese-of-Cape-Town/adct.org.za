@@ -90,6 +90,29 @@ Real samples reviewed so far, and what they taught us, are in [parser findings](
 - A **score report** (fields right / total) is printed in CI. When parsing rules improve, the score should not go down.
 - Every parser bug report should add a fixture first (failing), then the fix.
 
+### Tracked fixture failures
+
+These fixtures currently report a mismatch, so their test run is **incomplete** rather than green. Each
+one is paired with a synthetic input that reproduces a real defect. When the issue is fixed, update the
+expectation and delete the `known_failures` entry in the same change; the fixture then guards the fix.
+
+| Fixture | Issue | Mismatch |
+|---|---|---|
+| `image-only-poster` | [#63](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/63) | `reprocess_needed` |
+| `relative-date-coming-weekday` | [#132](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/132) | `fields.event_date` — "this coming Saturday" yields no date |
+| `relative-date-end-of-month` | [#132](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/132) | `fields.event_date` — "end of this month" yields no date |
+| `relative-date-first-of-month` | [#132](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/132) | `fields.event_date` — "the first of October" yields no date |
+| `time-range-dotted-am` | [#153](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/153) | `fields.event_time` reads `00:00`; `event_end_time` missing |
+| `time-range-dotted-bare` | [#153](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/153) | `8.30-10.00am` yields the range end only |
+| `time-range-bare-hyphen` | [#153](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/153) | `7-9pm` yields the range end only |
+| `real-format-ordinal-and-bare-time` | [#165](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/165) | `fields.event_time` — compact `830am` yields no time |
+| `unheaded-event-after-sick-list` | [#98](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/98) | event after the skipped section is dropped entirely |
+| `unheaded-event-after-deceased` | [#98](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/98) | event after the skipped section is dropped entirely |
+
+Current `composer fixture-score` baseline: **348/373 fields correct (93%)**, with 10 tracked failures
+above. Adding a tracked fixture deliberately lowers this number, so compare per-fixture rows rather
+than the total; a drop in a **pre-existing** fixture's score is a regression.
+
 ## Inbound-mail screening fixtures
 
 `tests/fixtures/inbound-mail/` contains synthetic `.eml` files paired with `.expected.json` assertions. They cover out-of-office, delivery-status bounce, mailing-list, no-reply, ordinary parish and spoofed Authentication-Results messages, plus isolated header-signal cases. These are consumed by `RawMessageInspectorTest`, separate from the event-parser golden corpus. Fixtures use only `example.test` identities; auth verdicts remain untrusted unless a test explicitly configures an authserv-id.
