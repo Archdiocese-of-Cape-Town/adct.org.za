@@ -44,6 +44,54 @@ final class AttachmentRepository extends AbstractRepository
     }
 
     /**
+     * A single attachment by ID.
+     *
+     * The candidate detail screen's download button posts an attachment ID, so
+     * the handler needs to look the row up and then confirm the attachment
+     * belongs to the candidate the reviewer opened. `extracted_text` is left out
+     * because a download never needs it.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function find(int $id): ?array
+    {
+        if ($id < 1) {
+            throw new InvalidArgumentException('An attachment ID must be positive.');
+        }
+
+        return $this->fetchRow($this->database->prepare(
+            'SELECT id, message_id, filename, mime_type, size_bytes, storage_path, status'
+            . ' FROM ' . $this->tableName()
+            . ' WHERE id = %d',
+            $id
+        ));
+    }
+
+    /**
+     * Every attachment on a message, in the order it arrived.
+     *
+     * The candidate detail screen shows what a parish sent so the reviewer can
+     * check the poster or bulletin the event was read from. `extracted_text` is
+     * deliberately left out: it can be the whole document, and the screen does not
+     * need it.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function findByMessageId(int $messageId): array
+    {
+        if ($messageId < 1) {
+        throw new InvalidArgumentException('A message ID must be positive.');
+        }
+
+        return $this->fetchRows($this->database->prepare(
+        'SELECT id, filename, mime_type, size_bytes, storage_path, extraction_method, status'
+        . ' FROM ' . $this->tableName()
+        . ' WHERE message_id = %d ORDER BY id ASC',
+        $messageId
+        ));
+    }
+
+    /**
      * The most recent PDFs that were received but produced no usable text.
      *
      * These are the posters an operator has to enter by hand, so the Manual

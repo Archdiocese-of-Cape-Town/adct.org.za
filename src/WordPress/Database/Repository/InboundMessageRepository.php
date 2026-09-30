@@ -33,6 +33,30 @@ final class InboundMessageRepository extends AbstractRepository
         'updated_at' => '%s',
     ];
 
+    /**
+     * The message a candidate was extracted from.
+     *
+     * The candidate detail screen shows the email the parish sent, so a reviewer
+     * can compare the notice against what the parser read out of it. `body_text`
+     * is included because the screen renders it; `auth_results` is not, since it
+     * holds SPF/DKIM verdicts the reviewer has no use for.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findById(int $messageId): ?array
+    {
+        if ($messageId < 1) {
+            throw new InvalidArgumentException('A message ID must be positive.');
+        }
+
+        return $this->fetchRow($this->database->prepare(
+            'SELECT id, source_id, sender_email, sender_name, subject, received_at, raw_path,'
+            . ' body_text, status FROM ' . $this->tableName()
+            . ' WHERE id = %d',
+            $messageId
+        ));
+    }
+
     public function findDuplicate(int $sourceId, string $externalId, ?string $contentHash): ?int
     {
         if ($sourceId < 1 || $externalId === '') {
