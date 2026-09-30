@@ -117,13 +117,22 @@ final class OcrControl
     }
 
     /**
-     * The reading settings for one poster.
+     * The reading settings for one poster, folded away by default.
      *
-     * A fieldset and legend rather than a bare pair of inputs, so a screen
-     * reader announces what the controls are for. Both inputs are labelled, and
-     * the plain-language summary under them restates the current choice in a
-     * sentence, because "sparse text" on its own tells a parish secretary
-     * nothing about what changed.
+     * Most reviewers will never open this, and they should not have to think
+     * about it: the settings only matter for a poster whose text comes out
+     * jumbled, and that is not a decision anybody makes in advance. A native
+     * <details> element does the folding, which means it works with no
+     * JavaScript at all and needs no ARIA bookkeeping of ours — the browser
+     * already wires the summary to the disclosure.
+     *
+     * Inside it, a fieldset and legend rather than a bare pair of inputs, so a
+     * screen reader announces what the controls are for, and a plain-language
+     * readout restates the current choice in a sentence.
+     *
+     * The numbers behind the plain words are all still reachable: each option
+     * carries its PSM in a title, and the summary carries the current one, so
+     * the settings are deferrable rather than opaque.
      *
      * Nothing here is persisted or transmitted: the values live in the form
      * controls until the page is closed, exactly as the recognised text does
@@ -134,23 +143,29 @@ final class OcrControl
         $base = 'adct-ocr-settings-' . $this->safeId($targetId);
 
         return sprintf(
-            '<fieldset class="adct-ocr__settings" data-adct-ocr-settings>'
-            . '<legend class="adct-ocr__settings-legend">%1$s</legend>'
-            . '<p class="adct-ocr__settings-help">%2$s</p>'
+            '<details class="adct-ocr__advanced" data-adct-ocr-settings>'
+            . '<summary class="adct-ocr__advanced-summary" data-adct-ocr-summary'
+            . ' title="%1$s">%2$s</summary>'
+            . '<fieldset class="adct-ocr__settings">'
+            . '<legend class="adct-ocr__settings-legend">%3$s</legend>'
+            . '<p class="adct-ocr__settings-help">%4$s</p>'
             . '<span class="adct-ocr__field">'
-            . '<label class="adct-ocr__settings-label" for="%3$s">%4$s</label>'
-            . '<select class="adct-ocr__settings-select" id="%3$s" data-adct-ocr-layout>'
-            . '%5$s'
+            . '<label class="adct-ocr__settings-label" for="%5$s">%6$s</label>'
+            . '<select class="adct-ocr__settings-select" id="%5$s" data-adct-ocr-layout>'
+            . '%7$s'
             . '</select>'
             . '</span>'
             . '<span class="adct-ocr__field">'
-            . '<label class="adct-ocr__settings-label" for="%6$s">%7$s</label>'
-            . '<input class="adct-ocr__settings-slider" type="range" id="%6$s" data-adct-ocr-confidence'
-            . ' min="%8$d" max="%9$d" step="%10$d" value="%8$d">'
-            . '<output class="adct-ocr__settings-value" for="%6$s" data-adct-ocr-confidence-readout>Keep every line</output>'
+            . '<label class="adct-ocr__settings-label" for="%8$s">%9$s</label>'
+            . '<input class="adct-ocr__settings-slider" type="range" id="%8$s" data-adct-ocr-confidence'
+            . ' min="%10$d" max="%11$d" step="%12$d" value="%10$d">'
+            . '<output class="adct-ocr__settings-value" for="%8$s" data-adct-ocr-confidence-readout>Keep every line</output>'
             . '</span>'
             . '<p class="adct-ocr__settings-readout" data-adct-ocr-readout role="status" aria-live="polite"></p>'
-            . '</fieldset>',
+            . '</fieldset>'
+            . '</details>',
+            esc_attr($this->summaryTooltip(self::LAYOUTS[0]['value'])),
+            esc_html__('Advanced', 'adct-parish-intake'),
             esc_html__('Reading settings', 'adct-parish-intake'),
             esc_html__(
                 'Optional. Leave these alone unless the text comes out jumbled, then try another '
@@ -169,20 +184,47 @@ final class OcrControl
     }
 
     /**
+     * The native tooltip on the disclosure.
+     *
+     * Hovering "Advanced" should say what it would do, and the number is the
+     * part an archivist or a maintainer is actually looking for. assets/
+     * ocr-settings.js rewrites this as the layout changes, so it always names
+     * the setting that is in force rather than the one the page loaded with.
+     */
+    private function summaryTooltip(string $layout): string
+    {
+        return sprintf(
+            '%s — Tesseract PSM %s',
+            $this->layoutLabel($layout),
+            $this->layoutPsm($layout)
+        );
+    }
+
+    /**
      * The layout choices, in plain words, with the PSM value written into the
      * markup so the browser never has to be told which number goes with which
      * name at click time.
+     *
+     * Each option also carries its number as a title. The label stays in plain
+     * words because that is what a parish secretary reads, but the number is
+     * not hidden — it is one hover away, and the plain-language label is
+     * exactly the kind of description that makes a Tesseract manual entry
+     * findable.
      */
     private function layoutOptions(): string
     {
         $options = '';
 
         foreach (self::LAYOUTS as $layout) {
+            $label = $this->layoutLabel($layout['value']);
+
             $options .= sprintf(
-                '<option value="%s" data-psm="%s">%s</option>',
+                '<option value="%s" data-psm="%s" title="%s — Tesseract PSM %s">%s</option>',
                 esc_attr($layout['value']),
                 esc_attr($layout['psm']),
-                esc_html($this->layoutLabel($layout['value']))
+                esc_attr($label),
+                esc_attr($this->layoutPsm($layout['value'])),
+                esc_html($label)
             );
         }
 
@@ -202,6 +244,23 @@ final class OcrControl
         ];
 
         return $labels[$value] ?? $value;
+    }
+
+    /**
+     * The Tesseract page-segmentation number behind a layout name.
+     *
+     * Looked up rather than taken from a caller's position, so a tooltip can
+     * never name one layout while quoting another's number.
+     */
+    private function layoutPsm(string $value): string
+    {
+        foreach (self::LAYOUTS as $layout) {
+            if ($layout['value'] === $value) {
+                return $layout['psm'];
+            }
+        }
+
+        return '';
     }
 
     /**

@@ -20,7 +20,9 @@
     display: block;
     margin: 0.5em 0;
     font-style: italic;
-}.adct-ocr__status--error {
+}
+
+.adct-ocr__status--error {
     font-style: normal;
     color: #8a1f11;
 }
@@ -52,14 +54,46 @@
     color: #50575e;
 }
 
-/* The reading settings. Collapsed-looking but always visible: they sit under
- * the button as a quiet block, because a reviewer who does not need them should
- * be able to ignore them, and one who does should be able to find them without
- * hunting for a disclosure the plugin has to script.
+/* The reading settings. Folded away behind a native <details>, because a
+ * reviewer should never have to deal with them in order to read a poster: the
+ * defaults are what almost everyone wants, and only a poster whose text comes
+ * out jumbled is worth opening this for.
+ *
+ * The summary is styled to look like the quiet affordance it is — small, and
+ * clearly a disclosure rather than a heading — so it reads as "there is more
+ * here if you need it" rather than as another thing to fill in. Its title
+ * carries the current layout and its PSM number, so the number is reachable
+ * without opening anything.
  */
 
+.adct-ocr__advanced {
+    margin: 0.5em 0 0;
+}
+
+.adct-ocr__advanced-summary {
+    display: inline-block;
+    padding: 0.15em 0.25em;
+    color: #50575e;
+    font-size: 0.9em;
+    cursor: pointer;
+}
+
+/* The disclosure marker is the only thing telling a mouse user this opens, so
+ * it is kept in the flow rather than hidden behind a custom chevron. Older
+ * browsers render their own marker here, which is a fine one to inherit.
+ */
+
+.adct-ocr__advanced-summary:hover {
+    color: #2271b1;
+}
+
+.adct-ocr__advanced-summary:focus-visible {
+    outline: 2px solid #2271b1;
+    outline-offset: 1px;
+}
+
 .adct-ocr__settings {
-    margin: 0.75em 0 0;
+    margin: 0.5em 0 0;
     padding: 0.5em 0.75em 0.75em;
     border: 1px solid #dcdcde;
     background: #fbfbfc;

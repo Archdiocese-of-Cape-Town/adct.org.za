@@ -43,11 +43,16 @@
      * tesseract.js 5.1.1 `src/constants/PSM.js` and mirrored as option values
      * in OcrControl::render(). Keeping them in this order means the panel
      * always offers the whole set.
+     *
+     * The labels are the ones the markup actually shows, so the readout and
+     * the disclosure's tooltip name what the reviewer can see in the select
+     * rather than a paraphrase of it. OcrControlTest::testTheMarkupAndThe
+     * ScriptAgreeOnEveryLayout() checks the two lists against each other.
      */
     var LAYOUTS = [
-        { value: 'auto', psm: '3', label: 'Automatic (recommended)' },
-        { value: 'sparse', psm: '11', label: 'Automatic, with words spread across the page' },
-        { value: 'column', psm: '4', label: 'A single tall column' },
+        { value: 'auto', psm: '3', label: 'Automatic — works for most posters' },
+        { value: 'sparse', psm: '11', label: 'Words spread across the page' },
+        { value: 'column', psm: '4', label: 'One tall column' },
         { value: 'block', psm: '6', label: 'One block of text' },
         { value: 'line', psm: '7', label: 'A single line' },
         { value: 'word', psm: '8', label: 'A single word' },
@@ -245,12 +250,31 @@
     }
 
     /**
+     * The tooltip on the folded-away disclosure.
+     *
+     * The panel is closed by default, so the number is only reachable by
+     * hovering the summary. That keeps it out of a reviewer's way without
+     * hiding it, which matters because the settings are otherwise
+     * indistinguishable from guesswork: PSM 11 means something specific and
+     * somebody will want to know it.
+     */
+    function tooltipFor(layout) {
+        var name = toLayout(layout);
+
+        return name + ' — Tesseract PSM ' + psmFor(layout);
+    }
+
+    /**
      * Wire one settings panel to a reader callback.
      *
      * The panel is inert markup; this is the only thing that makes it live, and
      * it registers no listener that touches the network. `onChange` is told
      * whether the layout moved, which is what decides between a free re-filter
      * of text already in hand and a fresh recognition.
+     *
+     * The disclosure itself is a native <details>, so the plugin adds no
+     * open/close behaviour of its own: it only keeps the summary's tooltip
+     * honest as the layout changes.
      */
     function attach(panel, onChange) {
         if (!panel || panel.getAttribute('data-adct-ocr-ready') === '1') {
@@ -263,6 +287,7 @@
         var slider = panel.querySelector('[data-adct-ocr-confidence]');
         var readout = panel.querySelector('[data-adct-ocr-readout]');
         var output = panel.querySelector('[data-adct-ocr-confidence-readout]');
+        var summary = panel.querySelector('[data-adct-ocr-summary]');
 
         function report() {
             var chosen = current(panel);
@@ -275,6 +300,10 @@
 
             if (readout) {
                 readout.textContent = describe(chosen.layout, chosen.confidence);
+            }
+
+            if (summary) {
+                summary.setAttribute('title', tooltipFor(chosen.layout));
             }
         }
 
@@ -367,6 +396,7 @@
         parametersFor: parametersFor,
         psmFor: psmFor,
         toLayout: toLayout,
+        tooltipFor: tooltipFor,
         isKnownLayout: isKnownLayout,
         isKnownConfidence: isKnownConfidence,
         filterText: filterText,

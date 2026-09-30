@@ -71,6 +71,24 @@ test('layout names come back in the plain words the reviewer chose', () => {
   assert.equal(settings.toLayout('nonsense'), '');
 });
 
+test('the folded-away tooltip names both the layout and its Tesseract number', () => {
+  // The settings are hidden behind a disclosure, so the number has to be
+  // reachable without opening anything. A tooltip that said only "Advanced"
+  // would leave the panel unexplained and the choice unlookable.
+  assert.match(settings.tooltipFor('auto'), /PSM 3/);
+  assert.match(settings.tooltipFor('sparse'), /PSM 11/);
+  assert.match(settings.tooltipFor('char'), /PSM 10/);
+
+  // Both halves: the plain words for a reviewer, the number for anyone who
+  // needs to look the setting up.
+  assert.match(settings.tooltipFor('sparse'), /spread across the page/i);
+});
+
+test('the tooltip follows the default for an unknown layout rather than going blank', () => {
+  assert.match(settings.tooltipFor('nonsense'), /PSM 3/);
+  assert.match(settings.tooltipFor(''), /PSM 3/);
+});
+
 
 
 test('a threshold of zero keeps the text exactly as it was read', () => {

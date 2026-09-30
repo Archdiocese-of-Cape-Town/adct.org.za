@@ -56,6 +56,8 @@ final class OcrImageCheck
      */
     private const CONTROL_MARKER = 'data-adct-ocr ';
     private const LAYOUT_MARKER = 'data-adct-ocr-layout';
+    private const SETTINGS_PANEL_MARKER = 'data-adct-ocr-settings';
+    private const SUMMARY_MARKER = 'data-adct-ocr-summary';
     private const CONFIDENCE_MARKER = 'data-adct-ocr-confidence ';
     private const CONFIDENCE_READOUT_MARKER = 'data-adct-ocr-confidence-readout';
 
@@ -256,6 +258,44 @@ final class OcrImageCheck
             $check(
                 substr_count($withPoster->body, self::CONFIDENCE_READOUT_MARKER) === 1,
                 'The token page did not render exactly one OCR confidence readout.'
+            );
+
+            // The settings must arrive folded away. A reviewer approving a
+            // candidate is answering "is this the right event?", not choosing a
+            // page-segmentation mode, so an open panel competes with the thing
+            // the reviewer is actually being asked. `<details>` is used rather
+            // than a scripted disclosure because it works with the deferred
+            // scripts still loading, and with JavaScript off entirely.
+            //
+            // These markers are distinct strings, not prefixes of one another:
+            // `data-adct-ocr-settings` and `data-adct-ocr-summary` neither
+            // contain `data-adct-ocr ` (which is what CONTROL_MARKER pads to
+            // avoid matching either of them).
+            $check(
+                substr_count($withPoster->body, self::SETTINGS_PANEL_MARKER) === 1,
+                'The token page did not render exactly one folded-away OCR settings panel.'
+            );
+            $check(
+                substr_count($withPoster->body, self::SUMMARY_MARKER) === 1,
+                'The token page did not render exactly one summary for the OCR settings panel.'
+            );
+            $check(
+                preg_match(
+                    '/<summary[^>]*' . preg_quote(self::SUMMARY_MARKER, '/') . '[^>]*>Advanced</',
+                    $withPoster->body
+                ) === 1,
+                'The OCR settings panel was not folded away behind a summary labelled Advanced.'
+            );
+            $check(
+                strpos($withPoster->body, '<details open') === false,
+                'The OCR settings panel arrived open, so every reviewer has to deal with it.'
+            );
+            $check(
+                preg_match(
+                    '/<summary[^>]*' . preg_quote(self::SUMMARY_MARKER, '/') . '[^>]*title="[^"]*Tesseract PSM \d+[^"]*"/',
+                    $withPoster->body
+                ) === 1,
+                'The OCR settings summary did not name the Tesseract number behind the current layout.'
             );
 
             // Document order matters: both scripts are deferred, and the OCR

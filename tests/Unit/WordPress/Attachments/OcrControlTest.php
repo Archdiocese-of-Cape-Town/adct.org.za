@@ -249,11 +249,108 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Attachments {
             self::assertStringContainsString('One tall column', $html);
             self::assertStringContainsString('A single line', $html);
 
-            // The PSM numbers are machine values and belong in the markup for
-            // the module, not in front of a parish secretary.
+            // The PSM numbers belong in the markup for the module, not as the
+            // visible text of an option. They are still reachable, as a tooltip
+            // and a title on the select itself, for anyone who wants them.
             foreach (['3', '11', '4', '6', '7', '8', '10'] as $psm) {
                 self::assertStringNotContainsString('>' . $psm . '<', $html);
             }
+        }
+
+        public function testTheSettingsAreFoldedAwaySoAReviewerNeverHasToDealWithThem(): void
+        {
+            $html = $this->control()->render('https://adct.org.za/image', 'target');
+
+            // A native <details> element: folded away with no script at all,
+            // and still expandable when the browser's own scripting is off.
+            self::assertStringContainsString('<details', $html);
+            self::assertStringContainsString('<summary', $html);
+            self::assertStringNotContainsString('<details open', $html);
+        }
+
+        public function testTheDisclosureIsLabelledAsAdvancedRatherThanAsSomethingToRead(): void
+        {
+            $html = $this->control()->render('https://adct.org.za/image', 'target');
+
+            self::assertStringContainsString('Advanced', $html);
+        }
+
+        public function testEachLayoutShowsTheNumberBehindItSoTheChoiceCanBeLookedUp(): void
+        {
+            $html = $this->control()->render('https://adct.org.za/image', 'target');
+
+            // A parish secretary may not know what PSM 11 means, but an archivist
+            // or a future maintainer will, and the title is where they look.
+            // This is also what makes the settings defensible rather than a
+            // black box: nothing is hidden, it is just out of the way.
+            self::assertStringContainsString('title="Automatic — works for most posters — Tesseract PSM 3"', $html);
+            self::assertStringContainsString('title="Words spread across the page — Tesseract PSM 11"', $html);
+            self::assertStringContainsString('title="A single character — Tesseract PSM 10"', $html);
+        }
+
+        public function testTheTooltipOnAnOptionRestatesTheLabelItCarries(): void
+        {
+            $html = $this->control()->render('https://adct.org.za/image', 'target');
+
+            // A tooltip that paraphrases the option it belongs to is worse than
+            // no tooltip: it looks authoritative and can quietly disagree with
+            // what the reviewer is looking at. The title is the label plus the
+            // number, and nothing else.
+            preg_match_all('/<option value="[a-z]+" data-psm="(\d+)" title="([^"]*)">([^<]*)<\/option>/', $html, $options, PREG_SET_ORDER);
+
+            self::assertNotEmpty($options, 'The layout select rendered no options.');
+
+            foreach ($options as $option) {
+                $title = html_entity_decode($option[2], ENT_QUOTES, 'UTF-8');
+
+                self::assertStringStartsWith($option[3], $title);
+                self::assertStringEndsWith('Tesseract PSM ' . $option[1], $title);
+            }
+        }
+
+        public function testTheSummaryTooltipNamesTheLayoutItWasGivenRatherThanAlwaysTheFirst(): void
+        {
+            $control = $this->control();
+            $method = new \ReflectionMethod(OcrControl::class, 'summaryTooltip');
+            $method->setAccessible(true);
+
+            // The truth about which number belongs to which layout is the
+            // rendered select, so the test reads it from there rather than
+            // restating a second copy of the mapping.
+            preg_match_all(
+                '/<option value="([a-z]+)" data-psm="(\d+)"/',
+                $control->render('https://adct.org.za/image', 'target'),
+                $options,
+                PREG_SET_ORDER
+            );
+
+            self::assertNotEmpty($options, 'The layout select rendered no options.');
+
+            // The summary tooltip is written from whichever layout is current,
+            // so it has to look that layout's own number up. Quoting a fixed one
+            // would report the first layout's number for every setting, and the
+            // default happens to be the first layout — which is exactly why the
+            // render-based tests elsewhere could not see it.
+            foreach ($options as $option) {
+                [, $layout, $psm] = $option;
+
+                self::assertStringEndsWith(
+                    'Tesseract PSM ' . $psm,
+                    $method->invoke($control, $layout),
+                    'The summary tooltip for ' . $layout . ' quoted the wrong Tesseract number.'
+                );
+            }
+        }
+
+        public function testTheSelectItselfCarriesTheCurrentNumberForPeopleWhoDoNotOpenThePanel(): void
+        {
+            $html = $this->control()->render('https://adct.org.za/image', 'target');
+
+            // The disclosure is closed by default, so the number has to be on
+            // the summary too. A native tooltip via `title` works without any
+            // scripting and is announced as a description by screen readers.
+            self::assertStringContainsString('data-adct-ocr-summary', $html);
+            self::assertStringContainsString('Tesseract PSM', $html);
         }
 
         public function testAutomaticIsTheFirstLayoutSoAnUntouchedControlBehavesAsItAlwaysHas(): void
@@ -338,7 +435,12 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Attachments {
         {
             $html = $this->control()->render('https://adct.org.za/image', 'target');
 
-            preg_match_all('/<option value="([a-z]+)" data-psm="(\d+)">/', $html, $found, PREG_SET_ORDER);
+            preg_match_all(
+                '/<option value="([a-z]+)" data-psm="(\d+)" title="([^"]*)">([^<]*)<\/option>/',
+                $html,
+                $found,
+                PREG_SET_ORDER
+            );
 
             self::assertNotEmpty($found, 'The layout select rendered no options.');
 
@@ -362,6 +464,34 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Attachments {
                     $pattern,
                     $module,
                     sprintf('ocr-settings.js has no PSM %s for the "%s" layout.', $psm, $value)
+                );
+            }
+
+            // The label too, not just the number. The readout and the
+            // disclosure's tooltip are written by ocr-settings.js and quote
+            // these labels back to the reviewer, so a label that drifts between
+            // the two lists would have the summary naming a layout that is not
+            // the one on screen. The regex above only reaches psm, so match the
+            // label separately.
+            foreach ($found as $option) {
+                $label = $option[4];
+                $title = $option[3];
+
+                self::assertStringEndsWith('— Tesseract PSM ' . $option[2], $title);
+                self::assertStringStartsWith($label, $title);
+
+                $pattern = "/value: '" . preg_quote($option[1], '/') . "', psm: '"
+                    . preg_quote($option[2], '/') . "', label: '"
+                    . preg_quote(html_entity_decode($label, ENT_QUOTES, 'UTF-8'), '/') . "'/";
+
+                self::assertMatchesRegularExpression(
+                    $pattern,
+                    $module,
+                    sprintf(
+                        'ocr-settings.js does not label the "%s" layout as the markup shows it: %s',
+                        $option[1],
+                        $label
+                    )
                 );
             }
         }
