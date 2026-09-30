@@ -1,15 +1,20 @@
 # Parser fixtures
 
-Invented, anonymised test inputs for the parsing pipeline. Every file here is synthetic.
+Test inputs for the parsing pipeline.
 
-> **None of these fixtures are real parish samples.** The 13 real attachments reviewed in September
-> 2026 stay in approved private storage and are never committed, copied into a chat, or sent to an
-> automated tool. The fixtures in this directory are *structural stand-ins*: they reproduce the
-> **shape** of each real class of input with entirely invented text. See the provenance table below
-> and [`docs/fixture-anonymisation.md`](../../docs/fixture-anonymisation.md), which is the binding
-> guide. The "at least 10 anonymised real samples" criterion of
-> [#19](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/19) is therefore **not met
-> yet** and needs a person with access to the private originals.
+> **No fixture here is a verbatim parish sample.** The 13 real attachments reviewed in September 2026
+> stay in approved private storage and are never copied raw into this repository, a chat or an automated
+> tool. A fixture may be *derived* from a real one — that is the normal and encouraged case — but it is
+> committed only after the content and metadata have been reduced to what the test needs. See the
+> provenance table below and
+> [`docs/fixture-anonymisation.md`](../../docs/fixture-anonymisation.md), which is the binding guide.
+>
+> Everything in this directory is currently **synthetic**: it reproduces the *shape* of each real class
+> of input with invented text. Nothing derived from a real attachment has been added yet, which is why
+> the "at least 10 anonymised real samples" criterion of
+> [#19](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/19) is not yet met. The two things
+> standing between here and that criterion are access to the private originals and a human who can
+> verify the result before it is published — not a rule against committing derived fixtures.
 
 ## Layout
 
@@ -99,8 +104,10 @@ the samples are": 8 bulletins, 2 text-layer posters, 3 image-only posters.
 | Date/time formats parishes actually write | `real-format-dotted-date`, `real-format-ordinal-and-bare-time`, `real-format-after-mass-time` |
 | Administrative / non-event mail | `admin-notice` |
 
-A real example that **cannot** be anonymised is represented by a synthetic stand-in of the same
-structure, and the real class of input is recorded in the table above — without identifying anyone.
+A real example that needs content the synthetic route cannot reach — a specific column quirk, a provider's
+real-world header shape, an unusual layout — is worth deriving from the original, because a hand-built
+stand-in will smooth over exactly the oddity the test exists to catch. Such a fixture is still committed
+anonymised, and the real class of input is recorded in the table above without identifying anyone.
 
 ## Anonymisation rules
 
@@ -113,14 +120,17 @@ structure, and the real class of input is recorded in the table above — withou
 3. **Keep sensitive headings** (`Sick list`, `Mass intentions`, `Banking details`) with obviously
    invented placeholder names, because the section-skip tests depend on the headings being present.
 4. **Rebuild `.eml` headers from scratch**: invented sender, synthetic subject, a fixed date with an
-   explicit timezone, and a non-identifying Message-ID. Never carry over `Received`, authentication,
-   routing or provider headers.
+   explicit timezone, and a Message-ID on an `example.test` domain. Drop `Received` chains and routing or
+   authentication headers that carry real infrastructure detail — they leak IP addresses, the sending
+   domain and mail-provider accounts. Where a test genuinely needs a *header shape* (the screening
+   fixtures cover `X-Mailer`, `Authentication-Results` and `Return-Path`), keep the header but point it at
+   synthetic values, as `tests/fixtures/inbound-mail/` does.
 5. **Re-create attachments** from synthetic content rather than redacting originals. Strip document
    metadata, comments, revision history, hidden layers, image EXIF/GPS and embedded thumbnails. PDFs are
    regenerated with `pdfs/generate.php`; `*.pdf` is marked `binary` in `.gitattributes` so Windows
    line-ending conversion cannot corrupt the text layer.
-6. **Commit only** the synthetic `.eml` and its `.expected.json`. Never commit source messages,
-   redaction notes, screenshots or working copies.
+6. **Commit only** the fixture pair — the `.eml` and its `.expected.json`, plus any regenerated
+   attachment. Never commit the source message, redaction notes, screenshots or working copies.
 
 Fixtures must also never carry personal data into anything downstream: skipped text must be absent
 from expected output *and* from AI-provider input, because bulletins contain sick lists and

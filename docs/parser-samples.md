@@ -68,6 +68,10 @@ In September 2026 we reviewed 13 real attachments (bulletins, newsletters and po
 [`docs/fixture-anonymisation.md`](fixture-anonymisation.md) is the binding procedure. It supersedes
 anything below that looks more permissive — this repository is public and POPIA applies.
 
+A fixture may be **derived from a real sample**; committing a derived fixture is the expected route, not
+a fallback. What must never be committed is a sample that still carries personal data or real
+infrastructure metadata. Reducing a real sample to a safe fixture is mechanical and reviewable.
+
 - Make a fixture from each sample type:
   - a text-layer bulletin;
   - a multi-church bulletin;
@@ -80,12 +84,18 @@ anything below that looks more permissive — this repository is public and POPI
     section-skip tests still work;
   - **parish names and `@adct.org.za` office addresses must also be replaced.** They are identifying in
     a public repository even though the underlying church addresses are themselves public.
-- Rebuild `.eml` headers from scratch rather than editing a copy: invented sender, synthetic subject, a
-  fixed `Date` with an explicit timezone, and no `Received`, authentication, routing or provider headers.
-- For PDFs, commit a small re-created PDF (generated from synthetic text in the same column layout)
-  rather than the original file. Regenerate with `php tests/fixtures/pdfs/generate.php`.
-- Never paste a real sample into a chat, an issue, a pull request or an automated tool. Review happens
-  locally in approved private storage; only the synthetic result is committed.
+- **Headers are the subtle part, and they are the reason raw messages leak.** Rebuild them rather than
+  editing a copy: invented sender, synthetic subject, a fixed `Date` with an explicit timezone, a
+  Message-ID on an `example.test` domain, and no `Received` chain — `Received` headers leak the sending
+  IPs and mail infrastructure, which no amount of body-text scrubbing removes. Where a test needs a real
+  header *shape* (`X-Mailer`, `Authentication-Results`, `Return-Path`), keep the header and use synthetic
+  values, as `tests/fixtures/inbound-mail/` already does.
+- PDFs and images may be committed provided the **content and metadata** are reduced to what the test
+  needs: regenerate the PDF or poster from synthetic text in the same layout, and strip document
+  properties, revision history, hidden layers, EXIF/GPS and embedded thumbnails. Checked-in originals are
+  not acceptable; a re-created equivalent is.
+- Never paste a raw sample into a chat, an issue, a pull request or an automated tool. Review and
+  derivation happen locally in approved private storage; only the reduced fixture is committed.
 
 The corpus layout, the fixture file format, the anonymisation rules and a 12-item review checklist are
 documented in [`tests/fixtures/README.md`](../tests/fixtures/README.md).
