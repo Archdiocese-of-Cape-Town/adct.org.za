@@ -178,12 +178,79 @@ final class ConfirmationEmailRendererTest extends TestCase
             $this->links()
         );
 
-        self::assertStringContainsString('Parish: Example Parish (please check)', $content->text);
+        // The parish carries origin "unsupported", so it is labelled as a guess, not just flagged.
+        self::assertStringContainsString(
+            'Parish: Example Parish (not stated in the notice — the parser guessed this, please correct it)',
+            $content->text
+        );
         self::assertStringNotContainsString('Date: 12 October 2026 (please check)', $content->text);
         self::assertStringNotContainsString('Description: Bring a chair. (please check)', $content->text);
         self::assertStringNotContainsString('Time: 6:30 pm (please check)', $content->text);
         // The 0.42 overall score is below the review threshold, but must not blank out good fields.
         self::assertStringContainsString('please review all details carefully', $content->html);
+    }
+
+    /**
+     * Issue #130: a value the parser invented must be labelled as such, not merely highlighted.
+     *
+     * "Please check" tells the submitter the value might be wrong. It does not say the notice never
+     * contained it, which is the distinction that matters: a fabricated parish name shown as though
+     * the notice stated it is the failure this issue reports.
+     */
+    public function testFabricatedFieldIsLabelledAsNotStatedInTheNotice(): void
+    {
+        $candidate = new ConfirmationEmailCandidate(
+            101,
+            [
+                'title' => 'Community supper',
+                'event_date' => '2026-10-12',
+                'event_end_date' => null,
+                'event_time' => '18:30',
+                'event_end_time' => null,
+                'venue' => 'Example Parish Hall',
+                'venue_address' => null,
+                'venue_suburb' => null,
+                'parish_name' => 'Example Parish',
+                'description' => 'Bring a chair.',
+                'event_type' => 'Meeting',
+                'contact' => null,
+                'all_day' => false,
+            ],
+            [],
+            0.42,
+            [],
+            'new',
+            null,
+            [
+                'score' => 0.42,
+                'coverage' => 0.8,
+                'fields' => [
+                    'title' => ['score' => 0.98, 'origin' => 'explicit', 'flags' => []],
+                    'event_date' => ['score' => 0.98, 'origin' => 'explicit', 'flags' => []],
+                    'parish_name' => [
+                        'score' => 0.0,
+                        'origin' => 'unsupported',
+                        'flags' => ['unanchored_parish_match'],
+                    ],
+                ],
+            ]
+        );
+
+        $content = (new ConfirmationEmailRenderer())->render(
+            $this->batch([$candidate]),
+            $this->links()
+        );
+
+        // Plain text, so text-only clients are not left with a bare highlight.
+        self::assertStringContainsString(
+            'Parish: Example Parish (not stated in the notice — the parser guessed this, please correct it)',
+            $content->text
+        );
+        // The HTML preview must carry the same wording, not just the highlight colour.
+        self::assertStringContainsString('not stated in the notice', $content->html);
+        // A field that is merely weak is still "please check": only fabricated values claim the guess.
+        self::assertStringContainsString('Date: 12 October 2026', $content->text);
+        self::assertStringNotContainsString('Date: 12 October 2026 (not stated', $content->text);
     }
 
     public function testFieldWithoutARecordedScoreIsNotMarked(): void

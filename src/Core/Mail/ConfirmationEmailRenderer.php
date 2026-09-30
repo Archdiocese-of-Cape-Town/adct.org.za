@@ -51,7 +51,7 @@ final class ConfirmationEmailRenderer
                 . (count($batch->candidates) === 1 ? ' event' : ' events')
                 . ' in your notice. Please check each preview below.</p>',
             '<p style="margin:0 0 20px;padding:12px 14px;border-left:4px solid #d99a00;background-color:#fff4d6;font-size:14px;line-height:1.5;">'
-                . 'Highlighted details may be uncertain or missing. Confirm and Deny links now open a review page; the Edit link is not active yet. '
+                . 'Highlighted details may be uncertain or missing. Where a detail is marked &quot;not stated in the notice&quot;, the parser could not find it in your text and filled in a guess — please correct it. Confirm and Deny links now open a review page; the Edit link is not active yet. '
                 . 'Every new event still needs approval by a dean or an Archdiocese reviewer.</p>',
             '</td></tr>',
         ];
@@ -63,7 +63,7 @@ final class ConfirmationEmailRenderer
                 count($batch->candidates),
                 count($batch->candidates) === 1 ? 'event' : 'events'
             ),
-            'Highlighted details may be uncertain or missing. Confirm and Deny links now open a review page; the Edit link is not active yet.',
+            'Highlighted details may be uncertain or missing. Where a detail is marked "not stated in the notice", the parser could not find it in your text and filled in a guess — please correct it. Confirm and Deny links now open a review page; the Edit link is not active yet.',
             'Every new event still needs approval by a dean or an Archdiocese reviewer.',
             '',
         ];
@@ -78,9 +78,11 @@ final class ConfirmationEmailRenderer
             $html[] = '<tr><td style="padding:16px 18px;background-color:' . $titleBackground . ';">';
             $html[] = '<h2 style="margin:0;font-size:19px;line-height:1.35;color:#17324d;">Event '
                 . $number . ': ' . $this->escape($card['title'])
-                . ($card['title_uncertain']
-                    ? ' <span style="font-size:13px;font-weight:normal;color:#704f00;">Please check</span>'
-                    : '')
+                . ($card['title_fabricated']
+                    ? ' <span style="font-size:13px;font-weight:normal;color:#7a3030;">Not stated in the notice — please check</span>'
+                    : ($card['title_uncertain']
+                        ? ' <span style="font-size:13px;font-weight:normal;color:#704f00;">Please check</span>'
+                        : ''))
                 . '</h2></td></tr>';
             $html[] = '<tr><td style="padding:16px 18px 4px;">';
             if ($candidate->matchTitle !== null && in_array($candidate->matchKind, ['update', 'cancellation', 'postponement'], true)) {
@@ -90,14 +92,14 @@ final class ConfirmationEmailRenderer
                     . $this->escape($label . $candidate->matchTitle) . '</p>';
                 $text[] = $label . $candidate->matchTitle;
             }
-            $html[] = $this->renderFieldRow('Date', $card['date'], $card['date_uncertain']);
-            $html[] = $this->renderFieldRow('Time', $card['time'], $card['time_uncertain']);
-            $html[] = $this->renderFieldRow('Location', $card['location'], $card['location_uncertain']);
-            $html[] = $this->renderFieldRow('Parish', $card['parish'], $card['parish_uncertain']);
-            $html[] = $this->renderFieldRow('Description', $card['description'], $card['description_uncertain']);
-            $html[] = $this->renderFieldRow('Event type', $card['event_type'], $card['event_type_uncertain']);
-            $html[] = $this->renderFieldRow('Contact', $card['contact'], $card['contact_uncertain']);
-            $html[] = $this->renderFieldRow('Recurrence', $card['recurrence'], $card['recurrence_uncertain']);
+            $html[] = $this->renderFieldRow('Date', $card['date'], $card['date_uncertain'], $card['date_fabricated']);
+            $html[] = $this->renderFieldRow('Time', $card['time'], $card['time_uncertain'], $card['time_fabricated']);
+            $html[] = $this->renderFieldRow('Location', $card['location'], $card['location_uncertain'], $card['location_fabricated']);
+            $html[] = $this->renderFieldRow('Parish', $card['parish'], $card['parish_uncertain'], $card['parish_fabricated']);
+            $html[] = $this->renderFieldRow('Description', $card['description'], $card['description_uncertain'], $card['description_fabricated']);
+            $html[] = $this->renderFieldRow('Event type', $card['event_type'], $card['event_type_uncertain'], $card['event_type_fabricated']);
+            $html[] = $this->renderFieldRow('Contact', $card['contact'], $card['contact_uncertain'], $card['contact_fabricated']);
+            $html[] = $this->renderFieldRow('Recurrence', $card['recurrence'], $card['recurrence_uncertain'], $card['recurrence_fabricated']);
             $html[] = $this->renderFieldRow('Review notes', $card['notes'], $card['notes_uncertain']);
             $html[] = '</td></tr>';
             $html[] = '<tr><td style="padding:8px 18px 16px;font-size:13px;line-height:1.5;color:#596773;">'
@@ -115,14 +117,14 @@ final class ConfirmationEmailRenderer
 
             $text[] = 'Event ' . $number . ': ' . $card['title']
                 . ($card['title_uncertain'] ? ' (please check)' : '');
-            $text[] = $this->textFieldRow('Date', $card['date'], $card['date_uncertain']);
-            $text[] = $this->textFieldRow('Time', $card['time'], $card['time_uncertain']);
-            $text[] = $this->textFieldRow('Location', $card['location'], $card['location_uncertain']);
-            $text[] = $this->textFieldRow('Parish', $card['parish'], $card['parish_uncertain']);
-            $text[] = $this->textFieldRow('Description', $card['description'], $card['description_uncertain']);
-            $text[] = $this->textFieldRow('Event type', $card['event_type'], $card['event_type_uncertain']);
-            $text[] = $this->textFieldRow('Contact', $card['contact'], $card['contact_uncertain']);
-            $text[] = $this->textFieldRow('Recurrence', $card['recurrence'], $card['recurrence_uncertain']);
+            $text[] = $this->textFieldRow('Date', $card['date'], $card['date_uncertain'], $card['date_fabricated']);
+            $text[] = $this->textFieldRow('Time', $card['time'], $card['time_uncertain'], $card['time_fabricated']);
+            $text[] = $this->textFieldRow('Location', $card['location'], $card['location_uncertain'], $card['location_fabricated']);
+            $text[] = $this->textFieldRow('Parish', $card['parish'], $card['parish_uncertain'], $card['parish_fabricated']);
+            $text[] = $this->textFieldRow('Description', $card['description'], $card['description_uncertain'], $card['description_fabricated']);
+            $text[] = $this->textFieldRow('Event type', $card['event_type'], $card['event_type_uncertain'], $card['event_type_fabricated']);
+            $text[] = $this->textFieldRow('Contact', $card['contact'], $card['contact_uncertain'], $card['contact_fabricated']);
+            $text[] = $this->textFieldRow('Recurrence', $card['recurrence'], $card['recurrence_uncertain'], $card['recurrence_fabricated']);
             $text[] = 'Review notes: ' . $card['notes'];
             $text[] = 'Parser confidence: ' . number_format($candidate->confidence * 100, 0) . '%';
             $text[] = 'Confirm: ' . $candidateLinks['approve'];
@@ -164,22 +166,31 @@ final class ConfirmationEmailRenderer
      * @return array{
      *     title: string,
      *     title_uncertain: bool,
+     *     title_fabricated: bool,
      *     date: string,
      *     date_uncertain: bool,
+     *     date_fabricated: bool,
      *     time: string,
      *     time_uncertain: bool,
+     *     time_fabricated: bool,
      *     location: string,
      *     location_uncertain: bool,
+     *     location_fabricated: bool,
      *     parish: string,
      *     parish_uncertain: bool,
+     *     parish_fabricated: bool,
      *     description: string,
      *     description_uncertain: bool,
+     *     description_fabricated: bool,
      *     event_type: string,
      *     event_type_uncertain: bool,
+     *     event_type_fabricated: bool,
      *     contact: string,
      *     contact_uncertain: bool,
+     *     contact_fabricated: bool,
      *     recurrence: string,
      *     recurrence_uncertain: bool,
+     *     recurrence_fabricated: bool,
      *     notes: string,
      *     notes_uncertain: bool
      * }
@@ -235,7 +246,20 @@ final class ConfirmationEmailRenderer
                     || $this->containsAny($notes, ['recurrence', 'repeats', 'schedule'])
                     || (bool) ($candidate->recurrence['ambiguous'] ?? false);
 
-                if ($lowConfidence && $fieldScores === []) {
+                // A field with origin "unsupported" has no support anywhere in the source block, so its value
+        // is an invention. That is a different claim from "please check", and it is the case #130
+        // reported: a plausible fabricated value read as though the notice had stated it.
+        $parishFabricated = $this->fieldFabricated($fieldScores, 'parish_name');
+        $titleFabricated = $this->fieldFabricated($fieldScores, 'title');
+        $dateFabricated = $this->fieldFabricated($fieldScores, 'event_date');
+        $timeFabricated = $this->fieldFabricated($fieldScores, 'event_time');
+        $locationFabricated = $this->fieldFabricated($fieldScores, 'venue');
+        $descriptionFabricated = $this->fieldFabricated($fieldScores, 'description');
+        $eventTypeFabricated = $this->fieldFabricated($fieldScores, 'event_type');
+        $contactFabricated = $this->fieldFabricated($fieldScores, 'contact');
+        $recurrenceFabricated = $this->fieldFabricated($fieldScores, 'recurrence');
+
+        if ($lowConfidence && $fieldScores === []) {
                     // Only when no per-field evidence exists. Once the parser reports a score per field,
                     // a weak overall score should not blank out fields the parser did support, or the
                     // submitter is asked to re-check detail that is in fact the best-evidenced part.
@@ -254,22 +278,31 @@ final class ConfirmationEmailRenderer
             'title_uncertain' => $title === 'Not identified'
                 || $this->fieldWeak($fieldScores, 'title')
                 || ($lowConfidence && $fieldScores === []),
+            'title_fabricated' => $titleFabricated,
             'date' => $date,
             'date_uncertain' => $dateUncertain,
+            'date_fabricated' => $dateFabricated,
             'time' => $time,
             'time_uncertain' => $timeUncertain,
+            'time_fabricated' => $timeFabricated,
             'location' => $locationParts === [] ? 'Not identified' : implode(', ', $locationParts),
             'location_uncertain' => $locationUncertain,
+            'location_fabricated' => $locationFabricated,
             'parish' => $parish,
             'parish_uncertain' => $parishUncertain,
+            'parish_fabricated' => $parishFabricated,
             'description' => $description,
             'description_uncertain' => $descriptionUncertain,
+            'description_fabricated' => $descriptionFabricated,
             'event_type' => $eventType,
             'event_type_uncertain' => $eventTypeUncertain,
+            'event_type_fabricated' => $eventTypeFabricated,
             'contact' => $contact,
             'contact_uncertain' => $contactUncertain,
+            'contact_fabricated' => $contactFabricated,
             'recurrence' => $recurrence,
             'recurrence_uncertain' => $recurrenceUncertain,
+            'recurrence_fabricated' => $recurrenceFabricated,
             'notes' => $reviewNotes,
             'notes_uncertain' => $candidate->notes !== [],
         ];
@@ -417,6 +450,21 @@ final class ConfirmationEmailRenderer
             return $entry !== null && $entry['score'] < $this->fieldThreshold;
         }
 
+        /**
+         * Whether the parser invented the named field outright.
+         *
+         * Distinct from a merely weak field: "unsupported" means the scorer found no support for the
+         * value in the source block at all, so whatever is shown came from a fallback, not the notice.
+         *
+         * @param array<string, array{score: float, origin: string, flags: list<string>}> $fieldScores
+         */
+        private function fieldFabricated(array $fieldScores, string $field): bool
+        {
+            $entry = $fieldScores[$field] ?? null;
+
+            return $entry !== null && $entry['origin'] === 'unsupported';
+        }
+
         private function lowConfidenceThreshold(): float
         {
             return ReviewQueuePolicy::DEFAULT_CONFIDENCE_THRESHOLD;
@@ -433,22 +481,44 @@ final class ConfirmationEmailRenderer
         return false;
     }
 
-    private function textFieldRow(string $label, string $value, bool $uncertain): string
-    {        $background = $uncertain ? '#fff4d6' : '#ffffff';
+    /**
+     * Plain-text field row.
+     *
+     * A fabricated value gets its own wording, not the generic "please check". "Please check" only
+     * says the value may be wrong; the submitter cannot tell that the notice never contained it and
+     * will leave a plausible invented parish name in place.
+     */
+    private function textFieldRow(string $label, string $value, bool $uncertain, bool $fabricated = false): string
+    {
+        if ($fabricated) {
+            return $label . ': ' . $value
+                . ' (not stated in the notice — the parser guessed this, please correct it)';
+        }
+
         return $label . ': ' . $value . ($uncertain ? ' (please check)' : '');
     }
 
-    private function renderFieldRow(string $label, string $value, bool $uncertain): string
-    {        $background = $uncertain ? '#fff4d6' : '#ffffff';
-        $labelColor = $uncertain ? '#704f00' : '#46525c';
+    private function renderFieldRow(string $label, string $value, bool $uncertain, bool $fabricated = false): string
+    {
+        $background = $fabricated ? '#fdecec' : ($uncertain ? '#fff4d6' : '#ffffff');
+        $labelColor = $fabricated ? '#7a3030' : ($uncertain ? '#704f00' : '#46525c');
+
+        $marker = $fabricated
+            ? ' <span aria-label="not stated in the notice — please check">*</span>'
+            : ($uncertain ? ' <span aria-label="please check">*</span>' : '');
+        $note = $fabricated
+            ? '<br><span style="font-size:13px;line-height:1.45;color:#7a3030;">'
+                . 'Not stated in the notice — the parser guessed this, please correct it.</span>'
+            : '';
 
         return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"'
             . ' style="border-collapse:collapse;background-color:' . $background . ';">'
             . '<tr><td width="115" valign="top" style="width:115px;padding:8px 8px 8px 0;font-size:14px;line-height:1.45;font-weight:bold;color:'
             . $labelColor . ';">' . $this->escape($label)
-            . ($uncertain ? ' <span aria-label="please check">*</span>' : '')
+            . $marker
             . '</td><td valign="top" style="padding:8px 0;font-size:14px;line-height:1.45;color:#263238;">'
             . nl2br($this->escape($value), false)
+            . $note
             . '</td></tr></table>';
     }
 

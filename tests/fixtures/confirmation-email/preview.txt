@@ -1,7 +1,7 @@
 Please review your event preview
 
 We found 1 event in your notice. Please check each preview below.
-Highlighted details may be uncertain or missing. Confirm and Deny links now open a review page; the Edit link is not active yet.
+Highlighted details may be uncertain or missing. Where a detail is marked "not stated in the notice", the parser could not find it in your text and filled in a guess — please correct it. Confirm and Deny links now open a review page; the Edit link is not active yet.
 Every new event still needs approval by a dean or an Archdiocese reviewer.
 
 Event 1: Parish Harvest <script>alert("x")</script> (please check)
