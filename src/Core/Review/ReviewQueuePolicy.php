@@ -8,6 +8,14 @@ use DomainException;
 
 final class ReviewQueuePolicy
 {
+    /**
+     * The default below which a candidate needs a human before it is published.
+     *
+     * This matches the historic value that was read from the AI threshold option, so a site that
+     * has never set the new option behaves exactly as before.
+     */
+    public const DEFAULT_CONFIDENCE_THRESHOLD = 0.55;
+
     /** @param array<string, mixed> $candidate */
     public function canDecide(array $candidate): bool
     {

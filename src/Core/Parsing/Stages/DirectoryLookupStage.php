@@ -8,6 +8,7 @@ use ADCT\ParishIntake\Core\Directory\DirectoryLookup;
 use ADCT\ParishIntake\Core\Directory\ParishMatch;
 use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use ADCT\ParishIntake\Core\Directory\VenueMatch;
+use ADCT\ParishIntake\Core\Parsing\Confidence\FieldEvidence;
 use ADCT\ParishIntake\Core\Parsing\Contracts\StageInterface;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\ParseContext;
@@ -246,7 +247,17 @@ final class DirectoryLookupStage implements StageInterface
             'confidence' => $confidence,
             'parish_id' => $match->parishId,
         ]);
-        $result->addNote(sprintf(
+
+                // A match on a verified sender is the strongest evidence a parish name can have; a
+                // bare church-name match in body text is no stronger than the text that produced it.
+                $result->recordFieldEvidence('parish_name', match ($source) {
+                    'sender' => new FieldEvidence(FieldEvidence::DIRECTORY_VERIFIED),
+                    'context' => new FieldEvidence(FieldEvidence::DIRECTORY_TEXT),
+                    default => $confidence >= 0.9
+                        ? new FieldEvidence(FieldEvidence::DIRECTORY_TEXT)
+                        : new FieldEvidence(FieldEvidence::INFERRED),
+                });
+                $result->addNote(sprintf(
             'parish_match: %s (confidence %.2f; parish_id %d).',
             $source,
             $confidence,
@@ -263,7 +274,12 @@ final class DirectoryLookupStage implements StageInterface
     ): void {
         if ($setVenueName) {
             $result->setField('venue', $match->name);
-        }
+                    $result->recordFieldEvidence('venue', match ($source) {
+                        'label' => new FieldEvidence(FieldEvidence::LABELLED),
+                        'default' => new FieldEvidence(FieldEvidence::CONTEXT),
+                        default => new FieldEvidence(FieldEvidence::DIRECTORY_TEXT),
+                    });
+                }
 
         $result->setField('venue_id', $match->venueId);
         $result->setField('venue_latitude', $match->latitude);

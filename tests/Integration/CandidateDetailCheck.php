@@ -242,7 +242,20 @@ final class CandidateDetailCheck
                 ]);
             };
 
-            $main = $makeCandidate('main', 'awaiting_approval', $parish, $contact, $rawPath);
+            $main = $makeCandidate('main', 'awaiting_approval', $parish, $contact, $rawPath, [
+                'field_confidence' => [
+                    'score' => 0.92,
+                    'coverage' => 0.8,
+                    'fields' => [
+                        'title' => ['score' => 0.98, 'origin' => 'explicit', 'flags' => []],
+                        'parish_name' => [
+                            'score' => 0.0,
+                            'origin' => 'unsupported',
+                            'flags' => ['unanchored_parish_match'],
+                        ],
+                    ],
+                ],
+            ]);
             $posterId = $addPoster($main['message'], $posterPath, 'fictional-poster');
 
             // A second candidate on the same parish, to prove one candidate's
@@ -299,6 +312,11 @@ final class CandidateDetailCheck
                 'the detail screen must list the stored attachment.');
             $check(str_contains($detail, 'Fictional Hall'),
                 'the detail screen must show an extracted field the form does not edit, such as the venue name.');
+            $check(str_contains($detail, 'Field confidence')
+                && str_contains($detail, '98%')
+                && str_contains($detail, 'unsupported')
+                && str_contains($detail, 'Not stated in the notice; the parser fell back to a guess.'),
+                'the editable detail screen must retain readable per-field confidence and unsupported-value warnings.');
             $check(str_contains($detail, 'FREQ=WEEKLY;BYDAY=TH'),
                             'the detail screen must show the stored recurrence rule in the custom-rule box.');
             $check(str_contains($detail, 'value="save"')

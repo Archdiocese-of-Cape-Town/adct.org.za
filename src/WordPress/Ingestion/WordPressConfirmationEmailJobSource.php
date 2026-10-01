@@ -129,8 +129,11 @@ final class WordPressConfirmationEmailJobSource implements ConfirmationEmailJobS
                 $this->floatValue($row['confidence'] ?? null, 'candidate confidence'),
                 $notes,
                 (string) ($row['match_kind'] ?? 'new'),
-                $this->matchedTitle($row['match_event_id'] ?? null)
-            );
+                            $this->matchedTitle($row['match_event_id'] ?? null),
+                            // Stored alongside the fields it scores. Absent on rows parsed before per-field
+                            // scoring existed, which the renderer handles by falling back to its heuristics.
+                            is_array($fields['field_confidence'] ?? null) ? $fields['field_confidence'] : []
+                        );
         }
 
         if ($rawPath === null) {

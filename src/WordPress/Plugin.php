@@ -54,6 +54,7 @@ use ADCT\ParishIntake\Core\Mail\ConfirmationEmailPreviewService;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
+use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
 use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
@@ -334,12 +335,14 @@ final class Plugin
             new EventValidator($timezone, $rruleValidator)
         );
         if (function_exists('add_action')) {
-            $threshold = get_option('adct_parish_intake_ai_threshold', '0.55');
-            if (! is_numeric($threshold) || (float) $threshold < 0 || (float) $threshold > 1) {
-                error_log('[ADCT Parish Intake] Invalid confidence threshold; review queue uses 0.55.');
-            }
-            $confidenceThreshold = is_numeric($threshold) && (float) $threshold >= 0 && (float) $threshold <= 1
-                ? (float) $threshold : 0.55;
+            // The review threshold is deliberately its own setting (#43). It used to be read from
+            // the AI threshold, which conflates "how confident must the parser be before a human
+            // looks at this" with "when should we pay for an AI call". Sites on the old value keep
+            // their behaviour, because both defaults are 0.55.
+            $confidenceThreshold = $this->confidenceOption(
+                'adct_parish_intake_confidence_threshold',
+                ReviewQueuePolicy::DEFAULT_CONFIDENCE_THRESHOLD
+            );
             $this->reviewQueuePage = new ReviewQueuePage(
                 new ReviewQueueRepository($database, $clock, new ReviewQueuePolicy(), $confidenceThreshold),
                 $this->candidatePublisher,
@@ -445,7 +448,13 @@ final class Plugin
                 new WordPressConfirmationActionLinkProvider(),
                 $this->mailQueue,
                 $mailQueueRepository,
-                new \ADCT\ParishIntake\Core\Mail\ConfirmationEmailRenderer($timezone)
+                new \ADCT\ParishIntake\Core\Mail\ConfirmationEmailRenderer(
+                    $timezone,
+                    $this->confidenceOption(
+                        'adct_parish_intake_field_confidence_threshold',
+                        ConfidenceScoringStage::DEFAULT_FIELD_THRESHOLD
+                    )
+                )
             ),
             $clock
         );
@@ -652,6 +661,14 @@ final class Plugin
         add_option('adct_parish_intake_openrouter_model', OpenAiCompatibleProvider::FREE_MODEL);
         add_option('adct_parish_intake_ai_base_url', OpenAiCompatibleProvider::DEFAULT_URL);
         add_option('adct_parish_intake_ai_threshold', '0.55');
+        add_option(
+            'adct_parish_intake_confidence_threshold',
+            (string) ReviewQueuePolicy::DEFAULT_CONFIDENCE_THRESHOLD
+        );
+        add_option(
+            'adct_parish_intake_field_confidence_threshold',
+            (string) ConfidenceScoringStage::DEFAULT_FIELD_THRESHOLD
+        );
         add_option('adct_parish_intake_section_keywords', SectionSkipper::defaultKeywordLists());
         add_option(
             WordPressTestModeSettings::TEST_MODE_OPTION,
@@ -915,6 +932,33 @@ final class Plugin
             new RoleInstaller(new WordPressRoleCapabilityStore()),
             new WordPressRoleVersionStore()
         );
+    }
+
+    /**
+     * Read a confidence threshold from an option, falling back to the documented default.
+     *
+     * A stored value that is missing or out of range must not silently become 0 or 1, which would
+     * either send everything to review or let everything publish unreviewed.
+     */
+    private function confidenceOption(string $option, float $default): float
+    {
+        if (! function_exists('get_option')) {
+            return $default;
+        }
+
+        $value = get_option($option, (string) $default);
+
+        if (! is_numeric($value) || (float) $value < 0.0 || (float) $value > 1.0) {
+            error_log(sprintf(
+                '[ADCT Parish Intake] Invalid %s; using %s.',
+                $option,
+                (string) $default
+            ));
+
+            return $default;
+        }
+
+        return (float) $value;
     }
 
     private function isAdminPostRequest(): bool

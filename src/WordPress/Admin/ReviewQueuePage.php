@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Admin;
 
 use ADCT\ParishIntake\Core\Auth\Capabilities;
+use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
 use ADCT\ParishIntake\Core\Review\CandidateEditResult;
@@ -353,7 +354,14 @@ final class ReviewQueuePage
                     <br /><strong>Manual resolution required before approval</strong>
                 <?php endif; ?>
             </td>
-            <td><?php echo esc_html(number_format((float) $row['confidence'] * 100, 0) . '%'); ?></td>
+            <td><?php echo esc_html(number_format((float) $row['confidence'] * 100, 0) . '%');
+                $uncertain = $this->uncertainFieldCount($fields);
+
+                if ($uncertain > 0) : ?>
+                    <br /><span class="description"><?php echo esc_html(
+                        $uncertain . ($uncertain === 1 ? ' field needs checking' : ' fields need checking')
+                    ); ?></span>
+                <?php endif; ?></td>
             <td><?php echo esc_html((string) $row['updated_at']); ?></td>
             <td><?php echo $decided !== null
                 ? esc_html((string) $decided . ' at ' . (string) ($row['decided_at'] ?? $row['approved_at'] ?? 'unknown time'))
@@ -381,6 +389,143 @@ final class ReviewQueuePage
             return false;
         }
     }
+
+    /**
+         * The per-field evidence behind the event score, as a read-only table.
+         *
+         * This is what a reviewer needs in order to judge the notice: not just "72%" but *which*
+         * detail is unsupported. Values the parser invented are labelled as such and come first.
+         *
+         * @param array<string, mixed> $fields
+         */
+        private function renderFieldConfidence(array $fields): void
+        {
+            $stored = $fields['field_confidence'] ?? null;
+
+            if (! is_array($stored) || ! is_array($stored['fields'] ?? null)) {
+                return;
+            }
+
+            $labels = [
+                'title' => 'Title',
+                'event_date' => 'Date',
+                'event_time' => 'Time',
+                'parish_name' => 'Parish',
+                'venue' => 'Venue',
+                'event_type' => 'Event type',
+                'contact' => 'Contact',
+                'description' => 'Description',
+                'recurrence' => 'Recurrence',
+            ];
+            $entries = [];
+
+            foreach ($stored['fields'] as $name => $entry) {
+                if (! is_string($name) || ! is_array($entry) || ! isset($entry['score']) || ! is_numeric($entry['score'])) {
+                    continue;
+                }
+
+                $flags = array_values(array_filter(
+                    (array) ($entry['flags'] ?? []),
+                    static fn ($flag): bool => is_string($flag)
+                ));
+
+                $entries[$name] = [
+                    'label' => $labels[$name] ?? $name,
+                    'score' => (float) $entry['score'],
+                    'origin' => is_string($entry['origin'] ?? null) ? $entry['origin'] : 'unknown',
+                    'flags' => $flags,
+                ];
+            }
+
+            if ($entries === []) {
+                return;
+            }
+
+            $order = ['title', 'event_date', 'event_time', 'parish_name', 'venue', 'event_type', 'contact', 'description', 'recurrence'];
+            usort($entries, static function (array $a, array $b) use ($order): int {
+                return array_search($a['label'], $order, true) <=> array_search($b['label'], $order, true);
+            });
+
+            $coverage = isset($stored['coverage']) && is_numeric($stored['coverage'])
+                ? (float) $stored['coverage']
+                : null;
+            ?>
+            <tr><th scope="row">Field confidence</th><td>
+                <p class="description" style="margin-top:0;">
+                    Each detail is scored on the evidence behind it. <?php if ($coverage !== null) : ?>
+                        The notice supports <?php echo esc_html(number_format($coverage * 100, 0) . '%'); ?> of the fields this event needs.
+                    <?php endif; ?>
+                </p>
+                <table class="widefat striped" style="margin:0;">
+                    <thead><tr>
+                        <th scope="col">Field</th><th scope="col">Score</th>
+                        <th scope="col">Evidence</th><th scope="col">Notes</th>
+                    </tr></thead>
+                    <tbody>
+                    <?php foreach ($entries as $entry) : ?>
+                        <tr>
+                            <td><?php echo esc_html($entry['label']); ?></td>
+                            <td><?php echo esc_html(number_format($entry['score'] * 100, 0) . '%'); ?></td>
+                            <td><?php echo esc_html(str_replace('_', ' ', $entry['origin'])); ?></td>
+                            <td><?php
+                                echo esc_html($this->fieldConfidenceNote($entry));
+                                                    ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </td></tr>
+            <?php
+        }
+
+        /**
+         * The reviewer-facing explanation of one field's evidence.
+         *
+         * @param array{label: string, score: float, origin: string, flags: list<string>} $entry
+         */
+            private function fieldConfidenceNote(array $entry): string
+            {
+            if ($entry['origin'] === 'unsupported') {
+                return 'Not stated in the notice; the parser fell back to a guess.';
+            }
+
+            if ($entry['flags'] === []) {
+                return '—';
+            }
+
+            return implode(', ', array_map(
+                fn (string $flag): string => str_replace('_', ' ', $flag),
+                $entry['flags']
+            ));
+            }
+
+            /**
+         * How many scored fields fall below the field threshold, for the queue list.
+         *
+         * @param array<string, mixed> $fields
+         */
+        private function uncertainFieldCount(array $fields): int
+        {
+            $stored = $fields['field_confidence'] ?? null;
+
+            if (! is_array($stored) || ! is_array($stored['fields'] ?? null)) {
+                return 0;
+            }
+
+            $threshold = (float) get_option(
+                'adct_parish_intake_field_confidence_threshold',
+                (string) ConfidenceScoringStage::DEFAULT_FIELD_THRESHOLD
+            );
+            $count = 0;
+
+            foreach ($stored['fields'] as $entry) {
+                if (is_array($entry) && isset($entry['score']) && is_numeric($entry['score']) && (float) $entry['score'] < $threshold) {
+                    $count++;
+                }
+            }
+
+            return $count;
+        }
 
     /**
      * The single-candidate screen: the source email, its attachments, every
@@ -420,7 +565,8 @@ final class ReviewQueuePage
             $editable,
             $canApprove,
             $attempt,
-            $this->isDownloadable(...)
+            $this->isDownloadable(...),
+            $this->renderFieldConfidence(...)
         );
         $view->renderAuditTrail($this->queue->history($id));
     }

@@ -40,7 +40,8 @@ final class CandidateDetailView
         bool $editable,
         bool $canApprove,
         ?CandidateEditResult $attempt = null,
-        ?callable $isDownloadable = null
+        ?callable $isDownloadable = null,
+        ?callable $renderFieldConfidence = null
     ): void {
         $id = (int) $row['id'];
         $fields = CandidateFieldSet::decodeFields($row['fields'] ?? null);
@@ -71,7 +72,7 @@ final class CandidateDetailView
                     ); ?>
                 </div>
                 <div class="adct-pi-detail-side">
-                    <?php $this->renderSummary($fields); ?>
+                    <?php $this->renderSummary($fields, $renderFieldConfidence); ?>
                     <?php $this->renderProvenance($row); ?>
                 </div>
             </div>
@@ -82,7 +83,7 @@ final class CandidateDetailView
     }
 
     /** @param array<string, mixed> $fields */
-    private function renderSummary(array $fields): void
+    private function renderSummary(array $fields, ?callable $renderFieldConfidence = null): void
     {
         $rows = [];
         foreach (CandidateFieldSet::EDITABLE_KEYS as $key) {
@@ -111,6 +112,9 @@ final class CandidateDetailView
                 <?php if ($rows === []) : ?>
                     <tr><td>No fields were stored on this candidate.</td></tr>
                 <?php endif; ?>
+                <?php if ($renderFieldConfidence !== null) {
+                    $renderFieldConfidence($fields);
+                } ?>
             </tbody></table>
         </div>
         <?php
