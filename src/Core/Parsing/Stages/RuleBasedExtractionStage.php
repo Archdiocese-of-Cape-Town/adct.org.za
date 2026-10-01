@@ -2,6 +2,7 @@
 
 namespace ADCT\ParishIntake\Core\Parsing\Stages;
 
+use ADCT\ParishIntake\Core\Parsing\Confidence\FieldEvidence;
 use ADCT\ParishIntake\Core\Parsing\Contracts\StageInterface;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\ParseContext;
@@ -84,70 +85,213 @@ final class RuleBasedExtractionStage implements StageInterface
                 ? trim($blockTitle)
                 : $this->extractTitle($message, $text)
         );
-        $result->setField(
-            'parish_name',
-            (isset($blockContext['parish_name']) ? (string) $blockContext['parish_name'] : null)
-                ?? $this->extractParishName($text, '')
-                ?? $this->extractParishName('', $message->getSenderName())
-        );
-        $rangeEndBeforeStart = false;
+                $this->recordTitleEvidence($result, $message, $blockTitle, $text);
+
+                $parishMatch = $this->parishNameMatch($text, '');
+                $parishName = (isset($blockContext['parish_name']) ? (string) $blockContext['parish_name'] : null)
+                    ?? ($parishMatch['value'] ?? null)
+                    ?? $this->parishNameMatch('', $message->getSenderName())['value'] ?? null;
+
+                if ($parishName !== null) {
+                    if (isset($blockContext['parish_name'])) {
+                        // The block's owning heading, which is safe shared context.
+                        $result->recordFieldEvidence('parish_name', new FieldEvidence(FieldEvidence::CONTEXT));
+                    } elseif ($parishMatch !== null) {
+                        $result->recordFieldEvidence('parish_name', match ($parishMatch['rule']) {
+                            'labelled' => new FieldEvidence(FieldEvidence::LABELLED),
+                            'unanchored' => FieldEvidence::unsupported('unanchored_parish_match'),
+                            default => new FieldEvidence(FieldEvidence::EXPLICIT),
+                        });
+                    } else {
+                        // Read from the sender display name, a weaker signal than the body itself.
+                        $result->recordFieldEvidence('parish_name', new FieldEvidence(FieldEvidence::INFERRED));
+                    }
+                }
+
+                $result->setField('parish_name', $parishName);
+                $rangeEndBeforeStart = false;
 
         if ($date !== null) {
             $result->setField('event_date', $date['date']);
             $result->setField('event_end_date', $date['end_date']);
+                    $result->recordFieldEvidence('event_date', $this->dateEvidence($date));
 
-            if ($date['weekday_mismatch']) {
-                $result->markDateWeekdayMismatch();
-                $result->addNote('The stated weekday does not match the parsed event date; verify it.');
-            }
+                    if ($date['weekday_mismatch']) {
+                        $result->markDateWeekdayMismatch();
+                        $result->addNote('The stated weekday does not match the parsed event date; verify it.');
+                    }
 
-            if ($date['next_weekday_ambiguous'] !== null) {
-                $result->markNextWeekdayAmbiguous();
-                $result->addNote(sprintf(
-                    'The phrase "next %s" is ambiguous between this week and next week; the first future occurrence was selected.',
-                    $date['next_weekday_ambiguous']
-                ));
-            }
+                    if ($date['next_weekday_ambiguous'] !== null) {
+                        $result->markNextWeekdayAmbiguous();
+                        $result->addNote(sprintf(
+                            'The phrase "next %s" is ambiguous between this week and next week; the first future occurrence was selected.',
+                            $date['next_weekday_ambiguous']
+                        ));
+                    }
 
-            $rangeEndBeforeStart = $date['end_before_start'];
+                    $rangeEndBeforeStart = $date['end_before_start'];
+                }
+
+                if ($times !== null) {
+                    $result->setField('event_time', $times['start']);
+                    $result->setField('event_end_time', $times['end']);
+                    $result->recordFieldEvidence('event_time', $times['type'] === 'bare'
+                        // A bare 24-hour clock time with no scripture wording around it is a real,
+                        // if slightly weaker, piece of evidence. A citation is never recorded as a
+                        // time at all, so there is no citation case here.
+                        ? new FieldEvidence(FieldEvidence::CONTEXT)
+                        : new FieldEvidence(FieldEvidence::EXPLICIT));
+                    $rangeEndBeforeStart = $rangeEndBeforeStart || $times['end_before_start'];
         }
 
-        if ($times !== null) {
-            $result->setField('event_time', $times['start']);
-            $result->setField('event_end_time', $times['end']);
-            $rangeEndBeforeStart = $rangeEndBeforeStart || $times['end_before_start'];
+                if ($rangeEndBeforeStart) {
+                    $result->markRangeEndBeforeStart();
+                    $result->addNote('The stated event end is before its start; verify the range.');
+                }
+
+                $venue = $this->extractVenue($body);
+                $venueSource = $venue === null
+                    ? null
+                    : ($this->hasLabelledVenue($body) ? 'label' : 'text');
+
+                if ($venue === null) {
+                    $venue = $this->extractVenue($message->getSubject());
+                    $venueSource = $venue === null
+                        ? null
+                        : ($this->hasLabelledVenue($message->getSubject()) ? 'label' : 'text');
         }
 
-        if ($rangeEndBeforeStart) {
-            $result->markRangeEndBeforeStart();
-            $result->addNote('The stated event end is before its start; verify the range.');
-        }
+                if ($venue === null && isset($blockContext['venue'])) {
+                    $venue = (string) $blockContext['venue'];
+                    $venueSource = 'context';
+                }
 
-        $venue = $this->extractVenue($body);
-        $venueSource = $venue === null
-            ? null
-            : ($this->hasLabelledVenue($body) ? 'label' : 'text');
+                $result->setField('venue', $venue);
 
-        if ($venue === null) {
-            $venue = $this->extractVenue($message->getSubject());
-            $venueSource = $venue === null
-                ? null
-                : ($this->hasLabelledVenue($message->getSubject()) ? 'label' : 'text');
-        }
+                if ($venue !== null && $venueSource !== null) {
+                    $result->recordFieldEvidence('venue', match ($venueSource) {
+                        'label' => new FieldEvidence(FieldEvidence::LABELLED),
+                        'text' => new FieldEvidence(FieldEvidence::DIRECTORY_TEXT),
+                        default => new FieldEvidence(FieldEvidence::CONTEXT),
+                    });
+                }
 
-        if ($venue === null && isset($blockContext['venue'])) {
-            $venue = (string) $blockContext['venue'];
-            $venueSource = 'context';
-        }
+                $context->setRuntimeValue('venue_source', $venueSource);
+                $contact = $this->extractContact($text . "\n" . $signature, $message->getSenderEmail());
 
-        $result->setField('venue', $venue);
-        $context->setRuntimeValue('venue_source', $venueSource);
-        $result->setField('contact', $this->extractContact($text . "\n" . $signature, $message->getSenderEmail()));
-        $result->setField('description', $this->eventDescription($body));
-        $result->setField('attachment_names', array_map(static fn ($attachment) => $attachment->getName(), $message->getAttachments()));
+                if ($contact !== null) {
+                    // The sender address is only used when the body had no contact of its own, so it
+                    // is never evidence from the notice.
+                    $result->recordFieldEvidence('contact', $contact === $message->getSenderEmail()
+                        ? FieldEvidence::unsupported('sender_fallback')
+                        : new FieldEvidence(FieldEvidence::EXPLICIT));
+                }
+
+                $result->setField('contact', $contact);
+                $description = $this->eventDescription($body);
+
+                if ($description !== null && $description !== '') {
+                    $result->recordFieldEvidence('description', new FieldEvidence(FieldEvidence::EXPLICIT));
+                }
+
+                $result->setField('description', $description);
+                $result->setField('attachment_names', array_map(static fn ($attachment) => $attachment->getName(), $message->getAttachments()));
         $result->addStrategy('rule_based_extraction');
 
         return $result;
+    }
+
+    /**
+     * A title read from the message subject is the sender's own description of the notice, so
+     * it is good evidence. A title scraped from the first meaningful line of the body is not:
+     * in a bulletin that line is the masthead, which describes the whole document rather than
+     * any one event.
+     *
+     * @param mixed $blockTitle
+     */
+    private function recordTitleEvidence(ParseResult $result, Message $message, mixed $blockTitle, string $text): void
+    {
+        if ($result->getField('title') === null) {
+            return;
+        }
+
+        $subject = trim(preg_replace('/^(?:re|fw|fwd):\s*/i', '', $message->getSubject()) ?? $message->getSubject());
+
+        if (is_string($blockTitle) && trim($blockTitle) !== '') {
+            // The first meaningful line of a bulletin is usually running prose that happens to
+            // begin the body, not a title. If the line is cut off mid-sentence, the parser invented
+            // it by cutting a sentence in half, and that is fabrication rather than weak evidence.
+            $result->recordFieldEvidence('title', $this->looksLikeSentenceFragment((string) $blockTitle)
+                ? FieldEvidence::unsupported('sentence_fragment')
+                : new FieldEvidence(FieldEvidence::EXPLICIT));
+
+            return;
+        }
+
+        if ($subject !== '') {
+                    $result->recordFieldEvidence('title', $this->subjectLooksLikeMasthead($subject)
+                        ? FieldEvidence::unsupported('masthead_subject')
+                        : new FieldEvidence(FieldEvidence::EXPLICIT));
+
+                    return;
+                }
+
+                $firstLine = Text::firstMeaningfulLine($text);
+                $result->recordFieldEvidence('title', $firstLine !== null && $firstLine !== $subject
+                    ? FieldEvidence::unsupported('masthead_fallback')
+                    : new FieldEvidence(FieldEvidence::CONTEXT));
+            }
+
+            /**
+             * A subject that merely announces the bulletin ("… Weekly Bulletin October 2026", "Parish
+             * Newsletter – week 42") names the document, not the event, so it is not evidence of a
+             * title. The value is still extracted; only its evidence changes.
+             */
+            private function subjectLooksLikeMasthead(string $subject): bool
+            {
+                return preg_match(
+                    '/\b(?:bulletin|newsletter|parish\s+news|diocesan\s+news|'
+                    . 'this\s+week(?:end)?(?:\s+in\s+the\s+archdiocese)?|'
+                    . 'week\s+\d+|mass\s+sheet|liturgy\s+of\s+the\s+word)\b/iu',
+                    $subject
+                ) === 1;
+            }
+
+    /**
+     * @param array<string, mixed> $date
+     */
+    private function dateEvidence(array $date): FieldEvidence
+    {
+        $flags = [];
+
+        if (($date['weekday_mismatch'] ?? false) === true) {
+            $flags[] = 'weekday_mismatch';
+        }
+
+        if (($date['end_before_start'] ?? false) === true) {
+            $flags[] = 'end_before_start';
+        }
+
+        if (($date['next_weekday_ambiguous'] ?? null) !== null) {
+            $flags[] = 'next_weekday_ambiguous';
+        }
+
+        $type = (string) ($date['type'] ?? '');
+
+        $origin = match ($type) {
+            'iso', 'numeric', 'day_month', 'month_day' => FieldEvidence::EXPLICIT,
+            'this_weekday', 'next_weekday', 'tomorrow', 'tonight' => FieldEvidence::CONTEXT,
+            'contextual' => FieldEvidence::INFERRED,
+            // A date the parser produced without recognising the pattern that produced it is
+            // not evidence of anything.
+            default => FieldEvidence::INFERRED,
+        };
+
+        if ($type === 'contextual' && ! ($date['has_date_context'] ?? true)) {
+            $flags[] = 'no_date_context';
+        }
+
+        return new FieldEvidence($origin, $flags);
     }
 
     private function classify(string $lower, bool $hasDate, bool $hasTime): string
@@ -204,24 +348,36 @@ final class RuleBasedExtractionStage implements StageInterface
 
     private function extractParishName(string $text, string $senderName): ?string
     {
-        $patterns = [
-            '/parish\s*[:\-]\s*([^\n]+)/i',
-            '/\b((?:St\.?|Saint|Our Lady of|Church of) [A-Z][A-Za-z\'\- ]+(?:Parish|Church)?)\b/u',
-            '/\b([A-Z][A-Za-z\'\- ]+ Parish)\b/u',
-        ];
+            return $this->parishNameMatch($text, $senderName)['value'] ?? null;
+        }
 
-        foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $text, $matches)) {
-                return trim($matches[1]);
+        /**
+         * Find the parish name and report *which* rule produced it, so the confidence scorer can
+         * tell a labelled match from the loose one that matches a phrase inside a sentence
+         * (tracked as issue #129).
+         *
+         * @return array{value: string, rule: string}|null
+         */
+        private function parishNameMatch(string $text, string $senderName): ?array
+        {
+            $patterns = [
+                '/parish\s*[:\-]\s*([^\n]+)/i' => 'labelled',
+                '/\b((?:St\.?|Saint|Our Lady of|Church of) [A-Z][A-Za-z\'\- ]+(?:Parish|Church)?)\b/u' => 'named_church',
+                '/\b([A-Z][A-Za-z\'\- ]+ Parish)\b/u' => 'unanchored',
+            ];
+
+            foreach ($patterns as $pattern => $rule) {
+                if (preg_match($pattern, $text, $matches)) {
+                    return ['value' => trim($matches[1]), 'rule' => (string) $rule];
+                }
             }
-        }
 
-        if (stripos($senderName, 'parish') !== false || stripos($senderName, 'church') !== false) {
-            return trim($senderName);
-        }
+            if (stripos($senderName, 'parish') !== false || stripos($senderName, 'church') !== false) {
+                return ['value' => trim($senderName), 'rule' => 'sender_name'];
+            }
 
-        return null;
-    }
+            return null;
+        }
 
     /**
      * @return array{date: string, end_date: ?string, weekday_mismatch: bool, end_before_start: bool, next_weekday_ambiguous: ?string}|null
@@ -356,10 +512,12 @@ final class RuleBasedExtractionStage implements StageInterface
             return [
                 'date' => $date->format('Y-m-d'),
                 'end_date' => $endDate?->format('Y-m-d'),
-                'weekday_mismatch' => $weekdayMismatch,
-                'end_before_start' => $endBeforeStart,
-                'next_weekday_ambiguous' => $ambiguousWeekday,
-            ];
+                'type' => (string) $candidate['type'],
+                'has_date_context' => true,
+                            'weekday_mismatch' => $weekdayMismatch,
+                            'end_before_start' => $endBeforeStart,
+                            'next_weekday_ambiguous' => $ambiguousWeekday,
+                        ];
         }
 
         if ($monthContext !== null) {
@@ -412,8 +570,10 @@ final class RuleBasedExtractionStage implements StageInterface
             return [
                 'date' => $date->format('Y-m-d'),
                 'end_date' => null,
-                'weekday_mismatch' => $weekdayText !== ''
-                    && $this->weekdayNumber($weekdayText) !== (int) $date->format('N'),
+                'type' => 'contextual',
+                'has_date_context' => true,
+                            'weekday_mismatch' => $weekdayText !== ''
+                                && $this->weekdayNumber($weekdayText) !== (int) $date->format('N'),
                 'end_before_start' => false,
                 'next_weekday_ambiguous' => null,
             ];
@@ -423,7 +583,7 @@ final class RuleBasedExtractionStage implements StageInterface
     }
 
     /**
-     * @return array{start: string, end: ?string, end_before_start: bool}|null
+         * @return array{start: string, end: ?string, end_before_start: bool, type: string}|null
      */
     private function extractTimes(string $text): ?array
     {
@@ -444,40 +604,105 @@ final class RuleBasedExtractionStage implements StageInterface
                 'start' => $start,
                 'end' => $end,
                 'end_before_start' => $end < $start,
+                'type' => 'range',
+            ];
+            }
+
+            $single = $this->extractFirstTime($text);
+
+            if ($single === null) {
+                return null;
+            }
+
+            return [
+                'start' => $single['time'],
+                'end' => null,
+                'end_before_start' => false,
+                'type' => $single['type'],
             ];
         }
 
-        $start = $this->extractFirstTime($text);
+        /**
+         * @return array{time: string, type: string}|null
+         */
+        private function extractFirstTime(string $text): ?array
+        {
+            preg_match_all(
+                '~\b(?:\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2})\b~i',
+                $text,
+                            $matches,
+                            PREG_OFFSET_CAPTURE
+                        );
 
-        if ($start === null) {
-            return null;
-        }
+                        foreach ($matches[0] as $found) {
+                            $match = $found[0];
+                            $time = $this->normalizeTime($match);
 
-        return [
-            'start' => $start,
-            'end' => null,
-            'end_before_start' => false,
-        ];
-    }
+                            if ($time === null) {
+                                continue;
+                            }
 
-    private function extractFirstTime(string $text): ?string
+                            // A bare `12:45` with no `am`/`pm` is also what a scripture citation looks
+                            // like. When the surrounding wording reads as a citation the number is
+                            // not a start time at all, so it is skipped rather than published as a
+                            // time the parish never gave (tracked as issue #128).
+                            if (preg_match('/[ap]m/i', $match) !== 1
+                                && $this->looksLikeCitation($text, (int) $found[1])
+                            ) {
+                                continue;
+                            }
+
+                            return [
+                                'time' => $time,
+                                'type' => preg_match('/[ap]m/i', $match) === 1 ? 'explicit' : 'bare',
+                            ];
+                        }
+
+                        return null;
+                    }
+
+                    /**
+                     * Decide whether a bare clock-shaped number is a scripture or chapter citation rather
+                     * than a start time. The cue is the wording immediately before it: a citation is
+                     * introduced by a scripture keyword or a capitalised book name ("Scripture for today
+                     * is 12:45", "Romans 12:45"), whereas a start time is introduced by "at", "from",
+                     * or nothing at all.
+                     */
+                    /**
+     * Whether a candidate title is a running-prose sentence that was cut off, rather than a
+     * heading. A heading is short and has no sentence punctuation; text that runs on past a comma
+     * and stops mid-sentence, or that opens with a lowercase continuation, is prose.
+     */
+    private function looksLikeSentenceFragment(string $candidate): bool
     {
-        preg_match_all(
-            '~\b(?:\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2})\b~i',
-            $text,
-            $matches
-        );
+        $candidate = trim($candidate);
 
-        foreach ($matches[0] as $match) {
-            $time = $this->normalizeTime($match);
-
-            if ($time !== null) {
-                return $time;
-            }
+        if ($candidate === '') {
+            return false;
         }
 
-        return null;
+        if (preg_match('/[.,;:!?]$/', $candidate) === 1) {
+            return false;
+        }
+
+        if (preg_match('/^(?:the|a|an|our|we|all|please|kindly|on|in|at|as|for|from|every)\b/i', $candidate) === 1) {
+            return true;
+        }
+
+        // A heading is a short noun phrase. Prose that had to be cut mid-sentence is long.
+        return str_word_count($candidate) > 8;
     }
+
+    private function looksLikeCitation(string $text, int $offset): bool
+                    {                        $before = substr($text, max(0, $offset - 60), min($offset, 60));
+
+                        return preg_match(
+                            '/(?:scripture|reading|readings|gospel|epistle|passage|verse|chapter|'
+                            . 'psalm|romans|corinthians|ephesians|thessalonians|timothy|peter|john|'
+                            . 'matthew|mark|luke|acts|colossians|hebrews)\b[^0-9]{0,20}$/iu',
+                            $before
+                        ) === 1;
+                    }
 
     private function normalizeTime(string $time): ?string
     {

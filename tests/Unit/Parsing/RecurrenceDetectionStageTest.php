@@ -127,7 +127,23 @@ final class RecurrenceDetectionStageTest extends TestCase
         self::assertSame('FREQ=MONTHLY;BYDAY=1FR', $inferred['recurrence']['rrule'] ?? null);
         self::assertStringContainsString('recurrence_anchor_inferred', implode(' ', $inferred['notes']));
         self::assertTrue($inferred['recurrence']['anchor_inferred'] ?? false);
-        self::assertEqualsWithDelta(0.05, $explicit['confidence'] - $inferred['confidence'], 0.0001);
+        // An anchor worked out from the recurrence rule is weaker than a date the notice states.
+        //
+        // This was previously asserted as an exact 0.05 delta. That value was an artefact of the
+        // old near-saturating additive scale, where the inferred anchor's flag was the only
+        // difference between the two candidates. Under a coverage-weighted mean the two also
+        // differ in which fields they carry, so the gap is no longer a fixed constant. The
+        // behaviour under test is the direction of the effect, not its size.
+        self::assertLessThan(
+            $explicit['confidence'],
+            $inferred['confidence'],
+            'An inferred recurrence anchor must score lower than a stated date.'
+        );
+        self::assertSame(
+            'inferred',
+            self::originOf($inferred, 'event_date'),
+            'The worked-out anchor is inferred evidence, not a stated date.'
+        );
     }
 
     public function testUsesTheDateParsersBulletinReferenceWhenInferringAnAnchor(): void
@@ -242,6 +258,16 @@ final class RecurrenceDetectionStageTest extends TestCase
 
         self::assertSame([], $result['recurrence']);
         self::assertNotSame('recurring_event', $result['classification']);
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     */
+    private static function originOf(array $result, string $field): ?string
+    {
+        $data = $result['fields']['field_confidence']['fields'][$field] ?? null;
+
+        return $data === null ? null : (string) $data['origin'];
     }
 
     private static function parse(

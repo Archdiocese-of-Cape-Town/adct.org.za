@@ -8,6 +8,8 @@ use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\Pipeline;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
+use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
+use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use ADCT\ParishIntake\Core\Pdf\PdfExtractionResult;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Ports\AiCallGateInterface;
@@ -37,6 +39,22 @@ final class ParserPage
     private ?string $settingsSaveError = null;
     private ?AttachmentRepository $attachments;
 
+    /**
+     * Form field name to [option name, default value].
+     *
+     * @var array<string, array{0: string, 1: float}>
+     */
+    private const CONFIDENCE_SETTINGS = [
+        'confidence_threshold' => [
+            'adct_parish_intake_confidence_threshold',
+            ReviewQueuePolicy::DEFAULT_CONFIDENCE_THRESHOLD,
+        ],
+        'field_confidence_threshold' => [
+            'adct_parish_intake_field_confidence_threshold',
+            ConfidenceScoringStage::DEFAULT_FIELD_THRESHOLD,
+        ],
+    ];
+
     public function __construct(
         Schema $schema,
         PipelineFactory $pipelineFactory,
@@ -51,6 +69,19 @@ final class ParserPage
         $this->httpClient = $httpClient;
         $this->aiGate = $aiGate;
         $this->attachments = $attachments;
+    }
+
+    /**
+     * One stored confidence threshold, falling back to its documented default.
+     */
+    private function confidenceSetting(string $key): float
+    {
+        [$option, $default] = self::CONFIDENCE_SETTINGS[$key];
+        $value = get_option($option, (string) $default);
+
+        return is_numeric($value) && (float) $value >= 0.0 && (float) $value <= 1.0
+            ? (float) $value
+            : $default;
     }
 
     /**
@@ -95,6 +126,8 @@ final class ParserPage
             'ai_threshold' => $settings['ai_threshold'],
             'ai_provider' => $allowAi ? $this->buildAiProvider() : new NullAiProvider(),
             'section_keywords' => $settings['section_keywords'],
+            'confidence_threshold' => $settings['confidence_threshold'],
+            'field_confidence_threshold' => $settings['field_confidence_threshold'],
         ]);
     }
 
@@ -190,6 +223,18 @@ final class ParserPage
         }
 
         update_option('adct_parish_intake_ai_threshold', (string) max(0, min(1, (float) wp_unslash($_POST['ai_threshold'] ?? '0.55'))));
+
+        foreach (self::CONFIDENCE_SETTINGS as $key => [$option, $default]) {
+            $submitted = wp_unslash($_POST[$key] ?? null);
+
+            // A missing or non-numeric field leaves the stored value alone rather than resetting
+            // a working setting to 0 or 1, which would publish or queue everything.
+            if (! is_scalar($submitted) || ! is_numeric($submitted)) {
+                continue;
+            }
+
+            update_option($option, (string) max(0.0, min(1.0, (float) $submitted)));
+        }
 
         $submittedKeywords = wp_unslash($_POST['section_keywords'] ?? []);
         $keywordLists = [];
@@ -335,6 +380,26 @@ final class ParserPage
                         <td>
                             <input type="number" step="0.05" min="0" max="1" name="ai_threshold" value="<?php echo esc_attr((string) $settings['ai_threshold']); ?>" />
                             <p class="description">Messages scoring below this confidence value will be sent to the AI fallback when enabled.</p>
+                        </td>
+                    </tr>
+                </table>
+                <h2>Confidence and review</h2>
+                <p>Each extracted field is scored on the evidence behind it, and the event score is
+                    derived from those field scores. A field the parser had to invent scores zero and
+                    lowers the event score, so guessing cannot make a notice look reliable.</p>
+                <table class="form-table" role="presentation">
+                    <tr>
+                        <th scope="row">Review threshold</th>
+                        <td>
+                            <input type="number" step="0.05" min="0" max="1" name="confidence_threshold" value="<?php echo esc_attr((string) $settings['confidence_threshold']); ?>" />
+                            <p class="description">Events scoring below this value go to a human for approval instead of being published. Lower it to review more, raise it to review less.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Field confidence threshold</th>
+                        <td>
+                            <input type="number" step="0.05" min="0" max="1" name="field_confidence_threshold" value="<?php echo esc_attr((string) $settings['field_confidence_threshold']); ?>" />
+                            <p class="description">A field scoring below this value is marked as needing attention on the confirmation email and the review screen. The event title and date are always treated this way.</p>
                         </td>
                     </tr>
                 </table>
@@ -619,6 +684,8 @@ final class ParserPage
             'openrouter_api_key_is_constant' => $secretResolver->isConstantConfigured(SecretRegistry::AI_API_KEY),
             'openrouter_api_key_is_saved' => $secretResolver->hasStoredOption(SecretRegistry::AI_API_KEY),
             'ai_threshold' => (float) get_option('adct_parish_intake_ai_threshold', '0.55'),
+            'confidence_threshold' => $this->confidenceSetting('confidence_threshold'),
+            'field_confidence_threshold' => $this->confidenceSetting('field_confidence_threshold'),
             'retention_raw_enabled' => get_option(RetentionSettings::RAW_ENABLED_OPTION, '0') === '1',
             'retention_raw_days' => $this->retentionDays(
                 get_option(RetentionSettings::RAW_DAYS_OPTION, RetentionSettings::DEFAULT_RAW_DAYS),

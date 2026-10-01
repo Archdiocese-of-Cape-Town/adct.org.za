@@ -184,6 +184,7 @@ The Inbox shows received, extracting, parsed, failed and ignored messages to use
 | block_index | zero-based position of the source block in the message (a bulletin can yield several candidates) |
 | parish_id | best guess or known |
 | fields | JSON: title, description, start, end, all_day, parish_id, venue_id / venue_text, venue coordinates, contact, event_type, featured, image attachment id, and the trimmed source snippet (maximum 2,000 characters) |
+| field_confidence | JSON: per-field evidence and scoring (see below) |
 | recurrence | JSON: normalized supported RRULE, human-readable source phrase, RRULE parts, and optional `ambiguous` / `anchor_inferred` flags |
 | confidence | 0–1 |
 | parser_version, strategies, notes | provenance |
@@ -198,6 +199,27 @@ The Inbox shows received, extracting, parsed, failed and ignored messages to use
 The rule parser represents the start as `event_date` / `event_time` and only adds `event_end_date` / `event_end_time` when it finds a date or time range. Single dates and times omit the end fields. If a range's end is before its start, the parser adds a note and lowers confidence rather than silently reordering it. An ambiguous "next <weekday>" also produces a note and a small confidence reduction.
 
 Directory lookup adds `parish_id` and, when a venue resolves, `venue_id`, `venue_latitude` / `venue_longitude` (when available), and `venue_address` / `venue_suburb`. The `parish_match` and `venue_match` field objects record the match source and confidence; they are additional JSON keys and require no schema migration. Parish source is `sender`, `text` or `context`; venue source is `label`, `text` or `default`.
+
+### Per-field confidence
+
+`fields.field_confidence` records where each value came from, so a value the parser invented is never indistinguishable from one it read from the notice ([#43](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/43), [#130](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/130)). It is an additional JSON key inside the existing `fields` longtext column and requires no schema migration. The candidate's scalar `confidence` column is derived from it, so existing review-queue SQL keeps working unchanged.
+
+```json
+{
+  "score": 0.467,
+  "coverage": 0.667,
+  "fields": {
+    "event_date": { "score": 0.98, "origin": "explicit", "flags": [] },
+    "parish_name": { "score": 0.0, "origin": "unsupported", "flags": ["unanchored_parish_match"] }
+  }
+}
+```
+
+Each entry has a `score` from 0 to 1, an `origin` describing how the value was obtained, and zero or more `flags` naming specific weaknesses. `origin` is one of `directory_verified`, `labelled`, `explicit`, `directory_text`, `context`, `inferred`, `ai`, `unsupported` or `manual`. **`unsupported` is the fabrication marker**: the value is not stated in the notice and the parser fell back to a guess, so it scores 0 and additionally penalises the overall score. `flags` are a closed allow-list (`masthead_fallback`, `masthead_subject`, `sentence_fragment`, `unanchored_parish_match`, `bare_time_match`, `sender_fallback`, `no_date_context`, `weekday_mismatch`, `end_before_start`, `next_weekday_ambiguous`, `recurrence_ambiguous`).
+
+The top-level `score` is the candidate's overall confidence and `coverage` is the share of the field weight that carries any value at all. Both are recomputed on every parse; the stored column is the authoritative value for querying, and the payload is for display and for per-field highlighting.
+
+`field_confidence` is written by the scoring stage, not by extraction stages. Candidates parsed before this key existed simply omit it, and every reader tolerates its absence rather than failing.
 
 The parser stores a validator-approved RFC 5545 subset rule at `recurrence.rrule` and the matching source phrase at `recurrence.text`; its legacy frequency/day fields remain available for compatibility. The recurring series' start is `fields.event_date`. If the notice has no explicit start date, deterministic rules anchor to the first matching occurrence on or after the same reference date used by date parsing (bulletin range when available, otherwise received date or injected clock), add the `recurrence_anchor_inferred` note, and reduce confidence by 0.05. A yearless `UNTIL` date resolves to the next such month/day on or after that anchor and adds a note. For "daily during Lent/Advent", the parser does not guess a season date or start anchor and emits no RRULE; it adds `recurrence_ambiguous_season`, sets the confirmation/reprocess flag and applies the ambiguity confidence penalty. These are candidate JSON changes only and require no schema migration.
 
