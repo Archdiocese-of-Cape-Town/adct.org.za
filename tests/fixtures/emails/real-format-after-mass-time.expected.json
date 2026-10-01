@@ -1,0 +1,10 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Marriage preparation evening",
+    "parish_name": "Example Parish",
+    "event_date": "2027-09-15",
+    "event_time": "09:30"
+  },
+  "notes": []
+}
