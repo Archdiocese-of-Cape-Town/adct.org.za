@@ -254,24 +254,44 @@ final class ApprovalDecisionCheck
             $clock->setInstant(ApprovalDecisionCheckClock::BEFORE_DIGEST_HOUR);
             $job->beginRun();
             $step = $job->processNext((string) ($digest1 - 1));
-            $heldDigestNotices = (int) $wpdb->get_var($wpdb->prepare(
-                "SELECT COUNT(*) FROM {$base}approval_notices WHERE candidate_id IN (%d,%d)",
-                $digest1, $digest2
+            // Scope every count to one digest approver: the job also notifies every
+                        // site-wide REVIEW-capability user (administrators, editors, managers) in
+                        // per-item mode, and those notices are correct behaviour, not a broken hold.
+                        $heldDigestNotices = (int) $wpdb->get_var($wpdb->prepare(
+                            "SELECT COUNT(*) FROM {$base}approval_notices WHERE recipient = %s"
+                            . ' AND candidate_id IN (%d,%d)',
+                            $deanEmail, $digest1, $digest2
             ));
-            $heldDigestMail = (int) $wpdb->get_var($wpdb->prepare(
-                "SELECT COUNT(*) FROM {$base}mail_queue WHERE recipient = %s AND group_key LIKE %s",
-                $deanEmail, 'approval-digest:%'
+                        $heldDigestMail = (int) $wpdb->get_var($wpdb->prepare(
+                            "SELECT COUNT(*) FROM {$base}mail_queue WHERE recipient = %s AND group_key LIKE %s",
+                            $deanEmail, 'approval-digest:%'
             ));
-            $heldDigestTokens = (int) $wpdb->get_var($wpdb->prepare(
-                "SELECT COUNT(*) FROM {$base}action_tokens WHERE subject_type = %s AND subject_id IN (%d,%d)",
-                'event_candidate', $digest1, $digest2
-            ));
-            $check($step->checkpoint() === null
-                && $heldDigestNotices === 0 && $heldDigestMail === 0 && $heldDigestTokens === 0
-                && $wpdb->get_var($wpdb->prepare(
-                    "SELECT status FROM {$base}event_candidates WHERE id = %d", $digest1
-                )) === 'awaiting_approval',
-                'a digest approver must receive nothing before the digest hour.');
+                        $heldDigestTokens = (int) $wpdb->get_var($wpdb->prepare(
+                            "SELECT COUNT(*) FROM {$base}action_tokens WHERE subject_type = %s AND email = %s"
+                            . ' AND subject_id IN (%d,%d)',
+                            'event_candidate', $deanEmail, $digest1, $digest2
+                        ));
+                        // Assert each condition separately so a failure names the behaviour that broke
+                        // rather than collapsing into one indistinguishable boolean.
+                        $check($step->checkpoint() === null,
+                            'holding a digest before the digest hour must end the run with no checkpoint.');
+                        $check($heldDigestNotices === 0,
+                            'a digest approver must receive no approval notice before the digest hour.');
+                        $check($heldDigestMail === 0,
+                            'a digest approver must receive no digest email before the digest hour.');
+                        $check($heldDigestTokens === 0,
+                            'a digest approver must receive no actionable token before the digest hour.');
+                        $check($wpdb->get_var($wpdb->prepare(
+                            "SELECT status FROM {$base}event_candidates WHERE id = %d", $digest1
+                        )) === 'awaiting_approval',
+                            'holding a digest must leave the candidate awaiting approval.');
+                        // The reviewer switched to digest mode above, so the same hold applies to them.
+                        $check((int) $wpdb->get_var($wpdb->prepare(
+                            "SELECT COUNT(*) FROM {$base}approval_notices WHERE recipient = %s"
+                            . ' AND candidate_id IN (%d,%d)',
+                            $reviewerEmail, $digest1, $digest2
+                        )) === 0,
+                            'a digest-mode reviewer must also be held before the digest hour.');
             $clock->setInstant(ApprovalDecisionCheckClock::AFTER_DIGEST_HOUR);
             $job->beginRun();
             $job->processNext((string) ($digest1 - 1));
