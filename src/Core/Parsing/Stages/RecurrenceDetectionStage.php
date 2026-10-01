@@ -4,6 +4,7 @@ namespace ADCT\ParishIntake\Core\Parsing\Stages;
 
 use ADCT\ParishIntake\Core\Events\RRulePresetMapper;
 use ADCT\ParishIntake\Core\Events\RRuleValidator;
+use ADCT\ParishIntake\Core\Parsing\Confidence\FieldEvidence;
 use ADCT\ParishIntake\Core\Parsing\Contracts\StageInterface;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\ParseContext;
@@ -122,6 +123,10 @@ final class RecurrenceDetectionStage implements StageInterface
                 $definition['parts']
             );
             $result->setField('event_date', $anchor->format('Y-m-d'));
+            // The anchor is worked out from the recurrence rule, not read from the notice. It is
+                        // real evidence, but weaker than a stated date: a human still has to confirm the
+                        // occurrence, which is why the date is scored as inferred rather than explicit.
+                        $result->recordFieldEvidence('event_date', FieldEvidence::inferred());
             $result->addNote('recurrence_anchor_inferred: ' . $anchor->format('Y-m-d'));
         }
 
@@ -188,10 +193,23 @@ final class RecurrenceDetectionStage implements StageInterface
         $result->setClassification('recurring_event');
         $result->addStrategy('recurrence_detection');
 
-        if (! empty($recurrence['ambiguous'])) {
-            $result->setNeedsReprocess(true);
-            $result->addNote('Recurring wording detected but needs human confirmation.');
-        }
+                // `anchor_inferred` lowers the recurrence field to `inferred` rather than adding
+                                // a flag: an anchor derived from a real recurrence rule is weaker evidence, not
+                                // a fabrication. `ambiguous` stays a flag because it is a candidate-wide defect
+                                // charged separately in ConfidenceScoringStage.
+                                $ambiguous = ! empty($recurrence['ambiguous']);
+
+                                $result->recordFieldEvidence('recurrence', new FieldEvidence(
+                                    ($ambiguous || ! empty($recurrence['anchor_inferred']))
+                                        ? FieldEvidence::INFERRED
+                                        : FieldEvidence::EXPLICIT,
+                                    $ambiguous ? ['recurrence_ambiguous'] : []
+                                ));
+
+                if (! empty($recurrence['ambiguous'])) {
+                    $result->setNeedsReprocess(true);
+                    $result->addNote('Recurring wording detected but needs human confirmation.');
+                }
 
         return $result;
     }
