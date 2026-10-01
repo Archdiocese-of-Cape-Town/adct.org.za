@@ -88,6 +88,12 @@ The existing `Pipeline::parse(Message): ParseResult` API remains compatible and 
 
 ### Confidence scoring
 
+This is a reliability check for deciding what a person needs to check, not a ranking of events or a statistical probability of correctness. "Penalty" below means lowering the reliability indicator when the parser guessed or found conflicting information; it never means penalising a parish or submitter.
+
+Use the default overall review threshold of 0.55 and field warning threshold of 0.60. Operators do not need to tune them to use the plugin. Keep review routing independent of optional AI enrichment: enabling AI must not change the human-review rules. A weak title or date already holds the candidate for review even if its overall score is acceptable. Do not add a permanent publication ban based on parser evidence; a person can check and correct the notice through the existing confirmation and approval workflow. Every new event still requires dean or Archdiocese approval.
+
+Unsupported values in both HTML and plain-text confirmation previews are explicitly labelled as guesses not stated in the notice, distinct from ordinary uncertain values. Keep the extraction defects tracked in #128 and #129 separate: this change makes unreliable extraction visible, not correct. The numerical defaults and weights are adjustable implementation details under the existing offline-first and human-approval decisions, not a new ranking policy requiring a separate ADR.
+
 `ConfidenceScoringStage` is a thin stage that delegates to the pure-PHP `CandidateScorer`. Every stage that sets a field records a `FieldEvidence` value object at the same moment — the origin (was this read from the notice, taken from the directory, inferred, filled by AI, or *not supported at all*?) plus any specific weakness flags. Scoring itself happens once, at the end, from that evidence, so a value's score cannot drift from how it was obtained.
 
 This exists because a plausible-looking value the parser invented was previously indistinguishable from one it actually read ([#43](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/43), [#130](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/130)). A field marked `unsupported` now scores 0 *and* reduces the overall score, rather than counting as if it were extracted.
