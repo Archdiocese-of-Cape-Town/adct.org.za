@@ -1,0 +1,16 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Parish potluck supper",
+    "parish_name": "Example Parish",
+    "event_date": "2026-10-17",
+    "event_time": "18:00",
+    "venue": "Example Parish Hall"
+  },
+  "candidate_count": 1,
+  "known_failures": {
+    "classification": "#98",
+    "fields": "#98",
+    "candidate_count": "#98"
+      }
+    }

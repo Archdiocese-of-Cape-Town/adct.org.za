@@ -1,0 +1,13 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Parish finance meeting",
+    "parish_name": "Example Parish",
+    "event_date": "2026-10-01",
+    "event_time": "19:00",
+    "venue": "Example Parish Hall"
+  },
+  "known_failures": {
+    "fields.event_date": "#132"
+  }
+}
