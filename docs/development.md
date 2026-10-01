@@ -43,7 +43,7 @@ This creates `dist/adct-parish-intake.zip`. The script installs production depen
 
 Inbound RFC 822 parsing uses the pre-approved pure-PHP `zbateson/mail-mime-parser` 4.x package (PHP 8.1+, BSD-2-Clause; see [ADR 0012](decisions/0012-pure-php-mime-parser.md) and [ADR 0014](decisions/0014-mail-mime-parser-4-x.md)). It and its runtime dependencies are included in the Strauss-prefixed release; no `ext-imap` or `ext-dom` is needed. Stay on 4.x: the 3.0.8 and 3.0.9 releases narrow `guzzlehttp/psr7` to `^2.5` and force a major-version downgrade of the transitive set, and 3.0.7 is delisted from Packagist.
 
-Mailbox access uses the built-in PHP-stream client behind `Core\Ports\MailboxInterface` (see [ADR 0013](decisions/0013-built-in-pure-php-imap-client.md)). It adds no Composer dependency or `ext-imap` requirement. TLS peer verification is enabled by default; plain IMAP and disabled peer verification require an explicit test-only configuration. Messages larger than the configurable 30 MiB default are rejected before their bodies are fetched.
+Mailbox access currently uses the built-in PHP-stream client behind `Core\Ports\MailboxInterface` (historical [ADR 0013](decisions/0013-built-in-pure-php-imap-client.md)); [ADR 0017](decisions/0017-library-first-protocol-and-format-handling.md) requires replacing it with a suitable pure-PHP library. Until that replacement lands, it adds no Composer dependency or `ext-imap` requirement. TLS peer verification is enabled by default; plain IMAP and disabled peer verification require an explicit test-only configuration. Messages larger than the configurable 30 MiB default are rejected before their bodies are fetched.
 
 The IMAP protocol tests use a scripted transport and run with PHPUnit's regular unit suite. The separate GreenMail integration test is in the `greenmail` group and is not part of `composer test`:
 
@@ -99,6 +99,7 @@ docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scr
 8. **Security:** capabilities + nonces on every admin action; escape output; action links are GET-shows-page / POST-acts with hashed single-use tokens ([ADR 0004](decisions/0004-trust-and-confirmation-model.md)).
 9. **Docs in the same PR** when behaviour or design changes. New design decisions become an ADR in `docs/decisions/`.
 10. Commit messages: short imperative summary line, then a body explaining why.
+11. **Library first for common utilities** ([ADR 0017](decisions/0017-library-first-protocol-and-format-handling.md)): prefer maintained, PHP 8.2-compatible, appropriately licensed pure-PHP libraries for standard protocols and formats (including IMAP and HTML-to-text), rather than writing or extending custom implementations. Check extensions, security maintenance, resource limits and release prefixing; package size alone does not justify handwritten parsing. Keep domain-specific logic in the plugin. Document any necessary exception in an ADR and get owner approval before adding a paid service or a non-pure-PHP dependency. The existing IMAP client and HTML tokenizer have not yet been replaced.
 
 ## Confidence settings
 

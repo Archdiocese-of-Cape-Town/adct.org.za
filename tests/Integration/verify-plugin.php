@@ -5461,6 +5461,8 @@ require_once __DIR__ . '/ApprovalDecisionCheck.php';
 ApprovalDecisionCheck::run($fail);
 require_once __DIR__ . '/ReviewQueueCheck.php';
 ReviewQueueCheck::run($fail);
+require_once __DIR__ . '/CandidateDetailCheck.php';
+CandidateDetailCheck::run($fail);
 
 foreach (['administrator', 'editor'] as $roleName) {
     $role = get_role($roleName);
@@ -5507,4 +5509,4 @@ foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
     }
 }
 
-WP_CLI::success('Installed release ZIP checks passed: schema v10 fresh and upgrade paths, v7 confirmation fields, v8 approval notices, v9 processed-mail ownership and v10 sender suggestions, action-token, approval/review-queue and confirmation flows, bounded inbound parsing and safe reprocessing, mailbox retention safety, event and directory administration, and public output.');
+WP_CLI::success('Installed release ZIP checks passed: schema v10 fresh and upgrade paths, v7 confirmation fields, v8 approval notices, v9 processed-mail ownership and v10 sender suggestions, action-token, approval/review-queue/candidate-detail and confirmation flows, bounded inbound parsing and safe reprocessing, mailbox retention safety, event and directory administration, and public output.');

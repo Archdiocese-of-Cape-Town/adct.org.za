@@ -64,6 +64,7 @@ use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
 use ADCT\ParishIntake\Core\Support\SystemClock;
+use ADCT\ParishIntake\Core\Review\CandidateEditValidator;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use ADCT\ParishIntake\WordPress\Pdf\PrinsFrankPdfTextExtractor;
 use ADCT\ParishIntake\WordPress\Pdf\WordPressAttachmentExtractionStore;
@@ -344,7 +345,13 @@ final class Plugin
             );
             $this->reviewQueuePage = new ReviewQueuePage(
                 new ReviewQueueRepository($database, $clock, new ReviewQueuePolicy(), $confidenceThreshold),
-                $this->candidatePublisher
+                $this->candidatePublisher,
+                new ReviewQueuePolicy(),
+                $inboundMessages,
+                $attachmentRepository,
+                new ProtectedInboundMailStorage(),
+                new CandidateEditValidator(),
+                $this->pluginFile
             );
         }
         $this->eventOccurrenceHooks = new EventOccurrenceHooks(
@@ -854,6 +861,7 @@ final class Plugin
         add_action('admin_menu', [$this->mailboxesPage, 'registerMenu']);
         add_action('admin_menu', [$this->inboundMessagesPage, 'registerMenu']);
         add_action('admin_menu', [$this->reviewQueuePage, 'registerMenu']);
+        add_action('admin_enqueue_scripts', [$this->reviewQueuePage, 'enqueueDetailAssets']);
         add_action('admin_menu', [$this->outboundMailPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
         add_action('admin_menu', [$this->healthPage, 'registerMenu']);
@@ -876,6 +884,15 @@ final class Plugin
             [$this->inboundMessagesPage, 'handleReprocess']
         );
         add_action('admin_post_adct_pi_review_bulk', [$this->reviewQueuePage, 'handleBulk']);
+        add_action('admin_post_adct_pi_candidate_save', [$this->reviewQueuePage, 'handleSave']);
+        add_action(
+            'admin_post_adct_pi_candidate_raw_message',
+            [$this->reviewQueuePage, 'handleRawMessage']
+        );
+        add_action(
+            'admin_post_adct_pi_candidate_attachment',
+            [$this->reviewQueuePage, 'handleAttachment']
+        );
         add_action('admin_post_adct_pi_test_mailbox', [$this->mailboxesPage, 'handleTestConnection']);
         add_action(
             'admin_post_adct_pi_create_mailbox_processed_folder',
