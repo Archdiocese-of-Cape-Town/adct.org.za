@@ -136,6 +136,61 @@ final class ReviewQueueRepository
     }
 
     /**
+     * The same scoping rule as {@see findScoped()}, stated explicitly for a user
+     * who holds the archdiocese-wide review capability.
+     *
+     * `findScoped()` takes the caller's `bool` at face value, so naming the case
+     * here keeps a reviewer's authority from depending on how the flag was set.
+     */
+    public function findScopedForReviewer(int $id, int $userId, string $email): ?array
+    {
+        return $this->findScoped($id, $userId, $email, true);
+    }
+
+    /**
+     * The message a candidate was extracted from.
+     *
+     * Only for confirming that a stored attachment belongs to the candidate a
+     * reviewer has already opened; the detail screen and the save handler both
+     * authorise through `findScoped()` first.
+     */
+    public function findMessageOf(int $id): ?int
+    {
+        if ($id < 1) {
+            throw new InvalidArgumentException('The candidate ID must be positive.');
+        }
+        $row = $this->row($this->database->prepare(
+            "SELECT message_id FROM {$this->candidates} WHERE id = %d",
+            $id
+        ));
+
+        return $row === null || ! isset($row['message_id']) ? null : (int) $row['message_id'];
+    }
+
+    /**
+     * The audit entries recorded against one candidate, newest first.
+     *
+     * The detail screen shows these so a reviewer can see who has already
+     * touched a candidate and what they changed.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function history(int $id, int $limit = 25): array
+    {
+        if ($id < 1) {
+            throw new InvalidArgumentException('The candidate ID must be positive.');
+        }
+
+        return $this->rows($this->database->prepare(
+            "SELECT actor, action, details, created_at FROM {$this->audit} "
+            . "WHERE subject_type = %s AND subject_id = %d ORDER BY created_at DESC, id DESC LIMIT %d",
+            'event_candidate',
+            $id,
+            max(1, min(100, $limit))
+        ));
+    }
+
+    /**
      * @return 'decided'|'already_decided'|'manual_review'|'retry'
      */
     public function decide(int $id, string $action, int $userId, string $email, bool $reviewer, string $reason = ''): string
@@ -254,8 +309,113 @@ final class ReviewQueueRepository
         }
     }
 
-    /** @return list<array<string, mixed>> */
-    public function activeParishes(): array
+    /**
+         * Writes a reviewer's corrected `fields` and `recurrence` back to a
+         * candidate.
+         *
+         * Only an undecided candidate inside the caller's review scope can be
+         * edited, and the row is locked for the duration so a decision made in
+         * another tab cannot be overwritten by an edit that started earlier. The
+         * parish column is realigned with the JSON, because {@see assignParish()}
+         * keeps the two in step and a reviewer changing the parish on this form must
+         * not desynchronise them.
+         *
+         * Returns `saved` when the candidate was rewritten, `unchanged` when the
+         * reviewer's form matched what was already stored, and `not_editable` when
+         * the candidate moved out of reach before the write landed.
+         *
+         * @param array<string, mixed> $fields
+         * @param array<string, mixed> $recurrence
+         * @param list<string>         $changedFields keys the reviewer actually altered
+         * @return 'saved'|'unchanged'|'not_editable'
+         */
+        public function updateFields(
+            int $id,
+            array $fields,
+            array $recurrence,
+            array $changedFields,
+            int $userId,
+            string $email,
+            bool $reviewer
+        ): string {
+            if ($id < 1) {
+                throw new InvalidArgumentException('The candidate ID must be positive.');
+            }
+            $this->execute('START TRANSACTION');
+            try {
+                $candidate = $this->lockedCandidate($id, $userId, $email, $reviewer);
+                if ($candidate === null) {
+                    throw new DomainException('This candidate is outside your review queue.');
+                }
+                if (! $this->isEditable($candidate)) {
+                    $this->execute('COMMIT');
+
+                    return 'not_editable';
+                }
+                if ($changedFields === []) {
+                    $this->execute('COMMIT');
+
+                    return 'unchanged';
+                }
+                $now = $this->timestamp();
+                $parishId = isset($fields['parish_id']) ? (int) $fields['parish_id'] : null;
+                $updated = $this->execute($this->database->prepare(
+                    "UPDATE {$this->candidates} SET fields = %s, recurrence = %s, parish_id = %s, updated_at = %s "
+                    . 'WHERE id = %d AND status = %s AND approved_by IS NULL AND decided_at IS NULL',
+                    json_encode($fields, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE),
+                    $this->encodeRecurrence($recurrence),
+                    $parishId,
+                    $now,
+                    $id,
+                    'awaiting_approval'
+                ));
+                if ($updated !== 1) {
+                    $this->execute('ROLLBACK');
+
+                    return 'not_editable';
+                }
+                $this->audit($email, 'candidate_edited', $id, [
+                    'role' => $reviewer ? 'reviewer' : 'dean',
+                    'changed_fields' => array_values($changedFields),
+                ], $now);
+                $this->execute('COMMIT');
+
+                return 'saved';
+            } catch (Throwable $failure) {
+                $this->rollback($failure);
+                throw $failure;
+            }
+        }
+
+        /**
+         * The recurrence JSON, or SQL NULL when the reviewer cleared the rule.
+         *
+         * A NULL is kept distinct from `[]` because the parser writes NULL for a
+         * single event and {@see CandidatePublisher} treats the two differently.
+         *
+         * @param array<string, mixed> $recurrence
+         */
+        private function encodeRecurrence(array $recurrence): ?string
+        {
+            return $recurrence === []
+                ? null
+                : json_encode($recurrence, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+        }
+
+        /**
+         * A candidate may be edited only while it is still awaiting a decision.
+         *
+         * @param array<string, mixed> $candidate
+         */
+        private function isEditable(array $candidate): bool
+        {
+            return $candidate['status'] === 'awaiting_approval'
+                && empty($candidate['approved_by'])
+                && empty($candidate['decided_at']);
+        }
+
+        /** @return list<array<string, mixed>> */
+        public function activeParishes(): array
     {
         return $this->rows($this->database->prepare(
             "SELECT id, name FROM {$this->parishes} WHERE status = %s ORDER BY name ASC",
