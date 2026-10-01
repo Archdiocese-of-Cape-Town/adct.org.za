@@ -278,6 +278,29 @@ final class ContactServiceTest extends TestCase
         }
     }
 
+    public function testConfirmingALearnedSenderKeepsRemindersOffUntilAnOperatorOptsIn(): void
+    {
+        $store = new FakeParishContactStore();
+        $service = new ContactService($store, new FixedContactClock());
+        $service->learnPending('sender@example.test', 11, 'signature');
+
+        self::assertSame(0, (int) $store->rows[1]['receives_reminders']);
+
+        $service->confirmPending(12, 'sender@example.test');
+
+        self::assertSame(SenderTrust::VERIFIED, $service->lookup('sender@example.test')->trust);
+        $confirmed = $store->findForParish(12);
+        self::assertCount(1, $confirmed);
+        self::assertSame(
+            0,
+            (int) $confirmed[0]['receives_reminders'],
+            'Confirming a learned sender must not silently opt it into reminders.'
+        );
+
+        $service->updateLink((int) $confirmed[0]['id'], 12, 'sender@example.test', '', '', true);
+        self::assertSame(1, (int) $store->findForParish(12)[0]['receives_reminders']);
+    }
+
     public function testBlockedUnlinkedSenderCanOnlyBeRelearnedAfterExplicitUnblock(): void
     {
         $service = new ContactService(new FakeParishContactStore(), new FixedContactClock());
@@ -311,6 +334,7 @@ class FakeParishContactStore implements ParishContactStoreInterface
         $this->rows[$id] = [
             'id' => $id, 'parish_id' => 0, 'email' => $email, 'trust' => SenderTrust::PENDING,
             'verified_at' => null, 'suggested_parish_id' => $suggestedParishId, 'suggestion_source' => $source,
+            'receives_reminders' => 0,
         ];
     }
 

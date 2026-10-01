@@ -104,7 +104,13 @@ Selecting a default clears the flag from the parish's other venues. Deactivating
 | verified_at | set when the contact confirms via token or an admin links them |
 | wp_user_id | set when a portal account exists |
 | last_seen_at | last message received from this address |
-| receives_reminders | bool |
+| receives_reminders | bool; a learned `pending` sender is always stored as `0`, and confirming it keeps `0` |
+
+Reminder opt-in: `receives_reminders` is `0` for every address the plugin learns on its own, and stays `0` when an
+administrator later confirms it on the Senders screen. A learned address has never agreed to receive reminders, so
+neither learning nor confirmation may opt it in. Only an operator ticking **Receives reminders** when linking an
+address, or saving that checkbox on the parish contact, enables it. Reminder work (#70) must treat anything other than
+an explicit opt-in as "do not send".
 
 Trust belongs to the **normalised email address**, not an individual parish link. The schema represents an address linked to several parishes as one row per `(parish_id, email)`; the Core contact service keeps `trust` and `verified_at` consistent across every row for that address. Blocking an address therefore blocks it at every linked parish, and verifying it verifies every link.
 

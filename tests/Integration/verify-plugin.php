@@ -4859,6 +4859,22 @@ if (
     $fail('An unknown sender was not saved as an unlinked pending contact with a suggestion-only parish guess.');
 }
 
+// Confirming a learned sender must not opt it into reminders: the address never agreed to receive them.
+$contactService->confirmPending($firstParishId, $pendingSenderEmail);
+$confirmedSenderRow = $wpdb->get_row($wpdb->prepare(
+    "SELECT parish_id, trust, receives_reminders FROM {$contactTable} WHERE email = %s LIMIT 1",
+    $pendingSenderEmail
+), ARRAY_A);
+
+if (
+    ! is_array($confirmedSenderRow)
+    || (int) ($confirmedSenderRow['parish_id'] ?? 0) !== $firstParishId
+    || ($confirmedSenderRow['trust'] ?? '') !== 'verified'
+    || (int) ($confirmedSenderRow['receives_reminders'] ?? 1) !== 0
+) {
+    $fail('Confirming a learned sender opted it into reminders without an operator opt-in.');
+}
+
 $senderAddressRows = $contactRepository->findSenderAddresses(['search' => $sharedSenderEmail], 20, 0);
 $senderAddressEmails = array_map(
     static fn (array $sender): string => (string) ($sender['email'] ?? ''),
