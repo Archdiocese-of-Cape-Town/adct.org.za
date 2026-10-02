@@ -9,7 +9,7 @@ use ADCT\ParishIntake\Core\Auth\ActionTokenRateLimiter;
 use ADCT\ParishIntake\Core\Auth\ActionTokenRenewalService;
 use ADCT\ParishIntake\Core\Auth\ActionTokenService;
 use ADCT\ParishIntake\Core\Auth\ActionTokenStatus;
-use ADCT\ParishIntake\Core\Support\SystemClock;
+use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalNoticeJob;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalRecipients;
 use ADCT\ParishIntake\WordPress\Approval\ReviewerNotificationPreference;
@@ -34,7 +34,7 @@ final class ApprovalDecisionCheck
         $suffix = bin2hex(random_bytes(5));
         $base = $wpdb->prefix . 'adct_pi_';
         $db = new WordPressDatabaseConnection();
-        $clock = new SystemClock();
+        $clock = new ApprovalDecisionCheckClock();
         $tokens = new ActionTokenService(new WordPressActionTokenStore($db), $clock);
         $recipients = new ApprovalRecipients(new ApprovalRouteResolver(new ApprovalRouteRepository($db)));
         $queue = new WordPressMailQueueRepository($db);
@@ -249,6 +249,50 @@ final class ApprovalDecisionCheck
             $wpdb->update($base . 'deanery_approvers', ['notify_mode' => 'digest'], ['wp_user_id' => $deanId]);
             $digest1 = $candidate('digest-one', $parish);
             $digest2 = $candidate('digest-two', $parish);
+            // Before the digest hour the job must hold the digest, leaving the run complete
+            // and the candidate untouched, so the hold cannot be mistaken for a partial run.
+            $clock->setInstant(ApprovalDecisionCheckClock::BEFORE_DIGEST_HOUR);
+            $job->beginRun();
+            $step = $job->processNext((string) ($digest1 - 1));
+            // Scope every count to one digest approver: the job also notifies every
+                        // site-wide REVIEW-capability user (administrators, editors, managers) in
+                        // per-item mode, and those notices are correct behaviour, not a broken hold.
+                        $heldDigestNotices = (int) $wpdb->get_var($wpdb->prepare(
+                            "SELECT COUNT(*) FROM {$base}approval_notices WHERE recipient = %s"
+                            . ' AND candidate_id IN (%d,%d)',
+                            $deanEmail, $digest1, $digest2
+            ));
+                        $heldDigestMail = (int) $wpdb->get_var($wpdb->prepare(
+                            "SELECT COUNT(*) FROM {$base}mail_queue WHERE recipient = %s AND group_key LIKE %s",
+                            $deanEmail, 'approval-digest:%'
+            ));
+                        $heldDigestTokens = (int) $wpdb->get_var($wpdb->prepare(
+                            "SELECT COUNT(*) FROM {$base}action_tokens WHERE subject_type = %s AND email = %s"
+                            . ' AND subject_id IN (%d,%d)',
+                            'event_candidate', $deanEmail, $digest1, $digest2
+                        ));
+                        // Assert each condition separately so a failure names the behaviour that broke
+                        // rather than collapsing into one indistinguishable boolean.
+                        $check($step->checkpoint() === null,
+                            'holding a digest before the digest hour must end the run with no checkpoint.');
+                        $check($heldDigestNotices === 0,
+                            'a digest approver must receive no approval notice before the digest hour.');
+                        $check($heldDigestMail === 0,
+                            'a digest approver must receive no digest email before the digest hour.');
+                        $check($heldDigestTokens === 0,
+                            'a digest approver must receive no actionable token before the digest hour.');
+                        $check($wpdb->get_var($wpdb->prepare(
+                            "SELECT status FROM {$base}event_candidates WHERE id = %d", $digest1
+                        )) === 'awaiting_approval',
+                            'holding a digest must leave the candidate awaiting approval.');
+                        // The reviewer switched to digest mode above, so the same hold applies to them.
+                        $check((int) $wpdb->get_var($wpdb->prepare(
+                            "SELECT COUNT(*) FROM {$base}approval_notices WHERE recipient = %s"
+                            . ' AND candidate_id IN (%d,%d)',
+                            $reviewerEmail, $digest1, $digest2
+                        )) === 0,
+                            'a digest-mode reviewer must also be held before the digest hour.');
+            $clock->setInstant(ApprovalDecisionCheckClock::AFTER_DIGEST_HOUR);
             $job->beginRun();
             $job->processNext((string) ($digest1 - 1));
             [$digestMail, $digestLinks] = $tokensFor($digest1, $deanEmail);
@@ -399,6 +443,8 @@ final class ApprovalDecisionCheck
                 'publisher recovery must fail closed for an ambiguous candidate after reviewer approval is recorded.');
 
             $wpdb->update($base . 'deanery_approvers', ['notify_mode' => 'each'], ['wp_user_id' => $deanId]);
+            // Still before the digest hour: a per-item approver must never be held.
+            $clock->setInstant(ApprovalDecisionCheckClock::BEFORE_DIGEST_HOUR);
             $batch = [];
             for ($index = 0; $index < 21; ++$index) {
                 $batch[] = $candidate('batch-' . $index, $parish);
@@ -471,5 +517,39 @@ final class ApprovalDecisionCheck
             $wpdb->delete($base . 'parishes', ['id' => $noDeanery]);
             $wpdb->delete($base . 'deaneries', ['id' => $deanery]);
         }
+    }
+}
+
+/**
+ * A movable fixed clock. The digest hour gate depends on the wall-clock time in
+ * Africa/Johannesburg, so this harness sets the instant explicitly instead of
+ * letting a real SystemClock decide whether the digest email should go out.
+ */
+final class ApprovalDecisionCheckClock implements ClockInterface
+{
+    /** 06:30 SAST: before the default 07:00 digest hour. */
+    public const BEFORE_DIGEST_HOUR = '2026-09-25 06:30:00';
+
+    /** 08:15 SAST: after the default digest hour, still the same SAST day. */
+    public const AFTER_DIGEST_HOUR = '2026-09-25 08:15:00';
+
+    private DateTimeImmutable $instant;
+
+    public function __construct()
+    {
+        $this->setInstant(self::AFTER_DIGEST_HOUR);
+    }
+
+    public function now(): DateTimeImmutable
+    {
+        return $this->instant;
+    }
+
+    public function setInstant(string $localTime): void
+    {
+        $this->instant = new DateTimeImmutable(
+            $localTime,
+            new DateTimeZone('Africa/Johannesburg')
+        );
     }
 }
