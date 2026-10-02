@@ -2,6 +2,7 @@
 
 namespace ADCT\ParishIntake\Core\Parsing\Stages;
 
+use ADCT\ParishIntake\Core\Parsing\BulletinMastheadMatcher;
 use ADCT\ParishIntake\Core\Parsing\Confidence\FieldEvidence;
 use ADCT\ParishIntake\Core\Parsing\Contracts\StageInterface;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
@@ -19,6 +20,28 @@ final class RuleBasedExtractionStage implements StageInterface
     private const WEEKDAY_PATTERN = '(?:Saturday|Sat|Sunday|Sun|Monday|Mon|Tuesday|Tues|Tue|Wednesday|Wed|Thursday|Thurs|Thur|Thu|Friday|Fri)';
     private const MONTH_PATTERN = '(?:January|Jan|February|Feb|March|Mar|April|Apr|May|June|Jun|July|Jul|August|Aug|September|Sept|Sep|October|Oct|November|Nov|December|Dec)';
     private const EVENT_KEYWORDS = ['mass', 'healing', 'retreat', 'novena', 'pilgrimage', 'fundraiser', 'conference', 'celebration', 'vigil', 'feast'];
+    /**
+     * A clock time: an hour with a colon or dotted minute part, or a bare hour carrying
+     * a meridiem. The leading lookbehind keeps the token out of longer digit runs (phone
+     * numbers, verse numbers) and out of decimals, and the trailing guards stop a dotted
+     * date such as "15.06.24" being read as 15:06. A dotted time deliberately does not
+     * require a word boundary before it, because the dot in "10.00" is what would fail
+     * one.
+     */
+    private const TIME_TOKEN = '(?<![\d:.,A-Za-z$£€])(?:\d{1,2}(?:[:.]\d{2})(?!\d)(?!\.\d)(?:\s*[ap]m)?|\d{1,2}\s*[ap]m)(?![\d])';
+    /**
+     * A currency symbol sitting directly before a time-shaped number. This is a
+     * separate check rather than an extra lookbehind branch because a price is often
+     * spaced away from its symbol ("R 20.00"), which no fixed-width lookbehind can
+     * reach, so the symbol is matched against the text leading up to the match instead.
+     */
+    private const CURRENCY_PREFIX = '~(?:[Rr]|[$£€])\s*$~';
+    /**
+     * The opening end of a range may also be a bare hour, because "7-9pm" states its
+     * meridiem once at the far end. A bare hour is only ever read inside a range, never
+     * on its own, so "The event begins 7." is not silently promoted to 07:00.
+     */
+    private const RANGE_START_TOKEN = '(?<![\d:.,A-Za-z$£€])(?:' . self::TIME_TOKEN . '|\d{1,2}(?![\d:.,A-Za-z]))';
     private const NOTICE_KEYWORDS = ['notice', 'announcement', 'newsletter', 'update', 'bulletin'];
 
     private ClockInterface $clock;
@@ -40,28 +63,48 @@ final class RuleBasedExtractionStage implements StageInterface
             $blockContext = [];
         }
 
-        $bulletinRange = $this->findBulletinDateRange($text);
-        $dateText = $text;
-
-        if ($bulletinRange !== null) {
-            $dateText = substr_replace(
-                $text,
-                ' ',
-                $bulletinRange['offset'],
-                strlen($bulletinRange['match'])
-            );
-        } elseif (isset($blockContext['bulletin_date_range']) && is_string($blockContext['bulletin_date_range'])) {
-            $bulletinRange = $this->findBulletinDateRange($blockContext['bulletin_date_range']);
-        }
-
-        $referenceDate = $bulletinRange['date'] ?? $this->referenceDate($message);
+        $masthead = $this->resolveMasthead($text, $blockContext);
+        $referenceDate = $masthead['date'] ?? $this->referenceDate($message);
         $context->setRuntimeValue('reference_date', $referenceDate);
+        $dateText = $masthead === null ? $text : $this->blankOut($text, $masthead['offset'], $masthead['match']);
         $monthContext = isset($blockContext['month']) && is_string($blockContext['month'])
             ? $blockContext['month']
             : null;
         $yearContext = isset($blockContext['year']) && is_numeric($blockContext['year'])
             ? (int) $blockContext['year']
             : null;
+
+        if ($masthead !== null) {
+            // The masthead is wider evidence than block context: it is tied to the words
+            // "bulletin" or "newsletter", so a bare month and year is a publication date
+            // rather than unlabelled body copy. With no year available anywhere the
+            // masthead still pins the month, which is what "end of September" needs.
+            $monthContext ??= $masthead['month'];
+
+            // A reviewer seeing a date they cannot trace back to the text needs to know
+            // where the year came from. Suppressed when the year was already pinned by
+            // block context, because then nothing was inferred.
+            if (! isset($blockContext['year'])) {
+                $result->addNote(sprintf(
+                    'The year was taken from the bulletin masthead, %s %d, which the event text did not state.',
+                    $masthead['month'],
+                    $masthead['year']
+                ));
+            }
+        }
+
+        // With a masthead the year is read back off the reference date rather than off
+        // the masthead, so that one date governs both the year and the ordering. A
+        // wrapping range ("28 December to 4 January 2027") is the reason: the matcher's
+        // year belongs to the end month, while nextMonthDay() needs the start year, and
+        // handing the raw year to both would double-count the adjustment.
+        //
+        // Without a masthead the year stays unknown, so a yearless date still rolls
+        // forward to its next occurrence on or after the received date.
+        if ($yearContext === null && $masthead !== null) {
+            $yearContext = (int) $referenceDate->format('Y');
+        }
+
         $dateText = $this->removeUntilDate($dateText);
         $replacementText = $this->replacementScheduleText($body);
         $replacementDate = $replacementText === null
@@ -583,10 +626,22 @@ final class RuleBasedExtractionStage implements StageInterface
         }
 
         $relativePatterns = [
-            'this_weekday' => '~\bthis\s+(?<weekday>' . self::WEEKDAY_PATTERN . ')\b~i',
-            'next_weekday' => '~\bnext\s+(?<weekday>' . self::WEEKDAY_PATTERN . ')\b~i',
+            // "this coming <weekday>" and "coming <weekday>" are the same rule as
+            // "this <weekday>": a parish writes both, and the word "coming" in
+            // between must not stop the date resolving.
+            //
+            // At least one qualifier is required. Making both optional would turn a
+            // bare weekday into a date, which collides with recurrence phrases such as
+            // "every Tuesday" and with "on or after 29 September".
+            'this_weekday' => '~\b(?:(?:this|coming)\s+)+(?<weekday>' . self::WEEKDAY_PATTERN . ')\b~i',
+            'next_weekday' => '~\bnext\s+(?:coming\s+)?(?<weekday>' . self::WEEKDAY_PATTERN . ')\b~i',
             'tomorrow' => '~\btomorrow\b~i',
             'tonight' => '~\btonight\b~i',
+            // "end of ..." is a deadline phrasing, but it is the only date information
+            // the line carries, so it is resolved here. Typed as a deadline
+            // separately -- see the note in docs/parish-intake-project-backlog.md.
+            'end_of_month' => '~\b(?:end|close)\s+(?:of\s+)?(?:the\s+)?(?:(?<month>' . self::MONTH_PATTERN . ')\.?(?:,?\s+(?<year>\d{4}))?|month|this\s+month|next\s+month)\b~iu',
+            'first_of_month' => '~\b(?:the\s+)?first\s+of\s+(?<month>' . self::MONTH_PATTERN . ')\.?(?:,?\s+(?<year>\d{4}))?\b~iu',
         ];
 
         foreach ($relativePatterns as $type => $pattern) {
@@ -640,6 +695,16 @@ final class RuleBasedExtractionStage implements StageInterface
             } elseif ($candidate['type'] === 'tonight') {
                 $date = $referenceDate;
                 $weekdayMismatch = false;
+            } elseif ($candidate['type'] === 'end_of_month') {
+                $date = $this->resolveEndOfMonth($match, $referenceDate, $monthContext, $yearContext);
+                $weekdayMismatch = false;
+            } elseif ($candidate['type'] === 'first_of_month') {
+                $monthText = $this->capturedValue($match, 'month');
+                $month = $this->monthNumber($monthText ?? '');
+                $date = $month === null
+                    ? null
+                    : $this->resolveMonthDay(1, $month, $this->capturedValue($match, 'year'), $referenceDate, $yearContext);
+                $weekdayMismatch = false;
             } else {
                 $monthText = $this->capturedValue($match, 'month');
                 $month = $monthText !== null && ctype_digit($monthText)
@@ -653,7 +718,7 @@ final class RuleBasedExtractionStage implements StageInterface
                 $day = (int) $this->capturedValue($match, 'day');
                 $yearText = $this->capturedValue($match, 'year');
                 $date = $yearText === null
-                    ? $this->nextMonthDay($day, $month, $referenceDate)
+                    ? $this->nextMonthDay($day, $month, $referenceDate, $yearContext)
                     : $this->makeDate($this->normalizeYear($yearText), $month, $day);
 
                 if ($date === null) {
@@ -692,6 +757,138 @@ final class RuleBasedExtractionStage implements StageInterface
         }
 
         return null;
+    }
+
+    /**
+     * Resolves "end of this month", "end of September" and "end of September 2026"
+     * to the last day of the month, never the first.
+     *
+     * A named month with no year is read against the bulletin month context where one
+     * is known, so "end of September" in a September bulletin means this year rather
+     * than rolling forward a whole year. "Next month" is relative to the reference
+     * date.
+     *
+     * @param array<int, array{0: string, 1: int}|null> $match
+     */
+    private function resolveEndOfMonth(
+        array $match,
+        DateTimeImmutable $referenceDate,
+        ?string $monthContext,
+        ?int $yearContext
+    ): ?DateTimeImmutable {
+        $monthText = $this->capturedValue($match, 'month');
+        $month = $monthText === null ? null : $this->monthNumber($monthText);
+
+        if ($month === null) {
+            return $this->resolveRelativeMonth($match, $referenceDate, $monthContext, $yearContext);
+        }
+
+        $year = $this->capturedValue($match, 'year');
+
+        if ($year !== null) {
+            return $this->lastDayOfMonth((int) $this->normalizeYear($year), $month);
+        }
+
+        $contextMonth = $monthContext === null ? null : $this->monthNumber($monthContext);
+
+        if ($contextMonth !== null) {
+            // A year stated in the document is authoritative, so the deadline is not
+            // rolled past it just because the day has already gone by. With only a
+            // month known, a deadline already in the past must roll forward.
+            $date = $this->lastDayOfMonth($yearContext ?? (int) $referenceDate->format('Y'), $month);
+
+            if ($date !== null && $yearContext === null && $date >= $referenceDate) {
+                return $date;
+            }
+
+            if ($date !== null && $yearContext !== null) {
+                return $date;
+            }
+        }
+
+        return $this->lastDayOfMonth((int) $referenceDate->format('Y'), $month);
+    }
+
+    /**
+     * "end of this month" and "end of next month" carry no month name of their own.
+     *
+     * @param array<int, array{0: string, 1: int}|null> $match
+     */
+    private function resolveRelativeMonth(
+        array $match,
+        DateTimeImmutable $referenceDate,
+        ?string $monthContext,
+        ?int $yearContext
+    ): ?DateTimeImmutable {
+        $whole = strtolower($match[0][0] ?? '');
+
+        if (str_contains($whole, 'next')) {
+            $anchor = $monthContext === null ? null : $this->monthNumber($monthContext);
+
+            if ($anchor !== null) {
+                $year = $yearContext ?? (int) $referenceDate->format('Y');
+
+                if ($anchor === 12) {
+                    return $this->lastDayOfMonth($year + 1, 1);
+                }
+
+                return $this->lastDayOfMonth($year, $anchor + 1);
+            }
+
+            return $referenceDate->modify('last day of next month');
+        }
+
+        $contextMonth = $monthContext === null ? null : $this->monthNumber($monthContext);
+        $month = $contextMonth ?? (int) $referenceDate->format('n');
+        $year = $yearContext ?? (int) $referenceDate->format('Y');
+        $date = $this->lastDayOfMonth($year, $month);
+
+        if ($date === null) {
+            return null;
+        }
+
+        // "the month" is the calendar month the reference date falls in, so it never
+        // needs rolling forward. Guard anyway so a stale bulletin date cannot produce
+        // a deadline that has already passed.
+        if (str_contains($whole, 'this') && $date < $referenceDate) {
+            return $this->lastDayOfMonth($year + 1, $month);
+        }
+
+        return $date;
+    }
+
+    private function lastDayOfMonth(int $year, int $month): ?DateTimeImmutable
+    {
+        if ($year < 1 || $month < 1 || $month > 12) {
+            return null;
+        }
+
+        // Deliberately not cal_days_in_month(): that lives in ext-calendar, which the
+        // hosting environment is not required to have. "last day of month" is
+        // calendar-correct for February, so it needs no leap-year special case.
+        $lastDay = DateTimeImmutable::createFromFormat(
+            '!Y-m',
+            sprintf('%04d-%02d', $year, $month),
+            new DateTimeZone(self::LOCAL_TIMEZONE)
+        );
+
+        if (! $lastDay instanceof DateTimeImmutable) {
+            return null;
+        }
+
+        return $lastDay->modify('last day of this month')->setTime(0, 0);
+    }
+
+    private function resolveMonthDay(
+        int $day,
+        int $month,
+        ?string $yearText,
+        DateTimeImmutable $referenceDate,
+        ?int $yearContext = null
+    ): ?DateTimeImmutable {
+        return $yearText === null
+            ? $this->nextMonthDay($day, $month, $referenceDate, $yearContext)
+            : $this->makeDate($this->normalizeYear($yearText), $month, $day);
     }
 
     /**
@@ -750,83 +947,212 @@ final class RuleBasedExtractionStage implements StageInterface
     }
 
     /**
-         * @return array{start: string, end: ?string, end_before_start: bool, type: string}|null
+     * @return array{start: string, end: ?string, end_before_start: bool, type: string}|null
      */
     private function extractTimes(string $text): ?array
     {
-        $timeToken = '(?:\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2})';
-        $rangePattern = '~\b(?:from\s+)?(?<start>' . $timeToken . ')\s+to\s+(?<end>' . $timeToken . ')\b~i';
+        $citations = $this->scriptureCitationSpans($text);
 
-        preg_match_all($rangePattern, $text, $rangeMatches, PREG_SET_ORDER);
+        // A range is read as a range whether it is spelled out ("from 9am to 1pm") or
+        // joined by a dash ("8.30-10.00am"). The two forms are matched separately so that
+        // a pair of bare numbers joined by a dash can be told apart from a date range:
+        // the dash form only counts when both ends state minutes or one end carries a
+        // meridiem, which is what keeps "5-6 October" a date range.
+        $patterns = [
+            '~(?:from\s+)?(?<start>' . self::RANGE_START_TOKEN . ')\s+to\s+(?<end>' . self::TIME_TOKEN . ')~i',
+            '~(?<start>' . self::RANGE_START_TOKEN . ')\s*[-–—]\s*(?<end>' . self::TIME_TOKEN . ')~ui',
+        ];
 
-        foreach ($rangeMatches as $match) {
-            $start = $this->normalizeTime($match['start']);
-            $end = $this->normalizeTime($match['end']);
+        foreach ($patterns as $pattern) {
+            preg_match_all($pattern, $text, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
 
-            if ($start === null || $end === null) {
-                continue;
+            foreach ($matches as $match) {
+                $offset = is_array($match[0]) ? $match[0][1] : 0;
+                $range = is_array($match[0]) ? $match[0][0] : '';
+                $startRaw = $match['start'][0];
+                $endRaw = $match['end'][0];
+
+                if ($this->isScriptureCitation($citations, $offset, strlen($range))) {
+                    continue;
+                }
+
+                // An amount of money is not a time range either.
+                if ($this->isCurrencyAmount($text, $offset)) {
+                    continue;
+                }
+
+                $start = $this->rangeEndTime($startRaw, $endRaw);
+                $end = $this->rangeEndTime($endRaw, $startRaw);
+
+                if ($start === null || $end === null) {
+                    continue;
+                }
+
+                return [
+                    'start' => $start,
+                    'end' => $end,
+                    'end_before_start' => $end < $start,
+                    'type' => 'range',
+                ];
             }
-
-            return [
-                'start' => $start,
-                'end' => $end,
-                'end_before_start' => $end < $start,
-                'type' => 'range',
-            ];
-            }
-
-            $single = $this->extractFirstTime($text);
-
-            if ($single === null) {
-                return null;
-            }
-
-            return [
-                'start' => $single['time'],
-                'end' => null,
-                'end_before_start' => false,
-                'type' => $single['type'],
-            ];
         }
+
+        $single = $this->extractFirstTime($text);
+
+        if ($single === null) {
+            return null;
+        }
+
+        return [
+            'start' => $single['time'],
+            'end' => null,
+            'end_before_start' => false,
+            'type' => $single['type'],
+        ];
+    }
 
         /**
          * @return array{time: string, type: string}|null
          */
-        private function extractFirstTime(string $text): ?array
-        {
-            preg_match_all(
-                '~\b(?:\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2})\b~i',
-                $text,
-                            $matches,
-                            PREG_OFFSET_CAPTURE
-                        );
+    /**
+     * Finds the first start time in the text, skipping a number that is really a
+     * scripture citation.
+     *
+     * A bare `12:45` with no `am`/`pm` is also what a scripture citation looks like, so the
+     * candidate matches are located by offset and tested against the citation spans found
+     * in the whole text. A citation is skipped rather than published as a time the parish
+     * never gave.
+     *
+     * @return array{time: string, type: string}|null
+     */
+    private function rangeEndTime(string $time, string $other): ?string
+    {
+        $meridiem = $this->meridiem($time);
+        $hour = trim(preg_replace('/\s*[ap]m\s*$/i', '', $time) ?? $time);
 
-                        foreach ($matches[0] as $found) {
-                            $match = $found[0];
-                            $time = $this->normalizeTime($match);
+        if ($this->statesMinutes($hour)) {
+            return $this->normalizeTime($hour);
+        }
 
-                            if ($time === null) {
-                                continue;
-                            }
+        return $this->normalizeTime($hour . ($meridiem ?? $this->meridiem($other) ?? ''));
+    }
 
-                            // A bare `12:45` with no `am`/`pm` is also what a scripture citation looks
-                            // like. When the surrounding wording reads as a citation the number is
-                            // not a start time at all, so it is skipped rather than published as a
-                            // time the parish never gave (tracked as issue #128).
-                            if (preg_match('/[ap]m/i', $match) !== 1
-                                && $this->looksLikeCitation($text, (int) $found[1])
-                            ) {
-                                continue;
-                            }
+    private function statesMinutes(string $time): bool
+    {
+        return preg_match('/\d{1,2}[:.]\d{2}/', trim($time)) === 1;
+    }
 
-                            return [
-                                'time' => $time,
-                                'type' => preg_match('/[ap]m/i', $match) === 1 ? 'explicit' : 'bare',
-                            ];
-                        }
+    private function meridiem(string $time): ?string
+    {
+        return preg_match('/\s*(?<meridiem>[ap]m)\s*$/i', trim($time), $matches) === 1
+            ? strtolower($matches['meridiem'])
+            : null;
+    }
 
-                        return null;
-                    }
+    /**
+     * @param list<array{start: int, end: int}> $citations
+     */
+    private function isCurrencyAmount(string $text, int $offset): bool
+    {
+        $before = substr($text, max(0, $offset - 8), min($offset, 8));
+
+        return preg_match(self::CURRENCY_PREFIX, $before) === 1;
+    }
+
+    private function extractFirstTime(string $text, ?array $citations = null): ?array
+    {
+        $citations ??= $this->scriptureCitationSpans($text);
+
+        preg_match_all('~' . self::TIME_TOKEN . '~i', $text, $matches, PREG_OFFSET_CAPTURE);
+
+        foreach ($matches[0] as [$match, $offset]) {
+            if ($this->isScriptureCitation($citations, $offset, strlen($match))) {
+                continue;
+            }
+
+            // An amount of money, "R50" or "$12.50", is not a time. A parish that
+            // has written a donation into the notice would otherwise publish it as a start.
+            if ($this->isCurrencyAmount($text, $offset)) {
+                continue;
+            }
+
+            // A citation with no book name -- "Scripture for today is 12:45" -- has no
+            // citation shape to detect, so the wording in front of the number is the only
+            // cue left. Checked only for a bare number: an explicit "6pm" is unambiguous
+            // and is always a time.
+            if (preg_match('/[ap]m/i', $match) !== 1
+                && $this->isScriptureIntroduction($text, $offset)
+            ) {
+                continue;
+            }
+
+            $time = $this->normalizeTime($match);
+
+            if ($time === null) {
+                continue;
+            }
+
+            return [
+                'time' => $time,
+                'type' => preg_match('/[ap]m/i', $match) === 1 ? 'explicit' : 'bare',
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether the wording immediately before a bare clock-shaped number introduces a
+     * scripture reference rather than a time: a citation is introduced by a scripture
+     * keyword ("Scripture for today is 12:45"), whereas a time is introduced by "at",
+     * "from", or nothing at all. Used only as a fallback for a citation that has no book
+     * name to key off, since a book name or a citation shape is the stronger signal.
+     */
+    private function isScriptureIntroduction(string $text, int $offset): bool
+    {
+        $before = substr($text, max(0, $offset - 60), min($offset, 60));
+
+        return preg_match(
+            '/(?:scripture|reading|readings|gospel|epistle|passage|verse|chapter|'
+            . 'psalm|romans|corinthians|ephesians|thessalonians|timothy|peter|john|'
+            . 'matthew|mark|luke|acts|colossians|hebrews)\b[^0-9]{0,20}$/iu',
+            $before
+        ) === 1;
+    }
+
+    private function scriptureCitationSpans(string $text): array
+    {
+        $spans = [];
+
+        preg_match_all(
+            '~(?<![:\w])(?<book>[A-Z][A-Za-z]{1,20}(?:\s+[A-Z][A-Za-z]{1,20}){0,2})\s+'
+            . '(?<chapter>\d{1,3}):(?<verse>\d{1,3})\b(?:'
+            . '\s*[\-–—]\s*\d{1,3}\b'
+            . ')?~u',
+            $text,
+            $matches,
+            PREG_OFFSET_CAPTURE
+        );
+
+        foreach ($matches[0] as [$citation, $offset]) {
+            $spans[] = [
+                'start' => $offset,
+                'end' => $offset + strlen($citation),
+            ];
+        }
+
+        return $spans;
+    }
+    private function isScriptureCitation(array $citations, int $offset, int $length): bool
+    {
+        foreach ($citations as $citation) {
+            if ($offset >= $citation['start'] && ($offset + $length) <= $citation['end']) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
                     /**
                      * Decide whether a bare clock-shaped number is a scripture or chapter citation rather
@@ -859,17 +1185,6 @@ final class RuleBasedExtractionStage implements StageInterface
         // A heading is a short noun phrase. Prose that had to be cut mid-sentence is long.
         return str_word_count($candidate) > 8;
     }
-
-    private function looksLikeCitation(string $text, int $offset): bool
-                    {                        $before = substr($text, max(0, $offset - 60), min($offset, 60));
-
-                        return preg_match(
-                            '/(?:scripture|reading|readings|gospel|epistle|passage|verse|chapter|'
-                            . 'psalm|romans|corinthians|ephesians|thessalonians|timothy|peter|john|'
-                            . 'matthew|mark|luke|acts|colossians|hebrews)\b[^0-9]{0,20}$/iu',
-                            $before
-                        ) === 1;
-                    }
 
     private function normalizeTime(string $time): ?string
     {
@@ -908,40 +1223,52 @@ final class RuleBasedExtractionStage implements StageInterface
     }
 
     /**
-     * @return array{date: DateTimeImmutable, match: string, offset: int}|null
+     * Resolves the reference date from a bulletin masthead.
+     *
+     * The body is the first place to look, then the block context. The splitter runs
+     * ahead of this stage and lifts a subject-line masthead into that context, so the
+     * subject does not need checking again here. The matching itself is shared with the
+     * splitter, so the two can never disagree about which forms count as a masthead.
+     *
+     * @param array<string, mixed> $blockContext
+     *
+     * @return array{date: \DateTimeImmutable, match: string, offset: int, month: string, year: int}|null
      */
-    private function findBulletinDateRange(string $text): ?array
+    private function resolveMasthead(string $text, array $blockContext): ?array
     {
-        $header = substr($text, 0, 512);
-        $pattern = '~\b(?:bulletin|newsletter)\b[\s\S]{0,120}?\b(?<start_day>\d{1,2})(?:st|nd|rd|th)?\s+(?<start_month>' . self::MONTH_PATTERN . ')\.?\s+(?:to|[-–])\s*(?<end_day>\d{1,2})(?:st|nd|rd|th)?\s+(?<end_month>' . self::MONTH_PATTERN . ')\.?,?\s+(?<year>\d{4})\b~iu';
+        $matcher = new BulletinMastheadMatcher();
+        $masthead = $matcher->match($text);
 
-        if (! preg_match($pattern, $header, $matches, PREG_OFFSET_CAPTURE | PREG_UNMATCHED_AS_NULL)) {
+        if ($masthead === null && isset($blockContext['masthead']) && is_string($blockContext['masthead'])) {
+            $masthead = $matcher->match($blockContext['masthead']);
+        }
+
+        if ($masthead === null) {
             return null;
         }
 
-        $startMonth = $this->monthNumber($matches['start_month'][0]);
-        $endMonth = $this->monthNumber($matches['end_month'][0]);
-        $year = (int) $matches['year'][0];
+        // An offset only means something for text this stage is about to scan, and the
+        // block context is not. -1 marks "not in $text", so nothing is blanked out of it.
+        $masthead['offset'] = $masthead['offset'] >= 0 && $masthead['offset'] < strlen($text)
+            && str_contains(substr($text, $masthead['offset'], strlen($masthead['match'])), $masthead['match'])
+                ? $masthead['offset']
+                : -1;
 
-        if ($startMonth === null || $endMonth === null) {
-            return null;
+        return $masthead;
+    }
+
+    /**
+     * Replaces a matched masthead span with a space so the date scanner cannot read a
+     * masthead date as the event date. An offset of -1 means the span came from
+     * somewhere other than $text, so there is nothing to blank out.
+     */
+    private function blankOut(string $text, int $offset, string $match): string
+    {
+        if ($offset < 0) {
+            return $text;
         }
 
-        if ($startMonth > $endMonth) {
-            --$year;
-        }
-
-        $date = $this->makeDate($year, $startMonth, (int) $matches['start_day'][0]);
-
-        if ($date === null) {
-            return null;
-        }
-
-        return [
-            'date' => $date,
-            'match' => $matches[0][0],
-            'offset' => $matches[0][1],
-        ];
+        return substr_replace($text, ' ', $offset, strlen($match));
     }
 
     private function referenceDate(Message $message): DateTimeImmutable
@@ -977,8 +1304,43 @@ final class RuleBasedExtractionStage implements StageInterface
         return $referenceDate->modify('+' . $daysUntil . ' days');
     }
 
-    private function nextMonthDay(int $day, int $month, DateTimeImmutable $referenceDate): ?DateTimeImmutable
+    /**
+     * Resolves a day and month with no year of their own.
+     *
+     * A year stated in the document is authoritative, so when one is known the date is
+     * placed in it and never rolled. Rolling here regardless of the year is what made
+     * #133 an eleven-month error: a September 2026 masthead left the reference date in
+     * 2027, and "1 September" in the masthead's own year then rolled to 2027-09-01.
+     *
+     * With no year anywhere in the document the rolling behaviour is kept, because
+     * "the retreat is on 5 October" arriving in January does mean next October.
+     */
+    private function nextMonthDay(int $day, int $month, DateTimeImmutable $referenceDate, ?int $knownYear = null): ?DateTimeImmutable
     {
+        if ($knownYear !== null) {
+            // A stated year pins the year, but not the ordering. "December 2025 ...
+            // report due 5 January" belongs to 5 January 2026, not 5 January 2025 --
+            // so the masthead's own month decides which side of the year a bare day and
+            // month falls on, exactly as it would without a stated year.
+            $date = $this->makeDate($knownYear, $month, $day);
+
+            if ($date === null) {
+                return null;
+            }
+
+            $mastheadMonth = (int) $referenceDate->format('n');
+
+            if ($month < $mastheadMonth) {
+                $nextYear = $this->makeDate($knownYear + 1, $month, $day);
+
+                if ($nextYear !== null) {
+                    return $nextYear;
+                }
+            }
+
+            return $date;
+        }
+
         $referenceYear = (int) $referenceDate->format('Y');
 
         for ($year = $referenceYear; $year <= $referenceYear + 8; ++$year) {

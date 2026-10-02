@@ -93,7 +93,7 @@ final class PrinsFrankPdfTextExtractorTest extends TestCase
 
     public function testExtractsTheSameFileOnceThePageLimitIsRaised(): void
     {
-        $result = (new PrinsFrankPdfTextExtractor())->extract(
+        $result = (new PrinsFrankPdfTextExtractor(stopwatch: new FixedStopwatch(0.0)))->extract(
             $this->fixture('over-page-limit.pdf'),
             new PdfExtractionLimits(maxPages: 50)
         );
