@@ -61,6 +61,32 @@ final class AttachmentRepositoryTest extends TestCase
 
         self::assertSame(1, $database->preparedArguments[0]['arguments'][6] ?? null);
     }
+
+    /**
+     * #181 regression: the query declared six status placeholders for five
+     * status arguments. Every test in this file still passed, because the
+     * double recorded the call without ever checking the counts -- which is
+     * exactly what real wpdb::prepare() refuses to do.
+     */
+    public function testEveryPlaceholderHasExactlyOneArgument(): void
+    {
+        $database = new RecordingAttachmentDatabase();
+
+        try {
+            (new AttachmentRepository($database))->findRecentUnreadablePdfs(5);
+        } catch (\Throwable $thrown) {
+            self::fail('prepare() was given a mismatched query: ' . $thrown->getMessage());
+        }
+
+        $prepared = $database->preparedArguments[0] ?? null;
+        self::assertNotNull($prepared);
+        self::assertSame(
+            substr_count((string) $prepared['query'], '%s') + substr_count((string) $prepared['query'], '%d'),
+            count($prepared['arguments']),
+            'wpdb::prepare() refuses to parameterise a query whose placeholder count '
+            . 'does not match its argument count, and returns it unprepared.'
+        );
+    }
 }
 
 final class RecordingAttachmentDatabase implements DatabaseConnectionInterface
@@ -90,6 +116,16 @@ final class RecordingAttachmentDatabase implements DatabaseConnectionInterface
     public function prepare(string $query, mixed ...$arguments): string
     {
         $this->preparedArguments[] = ['query' => $query, 'arguments' => $arguments];
+
+        $expected = substr_count($query, '%s') + substr_count($query, '%d');
+
+        if ($expected !== count($arguments)) {
+            throw new \InvalidArgumentException(sprintf(
+                'wpdb::prepare() was called incorrectly: %d placeholders for %d arguments',
+                $expected,
+                count($arguments)
+            ));
+        }
 
         return $query;
     }

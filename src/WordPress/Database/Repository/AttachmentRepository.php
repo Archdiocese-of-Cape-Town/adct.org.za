@@ -101,17 +101,29 @@ final class AttachmentRepository extends AbstractRepository
      */
     public function findRecentUnreadablePdfs(int $limit = 5): array
     {
-        return $this->fetchRows($this->database->prepare(
-            'SELECT filename, status, updated_at FROM ' . $this->tableName()
-            . ' WHERE mime_type = %s AND status IN (%s, %s, %s, %s, %s, %s)'
-            . ' ORDER BY id DESC LIMIT %d',
-            PdfExtractionResult::MIME_TYPE,
+        // Built from the list so the placeholders cannot drift from the
+        // statuses again. #181: this declared six placeholders for five
+        // arguments, so wpdb::prepare() refused to parameterise the query
+        // and logged a notice on every admin Parser screen render.
+        $unreadableStatuses = [
             PdfExtractionResult::STATUS_NO_TEXT_LAYER,
             PdfExtractionResult::STATUS_SKIPPED_SIZE,
             PdfExtractionResult::STATUS_SKIPPED_PAGE_LIMIT,
             PdfExtractionResult::STATUS_SKIPPED_TIMEOUT,
             PdfExtractionResult::STATUS_FAILED,
-            max(1, min(50, $limit))
+        ];
+
+        return $this->fetchRows($this->database->prepare(
+            'SELECT filename, status, updated_at FROM ' . $this->tableName()
+            . ' WHERE mime_type = %s AND status IN ('
+            . implode(', ', array_fill(0, count($unreadableStatuses), '%s'))
+            . ')'
+            . ' ORDER BY id DESC LIMIT %d',
+            ...array_merge(
+            [PdfExtractionResult::MIME_TYPE],
+            array_values($unreadableStatuses),
+            [max(1, min(50, $limit))]
+            )
         ));
     }
 }
