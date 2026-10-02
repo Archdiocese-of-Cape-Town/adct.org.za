@@ -145,6 +145,43 @@ final class ContactServiceTest extends TestCase
         self::assertSame(SenderTrust::VERIFIED, $service->lookup('new-office@example.test')->trust);
     }
 
+    public function testPendingLinksStayPendingUntilAnApproverConfirmsThem(): void
+    {
+        $store = new FakeParishContactStore();
+        $service = new ContactService($store, new FixedContactClock());
+
+        $service->linkPending(11, 'sender@example.test', 'Office', 'Secretary');
+
+        self::assertSame(SenderTrust::PENDING, $service->lookup('sender@example.test')->trust);
+        self::assertSame(0, $store->rows[1]['receives_reminders']);
+        self::assertNull($store->rows[1]['verified_at']);
+    }
+
+    public function testPendingLinksRefuseToCreateIfTheAddressBecomesKnownDuringTheSecondRead(): void
+    {
+        $store = new ChangingParishContactStore();
+        $service = new ContactService($store, new FixedContactClock());
+
+        $result = $service->linkPending(11, 'sender@example.test', 'Office', 'Secretary');
+
+        self::assertSame(SenderTrust::VERIFIED, $result->trust);
+        self::assertSame([], $store->rows);
+        self::assertSame(2, $store->findByEmailCalls);
+    }
+
+    public function testPendingLinksRefuseToOverwriteTrustIfAnotherWriterWinsAfterTheFinalRead(): void
+    {
+        $store = new RacingParishContactStore();
+        $service = new ContactService($store, new FixedContactClock());
+
+        $result = $service->linkPending(11, 'sender@example.test', 'Office', 'Secretary');
+
+        self::assertSame(SenderTrust::VERIFIED, $result->trust);
+        self::assertCount(1, $store->rows);
+        self::assertSame(SenderTrust::VERIFIED, $store->rows[1]['trust']);
+        self::assertSame('sender@example.test', $store->rows[1]['email']);
+    }
+
     public function testChangingALinkEmailUsesExistingAddressTrustAndDeduplicatesParishLinks(): void
     {
         $store = new FakeParishContactStore();
@@ -196,9 +233,65 @@ final class ContactServiceTest extends TestCase
         self::assertSame([], $store->findByEmail('blocked@example.test'));
         self::assertSame([11], $service->lookup('new@example.test')->parishIds);
     }
+
+    public function testLearningAndConfirmingAnUnlinkedSenderIsIdempotentAndNeverTrustsAGuess(): void
+    {
+        $store = new FakeParishContactStore();
+        $service = new ContactService($store, new FixedContactClock());
+        $service->learnPending(' Sender@Example.Test ', 11, 'signature');
+        $service->learnPending('sender@example.test', 12, 'body');
+
+        self::assertCount(1, $store->rows);
+        self::assertSame(SenderTrust::PENDING, $service->lookup('sender@example.test')->trust);
+        self::assertSame([], $service->lookup('sender@example.test')->parishIds);
+        self::assertSame(11, $store->rows[1]['suggested_parish_id']);
+
+        $service->confirmPending(12, 'sender@example.test');
+        $service->confirmPending(12, 'SENDER@example.test');
+        self::assertCount(1, $store->rows);
+        self::assertSame([12], $service->lookup('sender@example.test')->parishIds);
+        self::assertSame(SenderTrust::VERIFIED, $service->lookup('sender@example.test')->trust);
+
+        $service->learnPending('sender@example.test', 11, 'signature');
+        self::assertSame(SenderTrust::VERIFIED, $service->lookup('sender@example.test')->trust);
+        $service->link(11, 'sender@example.test');
+        self::assertSame([11, 12], $service->lookup('sender@example.test')->parishIds);
+        $service->block('sender@example.test');
+        $service->learnPending('sender@example.test', 12, 'parser');
+        self::assertSame(SenderTrust::BLOCKED, $service->lookup('sender@example.test')->trust);
+        $this->expectException(DomainException::class);
+        $service->confirmPending(11, 'sender@example.test');
+    }
+
+    public function testEveryParishSuggestionSourceRemainsUnlinkedAndPending(): void
+    {
+        foreach (['signature', 'parser', 'body', 'domain'] as $source) {
+            $store = new FakeParishContactStore();
+            $service = new ContactService($store, new FixedContactClock());
+            $result = $service->learnPending('sender@example.test', 11, $source);
+
+            self::assertSame(SenderTrust::PENDING, $result->trust, $source);
+            self::assertSame([], $result->parishIds, $source);
+            self::assertNull($store->rows[1]['verified_at'], $source);
+            self::assertSame($source, $store->rows[1]['suggestion_source']);
+            self::assertSame(11, $store->rows[1]['suggested_parish_id']);
+        }
+    }
+
+    public function testBlockedUnlinkedSenderCanOnlyBeRelearnedAfterExplicitUnblock(): void
+    {
+        $service = new ContactService(new FakeParishContactStore(), new FixedContactClock());
+        $service->learnPending('sender@example.test');
+        $service->block('sender@example.test');
+        $service->learnPending('sender@example.test');
+        self::assertSame(SenderTrust::BLOCKED, $service->lookup('sender@example.test')->trust);
+        $service->unblock('sender@example.test');
+        $service->learnPending('sender@example.test');
+        self::assertSame(SenderTrust::PENDING, $service->lookup('sender@example.test')->trust);
+    }
 }
 
-final class FakeParishContactStore implements ParishContactStoreInterface
+class FakeParishContactStore implements ParishContactStoreInterface
 {
     /**
      * @var array<int, array<string, mixed>>
@@ -206,6 +299,20 @@ final class FakeParishContactStore implements ParishContactStoreInterface
     public array $rows = [];
 
     private int $nextId = 1;
+
+    public function savePendingSender(string $email, ?int $suggestedParishId, ?string $source, string $timestamp): void
+    {
+        foreach ($this->rows as $row) {
+            if ($row['email'] === $email && (int) $row['parish_id'] === 0) {
+                return;
+            }
+        }
+        $id = $this->nextId++;
+        $this->rows[$id] = [
+            'id' => $id, 'parish_id' => 0, 'email' => $email, 'trust' => SenderTrust::PENDING,
+            'verified_at' => null, 'suggested_parish_id' => $suggestedParishId, 'suggestion_source' => $source,
+        ];
+    }
 
     public function findByEmail(string $email): array
     {
@@ -268,6 +375,50 @@ final class FakeParishContactStore implements ParishContactStoreInterface
             'created_at' => $timestamp,
             'updated_at' => $timestamp,
         ];
+    }
+
+    public function savePendingLink(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $timestamp
+    ): int {
+        foreach ($this->rows as $id => $row) {
+            if ((int) $row['parish_id'] === $parishId && $row['email'] === $email) {
+                if ($row['trust'] !== SenderTrust::UNKNOWN) {
+                    return 0;
+                }
+
+                $this->rows[$id] = array_merge($row, [
+                    'display_name' => $displayName,
+                    'role_label' => $roleLabel,
+                    'receives_reminders' => $receivesReminders ? 1 : 0,
+                    'trust' => SenderTrust::PENDING,
+                    'verified_at' => null,
+                    'updated_at' => $timestamp,
+                ]);
+
+                return 1;
+            }
+        }
+
+        $id = $this->nextId++;
+        $this->rows[$id] = [
+            'id' => $id,
+            'parish_id' => $parishId,
+            'email' => $email,
+            'display_name' => $displayName,
+            'role_label' => $roleLabel,
+            'receives_reminders' => $receivesReminders ? 1 : 0,
+            'trust' => SenderTrust::PENDING,
+            'verified_at' => null,
+            'created_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ];
+
+        return 1;
     }
 
     public function updateLink(
@@ -335,6 +486,145 @@ final class FakeParishContactStore implements ParishContactStoreInterface
         }
 
         return $updated;
+    }
+}
+
+final class ChangingParishContactStore implements ParishContactStoreInterface
+{
+    /**
+     * @var array<int, array<string, mixed>>
+     */
+    public array $rows = [];
+
+    public int $findByEmailCalls = 0;
+
+    public function findByEmail(string $email): array
+    {
+        ++$this->findByEmailCalls;
+
+        if ($this->findByEmailCalls === 1) {
+            return [];
+        }
+
+        return [[
+            'id' => 99,
+            'parish_id' => 12,
+            'email' => $email,
+            'display_name' => 'Office',
+            'role_label' => 'Secretary',
+            'trust' => SenderTrust::VERIFIED,
+            'verified_at' => '2026-09-24 22:00:00',
+            'receives_reminders' => 1,
+            'created_at' => '2026-09-24 22:00:00',
+            'updated_at' => '2026-09-24 22:00:00',
+        ]];
+    }
+
+    public function savePendingSender(
+        string $email,
+        ?int $suggestedParishId,
+        ?string $source,
+        string $timestamp
+    ): void {
+        throw new \LogicException('This race fixture must not save a pending sender.');
+    }
+
+    public function findLink(int $contactId, int $parishId): ?array
+    {
+        return null;
+    }
+
+    public function findForParish(int $parishId): array
+    {
+        return [];
+    }
+
+    public function saveLink(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $trust,
+        ?string $verifiedAt,
+        string $timestamp
+    ): void {
+        $this->rows[] = compact(
+            'parishId',
+            'email',
+            'displayName',
+            'roleLabel',
+            'receivesReminders',
+            'trust',
+            'verifiedAt',
+            'timestamp'
+        );
+    }
+
+    public function savePendingLink(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $timestamp
+    ): int {
+        return 0;
+    }
+
+    public function updateLink(
+        int $contactId,
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $trust,
+        ?string $verifiedAt,
+        string $timestamp
+    ): int {
+        return 0;
+    }
+
+    public function deleteLink(int $contactId, int $parishId): int
+    {
+        return 0;
+    }
+
+    public function setTrustForEmail(
+        string $email,
+        string $trust,
+        ?string $verifiedAt,
+        string $timestamp
+    ): int {
+        return 0;
+    }
+}
+
+final class RacingParishContactStore extends FakeParishContactStore
+{
+    public function savePendingLink(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $timestamp
+    ): int {
+        $this->rows[1] = [
+            'id' => 1,
+            'parish_id' => $parishId,
+            'email' => $email,
+            'display_name' => 'Trusted office',
+            'role_label' => 'Secretary',
+            'receives_reminders' => 1,
+            'trust' => SenderTrust::VERIFIED,
+            'verified_at' => $timestamp,
+            'created_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ];
+
+        return 0;
     }
 }
 

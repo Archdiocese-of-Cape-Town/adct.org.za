@@ -5,6 +5,7 @@ declare(strict_types=1);
 use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
+use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Plugin;
 
 final class PublicationCheck
@@ -27,7 +28,9 @@ final class PublicationCheck
             ?int $match,
             ?string $via = 'reviewer',
             string $title = 'Sample parish event',
-            ?string $eventType = 'social'
+            ?string $eventType = 'social',
+            bool $automaticType = false,
+            ?bool $featured = null
         ) use (
             $candidates, $date, $now, &$candidateIds
         ): int {
@@ -40,6 +43,13 @@ final class PublicationCheck
             ];
             if ($eventType !== null) {
                 $fields['event_type'] = $eventType;
+                if ($automaticType) {
+                    $fields['event_type_source'] = 'keyword';
+                    $fields['event_type_confidence'] = 0.85;
+                }
+            }
+            if ($featured !== null) {
+                $fields['featured'] = $featured;
             }
             $id = $candidates->insert([
                 'block_index' => 0,
@@ -78,16 +88,23 @@ final class PublicationCheck
             } catch (DomainException $expected) {
             }
 
-            $create = $make('new', null);
+            $create = $make('new', null, 'reviewer', 'Sample parish event', 'social', true);
             $stale = $make('update', null);
             $eventId = $publisher->publish($create);
             $candidates->update($stale, ['match_event_id' => $eventId]);
             $newer = $make('update', $eventId);
+            $social = get_term_by('slug', 'social', 'adct_event_type');
+            $initialOccurrenceType = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT event_type_term_id FROM {$occurrences} WHERE event_id = %d LIMIT 1",
+                $eventId
+            ));
             if (
                 get_post($eventId)?->post_status !== 'publish'
                 || get_post_meta($eventId, 'source_candidate_id', true) != $create
                 || $count($occurrences, $eventId) !== 1
                 || ! has_term('social', 'adct_event_type', $eventId)
+                || ! $social instanceof \WP_Term
+                || $initialOccurrenceType !== $social->term_id
                 || $generation->current() === $initialGeneration
                 || $publisher->publish($create) !== $eventId
                 || $count($changes, $eventId) !== 0
@@ -107,6 +124,42 @@ final class PublicationCheck
             $publisher->publish($withoutType);
             if (! has_term('social', 'adct_event_type', $eventId)) {
                 $fail('An update without an event_type removed the existing event type.');
+            }
+            $publisher->publish($make(
+                'update',
+                $eventId,
+                'reviewer',
+                'Featured suggestion',
+                null,
+                featured: true
+            ));
+            if (! in_array(get_post_meta($eventId, 'featured', true), [true, 1, '1'], true)) {
+                $fail('A reviewed featured suggestion was not published.');
+            }
+            update_post_meta($eventId, 'featured', false);
+            update_post_meta($eventId, EventEditor::FEATURED_OVERRIDE_META, '1');
+            $publisher->publish($make(
+                'update',
+                $eventId,
+                'reviewer',
+                'Keep admin choice',
+                null,
+                featured: true
+            ));
+            if (get_post_meta($eventId, 'featured', true) !== '') {
+                $fail('A parser suggestion overrode an explicit admin unfeatured choice.');
+            }
+            update_post_meta($eventId, 'featured', true);
+            $publisher->publish($make(
+                'update',
+                $eventId,
+                'reviewer',
+                'Keep admin featured',
+                null,
+                featured: false
+            ));
+            if (! in_array(get_post_meta($eventId, 'featured', true), [true, 1, '1'], true)) {
+                $fail('A routine parser update removed an explicit admin featured choice.');
             }
 
             foreach ([
@@ -241,6 +294,18 @@ final class PublicationCheck
                 || $count($changes, $eventId) !== $beforeChanges + 1
             ) {
                 $fail('Retry did not repair the listing cache generation without a duplicate revision.');
+            }
+
+            $youth = get_term_by('slug', 'youth', 'adct_event_type');
+            wp_set_object_terms($eventId, [$youth->term_id], 'adct_event_type');
+            $automaticUpdate = $make('update', $eventId, 'reviewer', 'Automatically typed update', 'social', true);
+            $publisher->publish($automaticUpdate);
+            $occurrenceType = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT event_type_term_id FROM {$occurrences} WHERE event_id = %d LIMIT 1", $eventId
+            ));
+            if (! has_term('youth', 'adct_event_type', $eventId)
+                || $occurrenceType !== $youth->term_id) {
+                $fail('An automatic type overwrote an intentionally selected published event type.');
             }
         } finally {
             if ($eventId !== null) {

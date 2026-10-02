@@ -24,11 +24,14 @@ use ADCT\ParishIntake\Core\Events\RRuleValidator;
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
 use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
+use ADCT\ParishIntake\Core\Directory\SenderLearningService;
+use ADCT\ParishIntake\Core\Directory\SenderParishSuggester;
 use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
 use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\Core\Jobs\FrameworkHeartbeatJob;
 use ADCT\ParishIntake\Core\Jobs\InboundMessageProcessingJob;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
+use ADCT\ParishIntake\Core\Jobs\ConfirmationEmailPreviewJob;
 use ADCT\ParishIntake\Core\Jobs\MailQueueSenderJob;
 use ADCT\ParishIntake\Core\Jobs\OccurrenceExpansionJob;
 use ADCT\ParishIntake\Core\Ingestion\Imap\ImapMailbox;
@@ -36,6 +39,7 @@ use ADCT\ParishIntake\Core\Ingestion\MimeMessageParser;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxConnectionConfig;
 use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
 use ADCT\ParishIntake\Core\Ingestion\AuthenticationResultsParser;
+use ADCT\ParishIntake\Core\Ingestion\InboundHeaderBlockParser;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettings;
 use ADCT\ParishIntake\Core\Ingestion\MailboxConnectionTestService;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
@@ -46,9 +50,12 @@ use ADCT\ParishIntake\Core\Mail\MailQueueConfiguration;
 use ADCT\ParishIntake\Core\Mail\MailQueueDispatcher;
 use ADCT\ParishIntake\Core\Mail\MailQueueService;
 use ADCT\ParishIntake\Core\Mail\MailQueueStats;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailPreviewService;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
+use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
+use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
@@ -57,6 +64,10 @@ use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
 use ADCT\ParishIntake\Core\Support\SystemClock;
+use ADCT\ParishIntake\Core\Review\CandidateEditValidator;
+use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
+use ADCT\ParishIntake\WordPress\Pdf\PrinsFrankPdfTextExtractor;
+use ADCT\ParishIntake\WordPress\Pdf\WordPressAttachmentExtractionStore;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
 use ADCT\ParishIntake\WordPress\Admin\HealthPage;
 use ADCT\ParishIntake\WordPress\Admin\InboundMessagesPage;
@@ -67,17 +78,28 @@ use ADCT\ParishIntake\WordPress\Admin\ParserPage;
 use ADCT\ParishIntake\WordPress\Admin\ParishesPage;
 use ADCT\ParishIntake\WordPress\Admin\SendersPage;
 use ADCT\ParishIntake\WordPress\Admin\SourcesPage;
+use ADCT\ParishIntake\WordPress\Admin\ReviewQueuePage;
 use ADCT\ParishIntake\WordPress\Ai\OpenAiCompatibleProvider;
 use ADCT\ParishIntake\WordPress\Ai\WordPressAiCallGate;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
+use ADCT\ParishIntake\WordPress\Auth\ConfirmationDecisionHandler;
+use ADCT\ParishIntake\WordPress\Auth\ApprovalDecisionHandler;
+use ADCT\ParishIntake\WordPress\Auth\ApprovalEditHandler;
+use ADCT\ParishIntake\WordPress\Approval\ApprovalNoticeJob;
+use ADCT\ParishIntake\WordPress\Approval\ApprovalRecipients;
+use ADCT\ParishIntake\WordPress\Approval\ReviewerNotificationPreference;
+use ADCT\ParishIntake\WordPress\Auth\WordPressConfirmationActionLinkProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRateLimitKeyProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRenewalDelivery;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleCapabilityStore;
 use ADCT\ParishIntake\WordPress\Auth\WordPressRoleVersionStore;
 use ADCT\ParishIntake\WordPress\Database\ActionTokenRateLimitSchemaMigration;
+use ADCT\ParishIntake\WordPress\Database\ApprovalNoticesMigration;
+use ADCT\ParishIntake\WordPress\Database\ConfirmationEmailPreviewSchemaMigration;
 use ADCT\ParishIntake\WordPress\Database\DbDeltaSchemaInstaller;
 use ADCT\ParishIntake\WordPress\Database\MailQueueGroupKeyMigration;
 use ADCT\ParishIntake\WordPress\Database\OccurrenceParishNullableMigration;
+use ADCT\ParishIntake\WordPress\Database\SenderSuggestionMigration;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
@@ -90,6 +112,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\EventCandidateRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\OccurrenceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\ReviewQueueRepository;
 use ADCT\ParishIntake\WordPress\Database\Schema;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenRateLimitStore;
@@ -123,9 +146,12 @@ use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
+use ADCT\ParishIntake\WordPress\Events\PublicEventPage;
+use ADCT\ParishIntake\WordPress\Events\EventTypeKeywords;
 use ADCT\ParishIntake\WordPress\Events\PublicEventListing;
 use ADCT\ParishIntake\WordPress\Events\PublicIcsFeed;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
+use ADCT\ParishIntake\WordPress\Ingestion\WordPressConfirmationEmailJobSource;
 use ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance;
 use ADCT\ParishIntake\WordPress\Publishing\WordPressPublicationStore;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
@@ -158,9 +184,12 @@ final class Plugin
     private EventOccurrenceHooks $eventOccurrenceHooks;
     private CandidatePublisher $candidatePublisher;
     private PublicEventListing $publicEventListing;
+    private PublicEventPage $publicEventPage;
     private PublicIcsFeed $publicIcsFeed;
     private MailboxesPage $mailboxesPage;
     private InboundMessagesPage $inboundMessagesPage;
+    private ?ReviewQueuePage $reviewQueuePage = null;
+    private ReviewerNotificationPreference $reviewerNotificationPreference;
 
     private function __construct(string $pluginFile)
     {
@@ -186,7 +215,8 @@ final class Plugin
         $inboundMessageStore = new WordPressInboundMessageStore(
             $database,
             $inboundMessages,
-            $attachmentRepository
+            $attachmentRepository,
+            static fn (): RetentionSettings => RetentionSettings::current()
         );
         $processedMailboxMessages = new WordPressProcessedMailboxMessageStore($database);
         $secrets = new WordPressSecretResolver();
@@ -195,7 +225,7 @@ final class Plugin
             new WordPressDirectorySnapshotCache(),
             new WordPressDirectorySnapshotLoader($parishes, $venues, $contacts)
         );
-        $this->pipelineFactory = new PipelineFactory($clock, $directorySnapshots);
+        $this->pipelineFactory = new PipelineFactory($clock, $directorySnapshots, new EventTypeKeywords());
         $this->parserPage = new ParserPage(
             $this->schema,
             $this->pipelineFactory,
@@ -204,7 +234,8 @@ final class Plugin
             new WordPressAiCallGate(
                 new WordPressActionTokenRateLimitStore($database),
                 $clock
-            )
+            ),
+            new AttachmentRepository($database)
         );
         $sourceRegistryService = new SourceRegistryService($sources, $clock);
         $this->mailboxesPage = new MailboxesPage(
@@ -221,8 +252,14 @@ final class Plugin
             $clock
         );
         $contactService = new ContactService($contacts, $clock);
+        $senderLearningService = new SenderLearningService(
+            $contactService,
+            new SenderParishSuggester($directorySnapshots)
+        );
         $venueAdministrationService = new VenueAdministrationService($venues, $clock);
         $approvalRouteResolver = new ApprovalRouteResolver(new ApprovalRouteRepository($database));
+        $approvalRecipients = new ApprovalRecipients($approvalRouteResolver);
+        $this->reviewerNotificationPreference = new ReviewerNotificationPreference();
         $this->sourcesPage = new SourcesPage($sources, $sourceRegistryService, $parishes);
         $this->deaneriesPage = new DeaneriesPage(
             $deaneries,
@@ -254,6 +291,7 @@ final class Plugin
         $this->sendersPage = new SendersPage($contacts, $contactService, $parishes);
         $this->eventPostType = new EventPostType();
         $listingGeneration = new EventListingGeneration();
+        $occurrences = new OccurrenceRepository($database);
         $this->publicEventListing = new PublicEventListing(
             $clock,
             new DateTimeZone('Africa/Johannesburg'),
@@ -261,15 +299,24 @@ final class Plugin
             $listingGeneration
         );
         $this->publicIcsFeed = new PublicIcsFeed($clock, $listingGeneration, new IcsCalendar());
+        $this->publicEventPage = new PublicEventPage(
+            $clock,
+            $timezone,
+            $parishes,
+            $venues,
+            $occurrences,
+            $pluginFile
+        );
         $this->eventEditor = new EventEditor(
             $parishes,
             $venues,
             new EventValidator($timezone, $rruleValidator),
             new RRulePresetMapper($rruleValidator),
-            $timezone
+            $timezone,
+            $clock
         );
         $occurrenceMaintenance = new WordPressEventOccurrenceMaintenance(
-            new OccurrenceRepository($database),
+            $occurrences,
             new OccurrenceExpander($timezone, $rruleValidator),
             $clock,
             function (): void {
@@ -287,6 +334,26 @@ final class Plugin
             ),
             new EventValidator($timezone, $rruleValidator)
         );
+        if (function_exists('add_action')) {
+            // The review threshold is deliberately its own setting (#43). It used to be read from
+            // the AI threshold, which conflates "how confident must the parser be before a human
+            // looks at this" with "when should we pay for an AI call". Sites on the old value keep
+            // their behaviour, because both defaults are 0.55.
+            $confidenceThreshold = $this->confidenceOption(
+                'adct_parish_intake_confidence_threshold',
+                ReviewQueuePolicy::DEFAULT_CONFIDENCE_THRESHOLD
+            );
+            $this->reviewQueuePage = new ReviewQueuePage(
+                new ReviewQueueRepository($database, $clock, new ReviewQueuePolicy(), $confidenceThreshold),
+                $this->candidatePublisher,
+                new ReviewQueuePolicy(),
+                $inboundMessages,
+                $attachmentRepository,
+                new ProtectedInboundMailStorage(),
+                new CandidateEditValidator(),
+                $this->pluginFile
+            );
+        }
         $this->eventOccurrenceHooks = new EventOccurrenceHooks(
             $occurrenceMaintenance,
             $clock,
@@ -340,6 +407,25 @@ final class Plugin
             new WordPressActionTokenRateLimitKeyProvider()
         );
         $this->actionTokenHandlers = new ActionTokenHandlerRegistry();
+        foreach ([\ADCT\ParishIntake\Core\Auth\ActionTokenPurpose::CONFIRM,
+            \ADCT\ParishIntake\Core\Auth\ActionTokenPurpose::DENY] as $purpose) {
+            $this->actionTokenHandlers->register(new ConfirmationDecisionHandler(
+                $purpose,
+                $database,
+                $approvalRouteResolver,
+                $this->candidatePublisher,
+                $clock
+            ));
+        }
+        foreach ([\ADCT\ParishIntake\Core\Auth\ActionTokenPurpose::APPROVE_EVENT,
+            \ADCT\ParishIntake\Core\Auth\ActionTokenPurpose::REJECT_EVENT] as $purpose) {
+            $this->actionTokenHandlers->register(new ApprovalDecisionHandler(
+                $purpose, $database, $approvalRecipients, $this->candidatePublisher, $this->mailQueue, $clock
+            ));
+        }
+        $this->actionTokenHandlers->register(new ApprovalEditHandler(
+            $database, $approvalRecipients, $clock
+        ));
         $this->actionTokenEndpoint = new ActionTokenEndpoint(
             $this->actionTokenService,
             $this->actionTokenHandlers,
@@ -348,6 +434,29 @@ final class Plugin
                 $actionTokenRateLimiter,
                 new WordPressActionTokenRenewalDelivery($this->mailQueue)
             )
+        );
+        $confirmationPreviewJob = new ConfirmationEmailPreviewJob(
+            new WordPressConfirmationEmailJobSource(
+                $database,
+                $contacts,
+                new ProtectedInboundMailStorage(),
+                new InboundHeaderBlockParser(),
+                $timezone
+            ),
+            new ConfirmationEmailPreviewService(
+                $this->actionTokenService,
+                new WordPressConfirmationActionLinkProvider(),
+                $this->mailQueue,
+                $mailQueueRepository,
+                new \ADCT\ParishIntake\Core\Mail\ConfirmationEmailRenderer(
+                    $timezone,
+                    $this->confidenceOption(
+                        'adct_parish_intake_field_confidence_threshold',
+                        ConfidenceScoringStage::DEFAULT_FIELD_THRESHOLD
+                    )
+                )
+            ),
+            $clock
         );
         $mailboxPollingJob = new MailboxPollingJob(
             $mailboxes,
@@ -389,8 +498,18 @@ final class Plugin
             new WordPressEventCandidateStore(new EventCandidateRepository($database)),
             new WordPressInboundMessageProcessingFailureLogger(),
             $directorySnapshots,
-            $clock
+            $clock,
+            $senderLearningService,
+            pdfTextEnrichment: new PdfTextEnrichmentService(
+                new WordPressAttachmentExtractionStore(
+                    new AttachmentRepository($database),
+                    $clock
+                ),
+                new PrinsFrankPdfTextExtractor(),
+                $protectedInboundMailStorage
+            )
         );
+        // This is the only scheduled retention path; processed mail is deleted only by exact stored move receipts.
         $retentionCleanupJob = new RetentionCleanupJob(
             $database,
             $processedMailboxMessages,
@@ -428,6 +547,12 @@ final class Plugin
             [
                 new FrameworkHeartbeatJob(),
                 $mailboxPollingJob,
+                $confirmationPreviewJob,
+                new ApprovalNoticeJob(
+                    $database, $approvalRecipients, $this->actionTokenService,
+                    $this->mailQueue, $mailQueueRepository, $clock,
+                    self::approvalDigestHour()
+                ),
                 $inboundMessageProcessingJob,
                 $retentionCleanupJob,
                 new OccurrenceExpansionJob($occurrenceMaintenance, $clock, $timezone),
@@ -517,6 +642,15 @@ final class Plugin
         return self::$instance->mailQueue->stats();
     }
 
+    public static function publicEventPage(): PublicEventPage
+    {
+        if (! self::$instance instanceof self) {
+            throw new \RuntimeException('The Parish Intake plugin has not been booted.');
+        }
+
+        return self::$instance->publicEventPage;
+    }
+
     public static function activate(): void
     {
         if (! function_exists('add_option')) {
@@ -528,6 +662,14 @@ final class Plugin
         add_option('adct_parish_intake_openrouter_model', OpenAiCompatibleProvider::FREE_MODEL);
         add_option('adct_parish_intake_ai_base_url', OpenAiCompatibleProvider::DEFAULT_URL);
         add_option('adct_parish_intake_ai_threshold', '0.55');
+        add_option(
+            'adct_parish_intake_confidence_threshold',
+            (string) ReviewQueuePolicy::DEFAULT_CONFIDENCE_THRESHOLD
+        );
+        add_option(
+            'adct_parish_intake_field_confidence_threshold',
+            (string) ConfidenceScoringStage::DEFAULT_FIELD_THRESHOLD
+        );
         add_option('adct_parish_intake_section_keywords', SectionSkipper::defaultKeywordLists());
         add_option(
             WordPressTestModeSettings::TEST_MODE_OPTION,
@@ -590,6 +732,12 @@ final class Plugin
             return;
         }
 
+        if (current_user_can(Capabilities::APPROVE_DEANERY)
+            && isset($_GET['page']) && is_string($_GET['page'])
+            && wp_unslash($_GET['page']) === ReviewQueuePage::PAGE_SLUG) {
+            return;
+        }
+
         wp_safe_redirect(home_url('/'));
         exit;
     }
@@ -630,11 +778,21 @@ final class Plugin
         if (! function_exists('add_action')) {
             return;
         }
+        if ($this->reviewQueuePage === null) {
+            throw new \LogicException('The review queue was not initialized.');
+        }
 
+        $this->reviewerNotificationPreference->registerHooks();
         add_filter('query_vars', [$this->actionTokenEndpoint, 'registerQueryVars']);
         add_action('template_redirect', [$this->actionTokenEndpoint, 'handleRequest'], 0);
         add_action('template_redirect', [$this->publicIcsFeed, 'handleRequest'], 1);
+        add_action('init', [$this->publicEventPage, 'register'], 12);
         add_action('init', [$this->eventPostType, 'register'], 5);
+        $typeKeywords = new EventTypeKeywords();
+        add_action(EventPostType::TAXONOMY . '_add_form_fields', [$typeKeywords, 'renderAddField']);
+        add_action(EventPostType::TAXONOMY . '_edit_form_fields', [$typeKeywords, 'renderEditField']);
+        add_action('created_' . EventPostType::TAXONOMY, [$typeKeywords, 'save']);
+        add_action('edited_' . EventPostType::TAXONOMY, [$typeKeywords, 'save']);
         add_action('init', [$this->publicEventListing, 'register'], 10);
         add_action('rest_api_init', [$this->publicEventListing, 'registerRestRoute']);
         add_action('wp_enqueue_scripts', [$this->publicEventListing, 'styles']);
@@ -668,6 +826,18 @@ final class Plugin
             2
         );
         add_filter(
+            'rest_request_before_callbacks',
+            [$this->eventOccurrenceHooks, 'beginRestWrite'],
+            10,
+            3
+        );
+        add_filter(
+            'rest_request_after_callbacks',
+            [$this->eventOccurrenceHooks, 'endRestWrite'],
+            10,
+            3
+        );
+        add_filter(
             'rest_post_dispatch',
             [$this->eventOccurrenceHooks, 'filterRestResponse'],
             10,
@@ -678,7 +848,11 @@ final class Plugin
         add_action('admin_notices', [$this->eventOccurrenceHooks, 'renderFailureNotice']);
         add_filter('manage_adct_event_posts_columns', [$this->eventEditor, 'filterColumns']);
         add_action('manage_adct_event_posts_custom_column', [$this->eventEditor, 'renderColumn'], 10, 2);
+        add_action('restrict_manage_posts', [$this->eventEditor, 'renderListFilters']);
+        add_action('pre_get_posts', [$this->eventEditor, 'filterListQuery']);
+        add_filter('posts_where', [$this->eventEditor, 'filterNextDateWhere'], 10, 2);
         add_filter('rest_pre_insert_adct_event', [$this->eventEditor, 'validateRestRequest'], 10, 2);
+        add_action('rest_after_insert_adct_event', [$this->eventEditor, 'markRestFeaturedChoice'], 10, 2);
         add_filter('show_admin_bar', [$this, 'hideAdminBarForPortalRoles']);
         add_action('admin_menu', [$this->parserPage, 'registerMenu']);
         add_action('admin_menu', [$this->deaneriesPage, 'registerMenu']);
@@ -687,6 +861,8 @@ final class Plugin
         add_action('admin_menu', [$this->sourcesPage, 'registerMenu']);
         add_action('admin_menu', [$this->mailboxesPage, 'registerMenu']);
         add_action('admin_menu', [$this->inboundMessagesPage, 'registerMenu']);
+        add_action('admin_menu', [$this->reviewQueuePage, 'registerMenu']);
+        add_action('admin_enqueue_scripts', [$this->reviewQueuePage, 'enqueueDetailAssets']);
         add_action('admin_menu', [$this->outboundMailPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
         add_action('admin_menu', [$this->healthPage, 'registerMenu']);
@@ -707,6 +883,16 @@ final class Plugin
         add_action(
             'admin_post_adct_pi_reprocess_inbound_messages',
             [$this->inboundMessagesPage, 'handleReprocess']
+        );
+        add_action('admin_post_adct_pi_review_bulk', [$this->reviewQueuePage, 'handleBulk']);
+        add_action('admin_post_adct_pi_candidate_save', [$this->reviewQueuePage, 'handleSave']);
+        add_action(
+            'admin_post_adct_pi_candidate_raw_message',
+            [$this->reviewQueuePage, 'handleRawMessage']
+        );
+        add_action(
+            'admin_post_adct_pi_candidate_attachment',
+            [$this->reviewQueuePage, 'handleAttachment']
         );
         add_action('admin_post_adct_pi_test_mailbox', [$this->mailboxesPage, 'handleTestConnection']);
         add_action(
@@ -749,6 +935,33 @@ final class Plugin
         );
     }
 
+    /**
+     * Read a confidence threshold from an option, falling back to the documented default.
+     *
+     * A stored value that is missing or out of range must not silently become 0 or 1, which would
+     * either send everything to review or let everything publish unreviewed.
+     */
+    private function confidenceOption(string $option, float $default): float
+    {
+        if (! function_exists('get_option')) {
+            return $default;
+        }
+
+        $value = get_option($option, (string) $default);
+
+        if (! is_numeric($value) || (float) $value < 0.0 || (float) $value > 1.0) {
+            error_log(sprintf(
+                '[ADCT Parish Intake] Invalid %s; using %s.',
+                $option,
+                (string) $default
+            ));
+
+            return $default;
+        }
+
+        return (float) $value;
+    }
+
     private function isAdminPostRequest(): bool
     {
         return isset($_SERVER['PHP_SELF'])
@@ -774,7 +987,10 @@ final class Plugin
                 new OccurrenceParishNullableMigration($database),
                 new MailQueueGroupKeyMigration($database),
                 new ActionTokenRateLimitSchemaMigration(new DbDeltaSchemaInstaller($database)),
+                new ConfirmationEmailPreviewSchemaMigration($database),
+                new ApprovalNoticesMigration(new DbDeltaSchemaInstaller($database)),
                 new ProcessedMailboxOwnershipSchemaMigration(new DbDeltaSchemaInstaller($database)),
+                new SenderSuggestionMigration(new DbDeltaSchemaInstaller($database)),
             ],
             new WordPressMigrationVersionStore(),
             new WordPressMigrationLogger()
@@ -808,6 +1024,49 @@ final class Plugin
 
             return new MailQueueConfiguration();
         }
+    }
+
+    /**
+     * Local hour (Africa/Johannesburg) from which daily approval digests may
+     * be sent. Earlier arrivals wait for a later cron run on the same day.
+     */
+    private static function approvalDigestHour(): int
+    {
+        if (! defined('ADCT_PI_APPROVAL_DIGEST_HOUR')) {
+            return ApprovalNoticeJob::DEFAULT_DIGEST_HOUR;
+        }
+
+        $configuredHour = constant('ADCT_PI_APPROVAL_DIGEST_HOUR');
+
+        if (
+            ! is_int($configuredHour)
+            && (
+                ! is_string($configuredHour)
+                || preg_match('/\A\d+\z/D', $configuredHour) !== 1
+            )
+        ) {
+            self::logInvalidDigestHour();
+
+            return ApprovalNoticeJob::DEFAULT_DIGEST_HOUR;
+        }
+
+        $hour = (int) $configuredHour;
+
+        if ($hour < 0 || $hour > 23) {
+            self::logInvalidDigestHour();
+
+            return ApprovalNoticeJob::DEFAULT_DIGEST_HOUR;
+        }
+
+        return $hour;
+    }
+
+    private static function logInvalidDigestHour(): void
+    {
+        error_log(
+            '[ADCT Parish Intake] ADCT_PI_APPROVAL_DIGEST_HOUR must be an integer from 0 to 23;'
+            . ' using default ' . ApprovalNoticeJob::DEFAULT_DIGEST_HOUR . '.'
+        );
     }
 
     private static function logInvalidMailQueueCap(): void

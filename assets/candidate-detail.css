@@ -1,0 +1,112 @@
+/* Candidate detail screen. Scoped to the review queue page's own classes. */
+
+.adct-pi-detail-columns {
+	display: grid;
+	gap: 20px;
+	grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+	align-items: start;
+	margin-top: 16px;
+}
+
+@media screen and (max-width: 960px) {
+	.adct-pi-detail-columns {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+
+.adct-pi-card {
+	background: #fff;
+	border: 1px solid #c3c4c7;
+	border-radius: 4px;
+	padding: 4px 16px 12px;
+	margin: 0 0 20px;
+}
+
+.adct-pi-card > h2,
+.adct-pi-card > h3 {
+	margin-top: 12px;
+}
+
+.adct-pi-card table.widefat th {
+	width: 34%;
+}
+
+.adct-pi-detail-columns .adct-pi-card {
+	margin-bottom: 0;
+}
+
+/* A value that came from the email, as opposed to one the reviewer typed. */
+.adct-pi-from-email {
+	font-family: Consolas, Monaco, monospace;
+	background: #f6f7f7;
+}
+
+.adct-pi-empty {
+	color: #646970;
+	font-style: italic;
+}
+
+/* Validation. The colour is a backstop only; the messages carry the meaning. */
+.adct-pi-field-error-text {
+	color: #b32d2e;
+	display: block;
+	font-style: italic;
+	margin-top: 4px;
+}
+
+.adct-pi-edit-form .adct-pi-field-error {
+	border-color: #b32d2e;
+	box-shadow: 0 0 0 1px #b32d2e;
+}
+
+.adct-pi-edit-form tr.adct-pi-row-error th {
+	color: #b32d2e;
+}
+
+.adct-pi-edit-form tr.adct-pi-row-error th .required {
+	color: #b32d2e;
+}
+
+/* The source panel: a long email body has to be readable but bounded. */
+.adct-pi-message-body {
+	background: #f6f7f7;
+	border: 1px solid #dcdcde;
+	border-radius: 3px;
+	margin: 0;
+	max-height: 24em;
+	overflow: auto;
+	padding: 10px 12px;
+	white-space: pre-wrap;
+	word-wrap: break-word;
+}
+
+.adct-pi-meta {
+	color: #50575e;
+	font-size: 12px;
+	margin: 0 0 8px;
+}
+
+.adct-pi-source-actions {
+	margin: 8px 0 0;
+}
+
+/* The audit trail is reference, not content, so it is deliberately quiet. */
+.adct-pi-audit {
+	font-size: 12px;
+}
+
+.adct-pi-audit td {
+	vertical-align: top;
+}
+
+.adct-pi-audit-time {
+	color: #646970;
+	white-space: nowrap;
+	width: 1%;
+}
+
+.adct-pi-detail-form .submit {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}

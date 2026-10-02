@@ -1,0 +1,28 @@
+Please review your event preview
+
+We found 1 event in your notice. Please check each preview below.
+Highlighted details may be uncertain or missing. Where a detail is marked "not stated in the notice", the parser could not find it in your text and filled in a guess — please correct it. Confirm and Deny links now open a review page; the Edit link is not active yet.
+Every new event still needs approval by a dean or an Archdiocese reviewer.
+
+Event 1: Parish Harvest <script>alert("x")</script> (please check)
+Date: 12 October 2026 (please check)
+Time: 6:30 pm to 7:45 pm (please check)
+Location: St <Example> Hall, 1 Example & Main Street, Cape Town (please check)
+Parish: St Example Parish (please check)
+Description: A & B
+Bring <b>a chair</b> (please check)
+Event type: Fundraising (please check)
+Contact: Office: office@example.test; Phone: 000 000 0000 (please check)
+Recurrence: One-time event
+Review notes: The stated weekday does not match the parsed event date; verify it.
+Parser confidence: 48%
+Confirm: https://adct.example.test/action?token=approve-101
+Deny: https://adct.example.test/action?token=deny-101
+Edit (not active): https://adct.example.test/action?token=edit-101
+
+Confirm all: https://adct.example.test/action?token=approve-all-901
+
+If any detail is wrong, contact events@adct.org.za. Replies to this message are not yet processed automatically.
+
+You received this because an event notice was sent to events@adct.org.za with this address as the sender or a trusted Reply-To.
+Archdiocese of Cape Town · events@adct.org.za

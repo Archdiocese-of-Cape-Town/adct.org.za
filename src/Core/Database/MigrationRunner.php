@@ -43,6 +43,15 @@ final class MigrationRunner
         }
 
         ksort($versions, SORT_NUMERIC);
+        $expectedVersion = 1;
+        foreach (array_keys($versions) as $version) {
+            if ($version !== $expectedVersion) {
+                throw new InvalidArgumentException('Migration versions must be contiguous starting at 1.');
+            }
+
+            ++$expectedVersion;
+        }
+
         $this->migrations = array_values($versions);
     }
 

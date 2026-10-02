@@ -14,13 +14,20 @@ concurrency:
 
 jobs:
   test:
-    name: PHP ${{ matrix.php }}
+    name: PHP ${{ matrix.php }}${{ matrix.experimental && ' (advisory)' || '' }}
     runs-on: ubuntu-latest
+    # 8.5 is not a supported target yet, so its failures are reported but never block a PR.
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
         # 8.2 is production (xneelo); 8.3 and 8.4 guard against host upgrades.
         php: ['8.2', '8.3', '8.4']
+        experimental: [false]
+        include:
+          # Advisory only: surfaces PHP 8.3+ deprecations early without gating merges.
+          - php: '8.5'
+            experimental: true
     steps:
       - uses: actions/checkout@v5
 

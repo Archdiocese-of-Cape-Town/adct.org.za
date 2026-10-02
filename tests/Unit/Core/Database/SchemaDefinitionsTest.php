@@ -150,14 +150,14 @@ final class SchemaDefinitionsTest extends TestCase
         }
     }
 
-    public function testProcessedMailboxOwnershipMigrationAddsVersionSevenTable(): void
+    public function testProcessedMailboxOwnershipMigrationAddsVersionNineTable(): void
     {
         $installer = new RecordingSchemaInstaller();
         $migration = new ProcessedMailboxOwnershipSchemaMigration($installer);
 
         $migration->apply();
 
-        self::assertSame(7, $migration->version());
+        self::assertSame(9, $migration->version());
         self::assertCount(1, $installer->statements);
 
         foreach ([

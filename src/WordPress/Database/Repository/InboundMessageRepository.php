@@ -33,6 +33,30 @@ final class InboundMessageRepository extends AbstractRepository
         'updated_at' => '%s',
     ];
 
+    /**
+     * The message a candidate was extracted from.
+     *
+     * The candidate detail screen shows the email the parish sent, so a reviewer
+     * can compare the notice against what the parser read out of it. `body_text`
+     * is included because the screen renders it; `auth_results` is not, since it
+     * holds SPF/DKIM verdicts the reviewer has no use for.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findById(int $messageId): ?array
+    {
+        if ($messageId < 1) {
+            throw new InvalidArgumentException('A message ID must be positive.');
+        }
+
+        return $this->fetchRow($this->database->prepare(
+            'SELECT id, source_id, sender_email, sender_name, subject, received_at, raw_path,'
+            . ' body_text, status FROM ' . $this->tableName()
+            . ' WHERE id = %d',
+            $messageId
+        ));
+    }
+
     public function findDuplicate(int $sourceId, string $externalId, ?string $contentHash): ?int
     {
         if ($sourceId < 1 || $externalId === '') {
@@ -175,7 +199,7 @@ final class InboundMessageRepository extends AbstractRepository
         try {
             $eligibleRows = $this->fetchRows($this->database->prepare(
                 'SELECT id FROM ' . $this->tableName()
-                . ' WHERE status = %s AND id IN (' . $placeholders . ') ORDER BY id ASC FOR UPDATE',
+                . ' WHERE status = %s AND id IN (' . $placeholders . ') AND raw_path IS NOT NULL ORDER BY id ASC FOR UPDATE',
                 InboundMessageRecord::STATUS_FAILED,
                 ...$messageIds
             ));
@@ -288,7 +312,13 @@ final class InboundMessageRepository extends AbstractRepository
     }
 
     /**
-     * @return list<array{received_at: string, auth_results: string|null, is_auto_reply: int|string}>
+     * @return list<array{
+     *     received_at: string,
+     *     auth_results: string|null,
+     *     is_auto_reply: int|string,
+     *     confirmation_status: string|null,
+     *     confirmation_reason: string|null
+     * }>
      */
     public function findRecentScreeningMessagesBySourceId(int $sourceId, int $limit = 5): array
     {
@@ -297,8 +327,10 @@ final class InboundMessageRepository extends AbstractRepository
         }
 
         return $this->fetchRows($this->database->prepare(
-            'SELECT received_at, auth_results, is_auto_reply FROM ' . $this->tableName()
-            . ' WHERE source_id = %d AND (is_auto_reply = 1 OR auth_results IS NOT NULL) '
+            'SELECT received_at, auth_results, is_auto_reply, confirmation_status, confirmation_reason '
+            . 'FROM ' . $this->tableName()
+            . ' WHERE source_id = %d AND (is_auto_reply = 1 OR auth_results IS NOT NULL '
+            . 'OR confirmation_status IS NOT NULL) '
             . 'ORDER BY id DESC LIMIT %d',
             $sourceId,
             max(1, min(20, $limit))

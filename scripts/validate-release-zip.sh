@@ -42,6 +42,7 @@ for required_file in \
     src/WordPress/Autoloader.php \
     assets/events-block.js \
     assets/events.css \
+    templates/single-adct_event.php \
     vendor-prefixed/autoload.php
 do
     if [ ! -f "$package_dir/$required_file" ]; then

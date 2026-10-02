@@ -11,6 +11,8 @@ interface ParishContactStoreInterface
      */
     public function findByEmail(string $email): array;
 
+    public function savePendingSender(string $email, ?int $suggestedParishId, ?string $source, string $timestamp): void;
+
     /**
      * @return array<string, mixed>|null
      */
@@ -31,6 +33,15 @@ interface ParishContactStoreInterface
         ?string $verifiedAt,
         string $timestamp
     ): void;
+
+    public function savePendingLink(
+        int $parishId,
+        string $email,
+        string $displayName,
+        string $roleLabel,
+        bool $receivesReminders,
+        string $timestamp
+    ): int;
 
     public function updateLink(
         int $contactId,

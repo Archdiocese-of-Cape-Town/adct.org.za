@@ -13,11 +13,38 @@ use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressInboundMessageStore;
+use ADCT\ParishIntake\WordPress\Jobs\RetentionSettings;
 use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
 
 final class WordPressInboundMessageStoreTest extends TestCase
 {
+    public function testNewMessagesUseTheConfiguredFileRetentionPeriod(): void
+    {
+        $database = new FakeInboundStoreDatabase();
+        $store = new WordPressInboundMessageStore(
+            $database,
+            new InboundMessageRepository($database),
+            new AttachmentRepository($database),
+            static fn () => RetentionSettings::fromValues('0', 45, '0', 30)
+        );
+        $message = new InboundMessageRecord(
+            17,
+            '<short-retention@example.test>',
+            null,
+            null,
+            null,
+            'Example event notice',
+            new DateTimeImmutable('2026-09-25T04:00:00+00:00'),
+            null,
+            []
+        );
+
+        $store->store($message, '2026-09-25 04:01:00');
+
+        self::assertContains('2026-11-09 04:00:00', $database->prepared[1]['arguments']);
+    }
+
     public function testStoresMessageAndAttachmentRowsInOneTransaction(): void
     {
         $database = new FakeInboundStoreDatabase();

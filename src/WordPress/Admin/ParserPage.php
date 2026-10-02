@@ -8,14 +8,19 @@ use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\Pipeline;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
+use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
+use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
+use ADCT\ParishIntake\Core\Pdf\PdfExtractionResult;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Ports\AiCallGateInterface;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\WordPress\Ai\OpenAiCompatibleProvider;
 use ADCT\ParishIntake\WordPress\Database\Schema;
+use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
 use ADCT\ParishIntake\WordPress\Jobs\RetentionSettings;
+use Throwable;
 
 final class ParserPage
 {
@@ -32,19 +37,84 @@ final class ParserPage
     private AiCallGateInterface $aiGate;
     private bool $settingsSaveSucceeded = false;
     private ?string $settingsSaveError = null;
+    private ?AttachmentRepository $attachments;
+
+    /**
+     * Form field name to [option name, default value].
+     *
+     * @var array<string, array{0: string, 1: float}>
+     */
+    private const CONFIDENCE_SETTINGS = [
+        'confidence_threshold' => [
+            'adct_parish_intake_confidence_threshold',
+            ReviewQueuePolicy::DEFAULT_CONFIDENCE_THRESHOLD,
+        ],
+        'field_confidence_threshold' => [
+            'adct_parish_intake_field_confidence_threshold',
+            ConfidenceScoringStage::DEFAULT_FIELD_THRESHOLD,
+        ],
+    ];
 
     public function __construct(
         Schema $schema,
         PipelineFactory $pipelineFactory,
         StaticReportGenerator $reportGenerator,
         HttpClientInterface $httpClient,
-        AiCallGateInterface $aiGate
+        AiCallGateInterface $aiGate,
+        ?AttachmentRepository $attachments = null
     ) {
         $this->schema = $schema;
         $this->pipelineFactory = $pipelineFactory;
         $this->reportGenerator = $reportGenerator;
         $this->httpClient = $httpClient;
         $this->aiGate = $aiGate;
+        $this->attachments = $attachments;
+    }
+
+    /**
+     * One stored confidence threshold, falling back to its documented default.
+     */
+    private function confidenceSetting(string $key): float
+    {
+        [$option, $default] = self::CONFIDENCE_SETTINGS[$key];
+        $value = get_option($option, (string) $default);
+
+        return is_numeric($value) && (float) $value >= 0.0 && (float) $value <= 1.0
+            ? (float) $value
+            : $default;
+    }
+
+    /**
+     * @return list<array{filename: string, status: string, updated_at: string}>
+     */
+    private function unreadablePdfs(): array
+    {
+        if ($this->attachments === null) {
+            return [];
+        }
+
+        try {
+            return $this->attachments->findRecentUnreadablePdfs(5);
+        } catch (Throwable $failure) {
+            error_log(
+                '[ADCT Parish Intake] Could not load unreadable PDF attachment warnings ('
+                . get_class($failure) . ').'
+            );
+
+            return [];
+        }
+    }
+
+    private function pdfStatusLabel(string $status): string
+    {
+        return match ($status) {
+            PdfExtractionResult::STATUS_NO_TEXT_LAYER => 'No text layer (likely a scan)',
+            PdfExtractionResult::STATUS_SKIPPED_SIZE => 'Too large to read',
+            PdfExtractionResult::STATUS_SKIPPED_PAGE_LIMIT => 'Too many pages',
+            PdfExtractionResult::STATUS_SKIPPED_TIMEOUT => 'Took too long to read',
+            PdfExtractionResult::STATUS_FAILED => 'Could not be opened',
+            default => 'Not read',
+        };
     }
 
     public function createConfiguredPipeline(bool $allowAi = false): Pipeline
@@ -56,6 +126,8 @@ final class ParserPage
             'ai_threshold' => $settings['ai_threshold'],
             'ai_provider' => $allowAi ? $this->buildAiProvider() : new NullAiProvider(),
             'section_keywords' => $settings['section_keywords'],
+            'confidence_threshold' => $settings['confidence_threshold'],
+            'field_confidence_threshold' => $settings['field_confidence_threshold'],
         ]);
     }
 
@@ -151,6 +223,18 @@ final class ParserPage
         }
 
         update_option('adct_parish_intake_ai_threshold', (string) max(0, min(1, (float) wp_unslash($_POST['ai_threshold'] ?? '0.55'))));
+
+        foreach (self::CONFIDENCE_SETTINGS as $key => [$option, $default]) {
+            $submitted = wp_unslash($_POST[$key] ?? null);
+
+            // A missing or non-numeric field leaves the stored value alone rather than resetting
+            // a working setting to 0 or 1, which would publish or queue everything.
+            if (! is_scalar($submitted) || ! is_numeric($submitted)) {
+                continue;
+            }
+
+            update_option($option, (string) max(0.0, min(1.0, (float) $submitted)));
+        }
 
         $submittedKeywords = wp_unslash($_POST['section_keywords'] ?? []);
         $keywordLists = [];
@@ -296,6 +380,26 @@ final class ParserPage
                         <td>
                             <input type="number" step="0.05" min="0" max="1" name="ai_threshold" value="<?php echo esc_attr((string) $settings['ai_threshold']); ?>" />
                             <p class="description">Messages scoring below this confidence value will be sent to the AI fallback when enabled.</p>
+                        </td>
+                    </tr>
+                </table>
+                <h2>Confidence and review</h2>
+                <p>Each extracted field is scored on the evidence behind it, and the event score is
+                    derived from those field scores. A field the parser had to invent scores zero and
+                    lowers the event score, so guessing cannot make a notice look reliable.</p>
+                <table class="form-table" role="presentation">
+                    <tr>
+                        <th scope="row">Review threshold</th>
+                        <td>
+                            <input type="number" step="0.05" min="0" max="1" name="confidence_threshold" value="<?php echo esc_attr((string) $settings['confidence_threshold']); ?>" />
+                            <p class="description">Events scoring below this value go to a human for approval instead of being published. Lower it to review more, raise it to review less.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Field confidence threshold</th>
+                        <td>
+                            <input type="number" step="0.05" min="0" max="1" name="field_confidence_threshold" value="<?php echo esc_attr((string) $settings['field_confidence_threshold']); ?>" />
+                            <p class="description">A field scoring below this value is marked as needing attention on the confirmation email and the review screen. The event title and date are always treated this way.</p>
                         </td>
                     </tr>
                 </table>
@@ -476,11 +580,41 @@ final class ParserPage
 
             <?php if ($outcome) : ?>
                 <h2>Latest parse outcome</h2>
+                <?php if (array_filter(
+                    $outcome->getNotes(),
+                    static fn (string $note): bool => str_starts_with(
+                        $note,
+                        'possible_missed_event_after_skipped_section: '
+                    )
+                ) !== []) : ?>
+                    <div class="notice notice-warning">
+                        <p><?php echo esc_html__('A skipped private section may contain an event after a blank line. Review the original message manually; the skipped text was not parsed or sent to AI.', 'adct-parish-intake'); ?></p>
+                    </div>
+                <?php endif; ?>
                 <pre><?php echo esc_html(wp_json_encode($outcome->toArray(), JSON_PRETTY_PRINT)); ?></pre>
             <?php endif; ?>
 
             <?php if ($report && ! empty($report['url'])) : ?>
                 <p><strong>Static snapshot:</strong> <a href="<?php echo esc_url($report['url']); ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html($report['url']); ?></a></p>
+            <?php endif; ?>
+
+            <?php $unreadablePdfs = $this->unreadablePdfs(); ?>
+            <?php if ($unreadablePdfs !== []) : ?>
+                <div class="notice notice-warning">
+                    <p><strong><?php echo esc_html__('PDF posters that could not be read', 'adct-parish-intake'); ?></strong></p>
+                    <p><?php echo esc_html__('These PDFs arrived as attachments but produced no text, so any event in them must be entered by hand. The email around them was still processed.', 'adct-parish-intake'); ?></p>
+                    <ul>
+                        <?php foreach ($unreadablePdfs as $pdf) : ?>
+                            <li>
+                                <code><?php echo esc_html((string) ($pdf['filename'] ?? '')); ?></code>
+                                &mdash; <?php echo esc_html($this->pdfStatusLabel((string) ($pdf['status'] ?? ''))); ?>
+                                <?php if ((string) ($pdf['updated_at'] ?? '') !== '') : ?>
+                                    <br /><small><?php echo esc_html((string) $pdf['updated_at']); ?> UTC</small>
+                                <?php endif; ?>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                </div>
             <?php endif; ?>
 
             <h2>Recent stored parses</h2>
@@ -550,6 +684,8 @@ final class ParserPage
             'openrouter_api_key_is_constant' => $secretResolver->isConstantConfigured(SecretRegistry::AI_API_KEY),
             'openrouter_api_key_is_saved' => $secretResolver->hasStoredOption(SecretRegistry::AI_API_KEY),
             'ai_threshold' => (float) get_option('adct_parish_intake_ai_threshold', '0.55'),
+            'confidence_threshold' => $this->confidenceSetting('confidence_threshold'),
+            'field_confidence_threshold' => $this->confidenceSetting('field_confidence_threshold'),
             'retention_raw_enabled' => get_option(RetentionSettings::RAW_ENABLED_OPTION, '0') === '1',
             'retention_raw_days' => $this->retentionDays(
                 get_option(RetentionSettings::RAW_DAYS_OPTION, RetentionSettings::DEFAULT_RAW_DAYS),

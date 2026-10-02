@@ -310,18 +310,55 @@ final class RepositoryTest extends TestCase
             '2026-09-25 00:00:00'
         ));
 
-        self::assertCount(1, $database->executedQueries);
-        self::assertStringContainsString('trust, verified_at', $database->executedQueries[0]);
+        self::assertCount(3, $database->preparedQueries);
+        self::assertStringContainsString('SELECT GET_LOCK(%s, %d) AS acquired', $database->preparedQueries[0]['query']);
+        self::assertStringContainsString('trust, verified_at', $database->preparedQueries[1]['query']);
         self::assertStringContainsString('ON DUPLICATE KEY UPDATE id = id', $database->executedQueries[0]);
         self::assertStringNotContainsString('trust =', $database->executedQueries[0]);
         self::assertStringNotContainsString('verified_at =', $database->executedQueries[0]);
+        self::assertStringContainsString('SELECT RELEASE_LOCK(%s) AS released', $database->preparedQueries[2]['query']);
+        self::assertSame([
+            'adct_pi_pc_' . substr(hash('sha256', strtolower('OFFICE@EXAMPLE.INVALID')), 0, 40),
+            5,
+        ], $database->preparedQueries[0]['arguments']);
         self::assertSame([
             7,
             'office@example.invalid',
             '2026-09-25 00:00:00',
             '2026-09-25 00:00:00',
             '2026-09-25 00:00:00',
-        ], $database->preparedQueries[0]['arguments']);
+        ], $database->preparedQueries[1]['arguments']);
+    }
+
+    public function testVerifiedOfficeContactInsertUsesTheSameEmailLockAsPendingLearning(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $database->rowResults = [
+            ['acquired' => '1'],
+            ['released' => '1'],
+        ];
+        $repository = new ParishContactRepository($database);
+
+        self::assertTrue($repository->insertVerifiedIfMissing(
+            7,
+            'OFFICE@EXAMPLE.INVALID',
+            '2026-09-25 00:00:00'
+        ));
+
+        self::assertCount(3, $database->preparedQueries);
+        self::assertSame(
+            'SELECT GET_LOCK(%s, %d) AS acquired',
+            $database->preparedQueries[0]['query']
+        );
+        self::assertSame(
+            'SELECT RELEASE_LOCK(%s) AS released',
+            $database->preparedQueries[2]['query']
+        );
+        self::assertSame(
+            $database->preparedQueries[0]['arguments'][0],
+            $database->preparedQueries[2]['arguments'][0]
+        );
+        self::assertStringStartsWith('adct_pi_pc_', (string) $database->preparedQueries[0]['arguments'][0]);
     }
 
     public function testParishContactAddressReadsAndTrustWritesUsePreparedQueries(): void
@@ -347,10 +384,11 @@ final class RepositoryTest extends TestCase
             '2026-09-25 00:00:00'
         );
 
-        self::assertCount(3, $database->preparedQueries);
+        self::assertCount(7, $database->preparedQueries);
         self::assertStringContainsString('WHERE email = %s', $database->preparedQueries[0]['query']);
         self::assertSame(['sender@example.test'], $database->preparedQueries[0]['arguments']);
-        self::assertStringContainsString('ON DUPLICATE KEY UPDATE', $database->preparedQueries[1]['query']);
+        self::assertStringContainsString('SELECT GET_LOCK(%s, %d) AS acquired', $database->preparedQueries[1]['query']);
+        self::assertStringContainsString('ON DUPLICATE KEY UPDATE', $database->preparedQueries[2]['query']);
         self::assertSame([
             7,
             'sender@example.test',
@@ -360,16 +398,16 @@ final class RepositoryTest extends TestCase
             1,
             '2026-09-25 00:00:00',
             '2026-09-25 00:00:00',
-        ], $database->preparedQueries[1]['arguments']);
+        ], $database->preparedQueries[2]['arguments']);
         self::assertStringContainsString(
             'UPDATE wp_adct_pi_parish_contacts SET trust = %s, verified_at = NULL',
-            $database->preparedQueries[2]['query']
+            $database->preparedQueries[5]['query']
         );
         self::assertSame([
             SenderTrust::BLOCKED,
             '2026-09-25 00:00:00',
             'sender@example.test',
-        ], $database->preparedQueries[2]['arguments']);
+        ], $database->preparedQueries[5]['arguments']);
     }
 
     public function testVenueDefaultWritesArePreparedAndScopedToTheParish(): void
@@ -777,6 +815,22 @@ final class FakeDatabaseConnection implements DatabaseConnectionInterface
     public function getRow(string $query): ?array
     {
         $this->selectedQueries[] = $query;
+
+        if (str_contains($query, 'GET_LOCK(')) {
+            if ($this->rowResults !== []) {
+                return array_shift($this->rowResults);
+            }
+
+            return ['acquired' => '1'];
+        }
+
+        if (str_contains($query, 'RELEASE_LOCK(')) {
+            if ($this->rowResults !== []) {
+                return array_shift($this->rowResults);
+            }
+
+            return ['released' => '1'];
+        }
 
         if ($this->rowResults !== []) {
             return array_shift($this->rowResults);

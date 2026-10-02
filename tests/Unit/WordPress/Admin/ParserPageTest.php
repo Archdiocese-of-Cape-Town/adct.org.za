@@ -52,6 +52,13 @@ namespace ADCT\ParishIntake\WordPress\Admin {
 
         return $present;
     }
+
+    function error_log(string $message): bool
+    {
+        $GLOBALS['parser_page_logs'][] = $message;
+
+        return true;
+    }
 }
 
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
@@ -59,6 +66,8 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
     use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
     use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
     use ADCT\ParishIntake\WordPress\Admin\ParserPage;
+    use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
+    use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
     use ADCT\ParishIntake\WordPress\Database\Schema;
     use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
     use ADCT\ParishIntake\WordPress\Jobs\RetentionSettings;
@@ -84,6 +93,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                 RetentionSettings::AUDIT_ENABLED_OPTION => '0',
             ];
             $GLOBALS['parser_page_updates'] = [];
+            $GLOBALS['parser_page_logs'] = [];
             $_POST = [];
         }
 
@@ -132,7 +142,28 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             self::assertFalse($this->privateProperty($page, 'settingsSaveSucceeded'));
         }
 
-        private function page(): ParserPage
+        public function testUnreadablePdfLookupFailureIsLoggedWithoutExposingDatabaseDetails(): void
+        {
+            $database = $this->createMock(DatabaseConnectionInterface::class);
+            $database->method('prefix')->willReturn('wp_');
+            $database->method('prepare')->willReturnCallback(
+                static fn (string $query, mixed ...$arguments): string => $query
+            );
+            $database->method('getResults')->willReturn([]);
+            $database->method('lastError')->willReturn('sensitive SQL error');
+
+            $page = $this->page(new AttachmentRepository($database));
+            $method = new \ReflectionMethod(ParserPage::class, 'unreadablePdfs');
+
+            self::assertSame([], $method->invoke($page));
+            self::assertSame(
+                ['[ADCT Parish Intake] Could not load unreadable PDF attachment warnings (RuntimeException).'],
+                $GLOBALS['parser_page_logs']
+            );
+            self::assertStringNotContainsString('sensitive SQL error', $GLOBALS['parser_page_logs'][0]);
+        }
+
+        private function page(?AttachmentRepository $attachments = null): ParserPage
         {
             return new ParserPage(
                 new Schema(),
@@ -158,14 +189,15 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                     public function backOff(int $seconds): void
                     {
                     }
-                }
+                },
+                $attachments
             );
         }
 
         private function privateProperty(object $object, string $property): mixed
         {
+            // No setAccessible() call: it has been a no-op since PHP 8.1 and is deprecated in 8.5.
             $reflection = new ReflectionProperty($object, $property);
-            $reflection->setAccessible(true);
 
             return $reflection->getValue($object);
         }

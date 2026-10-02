@@ -9,7 +9,7 @@ use ADCT\ParishIntake\Core\Ports\SchemaInstallerInterface;
 
 final class ProcessedMailboxOwnershipSchemaMigration implements MigrationStepInterface
 {
-    private const VERSION = 7;
+    private const VERSION = 9;
 
     private const SQL = <<<'SQL'
 CREATE TABLE {table_prefix}adct_pi_processed_mail_ownership (

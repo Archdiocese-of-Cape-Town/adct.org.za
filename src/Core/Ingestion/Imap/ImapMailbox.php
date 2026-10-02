@@ -10,10 +10,14 @@ use ADCT\ParishIntake\Core\Ingestion\MailboxSearchCriteria;
 use ADCT\ParishIntake\Core\Ingestion\RawMailMessage;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxMoveReceiptProviderInterface;
+use ADCT\ParishIntake\Core\Ports\ProcessedMailRetentionInterface;
 use DateTimeImmutable;
 use InvalidArgumentException;
 
-final class ImapMailbox implements MailboxInterface, MailboxMoveReceiptProviderInterface
+final class ImapMailbox implements
+    MailboxInterface,
+    MailboxMoveReceiptProviderInterface,
+    ProcessedMailRetentionInterface
 {
     private ImapProtocolClient $client;
 
@@ -284,6 +288,75 @@ final class ImapMailbox implements MailboxInterface, MailboxMoveReceiptProviderI
         $this->selectFolder($this->inboxFolder());
         $result = $this->client->execute(sprintf('UID STORE %d +FLAGS.SILENT (\\Seen)', $uid));
         $this->client->requireOkay($result, 'The message could not be marked as read.');
+    }
+
+    public function nextOldProcessedUid(DateTimeImmutable $before, int $afterUid): array
+    {
+        if ($afterUid < 0 || $afterUid >= MailboxCheckpoint::MAX_UID) {
+            throw new InvalidArgumentException('The Processed folder UID cursor is invalid.');
+        }
+        $this->selectFolder($this->processedFolder());
+        $validity = $this->selectedUidValidity;
+        if ($validity === null) {
+            throw new ProtocolError('The Processed folder did not return UIDVALIDITY.');
+        }
+        // BEFORE uses the server's INTERNALDATE, by calendar day. Keep the entire cutoff day.
+        $result = $this->client->execute(
+            'UID SEARCH BEFORE ' . $before->format('d-M-Y')
+            . ($afterUid > 0 ? ' UID ' . ($afterUid + 1) . ':*' : '')
+        );
+        $this->client->requireOkay($result, 'The Processed folder could not be searched.');
+        $uids = $this->parseSearchUids($result->responses);
+        $uids = array_values(array_filter($uids, static fn (int $uid): bool => $uid > $afterUid));
+        return ['validity' => $validity, 'uid' => $uids === [] ? null : min($uids)];
+    }
+
+    public function deleteOldProcessedUid(int $uid, int $expectedValidity): void
+    {
+        $this->validateUid($uid);
+        $this->selectFolder($this->processedFolder());
+        if ($this->selectedUidValidity === null || $this->selectedUidValidity !== $expectedValidity) {
+            throw new ProtocolError('The Processed folder UID identity changed; nothing was deleted.');
+        }
+        if (! $this->client->supports('UIDPLUS')) {
+            throw new ProtocolError('Safe Processed-folder cleanup requires UIDPLUS; no messages were deleted.');
+        }
+        $marked = $this->client->execute(sprintf('UID STORE %d +FLAGS.SILENT (\\Deleted)', $uid));
+        $this->client->requireOkay($marked, 'The old Processed message could not be marked for deletion.');
+        $removed = $this->client->execute(sprintf('UID EXPUNGE %d', $uid));
+        $this->client->requireOkay($removed, 'The old Processed message could not be removed.');
+    }
+
+    /** @param list<string> $responses
+     * @return list<int>
+     */
+    private function parseSearchUids(array $responses): array
+    {
+        $uids = [];
+        foreach ($responses as $response) {
+            if (preg_match('/^\*\s+SEARCH(?:\s+(.*))?$/i', rtrim($response, "\r\n"), $matches) !== 1) {
+                continue;
+            }
+            foreach (preg_split('/\s+/', trim($matches[1] ?? '')) ?: [] as $value) {
+                if ($value === '') {
+                    continue;
+                }
+                $uid = filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+                if (! is_int($uid)) {
+                    throw new ProtocolError('The mail server returned an invalid Processed message UID.');
+                }
+                $uids[] = $uid;
+            }
+        }
+        return $uids;
+    }
+
+    private function processedFolder(): string
+    {
+        if (! isset($this->config->folders['processed'])) {
+            throw new InvalidArgumentException('A Processed folder must be configured for retention.');
+        }
+        return $this->config->folders['processed'];
     }
 
     public function close(): void
