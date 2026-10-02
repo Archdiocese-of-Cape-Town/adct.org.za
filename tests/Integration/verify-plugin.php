@@ -4860,10 +4860,14 @@ if (
 }
 
 // Confirming a learned sender must not opt it into reminders: the address never agreed to receive them.
-$contactService->confirmPending($firstParishId, $pendingSenderEmail);
+// Use a dedicated address: the Senders page render further below asserts this
+// fixture is still pending, so confirming it here would mutate shared state.
+$confirmedPendingEmail = 'confirmed-' . bin2hex(random_bytes(6)) . '@example.test';
+$contactService->learnPending($confirmedPendingEmail, $firstParishId, 'signature');
+$contactService->confirmPending($firstParishId, $confirmedPendingEmail);
 $confirmedSenderRow = $wpdb->get_row($wpdb->prepare(
     "SELECT parish_id, trust, receives_reminders FROM {$contactTable} WHERE email = %s LIMIT 1",
-    $pendingSenderEmail
+    $confirmedPendingEmail
 ), ARRAY_A);
 
 if (
