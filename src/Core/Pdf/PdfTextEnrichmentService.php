@@ -8,6 +8,8 @@ use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Ports\AttachmentExtractionStoreInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use ADCT\ParishIntake\Core\Ports\PdfTextExtractorInterface;
+use ADCT\ParishIntake\Core\Ports\StopwatchInterface;
+use ADCT\ParishIntake\Core\Support\SystemStopwatch;
 use Throwable;
 
 /**
@@ -28,16 +30,22 @@ final class PdfTextEnrichmentService
     public const SECTION_HEADING = '--- Text from the attached PDF (not OCR) ---';
 
     /**
-     * How many attachments of one message are read. A parish sends one flyer;
-     * this only exists so a mail with a dozen PDFs cannot eat the job budget.
+     * How many attachments of one message are read. A parish sends a flyer and
+     * sometimes a programme, and a dean occasionally forwards a bundle.
+     *
+     * This is not what keeps the job inside its budget. Time is: one stopwatch
+     * spans the whole message and `PdfExtractionLimits::$messageTimeBudgetSeconds`
+     * caps the total, however many attachments arrive. The count only stops a
+     * mail with a hundred PDFs from queueing a hundred rows of operator work.
      */
-    public const MAX_ATTACHMENTS_PER_MESSAGE = 3;
+    public const MAX_ATTACHMENTS_PER_MESSAGE = 5;
 
     public function __construct(
         private readonly AttachmentExtractionStoreInterface $store,
         private readonly PdfTextExtractorInterface $extractor,
         private readonly InboundMailStorageReaderInterface $storage,
         private readonly ?PdfExtractionLimits $limits = null,
+        private readonly ?StopwatchInterface $stopwatch = null,
     ) {
     }
 
@@ -53,11 +61,35 @@ final class PdfTextEnrichmentService
             return PdfEnrichmentResult::unchanged($message);
         }
 
+        $limits = $this->limits ?? PdfExtractionLimits::defaults();
+
+        // One stopwatch for the whole message, so time already spent on an
+        // earlier attachment counts against a later one.
+        $stopwatch = $this->stopwatch ?? new SystemStopwatch();
+
         $sections = [];
         $notices = [];
 
         foreach (array_slice($attachments, 0, self::MAX_ATTACHMENTS_PER_MESSAGE) as $attachment) {
-            $result = $this->extract($attachment);
+            $remaining = $limits->messageTimeBudgetSeconds - $stopwatch->elapsedSeconds();
+
+            if ($remaining <= 0) {
+                // Spent. Opening another file here could still run for the full
+                // per-file ceiling, which is exactly what this budget prevents.
+                $this->record(
+                    $attachment->id,
+                    $attachment,
+                    PdfExtractionResult::skippedTimeout(
+                        $limits->maxPages,
+                        $limits->messageTimeBudgetSeconds
+                    ),
+                    $notices
+                );
+
+                continue;
+            }
+
+            $result = $this->extract($attachment, $this->fileLimits($limits, $remaining));
 
             if ($result === null) {
                 continue;
@@ -81,20 +113,38 @@ final class PdfTextEnrichmentService
     }
 
     /**
+     * Hands the file the smaller of the per-file ceiling and the time actually
+     * left in the message budget, so no single file can overrun the message.
+     *
+     * The remaining time is a float reading, so it is rounded down. That is the
+     * safe direction: the whole seconds granted never exceed the time left.
+     */
+    private function fileLimits(PdfExtractionLimits $limits, float $remaining): PdfExtractionLimits
+    {
+        if ($remaining >= $limits->timeBudgetSeconds) {
+            return $limits;
+        }
+
+        return new PdfExtractionLimits(
+            $limits->maxBytes,
+            $limits->maxPages,
+            max(1, (int) floor($remaining)),
+            $limits->messageTimeBudgetSeconds
+        );
+    }
+
+    /**
      * The extractor is contracted not to throw, but a defensive catch costs
      * nothing here and there is no safe caller further up.
      */
-    private function extract(StoredPdfAttachment $attachment): ?PdfExtractionResult
+    private function extract(StoredPdfAttachment $attachment, PdfExtractionLimits $limits): ?PdfExtractionResult
     {
         try {
             // The stored name is relative to the private directory, which only
             // the storage adapter knows, so it is resolved rather than trusted.
             $path = $this->storage->resolveAttachmentPath($attachment->storagePath);
 
-            return $this->extractor->extract(
-                $path,
-                $this->limits ?? PdfExtractionLimits::defaults()
-            );
+            return $this->extractor->extract($path, $limits);
         } catch (Throwable) {
             return PdfExtractionResult::failed('The attached PDF could not be read.');
         }
