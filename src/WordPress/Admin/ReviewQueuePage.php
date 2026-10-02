@@ -5,22 +5,89 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Admin;
 
 use ADCT\ParishIntake\Core\Auth\Capabilities;
+use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
+use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
+use ADCT\ParishIntake\Core\Review\CandidateEditResult;
+use ADCT\ParishIntake\Core\Review\CandidateEditValidator;
+use ADCT\ParishIntake\Core\Review\CandidateFieldSet;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
+use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ReviewQueueRepository;
 use DomainException;
+use Throwable;
 
 final class ReviewQueuePage
 {
     public const PAGE_SLUG = 'adct-parish-intake-review';
     private const ACTION = 'adct_pi_review_bulk';
+
+    /**
+     * The POST action and nonce names for the single-candidate editor.
+     *
+     * They are public because the editor, the source panel and `Plugin.php` all
+     * have to name the same action, and a mismatch would fail silently.
+     */
+    public const SAVE_ACTION = 'adct_pi_candidate_save';
+    public const SAVE_NONCE = 'review_nonce';
+    public const RAW_MESSAGE_ACTION = 'adct_pi_candidate_raw_message';
+    public const ATTACHMENT_ACTION = 'adct_pi_candidate_attachment';
+
+    /**
+     * One nonce name for both download actions. The file a reviewer is allowed to
+     * see is decided by the candidate they came from, not by the button, so
+     * there is nothing to vary.
+     */
+    public const SOURCE_NONCE = 'source_nonce';
+
+    /** Serving a stored file is bounded so a large poster cannot exhaust the 90 s limit. */
+    private const MAX_DOWNLOAD_BYTES = 10485760;
+
     private const PAGE_SIZE = 25;
 
+    /**
+     * @param string $pluginFile the plugin's main file, so assets resolve and cache-bust
+     */
     public function __construct(
         private readonly ReviewQueueRepository $queue,
         private readonly CandidatePublisher $publisher,
-        private readonly ReviewQueuePolicy $policy = new ReviewQueuePolicy()
+        private readonly ReviewQueuePolicy $policy = new ReviewQueuePolicy(),
+        private readonly ?InboundMessageRepository $messages = null,
+        private readonly ?AttachmentRepository $attachments = null,
+        private readonly ?InboundMailStorageReaderInterface $storage = null,
+        private readonly ?CandidateEditValidator $validator = null,
+        private readonly string $pluginFile = ''
     ) {
+    }
+
+    /**
+     * Load the detail screen's stylesheet and script, and only on this page.
+     *
+     * The script is a progressive enhancement: it hides the time fields for an
+     * all-day event and reveals the custom rule box. The form is complete and
+     * correct without it, so nothing here gates a control's behaviour.
+     */
+    public function enqueueDetailAssets(string $hookSuffix): void
+    {
+        if ($this->pluginFile === '' || ! str_contains($hookSuffix, self::PAGE_SLUG)) {
+            return;
+        }
+        // Bumped by hand when these files change, matching the public listing.
+        $version = '1.0.0';
+        wp_enqueue_style(
+            'adct-parish-intake-candidate-detail',
+            plugins_url('assets/candidate-detail.css', $this->pluginFile),
+            [],
+            $version
+        );
+        wp_enqueue_script(
+            'adct-parish-intake-candidate-detail',
+            plugins_url('assets/candidate-detail.js', $this->pluginFile),
+            [],
+            $version,
+            true
+        );
     }
 
     public function registerMenu(): void
@@ -68,11 +135,11 @@ final class ReviewQueuePage
         $counts = $this->queue->counts($userId, $email, $reviewer, $search);
         $detailId = absint($this->text($_GET['candidate'] ?? '0'));
         if ($detailId > 0) {
-            $candidate = $this->queue->findScoped($detailId, $userId, $email, $reviewer);
+            $candidate = $this->scopedCandidate($detailId, $userId, $email, $reviewer);
             if ($candidate === null) {
                 wp_die(esc_html('This candidate is not in your review queue.'), '', ['response' => 404]);
             }
-            $this->renderDetail($candidate, $tab, $search);
+            $this->renderDetail($candidate, $tab, $search, $reviewer);
             return;
         }
         $page = max(1, absint($this->text($_GET['paged'] ?? '1')));
@@ -287,7 +354,14 @@ final class ReviewQueuePage
                     <br /><strong>Manual resolution required before approval</strong>
                 <?php endif; ?>
             </td>
-            <td><?php echo esc_html(number_format((float) $row['confidence'] * 100, 0) . '%'); ?></td>
+            <td><?php echo esc_html(number_format((float) $row['confidence'] * 100, 0) . '%');
+                $uncertain = $this->uncertainFieldCount($fields);
+
+                if ($uncertain > 0) : ?>
+                    <br /><span class="description"><?php echo esc_html(
+                        $uncertain . ($uncertain === 1 ? ' field needs checking' : ' fields need checking')
+                    ); ?></span>
+                <?php endif; ?></td>
             <td><?php echo esc_html((string) $row['updated_at']); ?></td>
             <td><?php echo $decided !== null
                 ? esc_html((string) $decided . ' at ' . (string) ($row['decided_at'] ?? $row['approved_at'] ?? 'unknown time'))
@@ -316,37 +390,575 @@ final class ReviewQueuePage
         }
     }
 
-    /** @param array<string, mixed> $row */
-    private function renderDetail(array $row, string $tab, string $search): void
-    {
-        $fields = $this->safeFields($row);
-        ?>
-        <div class="wrap"><h1>Candidate #<?php echo esc_html((string) $row['id']); ?></h1>
-            <p><a href="<?php echo esc_url($this->url($tab, $search)); ?>">Back to review queue</a></p>
-            <p>This is a read-only preview. Resolve ambiguous matches and edit event details in the future candidate editor (#61); this page does not publish on GET.</p>
-            <table class="widefat striped"><tbody>
-                <?php foreach ([
-                    'title' => 'Title', 'event_date' => 'Date', 'event_time' => 'Time',
-                    'venue' => 'Venue', 'description' => 'Description',
-                ] as $key => $label) : ?>
-                    <tr><th scope="row"><?php echo esc_html($label); ?></th>
-                        <td><?php echo esc_html(is_string($fields[$key] ?? null) ? $this->excerpt($fields[$key]) : '—'); ?></td></tr>
-                <?php endforeach; ?>
-                <tr><th scope="row">Sender</th><td><?php echo esc_html((string) ($row['sender_email'] ?: 'No inbound sender')); ?></td></tr>
-                <tr><th scope="row">Parish</th><td><?php echo esc_html((string) ($row['parish_name'] ?: 'Unassigned')); ?></td></tr>
-                <tr><th scope="row">Status</th><td><?php echo esc_html((string) $row['status']); ?></td></tr>
-                <?php foreach ($this->sectionWarnings($row) as $warning) : ?>
-                    <tr><th scope="row">Parser warning</th><td><?php echo esc_html($warning); ?></td></tr>
-                <?php endforeach; ?>
-                <tr><th scope="row">Decision</th><td><?php echo esc_html((string) ($row['decided_by'] ?: 'Not decided')
-                    . ' / ' . (string) ($row['decided_at'] ?: '—')); ?></td></tr>
-            </tbody></table>
-        </div>
-        <?php
+    /**
+         * The per-field evidence behind the event score, as a read-only table.
+         *
+         * This is what a reviewer needs in order to judge the notice: not just "72%" but *which*
+         * detail is unsupported. Values the parser invented are labelled as such and come first.
+         *
+         * @param array<string, mixed> $fields
+         */
+        private function renderFieldConfidence(array $fields): void
+        {
+            $stored = $fields['field_confidence'] ?? null;
+
+            if (! is_array($stored) || ! is_array($stored['fields'] ?? null)) {
+                return;
+            }
+
+            $labels = [
+                'title' => 'Title',
+                'event_date' => 'Date',
+                'event_time' => 'Time',
+                'parish_name' => 'Parish',
+                'venue' => 'Venue',
+                'event_type' => 'Event type',
+                'contact' => 'Contact',
+                'description' => 'Description',
+                'recurrence' => 'Recurrence',
+            ];
+            $entries = [];
+
+            foreach ($stored['fields'] as $name => $entry) {
+                if (! is_string($name) || ! is_array($entry) || ! isset($entry['score']) || ! is_numeric($entry['score'])) {
+                    continue;
+                }
+
+                $flags = array_values(array_filter(
+                    (array) ($entry['flags'] ?? []),
+                    static fn ($flag): bool => is_string($flag)
+                ));
+
+                $entries[$name] = [
+                    'label' => $labels[$name] ?? $name,
+                    'score' => (float) $entry['score'],
+                    'origin' => is_string($entry['origin'] ?? null) ? $entry['origin'] : 'unknown',
+                    'flags' => $flags,
+                ];
+            }
+
+            if ($entries === []) {
+                return;
+            }
+
+            $order = ['title', 'event_date', 'event_time', 'parish_name', 'venue', 'event_type', 'contact', 'description', 'recurrence'];
+            usort($entries, static function (array $a, array $b) use ($order): int {
+                return array_search($a['label'], $order, true) <=> array_search($b['label'], $order, true);
+            });
+
+            $coverage = isset($stored['coverage']) && is_numeric($stored['coverage'])
+                ? (float) $stored['coverage']
+                : null;
+            ?>
+            <tr><th scope="row">Field confidence</th><td>
+                <p class="description" style="margin-top:0;">
+                    Each detail is scored on the evidence behind it. <?php if ($coverage !== null) : ?>
+                        The notice supports <?php echo esc_html(number_format($coverage * 100, 0) . '%'); ?> of the fields this event needs.
+                    <?php endif; ?>
+                </p>
+                <table class="widefat striped" style="margin:0;">
+                    <thead><tr>
+                        <th scope="col">Field</th><th scope="col">Score</th>
+                        <th scope="col">Evidence</th><th scope="col">Notes</th>
+                    </tr></thead>
+                    <tbody>
+                    <?php foreach ($entries as $entry) : ?>
+                        <tr>
+                            <td><?php echo esc_html($entry['label']); ?></td>
+                            <td><?php echo esc_html(number_format($entry['score'] * 100, 0) . '%'); ?></td>
+                            <td><?php echo esc_html(str_replace('_', ' ', $entry['origin'])); ?></td>
+                            <td><?php
+                                echo esc_html($this->fieldConfidenceNote($entry));
+                                                    ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </td></tr>
+            <?php
+        }
+
+        /**
+         * The reviewer-facing explanation of one field's evidence.
+         *
+         * @param array{label: string, score: float, origin: string, flags: list<string>} $entry
+         */
+            private function fieldConfidenceNote(array $entry): string
+            {
+            if ($entry['origin'] === 'unsupported') {
+                return 'Not stated in the notice; the parser fell back to a guess.';
+            }
+
+            if ($entry['flags'] === []) {
+                return '—';
+            }
+
+            return implode(', ', array_map(
+                fn (string $flag): string => str_replace('_', ' ', $flag),
+                $entry['flags']
+            ));
+            }
+
+            /**
+         * How many scored fields fall below the field threshold, for the queue list.
+         *
+         * @param array<string, mixed> $fields
+         */
+        private function uncertainFieldCount(array $fields): int
+        {
+            $stored = $fields['field_confidence'] ?? null;
+
+            if (! is_array($stored) || ! is_array($stored['fields'] ?? null)) {
+                return 0;
+            }
+
+            $threshold = (float) get_option(
+                'adct_parish_intake_field_confidence_threshold',
+                (string) ConfidenceScoringStage::DEFAULT_FIELD_THRESHOLD
+            );
+            $count = 0;
+
+            foreach ($stored['fields'] as $entry) {
+                if (is_array($entry) && isset($entry['score']) && is_numeric($entry['score']) && (float) $entry['score'] < $threshold) {
+                    $count++;
+                }
+            }
+
+            return $count;
+        }
+
+    /**
+     * The single-candidate screen: the source email, its attachments, every
+     * extracted field, and the edit/approve form.
+     *
+     * A GET only ever renders. Nothing here writes, so a prefetched or
+     * bookmarked URL cannot change a candidate.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function renderDetail(
+        array $row,
+        string $tab,
+        string $search,
+        bool $reviewer,
+        ?CandidateEditResult $attempt = null
+    ): void {
+        $id = (int) $row['id'];
+        $messageId = (int) ($row['message_id'] ?? 0);
+        $message = $messageId > 0 && $this->messages !== null
+            ? $this->messages->findById($messageId)
+            : null;
+        $attachments = $messageId > 0 && $this->attachments !== null
+            ? $this->attachments->findByMessageId($messageId)
+            : [];
+        $editable = $this->canEdit($row);
+        $canApprove = $editable && $this->canApproveRow($row);
+
+        $view = new CandidateDetailView();
+        $view->render(
+            $row,
+            $message,
+            $attachments,
+            $this->queue->activeParishes(),
+            $tab,
+            $search,
+            $editable,
+            $canApprove,
+            $attempt,
+            $this->isDownloadable(...),
+            $this->renderFieldConfidence(...)
+        );
+        $view->renderAuditTrail($this->queue->history($id));
     }
 
-    /** @param array<string, mixed> $row
-     *  @return array<string, mixed>
+    /**
+     * Whether a stored name still resolves to a real file on disk.
+     *
+     * A retention run can remove a file while the row survives, so the view
+     * must be able to tell "no path recorded" apart from "the file is gone";
+     * only the first case is worth a Download button.
+     */
+    private function isDownloadable(string $path): bool
+    {
+        $storage = $this->storage;
+        if ($storage === null) {
+            return false;
+        }
+
+        try {
+            return is_file($storage->resolveAttachmentPath($path));
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether the editor may change this candidate at all.
+     *
+     * Anything already decided is read-only, so a later screen cannot rewrite an
+     * approved event behind the publisher's back.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function canEdit(array $row): bool
+    {
+        return ($row['status'] ?? '') === 'awaiting_approval'
+            && empty($row['approved_by'])
+            && empty($row['decided_at']);
+    }
+
+    private function validator(): CandidateEditValidator
+    {
+        return $this->validator ?? new CandidateEditValidator();
+    }
+
+    /**
+     * The candidate editor's POST input, sanitised.
+     *
+     * Only the keys the validator reads are collected, so nothing the form does
+     * not own can reach it.
+     *
+     * @param array<string, mixed> $source
+     * @return array<string, mixed>
+     */
+    private function readEditForm(array $source): array
+    {
+        $form = [];
+        $text = [
+            'title', 'event_date', 'event_time', 'event_end_date', 'event_end_time',
+            'event_type', 'description', 'exdates', 'rdates', 'contact_name',
+            'contact_email', 'contact_phone', 'recurrence_custom',
+        ];
+        foreach ($text as $key) {
+            if (isset($source[$key]) && is_string($source[$key])) {
+                $form[$key] = sanitize_textarea_field(wp_unslash($source[$key]));
+            }
+        }
+        $keys = [
+            'all_day', 'featured', 'parish_id', 'venue_id', 'status_flag',
+            'recurrence_preset', 'recurrence_weekday', 'recurrence_ordinal',
+            'recurrence_month_day',
+        ];
+        foreach ($keys as $key) {
+            if (isset($source[$key]) && is_scalar($source[$key])) {
+                $form[$key] = sanitize_text_field(wp_unslash((string) $source[$key]));
+            }
+        }
+
+        return $form;
+    }
+
+    /**
+     * The editor's POST handler: save, then optionally approve or reject.
+     *
+     * The order matters. The edit is committed and audited first, so a failure
+     * to publish cannot lose what the reviewer typed; the decision then goes
+     * through the same `decide()` the bulk form uses, keeping one code path for
+     * approving a candidate.
+     */
+    public function handleSave(): void
+    {
+        [$userId, $email, $reviewer] = $this->identity();
+        check_admin_referer(self::SAVE_ACTION, self::SAVE_NONCE);
+
+        $id = absint($this->text($_POST['candidate_id'] ?? '0'));
+        $tab = $this->tab($this->text($_POST['tab'] ?? 'awaiting_approval'));
+        $search = substr(sanitize_text_field($this->text($_POST['search'] ?? '')), 0, 100);
+        $mode = sanitize_key($this->text($_POST['save_mode'] ?? 'save'));
+        if ($id < 1 || ! in_array($mode, ['save', 'approve', 'reject'], true)) {
+            wp_die(esc_html('That candidate edit is not valid.'), '', ['response' => 400]);
+        }
+        $row = $this->scopedCandidate($id, $userId, $email, $reviewer);
+        if ($row === null) {
+            wp_die(esc_html('This candidate is not in your review queue.'), '', ['response' => 404]);
+        }
+        if (! $this->canEdit($row)) {
+            wp_die(esc_html('This candidate has already been decided.'), '', ['response' => 409]);
+        }
+        if ($mode === 'approve' && ! $this->canApproveRow($row)) {
+            wp_die(
+                esc_html('This candidate needs manual resolution before it can be approved.'),
+                '',
+                ['response' => 409]
+            );
+        }
+
+        $form = $this->readEditForm($_POST);
+        $result = $this->validator()->validate(
+            $this->safeFields($row),
+            $this->storedRecurrence($row),
+            $form
+        );
+        if ($result->hasErrors()) {
+                    // Re-render rather than redirect: the point is to show the reviewer
+            // their own values with the problems attached.
+            $this->renderDetail(
+                array_merge($row, $this->fieldsFrom($result)),
+                $tab,
+                $search,
+                $reviewer,
+                $result
+            );
+
+            return;
+        }
+
+        // The redirect is deliberately outside the try block. `wp_safe_redirect()`
+                // ends the request by exiting, and any Throwable raised on the way out of
+                // it belongs to the shutdown path, not to the save. Catching it here would
+                // turn a finished save into a "could not be saved" error page.
+                $reason = substr(sanitize_textarea_field($this->text($_POST['reason'] ?? '')), 0, 500);
+
+                try {
+                    $saved = $this->queue->updateFields(
+                        $id,
+                        $result->values,
+                        $result->recurrence,
+                        $result->changedFields,
+                        $userId,
+                        $email,
+                        $reviewer
+                    );
+                    if ($saved === 'not_editable') {
+                        wp_die(esc_html('This candidate was decided while you were editing it.'), '', ['response' => 409]);
+                    }
+                    $decision = null;
+                    if ($mode !== 'save' && $saved !== 'unchanged') {
+                        $decision = $this->queue->decide($id, $mode, $userId, $email, $reviewer, $reason);
+                        if ($decision === 'decided' && $mode === 'approve') {
+                            $this->publisher->publish($id);
+                        }
+                    }
+                } catch (DomainException $failure) {
+                    wp_die(esc_html($failure->getMessage()), '', ['response' => 409]);
+                } catch (Throwable $failure) {
+                    error_log('[ADCT Parish Intake] Candidate save failed: ' . $failure->getMessage());
+                    wp_die(esc_html('The candidate could not be saved. Try again in a moment.'), '', ['response' => 500]);
+                }
+
+                $query = ['candidate' => $id, 'tab' => $tab, 'search' => $search, 'saved' => $saved];
+                if ($decision !== null) {
+                    $query['decision'] = $decision;
+                }
+
+                wp_safe_redirect(add_query_arg($query, $this->url($tab, $search)));
+                exit;
+            }
+
+    /**
+     * Serve the stored original message for a candidate.
+     *
+     * The reviewer proves which candidate they are looking at by posting its ID;
+     * the message is then chosen from the database, never from the request. That
+     * keeps a stored path out of any URL and stops one reviewer from walking the
+     * message table.
+     */
+    public function handleRawMessage(): void
+    {
+        [$userId, $email, $reviewer] = $this->identity();
+        check_admin_referer(self::RAW_MESSAGE_ACTION, self::SOURCE_NONCE);
+        $candidateId = absint($this->text($_POST['candidate'] ?? '0'));
+        if ($candidateId < 1 || $this->scopedCandidate($candidateId, $userId, $email, $reviewer) === null) {
+            wp_die(esc_html('This candidate is not in your review queue.'), '', ['response' => 404]);
+        }
+        $this->sendFile($this->rawMessageFor($candidateId));
+    }
+
+    /**
+     * The stored raw message for a candidate, or null when it is not available.
+     *
+     * Split out from the handler so the authorization is a plain return value
+     * and can be exercised without ending the request.
+     */
+    private function rawMessageFor(int $candidateId): ?array
+    {
+        $messageId = $this->queue->findMessageOf($candidateId);
+        $message = $messageId === null || $this->messages === null
+            ? null
+            : $this->messages->findById($messageId);
+        $path = $message === null ? null : $this->nullableString($message['raw_path'] ?? null);
+        if ($path === null) {
+            return null;
+        }
+
+        return [
+            'path' => $path,
+            'mime_type' => 'message/rfc822',
+            'filename' => 'message-' . $messageId . '.eml',
+        ];
+    }
+
+    /**
+     * Serve one stored attachment belonging to a candidate's message.
+     *
+     * The attachment is looked up by its own ID and its message is checked
+     * against the candidate the reviewer was viewing, so one reviewer cannot
+     * walk the attachment table.
+     */
+    public function handleAttachment(): void
+    {
+        [$userId, $email, $reviewer] = $this->identity();
+        check_admin_referer(self::ATTACHMENT_ACTION, self::SOURCE_NONCE);
+        $attachmentId = absint($this->text($_POST['attachment_id'] ?? '0'));
+        $candidateId = absint($this->text($_POST['candidate'] ?? '0'));
+        if ($attachmentId < 1 || $candidateId < 1) {
+            wp_die(esc_html('That attachment is not available.'), '', ['response' => 404]);
+        }
+        if ($this->scopedCandidate($candidateId, $userId, $email, $reviewer) === null) {
+            wp_die(esc_html('This candidate is not in your review queue.'), '', ['response' => 404]);
+        }
+        $this->sendFile($this->attachmentFor($attachmentId, $candidateId));
+    }
+
+    /**
+     * The candidate, but only if this reviewer is allowed to see it.
+     *
+     * A reviewer with the archdiocese-wide capability sees every candidate; a
+     * deanery approver only sees candidates from their own deaneries. The two
+     * are different questions, so they are asked separately rather than through
+     * one boolean.
+     */
+    private function scopedCandidate(int $candidateId, int $userId, string $email, bool $reviewer): ?array
+    {
+        return $reviewer
+            ? $this->queue->findScopedForReviewer($candidateId, $userId, $email)
+            : $this->queue->findScoped($candidateId, $userId, $email, false);
+    }
+
+    /**
+     * The stored file for an attachment, when it belongs to the candidate.
+     *
+     * The message is compared rather than trusted from the request, so a
+     * reviewer cannot enumerate the attachment table through this screen. Null
+     * means "no such attachment on that candidate"; a missing file is a
+     * separate answer, so the panel can say so rather than showing a button
+     * that fails.
+     *
+     * @return array{path: string, mime_type: string, filename: string}|null
+     */
+    private function attachmentFor(int $attachmentId, int $candidateId): ?array
+    {
+        if ($attachmentId < 1 || $this->attachments === null) {
+            return null;
+        }
+        $attachment = $this->attachments->find($attachmentId);
+        if ($attachment === null) {
+            return null;
+        }
+        if ($this->queue->findMessageOf($candidateId) !== (int) ($attachment['message_id'] ?? 0)) {
+            return null;
+        }
+        $path = $this->nullableString($attachment['storage_path'] ?? null);
+        if ($path === null) {
+            return null;
+        }
+
+        return [
+            'path' => $path,
+            'mime_type' => $this->downloadMimeType($this->nullableString($attachment['mime_type'] ?? null)),
+            'filename' => $this->nullableString($attachment['filename'] ?? null) ?? 'attachment-' . $attachmentId,
+        ];
+    }
+
+    /**
+     * A MIME type recorded from a parish email is untrusted input, and it is
+     * about to become a response header value. Only a well-formed type is
+     * allowed through; anything else is served as an opaque byte stream.
+     */
+    private function downloadMimeType(?string $mimeType): string
+    {
+        if ($mimeType === null) {
+            return 'application/octet-stream';
+        }
+        $clean = strtolower(trim($mimeType));
+        if (preg_match('#^application/[a-z0-9.+-]+$#', $clean) === 1) {
+            return $clean;
+        }
+        if (preg_match('#^(image|audio|video|message)/[a-z0-9.+-]+$#', $clean) === 1) {
+            return $clean;
+        }
+        if ($clean === 'text/plain' || $clean === 'text/csv' || $clean === 'text/calendar') {
+            return $clean;
+        }
+
+        return 'application/octet-stream';
+    }
+
+    /**
+     * Stream a stored file, or fail loudly.
+     *
+     * The path is validated and resolved by the storage adapter, which rejects
+     * anything that is not a stored name and refuses symbolic links, so this
+     * cannot be turned into a directory traversal.
+     *
+     * @param array{path: string, mime_type: string, filename: string}|null $file
+     */
+    private function sendFile(?array $file): void
+    {
+        if ($file === null) {
+            wp_die(esc_html('That file is not available.'), '', ['response' => 404]);
+        }
+        $storage = $this->storage;
+        if ($storage === null) {
+            wp_die(esc_html('That file is not available.'), '', ['response' => 404]);
+        }
+        try {
+            $path = $storage->resolveAttachmentPath($file['path']);
+        } catch (Throwable $unavailable) {
+            wp_die(esc_html('That file is not available.'), '', ['response' => 404]);
+        }
+        $size = filesize($path);
+        if ($size === false || $size > self::MAX_DOWNLOAD_BYTES) {
+            wp_die(esc_html('That file is too large to download here.'), '', ['response' => 413]);
+        }
+        $contents = file_get_contents($path);
+        if (! is_string($contents)) {
+            wp_die(esc_html('That file could not be read.'), '', ['response' => 500]);
+        }
+        // A stored filename is parish-supplied, so it is reduced to a harmless
+        // token and never sent back as a header value.
+        $safeName = preg_replace('/[^A-Za-z0-9._-]/', '_', $file['filename']) ?? 'attachment';
+        nocache_headers();
+        header('Content-Type: ' . $this->downloadMimeType($file['mime_type']));
+        header('Content-Length: ' . (string) strlen($contents));
+        header("Content-Disposition: attachment; filename=\"{$safeName}\"");
+        header('X-Content-Type-Options: nosniff');
+        echo $contents; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- binary download.
+        exit;
+    }
+
+    private function nullableString(mixed $value): ?string
+    {
+        if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        return $value;
+    }
+
+    /**
+     * The candidate's stored recurrence JSON.
+     *
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function storedRecurrence(array $row): array
+    {
+        return CandidateFieldSet::decodeFields($row['recurrence'] ?? null);
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @param CandidateEditResult $result
+     * @return array<string, mixed>
+     */
+    private function fieldsFrom(CandidateEditResult $result): array
+    {
+        return ['fields' => json_encode($result->values, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)];
+    }
+
+    /**
+     * @param array<string, mixed> $row
      */
     private function safeFields(array $row): array
     {
@@ -419,6 +1031,14 @@ final class ReviewQueuePage
     }
 
     private function url(string $tab, string $search): string
+    {
+        return self::queueUrl($tab, $search);
+    }
+
+    /**
+     * The queue URL without the detail parameter, for the "back" link.
+     */
+    public static function queueUrl(string $tab, string $search): string
     {
         return add_query_arg(
             ['page' => self::PAGE_SLUG, 'tab' => $tab, 'search' => $search],

@@ -119,6 +119,7 @@ For a parish with no official source, the import also registers that office emai
 2. Open **Parish Intake → Senders** to search by email address or contact name, filter by trust, see all linked parishes, and link an address to another parish. Trust is shared by the address across all of its parish links.
 3. Use **Verify address** only after checking the contact with the parish. Verification fills in the sender's linked parish information and permits immediate changes to already-published events; every new event still needs approval by a dean or archdiocese reviewer.
 4. **Block address** stops intake for that email address across every linked parish. An administrator can use **Unblock address** to return it to `unknown`; verify it again before treating it as trusted. A blocked address cannot lose its final parish link until an administrator explicitly unblocks it, so removing one of several links does not change trust for the remaining links.
+5. Learned senders listed under **Pending senders** start with reminders switched **off**, and **Confirm sender** leaves them off. That is deliberate: a learned address has not agreed to receive reminders, so the plugin never opts it in on its own. Turn reminders on deliberately by editing the contact on **Parish Intake → Parishes** and ticking **Receives reminders**; that checkbox is the only opt-in.
 
 ### Manage sources
 
@@ -175,6 +176,18 @@ The Mailboxes screen's **Recent message screening and confirmation** summary sho
 - If the recipient is no longer safe or has changed, the payload has changed, or multiple rows use the same inbound key, it is marked **delivery failed: confirmation queue conflict** rather than sent a second time.
 
 Do not expect the Approve, Deny, Edit or Approve all links in these preview emails to work yet. They are explicitly marked **not active**; their token preview reports that the action is unavailable and does not consume the token or change an event. Replies are not processed automatically. Until an operator requeue action is available, do not edit the database or assume a suppressed message will be resent; contact the site owner if a confirmation needs recovery.
+
+### Approver emails and daily digests
+
+The **Queue approver decisions and digests** job emails the dean and archdiocese reviewers when a new event needs approval. Each email gives an **Approve**, **Reject** and **Edit** link for each event. Opening a link only shows a confirmation page; nothing is decided by clicking the link in the email itself — the decision is made by submitting that page, so a link scanner that follows mail links cannot approve or reject an event by accident. Links expire after 14 days and can be used once, and the first decision wins.
+
+Approvers who choose **daily digest** rather than **each event** receive one email a day listing everything waiting. Digests are not sent before the digest hour, so an event that arrives at 14:00 is included in that evening's digest rather than being mailed straight away. There is no admin screen for this; a technical operator can change the hour in `wp-config.php` with `ADCT_PI_APPROVAL_DIGEST_HOUR`, an integer from `0` to `23` in `Africa/Johannesburg` time. If it is absent, digests go out from **07:00**. An invalid value is logged and safely falls back to 07:00.
+
+```php
+define('ADCT_PI_APPROVAL_DIGEST_HOUR', 7);
+```
+
+Choosing **each event** instead of **daily digest** is unaffected by this hour — those approvers are emailed as soon as the job runs.
 
 ## Configure parser safeguards
 

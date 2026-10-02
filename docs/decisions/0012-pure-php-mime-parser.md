@@ -1,6 +1,6 @@
 # ADR 0012: Pure-PHP MIME parsing with a prefixed Composer dependency
 
-- Status: Accepted
+- Status: Accepted; HTML tokenizer choice superseded by 0017; MIME parser version superseded by 0014
 - Date: 2026-09-25
 
 ## Context
@@ -8,11 +8,11 @@ Inbound parish mail arrives as raw RFC 822 messages. The host has no `ext-imap`,
 
 ## Decision
 - Use the pre-approved `zbateson/mail-mime-parser` 3.x package behind the Core `Ingestion\MimeMessageParser` service. The package is pure PHP, supports PHP 8.1 and later (including 8.2–8.4), and uses the BSD-2-Clause license; its resolved runtime dependencies are permissively licensed.
-- Convert HTML with the Core's pure-PHP tag tokenizer, not `DOMDocument`. Keep newsletter cleanup, quoted text, signatures and forwarded-message metadata in reusable Core support/value objects.
+- Convert HTML with the Core's pure-PHP tag tokenizer, not `DOMDocument`. Keep newsletter cleanup, quoted text, signatures and forwarded-message metadata in reusable Core support/value objects. *(Historical choice: ADR 0017 supersedes the tokenizer selection; the implementation has not yet been replaced.)*
 - Keep the dependency in Composer and Strauss-prefix it into `vendor-prefixed/` for release. Do not call PHP's IMAP functions or depend on `ext-imap` or `ext-dom`.
 - Retain attachment metadata and a MIME-part reference only. Attachment content remains available through the stored raw message and is out of scope for E2.4.
 
 ## Consequences
 - Common nested MIME, transfer encoding, header and charset edge cases are handled by a maintained parser without a native mail extension.
 - The release zip includes the MIME parser and its transitive runtime packages; the build and bootstrap checks must continue to verify Strauss prefixing.
-- HTML conversion and text cleanup remain application code and are covered by unit and golden-fixture tests.
+- HTML conversion and text cleanup remain application code and are covered by unit and golden-fixture tests. *(Historical consequence; see ADR 0017 for the current library-first policy.)*

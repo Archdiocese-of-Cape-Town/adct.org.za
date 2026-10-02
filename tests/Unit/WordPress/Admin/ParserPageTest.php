@@ -196,8 +196,8 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
 
         private function privateProperty(object $object, string $property): mixed
         {
+            // No setAccessible() call: it has been a no-op since PHP 8.1 and is deprecated in 8.5.
             $reflection = new ReflectionProperty($object, $property);
-            $reflection->setAccessible(true);
 
             return $reflection->getValue($object);
         }

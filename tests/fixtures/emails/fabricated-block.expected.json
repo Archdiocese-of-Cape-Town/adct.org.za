@@ -1,0 +1,46 @@
+{
+  "classification": "low_confidence",
+  "candidate_count": 2,
+  "candidates": [
+    {
+      "block_index": 0,
+      "fields": {
+        "title": "Annual general meeting will take place as usual and we look forward to seeing",
+        "parish_name": "Example Parish Office",
+        "field_confidence": {
+          "score": 0.11,
+          "coverage": 0.267,
+          "fields": {
+            "title": { "score": 0.0, "origin": "unsupported", "flags": ["sentence_fragment"] },
+            "parish_name": { "score": 0.85, "origin": "inferred", "flags": [] },
+            "contact": { "score": 0.0, "origin": "unsupported", "flags": ["sender_fallback"] },
+            "description": { "score": 0.98, "origin": "explicit", "flags": [] },
+            "event_type": { "score": 0.96, "origin": "directory_text", "flags": [] }
+          }
+        }
+      }
+    },
+    {
+      "block_index": 1,
+      "fields": {
+        "title": "Example Parish Hall",
+        "parish_name": "Example Parish",
+        "event_date": "2026-11-06",
+        "event_time": "18:00",
+        "field_confidence": {
+          "score": 0.467,
+          "coverage": 0.667,
+          "fields": {
+            "title": { "score": 0.98, "origin": "explicit", "flags": [] },
+            "parish_name": { "score": 0.0, "origin": "unsupported", "flags": ["unanchored_parish_match"] },
+            "event_date": { "score": 0.98, "origin": "explicit", "flags": [] },
+            "event_time": { "score": 0.92, "origin": "context", "flags": [] },
+            "contact": { "score": 0.0, "origin": "unsupported", "flags": ["sender_fallback"] },
+            "description": { "score": 0.98, "origin": "explicit", "flags": [] },
+            "event_type": { "score": 0.85, "origin": "inferred", "flags": [] }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Parish book club",
+    "parish_name": "Example Parish",
+    "event_date": "2026-10-12",
+    "event_time": "10:00",
+    "event_end_time": "12:00",
+    "venue": "Example Parish Hall"
+  },
+  "known_failures": {
+    "fields.event_time": "#153",
+    "fields.event_end_time": "#153"
+  }
+}

@@ -2,12 +2,29 @@
 
 namespace ADCT\ParishIntake\Core\Parsing;
 
+use ADCT\ParishIntake\Core\Parsing\Confidence\FieldEvidence;
+
 final class ParseResult
 {
     private string $normalizedText = '';
     private string $classification = 'unknown';
     private array $fields = [];
-    private array $recurrence = [];
+
+    /**
+     * Why each field is believed, keyed by field name. Populated as the parser sets fields.
+     *
+     * @var array<string, FieldEvidence>
+     */
+    private array $fieldEvidence = [];
+
+        /**
+         * The computed per-field confidence, attached to `fields` on export.
+         *
+         * @var array{score: float, coverage: float, fields: array<string, array<string, mixed>>}|null
+         */
+        private ?array $fieldConfidencePayload = null;
+
+        private array $recurrence = [];
     private float $confidence = 0.0;
     private bool $dateWeekdayMismatch = false;
     private bool $rangeEndBeforeStart = false;
@@ -63,16 +80,59 @@ final class ParseResult
         return $this->fields;
     }
 
-    public function mergeFields(array $fields, bool $onlyEmpty = true): void
-    {
-        foreach ($fields as $key => $value) {
-            if ($onlyEmpty && ! empty($this->fields[$key])) {
-                continue;
-            }
-
-            $this->setField((string) $key, $value);
-        }
+        /**
+         * Record why a field is believed.
+         *
+         * Last write wins, so a later stage that knows better (such as the directory lookup, which
+         * can confirm a parish from a verified sender) may correct or upgrade an earlier guess.
+         */
+        public function recordFieldEvidence(string $field, FieldEvidence $evidence): void
+        {
+            $this->fieldEvidence[$field] = $evidence;
     }
+
+        /**
+         * @return array<string, FieldEvidence>
+         */
+        public function fieldEvidence(): array
+        {
+            return $this->fieldEvidence;
+        }
+
+        public function fieldEvidenceFor(string $field): ?FieldEvidence
+        {
+            return $this->fieldEvidence[$field] ?? null;
+        }
+
+        /**
+         * Drop the recorded evidence for fields that are no longer present, so a value that was
+         * overwritten does not keep scoring the candidate.
+         */
+        public function pruneFieldEvidence(): void
+        {
+            foreach (array_keys($this->fieldEvidence) as $field) {
+                if (! isset($this->fields[$field])) {
+                    unset($this->fieldEvidence[$field]);
+                }
+            }
+        }
+
+        public function mergeFields(array $fields, bool $onlyEmpty = true): void
+        {
+            foreach ($fields as $key => $value) {
+                if ($onlyEmpty && ! empty($this->fields[$key])) {
+                    continue;
+                }
+
+                $this->setField((string) $key, $value);
+
+                // A merged value replaces whatever produced the old one, so its evidence must move
+                // with it or the score would describe a field that is no longer there.
+                if (! isset($this->fieldEvidence[$key])) {
+                    $this->recordFieldEvidence((string) $key, new FieldEvidence(FieldEvidence::AI));
+                }
+            }
+        }
 
     public function setRecurrence(array $recurrence): void
     {
@@ -223,14 +283,48 @@ final class ParseResult
         return $this->sourceSnippet;
     }
 
-    public function toArray(): array
+        /**
+         * Per-field confidence, published inside `fields` so it rides along in the existing
+         * longtext column. No schema migration is needed for this, the same way `parish_match`
+         * and `venue_match` were added.
+         *
+         * @return array{score: float, coverage: float, fields: array<string, array<string, mixed>>}|null
+         */
+        public function fieldConfidence(): ?array
+        {
+            return $this->fieldConfidencePayload;
+        }
+
+        /**
+         * @param array{score: float, coverage: float, fields: array<string, array<string, mixed>>}|null $payload
+         */
+        public function setFieldConfidence(?array $payload): void
+        {
+            $this->fieldConfidencePayload = $payload;
+        }
+
+        /**
+         * The fields as persisted, with the per-field confidence payload merged in.
+         *
+         * @return array<string, mixed>
+         */
+        private function fieldsWithFieldConfidence(): array
+        {
+            if ($this->fieldConfidencePayload === null) {
+                return $this->fields;
+            }
+
+            return ['field_confidence' => $this->fieldConfidencePayload] + $this->fields;
+        }
+
+        public function toArray(): array
     {
         return [
             'normalized_text' => $this->normalizedText,
             'classification' => $this->classification,
             'block_index' => $this->blockIndex,
             'source_snippet' => $this->sourceSnippet,
-            'fields' => $this->fields,
+                'fields' => $this->fieldsWithFieldConfidence(),
             'recurrence' => $this->recurrence,
             'confidence' => $this->confidence,
             'notes' => $this->notes,

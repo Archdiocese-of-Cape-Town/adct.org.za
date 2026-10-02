@@ -54,6 +54,7 @@ use ADCT\ParishIntake\Core\Mail\ConfirmationEmailPreviewService;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
+use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
 use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
@@ -63,6 +64,7 @@ use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
 use ADCT\ParishIntake\Core\Support\SystemClock;
+use ADCT\ParishIntake\Core\Review\CandidateEditValidator;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use ADCT\ParishIntake\WordPress\Pdf\PrinsFrankPdfTextExtractor;
 use ADCT\ParishIntake\WordPress\Pdf\WordPressAttachmentExtractionStore;
@@ -333,15 +335,23 @@ final class Plugin
             new EventValidator($timezone, $rruleValidator)
         );
         if (function_exists('add_action')) {
-            $threshold = get_option('adct_parish_intake_ai_threshold', '0.55');
-            if (! is_numeric($threshold) || (float) $threshold < 0 || (float) $threshold > 1) {
-                error_log('[ADCT Parish Intake] Invalid confidence threshold; review queue uses 0.55.');
-            }
-            $confidenceThreshold = is_numeric($threshold) && (float) $threshold >= 0 && (float) $threshold <= 1
-                ? (float) $threshold : 0.55;
+            // The review threshold is deliberately its own setting (#43). It used to be read from
+            // the AI threshold, which conflates "how confident must the parser be before a human
+            // looks at this" with "when should we pay for an AI call". Sites on the old value keep
+            // their behaviour, because both defaults are 0.55.
+            $confidenceThreshold = $this->confidenceOption(
+                'adct_parish_intake_confidence_threshold',
+                ReviewQueuePolicy::DEFAULT_CONFIDENCE_THRESHOLD
+            );
             $this->reviewQueuePage = new ReviewQueuePage(
                 new ReviewQueueRepository($database, $clock, new ReviewQueuePolicy(), $confidenceThreshold),
-                $this->candidatePublisher
+                $this->candidatePublisher,
+                new ReviewQueuePolicy(),
+                $inboundMessages,
+                $attachmentRepository,
+                new ProtectedInboundMailStorage(),
+                new CandidateEditValidator(),
+                $this->pluginFile
             );
         }
         $this->eventOccurrenceHooks = new EventOccurrenceHooks(
@@ -438,7 +448,13 @@ final class Plugin
                 new WordPressConfirmationActionLinkProvider(),
                 $this->mailQueue,
                 $mailQueueRepository,
-                new \ADCT\ParishIntake\Core\Mail\ConfirmationEmailRenderer($timezone)
+                new \ADCT\ParishIntake\Core\Mail\ConfirmationEmailRenderer(
+                    $timezone,
+                    $this->confidenceOption(
+                        'adct_parish_intake_field_confidence_threshold',
+                        ConfidenceScoringStage::DEFAULT_FIELD_THRESHOLD
+                    )
+                )
             ),
             $clock
         );
@@ -534,7 +550,8 @@ final class Plugin
                 $confirmationPreviewJob,
                 new ApprovalNoticeJob(
                     $database, $approvalRecipients, $this->actionTokenService,
-                    $this->mailQueue, $mailQueueRepository, $clock
+                    $this->mailQueue, $mailQueueRepository, $clock,
+                    self::approvalDigestHour()
                 ),
                 $inboundMessageProcessingJob,
                 $retentionCleanupJob,
@@ -645,6 +662,14 @@ final class Plugin
         add_option('adct_parish_intake_openrouter_model', OpenAiCompatibleProvider::FREE_MODEL);
         add_option('adct_parish_intake_ai_base_url', OpenAiCompatibleProvider::DEFAULT_URL);
         add_option('adct_parish_intake_ai_threshold', '0.55');
+        add_option(
+            'adct_parish_intake_confidence_threshold',
+            (string) ReviewQueuePolicy::DEFAULT_CONFIDENCE_THRESHOLD
+        );
+        add_option(
+            'adct_parish_intake_field_confidence_threshold',
+            (string) ConfidenceScoringStage::DEFAULT_FIELD_THRESHOLD
+        );
         add_option('adct_parish_intake_section_keywords', SectionSkipper::defaultKeywordLists());
         add_option(
             WordPressTestModeSettings::TEST_MODE_OPTION,
@@ -837,6 +862,7 @@ final class Plugin
         add_action('admin_menu', [$this->mailboxesPage, 'registerMenu']);
         add_action('admin_menu', [$this->inboundMessagesPage, 'registerMenu']);
         add_action('admin_menu', [$this->reviewQueuePage, 'registerMenu']);
+        add_action('admin_enqueue_scripts', [$this->reviewQueuePage, 'enqueueDetailAssets']);
         add_action('admin_menu', [$this->outboundMailPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
         add_action('admin_menu', [$this->healthPage, 'registerMenu']);
@@ -859,6 +885,15 @@ final class Plugin
             [$this->inboundMessagesPage, 'handleReprocess']
         );
         add_action('admin_post_adct_pi_review_bulk', [$this->reviewQueuePage, 'handleBulk']);
+        add_action('admin_post_adct_pi_candidate_save', [$this->reviewQueuePage, 'handleSave']);
+        add_action(
+            'admin_post_adct_pi_candidate_raw_message',
+            [$this->reviewQueuePage, 'handleRawMessage']
+        );
+        add_action(
+            'admin_post_adct_pi_candidate_attachment',
+            [$this->reviewQueuePage, 'handleAttachment']
+        );
         add_action('admin_post_adct_pi_test_mailbox', [$this->mailboxesPage, 'handleTestConnection']);
         add_action(
             'admin_post_adct_pi_create_mailbox_processed_folder',
@@ -898,6 +933,33 @@ final class Plugin
             new RoleInstaller(new WordPressRoleCapabilityStore()),
             new WordPressRoleVersionStore()
         );
+    }
+
+    /**
+     * Read a confidence threshold from an option, falling back to the documented default.
+     *
+     * A stored value that is missing or out of range must not silently become 0 or 1, which would
+     * either send everything to review or let everything publish unreviewed.
+     */
+    private function confidenceOption(string $option, float $default): float
+    {
+        if (! function_exists('get_option')) {
+            return $default;
+        }
+
+        $value = get_option($option, (string) $default);
+
+        if (! is_numeric($value) || (float) $value < 0.0 || (float) $value > 1.0) {
+            error_log(sprintf(
+                '[ADCT Parish Intake] Invalid %s; using %s.',
+                $option,
+                (string) $default
+            ));
+
+            return $default;
+        }
+
+        return (float) $value;
     }
 
     private function isAdminPostRequest(): bool
@@ -962,6 +1024,49 @@ final class Plugin
 
             return new MailQueueConfiguration();
         }
+    }
+
+    /**
+     * Local hour (Africa/Johannesburg) from which daily approval digests may
+     * be sent. Earlier arrivals wait for a later cron run on the same day.
+     */
+    private static function approvalDigestHour(): int
+    {
+        if (! defined('ADCT_PI_APPROVAL_DIGEST_HOUR')) {
+            return ApprovalNoticeJob::DEFAULT_DIGEST_HOUR;
+        }
+
+        $configuredHour = constant('ADCT_PI_APPROVAL_DIGEST_HOUR');
+
+        if (
+            ! is_int($configuredHour)
+            && (
+                ! is_string($configuredHour)
+                || preg_match('/\A\d+\z/D', $configuredHour) !== 1
+            )
+        ) {
+            self::logInvalidDigestHour();
+
+            return ApprovalNoticeJob::DEFAULT_DIGEST_HOUR;
+        }
+
+        $hour = (int) $configuredHour;
+
+        if ($hour < 0 || $hour > 23) {
+            self::logInvalidDigestHour();
+
+            return ApprovalNoticeJob::DEFAULT_DIGEST_HOUR;
+        }
+
+        return $hour;
+    }
+
+    private static function logInvalidDigestHour(): void
+    {
+        error_log(
+            '[ADCT Parish Intake] ADCT_PI_APPROVAL_DIGEST_HOUR must be an integer from 0 to 23;'
+            . ' using default ' . ApprovalNoticeJob::DEFAULT_DIGEST_HOUR . '.'
+        );
     }
 
     private static function logInvalidMailQueueCap(): void

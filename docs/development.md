@@ -29,7 +29,7 @@ npm run test:integration
 
 These commands were checked on 2026-09-24: the smoke test passes, lint is clean, and PHPUnit 11 runs on `php:8.2-cli` with the platform pin. Use **PHPUnit 11** (PHPUnit 12 needs PHP 8.3). The integration command checks its environment configuration, starts a dedicated `wp-env` Docker environment, installs the built zip with WP-CLI, and runs the public-behaviour checks through WP-CLI; it never activates the raw checkout. Its default disposable Docker data directory is distinct for each checkout. For parallel runs, set an unused absolute `WP_ENV_HOME` path (prefer a short path on Windows) and distinct `WP_ENV_PORT` and `WP_ENV_TESTS_PORT` values before running the command. Never point it at an environment another session is using. **Local runs leave their environment running**, even on failure: record the home and ports for later approved cleanup. CI (`CI=true`) stops the environment after the run. Set `ADCT_PI_KEEP_WP_ENV_RUNNING=1` to keep it running even in CI, or `0` to explicitly opt into stopping it locally after approval. Run `npm run test:integration-config` to check the isolated-home and cleanup settings without starting or stopping containers.
 
-GitHub Actions (added in [#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17)) runs the unit tests on PHP 8.2, 8.3 and 8.4 and the WordPress integration suite on PHP 8.2 for every PR. CI is the final judge.
+GitHub Actions (added in [#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17)) runs the unit tests on PHP 8.2, 8.3 and 8.4 and the WordPress integration suite on PHP 8.2 for every PR. A PHP 8.5 job runs the same lint and tests for information only: 8.5 is not a supported target yet, so its job is `continue-on-error` and can never fail a PR. CI is the final judge.
 
 ## Build the release zip
 
@@ -43,7 +43,7 @@ This creates `dist/adct-parish-intake.zip`. The script installs production depen
 
 Inbound RFC 822 parsing uses the pre-approved pure-PHP `zbateson/mail-mime-parser` 4.x package (PHP 8.1+, BSD-2-Clause; see [ADR 0012](decisions/0012-pure-php-mime-parser.md) and [ADR 0014](decisions/0014-mail-mime-parser-4-x.md)). It and its runtime dependencies are included in the Strauss-prefixed release; no `ext-imap` or `ext-dom` is needed. Stay on 4.x: the 3.0.8 and 3.0.9 releases narrow `guzzlehttp/psr7` to `^2.5` and force a major-version downgrade of the transitive set, and 3.0.7 is delisted from Packagist.
 
-Mailbox access uses the built-in PHP-stream client behind `Core\Ports\MailboxInterface` (see [ADR 0013](decisions/0013-built-in-pure-php-imap-client.md)). It adds no Composer dependency or `ext-imap` requirement. TLS peer verification is enabled by default; plain IMAP and disabled peer verification require an explicit test-only configuration. Messages larger than the configurable 30 MiB default are rejected before their bodies are fetched.
+Mailbox access currently uses the built-in PHP-stream client behind `Core\Ports\MailboxInterface` (historical [ADR 0013](decisions/0013-built-in-pure-php-imap-client.md)); [ADR 0017](decisions/0017-library-first-protocol-and-format-handling.md) requires replacing it with a suitable pure-PHP library. Until that replacement lands, it adds no Composer dependency or `ext-imap` requirement. TLS peer verification is enabled by default; plain IMAP and disabled peer verification require an explicit test-only configuration. Messages larger than the configurable 30 MiB default are rejected before their bodies are fetched.
 
 The IMAP protocol tests use a scripted transport and run with PHPUnit's regular unit suite. The separate GreenMail integration test is in the `greenmail` group and is not part of `composer test`:
 
@@ -84,13 +84,14 @@ docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scr
 | `tests/Integration/` | WP-CLI integration checks against the plugin installed from the release zip; separate from `composer test`. |
 | `.wp-env.json` | Isolated wp-env configuration that exposes the built zip and integration tests without mapping/activating the raw plugin checkout. |
 | `data/seed/` | Deaneries and parishes CSVs for the directory import and preview sample data |
+| `src/Core/Parsing/Confidence/` | `FieldEvidence` (how each value was obtained) and `CandidateScorer` (turns evidence into the per-field and overall scores) |
 | `docs/` | Design, decisions (ADRs), backlog, testing |
 
 ## Rules for every change
 
 1. **One issue per PR.** Branch from `main`, reference the issue (`Closes #N`) and follow its acceptance criteria. If the issue is unclear, comment on it instead of guessing big design changes.
 2. **Tests first for bugs**, and every feature ships with tests. **Never remove or weaken a test because the implementation fails it.** If an expectation really is wrong, change it in a separate commit that explains why ([testing](testing.md)).
-3. **PHP 8.2 compatible.** No 8.3+ syntax or functions (e.g. typed class constants, `json_validate`). No `ext-imap`.
+3. **PHP 8.2 is the minimum, and nothing deprecated in PHP 8.3 or later may be used.** Write code that runs on 8.2 and stays clean on 8.3, 8.4 and 8.5: no deprecated functions, features or behaviour, and no 8.3+ syntax (e.g. typed class constants, `json_validate`). The version is a floor, never a ceiling — do not add an upper bound to `composer.json`, because that would refuse to install on a newer host. No `ext-imap`.
 4. **Core stays WordPress-free.** Code under `src/Core` (once #20 lands) must not call WordPress functions; use the ports (interfaces) and inject adapters.
 5. **Portable SQL** that works on MySQL 8 and MariaDB 10.11, through `$wpdb` with prepared statements. Before the first non-prerelease GitHub Release, change the canonical fresh-install schema and test a fresh installation; a new migration is not required solely for disposable test databases. Preserve the existing migrations and tests. Data that must survive always requires a safe, tested migration, and after the first release every schema change uses a versioned migration ([ADR 0016](decisions/0016-pre-release-schema-changes.md)).
 6. **Shared-hosting limits** ([hosting environment](hosting-environment.md)): jobs default to a 60 s / 100-item budget with a 180 s lock lease and a checkpoint after each item; the runner's constructor and per-run arguments configure the budgets. No command line (no WP-CLI) is needed for any operation; all plugin email goes through the mail queue.
@@ -98,11 +99,23 @@ docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scr
 8. **Security:** capabilities + nonces on every admin action; escape output; action links are GET-shows-page / POST-acts with hashed single-use tokens ([ADR 0004](decisions/0004-trust-and-confirmation-model.md)).
 9. **Docs in the same PR** when behaviour or design changes. New design decisions become an ADR in `docs/decisions/`.
 10. Commit messages: short imperative summary line, then a body explaining why.
+11. **Library first for common utilities** ([ADR 0017](decisions/0017-library-first-protocol-and-format-handling.md)): prefer maintained, PHP 8.2-compatible, appropriately licensed pure-PHP libraries for standard protocols and formats (including IMAP and HTML-to-text), rather than writing or extending custom implementations. Check extensions, security maintenance, resource limits and release prefixing; package size alone does not justify handwritten parsing. Keep domain-specific logic in the plugin. Document any necessary exception in an ADR and get owner approval before adding a paid service or a non-pure-PHP dependency. The existing IMAP client and HTML tokenizer have not yet been replaced.
+
+## Confidence settings
+
+Two thresholds are editable under **Parish Intake → Settings**; both are safe to change on a live site and take effect on the next parse.
+
+| Option | Default | Effect |
+|---|---|---|
+| `adct_parish_intake_confidence_threshold` | `0.55` | Overall candidate score below which a parse is routed to human review instead of publishing. |
+| `adct_parish_intake_field_confidence_threshold` | `0.60` | Per-field score below which a value is marked as uncertain in the submitter's preview email and in the review queue. |
+
+The review threshold is deliberately independent of the AI-enrichment threshold, so enabling or disabling AI does not move the point at which a candidate is routed to a person. Lowering a threshold sends more candidates to reviewers and lengthens queues; raising it does the reverse. See [architecture](architecture.md#confidence-scoring) for the scoring model.
 
 ## Definition of done (per PR)
 
 - Acceptance criteria of the issue met, and ticked in the PR description.
-- Tests added or updated; unit tests pass in CI on PHP 8.2–8.4 and the separate WordPress integration job passes on PHP 8.2 using the built zip.
+- Tests added or updated; unit tests pass in CI on PHP 8.2–8.4, with the advisory PHP 8.5 job reported but never blocking, and the separate WordPress integration job passes on PHP 8.2 using the built zip.
 - No new WordPress calls in the core; lint clean.
 - Docs updated where affected; no personal data or secrets in the diff.
 - For schema changes, verify the built zip installs the expected tables, columns and indexes on a fresh database. Upgrade tests remain required when preserving existing data or changing a released schema ([ADR 0016](decisions/0016-pre-release-schema-changes.md)).

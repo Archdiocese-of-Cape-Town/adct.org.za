@@ -75,7 +75,9 @@ final class ContactService
         }
 
         $placeholder = $this->findParishLink($rows, 0);
-        $this->link($parishId, $email);
+        // A learned address has never opted into reminders, so confirming it must not
+        // opt it in either. An operator enables reminders explicitly per link.
+        $this->link($parishId, $email, '', '', false);
         if ($placeholder !== null && $this->contacts->deleteLink((int) $placeholder['id'], 0) !== 1) {
             throw new RuntimeException('The unlinked sender record could not be reconciled.');
         }
