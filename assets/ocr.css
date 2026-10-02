@@ -1,0 +1,165 @@
+/* On-demand client-side OCR controls (ADR 0018).
+ *
+ * The token pages render outside the WordPress theme, so these rules are
+ * self-contained and do not depend on admin or theme styles.
+ */
+
+.adct-ocr {
+    margin: 1em 0;
+}
+
+.adct-ocr__preview {
+    display: block;
+    max-width: 100%;
+    max-height: 40em;
+    margin-bottom: 0.5em;
+    border: 1px solid #c3c4c7;
+}
+
+.adct-ocr__status {
+    display: block;
+    margin: 0.5em 0;
+    font-style: italic;
+}
+
+.adct-ocr__status--error {
+    font-style: normal;
+    color: #8a1f11;
+}
+
+.adct-ocr__status--done {
+    font-style: normal;
+    color: #1a4f1a;
+}
+
+.adct-ocr__result {
+    margin: 0.5em 0;
+    padding: 0.5em 0.75em;
+    border-left: 4px solid #2271b1;
+    background: #f6f7f7;
+}
+
+.adct-ocr__result-heading {
+    margin: 0 0 0.25em;
+    font-weight: 600;
+}
+
+.adct-ocr__result p {
+    white-space: pre-wrap;
+}
+
+.adct-ocr__notice {
+    margin: 0.5em 0 0;
+    font-size: 0.9em;
+    color: #50575e;
+}
+
+/* The reading settings. Folded away behind a native <details>, because a
+ * reviewer should never have to deal with them in order to read a poster: the
+ * defaults are what almost everyone wants, and only a poster whose text comes
+ * out jumbled is worth opening this for.
+ *
+ * The summary is styled to look like the quiet affordance it is — small, and
+ * clearly a disclosure rather than a heading — so it reads as "there is more
+ * here if you need it" rather than as another thing to fill in. Its title
+ * carries the current layout and its PSM number, so the number is reachable
+ * without opening anything.
+ */
+
+.adct-ocr__advanced {
+    margin: 0.5em 0 0;
+}
+
+.adct-ocr__advanced-summary {
+    display: inline-block;
+    padding: 0.15em 0.25em;
+    color: #50575e;
+    font-size: 0.9em;
+    cursor: pointer;
+}
+
+/* The disclosure marker is the only thing telling a mouse user this opens, so
+ * it is kept in the flow rather than hidden behind a custom chevron. Older
+ * browsers render their own marker here, which is a fine one to inherit.
+ */
+
+.adct-ocr__advanced-summary:hover {
+    color: #2271b1;
+}
+
+.adct-ocr__advanced-summary:focus-visible {
+    outline: 2px solid #2271b1;
+    outline-offset: 1px;
+}
+
+.adct-ocr__settings {
+    margin: 0.5em 0 0;
+    padding: 0.5em 0.75em 0.75em;
+    border: 1px solid #dcdcde;
+    background: #fbfbfc;
+}
+
+.adct-ocr__settings-legend {
+    padding: 0 0.25em;
+    font-weight: 600;
+}
+
+.adct-ocr__settings-help {
+    margin: 0 0 0.5em;
+    font-size: 0.9em;
+    color: #50575e;
+}
+
+.adct-ocr__field {
+    display: block;
+    margin-bottom: 0.5em;
+}
+
+.adct-ocr__settings-label {
+    display: block;
+    margin-bottom: 0.15em;
+    font-size: 0.9em;
+}
+
+.adct-ocr__settings-select {
+    max-width: 100%;
+}
+
+/* The slider is given a real height and a visible track. Left to its own
+ * devices a range input is a few pixels tall and very hard to grab accurately
+ * on a touch screen, which is most of what this gets used on.
+ */
+
+.adct-ocr__settings-slider {
+    display: block;
+    width: 100%;
+    max-width: 20em;
+    height: 1.75em;
+    margin: 0;
+    cursor: pointer;
+    accent-color: #2271b1;
+}
+
+.adct-ocr__settings-value {
+    display: inline-block;
+    margin-top: 0.15em;
+    font-size: 0.9em;
+    color: #50575e;
+}
+
+.adct-ocr__settings-readout {
+    margin: 0.5em 0 0;
+    font-size: 0.9em;
+    font-style: italic;
+    color: #50575e;
+}
+
+/* On a narrow screen the slider and its label stack, so the thumb stays a
+ * comfortable size rather than being squeezed into a column of text.
+ */
+
+@media screen and (max-width: 480px) {
+    .adct-ocr__settings-slider {
+        max-width: none;
+    }
+}
