@@ -177,6 +177,18 @@ The Mailboxes screen's **Recent message screening and confirmation** summary sho
 
 Do not expect the Approve, Deny, Edit or Approve all links in these preview emails to work yet. They are explicitly marked **not active**; their token preview reports that the action is unavailable and does not consume the token or change an event. Replies are not processed automatically. Until an operator requeue action is available, do not edit the database or assume a suppressed message will be resent; contact the site owner if a confirmation needs recovery.
 
+### Approver emails and daily digests
+
+The **Queue approver decisions and digests** job emails the dean and archdiocese reviewers when a new event needs approval. Each email gives an **Approve**, **Reject** and **Edit** link for each event. Opening a link only shows a confirmation page; nothing is decided by clicking the link in the email itself — the decision is made by submitting that page, so a link scanner that follows mail links cannot approve or reject an event by accident. Links expire after 14 days and can be used once, and the first decision wins.
+
+Approvers who choose **daily digest** rather than **each event** receive one email a day listing everything waiting. Digests are not sent before the digest hour, so an event that arrives at 14:00 is included in that evening's digest rather than being mailed straight away. There is no admin screen for this; a technical operator can change the hour in `wp-config.php` with `ADCT_PI_APPROVAL_DIGEST_HOUR`, an integer from `0` to `23` in `Africa/Johannesburg` time. If it is absent, digests go out from **07:00**. An invalid value is logged and safely falls back to 07:00.
+
+```php
+define('ADCT_PI_APPROVAL_DIGEST_HOUR', 7);
+```
+
+Choosing **each event** instead of **daily digest** is unaffected by this hour — those approvers are emailed as soon as the job runs.
+
 ## Configure parser safeguards
 
 An Administrator or Intake manager with settings access can open **Parish Intake → Settings** and edit the non-event section phrases. Enter one heading or leading phrase per line in each category. Matching ignores case and punctuation. A standalone category phrase or a match formatted as a Markdown/underlined, all-caps or colon-terminated heading skips through the next heading, even when that section contains dates or times. A phrase at the start of running text skips only its block when there is no explicit date plus time or event noun. If that event signal is present, the candidate is kept with a text-free `section_keyword_overridden: <category>` note and its confidence is reduced by 0.1 for closer review. Weekly Mass-times tables with weekday/time rows that identify Mass or Service are also skipped automatically.
