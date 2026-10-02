@@ -26,7 +26,7 @@ Update this table whenever the host is upgraded.
 
 ## Design consequences
 
-- **PHP 8.2 is the minimum.** CI also tests 8.3 and 8.4 so a host upgrade won't break the plugin.
+- **PHP 8.2 is the minimum, and nothing deprecated in PHP 8.3 or later may be used.** CI enforces 8.3 and 8.4 so a host upgrade won't break the plugin, and runs 8.5 as an advisory `continue-on-error` job. The version is a floor, never a ceiling: don't cap `composer.json` with an upper bound, or the plugin would refuse to install after a host upgrade.
 - **No `ext-imap`.** It isn't installed and was removed from PHP core in 8.4. `MailboxInterface` is currently implemented by the built-in pure-PHP `ImapMailbox` over PHP stream sockets; it adds no Composer dependency and verifies TLS peers by default. [ADR 0017](decisions/0017-library-first-protocol-and-format-handling.md) supersedes the built-in-client choice in [ADR 0013](decisions/0013-built-in-pure-php-imap-client.md) and calls for a library-backed replacement.
 - **Mailbox settings and connection checks.** The Parish Intake → Mailboxes screen uses port 993 with SSL/TLS by default and always verifies the server certificate in production. Use the exact hostname shown on the certificate, not a custom alias; the screen's Test connection action checks access and folder configuration but does not poll or process mail.
 - **90 s time limit.** Every job has a ~60 s time budget, a lock and a checkpoint (see [architecture](architecture.md#scheduled-jobs)). Web requests never do polling or AI calls synchronously.

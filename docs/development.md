@@ -29,7 +29,7 @@ npm run test:integration
 
 These commands were checked on 2026-09-24: the smoke test passes, lint is clean, and PHPUnit 11 runs on `php:8.2-cli` with the platform pin. Use **PHPUnit 11** (PHPUnit 12 needs PHP 8.3). The integration command checks its environment configuration, starts a dedicated `wp-env` Docker environment, installs the built zip with WP-CLI, and runs the public-behaviour checks through WP-CLI; it never activates the raw checkout. Its default disposable Docker data directory is distinct for each checkout. For parallel runs, set an unused absolute `WP_ENV_HOME` path (prefer a short path on Windows) and distinct `WP_ENV_PORT` and `WP_ENV_TESTS_PORT` values before running the command. Never point it at an environment another session is using. **Local runs leave their environment running**, even on failure: record the home and ports for later approved cleanup. CI (`CI=true`) stops the environment after the run. Set `ADCT_PI_KEEP_WP_ENV_RUNNING=1` to keep it running even in CI, or `0` to explicitly opt into stopping it locally after approval. Run `npm run test:integration-config` to check the isolated-home and cleanup settings without starting or stopping containers.
 
-GitHub Actions (added in [#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17)) runs the unit tests on PHP 8.2, 8.3 and 8.4 and the WordPress integration suite on PHP 8.2 for every PR. CI is the final judge.
+GitHub Actions (added in [#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17)) runs the unit tests on PHP 8.2, 8.3 and 8.4 and the WordPress integration suite on PHP 8.2 for every PR. A PHP 8.5 job runs the same lint and tests for information only: 8.5 is not a supported target yet, so its job is `continue-on-error` and can never fail a PR. CI is the final judge.
 
 ## Build the release zip
 
@@ -91,7 +91,7 @@ docker run --rm -e RELEASE_TAG=v0.1.0 -v "${PWD}:/app" -w /app composer:2 sh scr
 
 1. **One issue per PR.** Branch from `main`, reference the issue (`Closes #N`) and follow its acceptance criteria. If the issue is unclear, comment on it instead of guessing big design changes.
 2. **Tests first for bugs**, and every feature ships with tests. **Never remove or weaken a test because the implementation fails it.** If an expectation really is wrong, change it in a separate commit that explains why ([testing](testing.md)).
-3. **PHP 8.2 compatible.** No 8.3+ syntax or functions (e.g. typed class constants, `json_validate`). No `ext-imap`.
+3. **PHP 8.2 is the minimum, and nothing deprecated in PHP 8.3 or later may be used.** Write code that runs on 8.2 and stays clean on 8.3, 8.4 and 8.5: no deprecated functions, features or behaviour, and no 8.3+ syntax (e.g. typed class constants, `json_validate`). The version is a floor, never a ceiling — do not add an upper bound to `composer.json`, because that would refuse to install on a newer host. No `ext-imap`.
 4. **Core stays WordPress-free.** Code under `src/Core` (once #20 lands) must not call WordPress functions; use the ports (interfaces) and inject adapters.
 5. **Portable SQL** that works on MySQL 8 and MariaDB 10.11, through `$wpdb` with prepared statements. Before the first non-prerelease GitHub Release, change the canonical fresh-install schema and test a fresh installation; a new migration is not required solely for disposable test databases. Preserve the existing migrations and tests. Data that must survive always requires a safe, tested migration, and after the first release every schema change uses a versioned migration ([ADR 0016](decisions/0016-pre-release-schema-changes.md)).
 6. **Shared-hosting limits** ([hosting environment](hosting-environment.md)): jobs default to a 60 s / 100-item budget with a 180 s lock lease and a checkpoint after each item; the runner's constructor and per-run arguments configure the budgets. No command line (no WP-CLI) is needed for any operation; all plugin email goes through the mail queue.
@@ -115,7 +115,7 @@ The review threshold is deliberately independent of the AI-enrichment threshold,
 ## Definition of done (per PR)
 
 - Acceptance criteria of the issue met, and ticked in the PR description.
-- Tests added or updated; unit tests pass in CI on PHP 8.2–8.4 and the separate WordPress integration job passes on PHP 8.2 using the built zip.
+- Tests added or updated; unit tests pass in CI on PHP 8.2–8.4, with the advisory PHP 8.5 job reported but never blocking, and the separate WordPress integration job passes on PHP 8.2 using the built zip.
 - No new WordPress calls in the core; lint clean.
 - Docs updated where affected; no personal data or secrets in the diff.
 - For schema changes, verify the built zip installs the expected tables, columns and indexes on a fresh database. Upgrade tests remain required when preserving existing data or changing a released schema ([ADR 0016](decisions/0016-pre-release-schema-changes.md)).
