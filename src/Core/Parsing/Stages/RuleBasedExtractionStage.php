@@ -346,40 +346,207 @@ final class RuleBasedExtractionStage implements StageInterface
         return Text::firstMeaningfulLine($text);
     }
 
+     /**
+     * A captured parish name must start a name, not continue a sentence. These leading
+     * words are the ones observed in real bulletins, where the word "Parish" belongs to
+     * a council, an office or an article rather than to a name.
+     */
+    private const PARISH_NAME_LEADING_WORDS = [
+        'i', 'we', 'you', 'the', 'a', 'an', 'this', 'that', 'these', 'those', 'all',
+        'every', 'each', 'our', 'your', 'their', 'his', 'her', 'its', 'please', 'kindly',
+        'thank', 'thanks', 'and', 'or', 'but', 'if', 'when', 'while', 'for', 'from', 'to',
+        'of', 'in', 'on', 'at', 'by', 'as', 'so', 'who', 'what', 'which', 'dear', 'contact',
+    ];
+
+    /**
+     * Words that follow "St"/"Saint" but are never a saint's name.
+     */
+    private const SAINT_NAME_STOP_WORDS = [
+        'parish', 'church', 'council', 'councils', 'office', 'secretary', 'counsellor',
+        'pastoral', 'finance', 'financial', 'administrator', 'community', 'committee',
+        'team', 'staff', 'school', 'hall', 'centre', 'center', 'festival',
+        'day', 'week', 'month', 'year', 'mass', 'times', 'newsletter', 'bulletin',
+    ];
+
     private function extractParishName(string $text, string $senderName): ?string
     {
-            return $this->parishNameMatch($text, $senderName)['value'] ?? null;
+        foreach (self::parishNameCandidates($text) as $candidate) {
+            $name = $this->normaliseParishNameCandidate($candidate);
+
+            if ($name !== null) {
+                return $name;
+            }
         }
 
-        /**
-         * Find the parish name and report *which* rule produced it, so the confidence scorer can
-         * tell a labelled match from the loose one that matches a phrase inside a sentence
-         * (tracked as issue #129).
-         *
-         * @return array{value: string, rule: string}|null
-         */
-        private function parishNameMatch(string $text, string $senderName): ?array
-        {
-            $patterns = [
-                '/parish\s*[:\-]\s*([^\n]+)/i' => 'labelled',
-                '/\b((?:St\.?|Saint|Our Lady of|Church of) [A-Z][A-Za-z\'\- ]+(?:Parish|Church)?)\b/u' => 'named_church',
-                '/\b([A-Z][A-Za-z\'\- ]+ Parish)\b/u' => 'unanchored',
-            ];
+        if (stripos($senderName, 'parish') !== false || stripos($senderName, 'church') !== false) {
+            return trim($senderName);
+        }
 
-            foreach ($patterns as $pattern => $rule) {
-                if (preg_match($pattern, $text, $matches)) {
-                    return ['value' => trim($matches[1]), 'rule' => (string) $rule];
-                }
-            }
+        return null;
+    }
 
-            if (stripos($senderName, 'parish') !== false || stripos($senderName, 'church') !== false) {
-                return ['value' => trim($senderName), 'rule' => 'sender_name'];
-            }
+    /**
+     * Find the parish name and report *which* rule produced it, so the confidence scorer can
+     * tell a labelled match from the loose one that matches a phrase inside a sentence.
+     *
+     * A saint or church dedication is treated as an explicit name; anything else matched
+     * without a label stays "unanchored", because the sentence-fragment rejection in
+     * normaliseParishNameCandidate() can only be so precise.
+     *
+     * @return array{value: string, rule: string}|null
+     */
+    private function parishNameMatch(string $text, string $senderName): ?array
+    {
+        $name = $this->extractParishName($text, $senderName);
 
+        if ($name === null) {
             return null;
         }
 
+        if ($senderName === $name) {
+            return ['value' => $name, 'rule' => 'sender_name'];
+        }
+
+        $labelled = preg_match('/^\s*(?:parish|venue|church)\s*[:\-]\s*/imu', $text) === 1;
+        $dedication = preg_match('/^\s*(?:St\.?|Saint|Our Lady of|Church of)\s+/iu', $name) === 1;
+
+        return [
+            'value' => $name,
+            'rule' => $labelled ? 'labelled' : ($dedication ? 'named_church' : 'unanchored'),
+        ];
+    }
+
     /**
+     * Yields plausible parish-name candidates in priority order: an explicit label
+     * first, then names that begin a line.
+     *
+     * @return list<string>
+     */
+    private static function parishNameCandidates(string $text): array
+    {
+        $candidates = [];
+
+        if (preg_match_all('/^\s*(?:parish|venue|church)\s*[:\-]\s*([^\n\r]+)/imu', $text, $matches)) {
+            foreach ($matches[1] as $match) {
+                $candidates[] = $match;
+            }
+        }
+
+        // A name token is a capitalised word, optionally carrying internal apostrophes
+        // and hyphens ("St Mary's", "Our Lady of Peace"). "of the" is a legal connector
+        // in a dedication such as "Our Lady of the Cape", so the article is allowed
+        // after "of" but never in place of a name. The optional "of ..." group must
+        // keep its trailing space inside, or it swallows the separator the name
+        // token then needs.
+        $nameToken = "[\p{Lu}][\p{Ll}\p{Lu}\'’\-]*";
+        $ofClause = '(?:\s+of\s+(?:the\s+)?[A-Z][A-Za-z]*)*';
+        $dedication = 'St\.?|Saint|Our\s+Lady(?:\s+of(?:\s+the)?)?|Church\s+of';
+        $name = $nameToken . $ofClause;
+
+        $lines = preg_split('/\R/u', $text) ?: [];
+
+        foreach ($lines as $line) {
+            if (preg_match(
+                '/^\s*((?:' . $dedication . ')\s+' . $name . '(?:\s+(?:Parish|Church))?)/u',
+                $line,
+                $match
+            )) {
+                $candidates[] = $match[1];
+            }
+
+            if (preg_match(
+                '/^\s*(' . $name . '\s+Parish)\b/u',
+                $line,
+                $match
+            )) {
+                $candidates[] = $match[1];
+            }
+        }
+
+        return $candidates;
+    }
+
+    private function normaliseParishNameCandidate(string $candidate): ?string
+    {
+        // A parish name never contains sentence punctuation. Apostrophes are kept:
+        // they belong to names such as "St Mary's".
+        $name = trim(preg_split('/[.,;:!?()\[\]"]/u', $candidate)[0] ?? '');
+
+        if ($name === '' || strlen($name) > 120) {
+            return null;
+        }
+
+        $words = preg_split('/\s+/u', $name) ?: [];
+
+        if ($words === []) {
+            return null;
+        }
+
+        $isOurLady = strtolower($words[0]) === 'our' && strtolower($words[1] ?? '') === 'lady';
+
+        if (! $isOurLady && in_array(strtolower($words[0]), self::PARISH_NAME_LEADING_WORDS, true)) {
+            return null;
+        }
+
+        if (! $this->hasCapitalisedNameToken($words)) {
+            return null;
+        }
+
+        if (in_array(strtolower($words[0]), ['st', 'st.', 'saint', 'church'], true) && ! $this->hasSaintName($words)) {
+            return null;
+        }
+
+        return $name;
+    }
+
+    /**
+     * @param list<string> $words
+     */
+    private function hasCapitalisedNameToken(array $words): bool
+    {
+        foreach (array_slice($words, 1) as $word) {
+            if (in_array(strtolower($word), ['of', 'the', 'and'], true)) {
+                continue;
+            }
+
+            return $this->isCapitalised($word);
+        }
+
+        return false;
+    }
+
+    /**
+     * "St Mary" is a name; "St Parish" is not. The second token after the title must be
+     * capitalised and must not be a common noun.
+     *
+     * @param list<string> $words
+     */
+    private function hasSaintName(array $words): bool
+    {
+        $nameToken = null;
+
+        foreach (array_slice($words, 1) as $word) {
+            if (strtolower($word) === 'of') {
+                continue;
+            }
+
+            $nameToken = $word;
+            break;
+        }
+
+        if ($nameToken === null || ! $this->isCapitalised($nameToken)) {
+            return false;
+        }
+
+        return ! in_array(strtolower($nameToken), self::SAINT_NAME_STOP_WORDS, true);
+    }
+
+    private function isCapitalised(string $word): bool
+    {
+        return preg_match('/^\p{Lu}/u', $word) === 1;
+    }
+
+     /**
      * @return array{date: string, end_date: ?string, weekday_mismatch: bool, end_before_start: bool, next_weekday_ambiguous: ?string}|null
      */
     private function extractDate(

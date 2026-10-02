@@ -64,9 +64,14 @@ final class ConfidenceScoringStageTest extends TestCase
         self::assertArrayHasKey('title', $origins, 'A title was extracted from the bulletin prose.');
         self::assertSame('unsupported', $origins['title']);
 
-        // "Parish Pastoral Councils" is a fragment of a sentence, not a parish name.
-        self::assertArrayHasKey('parish_name', $origins, 'A parish name was read out of running prose.');
-        self::assertSame('unsupported', $origins['parish_name']);
+        // "Parish Pastoral Councils" is a fragment of a sentence, not a parish name. Since #129
+        // the extractor rejects the fragment outright rather than extracting it and flagging it,
+        // so there is no parish evidence at all and nothing for the scorer to reward.
+        self::assertArrayNotHasKey(
+            'parish_name',
+            $origins,
+            'A parish name was read out of running prose.'
+        );
 
         // The sender address is always present, so the contact fallback must never look reliable.
         self::assertArrayHasKey('contact', $origins);
@@ -159,10 +164,10 @@ final class ConfidenceScoringStageTest extends TestCase
         );
 
         // The bare block invents no title from prose; the fabricated one does.
-        self::assertSame(
-            'unsupported',
-            self::origins($fabricated)['parish_name'] ?? null,
-            'A mid-sentence "Parish" fragment should be unsupported evidence, not a parish name.'
+        self::assertArrayNotHasKey(
+            'parish_name',
+            self::origins($fabricated),
+            'A mid-sentence "Parish" fragment should produce no parish evidence at all.'
         );
         self::assertArrayNotHasKey(
             'parish_name',
