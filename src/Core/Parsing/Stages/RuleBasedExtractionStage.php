@@ -583,10 +583,22 @@ final class RuleBasedExtractionStage implements StageInterface
         }
 
         $relativePatterns = [
-            'this_weekday' => '~\bthis\s+(?<weekday>' . self::WEEKDAY_PATTERN . ')\b~i',
-            'next_weekday' => '~\bnext\s+(?<weekday>' . self::WEEKDAY_PATTERN . ')\b~i',
+            // "this coming <weekday>" and "coming <weekday>" are the same rule as
+            // "this <weekday>": a parish writes both, and the word "coming" in
+            // between must not stop the date resolving.
+            //
+            // At least one qualifier is required. Making both optional would turn a
+            // bare weekday into a date, which collides with recurrence phrases such as
+            // "every Tuesday" and with "on or after 29 September".
+            'this_weekday' => '~\b(?:(?:this|coming)\s+)+(?<weekday>' . self::WEEKDAY_PATTERN . ')\b~i',
+            'next_weekday' => '~\bnext\s+(?:coming\s+)?(?<weekday>' . self::WEEKDAY_PATTERN . ')\b~i',
             'tomorrow' => '~\btomorrow\b~i',
             'tonight' => '~\btonight\b~i',
+            // "end of ..." is a deadline phrasing, but it is the only date information
+            // the line carries, so it is resolved here. Typed as a deadline
+            // separately -- see the note in docs/parish-intake-project-backlog.md.
+            'end_of_month' => '~\b(?:end|close)\s+(?:of\s+)?(?:the\s+)?(?:(?<month>' . self::MONTH_PATTERN . ')\.?(?:,?\s+(?<year>\d{4}))?|month|this\s+month|next\s+month)\b~iu',
+            'first_of_month' => '~\b(?:the\s+)?first\s+of\s+(?<month>' . self::MONTH_PATTERN . ')\.?(?:,?\s+(?<year>\d{4}))?\b~iu',
         ];
 
         foreach ($relativePatterns as $type => $pattern) {
@@ -640,6 +652,16 @@ final class RuleBasedExtractionStage implements StageInterface
             } elseif ($candidate['type'] === 'tonight') {
                 $date = $referenceDate;
                 $weekdayMismatch = false;
+            } elseif ($candidate['type'] === 'end_of_month') {
+                $date = $this->resolveEndOfMonth($match, $referenceDate, $monthContext, $yearContext);
+                $weekdayMismatch = false;
+            } elseif ($candidate['type'] === 'first_of_month') {
+                $monthText = $this->capturedValue($match, 'month');
+                $month = $this->monthNumber($monthText ?? '');
+                $date = $month === null
+                    ? null
+                    : $this->resolveMonthDay(1, $month, $this->capturedValue($match, 'year'), $referenceDate);
+                $weekdayMismatch = false;
             } else {
                 $monthText = $this->capturedValue($match, 'month');
                 $month = $monthText !== null && ctype_digit($monthText)
@@ -692,6 +714,115 @@ final class RuleBasedExtractionStage implements StageInterface
         }
 
         return null;
+    }
+
+    private function resolveEndOfMonth(
+        array $match,
+        DateTimeImmutable $referenceDate,
+        ?string $monthContext,
+        ?int $yearContext
+    ): ?DateTimeImmutable {
+        $monthText = $this->capturedValue($match, 'month');
+        $month = $monthText === null ? null : $this->monthNumber($monthText);
+
+        if ($month === null) {
+            return $this->resolveRelativeMonth($match, $referenceDate, $monthContext, $yearContext);
+        }
+
+        $year = $this->capturedValue($match, 'year');
+
+        if ($year !== null) {
+            return $this->lastDayOfMonth((int) $this->normalizeYear($year), $month);
+        }
+
+        $contextMonth = $monthContext === null ? null : $this->monthNumber($monthContext);
+
+        if ($contextMonth !== null) {
+            $year = $yearContext ?? (int) $referenceDate->format('Y');
+            $date = $this->lastDayOfMonth($year, $month);
+
+            if ($date !== null && $date >= $referenceDate) {
+                return $date;
+            }
+        }
+
+        return $this->lastDayOfMonth((int) $referenceDate->format('Y'), $month);
+    }
+
+    private function resolveRelativeMonth(
+        array $match,
+        DateTimeImmutable $referenceDate,
+        ?string $monthContext,
+        ?int $yearContext
+    ): ?DateTimeImmutable {
+        $whole = strtolower($match[0][0] ?? '');
+
+        if (str_contains($whole, 'next')) {
+            $anchor = $monthContext === null ? null : $this->monthNumber($monthContext);
+
+            if ($anchor !== null) {
+                $year = $yearContext ?? (int) $referenceDate->format('Y');
+
+                if ($anchor === 12) {
+                    return $this->lastDayOfMonth($year + 1, 1);
+                }
+
+                return $this->lastDayOfMonth($year, $anchor + 1);
+            }
+
+            return $referenceDate->modify('last day of next month');
+        }
+
+        $contextMonth = $monthContext === null ? null : $this->monthNumber($monthContext);
+        $month = $contextMonth ?? (int) $referenceDate->format('n');
+        $year = $yearContext ?? (int) $referenceDate->format('Y');
+        $date = $this->lastDayOfMonth($year, $month);
+
+        if ($date === null) {
+            return null;
+        }
+
+        // "the month" is the calendar month the reference date falls in, so it never
+        // needs rolling forward. Guard anyway so a stale bulletin date cannot produce
+        // a deadline that has already passed.
+        if (str_contains($whole, 'this') && $date < $referenceDate) {
+            return $this->lastDayOfMonth($year + 1, $month);
+        }
+
+        return $date;
+    }
+
+    private function lastDayOfMonth(int $year, int $month): ?DateTimeImmutable
+    {
+        if ($year < 1 || $month < 1 || $month > 12) {
+            return null;
+        }
+
+        // Deliberately not cal_days_in_month(): that lives in ext-calendar, which the
+        // hosting environment is not required to have. "last day of month" is
+        // calendar-correct for February, so it needs no leap-year special case.
+        $lastDay = DateTimeImmutable::createFromFormat(
+            '!Y-m',
+            sprintf('%04d-%02d', $year, $month),
+            new DateTimeZone(self::LOCAL_TIMEZONE)
+        );
+
+        if (! $lastDay instanceof DateTimeImmutable) {
+            return null;
+        }
+
+        return $lastDay->modify('last day of this month')->setTime(0, 0);
+    }
+
+    private function resolveMonthDay(
+        int $day,
+        int $month,
+        ?string $yearText,
+        DateTimeImmutable $referenceDate
+    ): ?DateTimeImmutable {
+        return $yearText === null
+            ? $this->nextMonthDay($day, $month, $referenceDate)
+            : $this->makeDate($this->normalizeYear($yearText), $month, $day);
     }
 
     /**
@@ -792,41 +923,109 @@ final class RuleBasedExtractionStage implements StageInterface
         /**
          * @return array{time: string, type: string}|null
          */
-        private function extractFirstTime(string $text): ?array
-        {
-            preg_match_all(
-                '~\b(?:\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2})\b~i',
-                $text,
-                            $matches,
-                            PREG_OFFSET_CAPTURE
-                        );
+    /**
+     * Finds the first start time in the text, skipping a number that is really a
+     * scripture citation.
+     *
+     * A bare `12:45` with no `am`/`pm` is also what a scripture citation looks like, so the
+     * candidate matches are located by offset and tested against the citation spans found
+     * in the whole text. A citation is skipped rather than published as a time the parish
+     * never gave.
+     *
+     * @return array{time: string, type: string}|null
+     */
+    private function extractFirstTime(string $text): ?array
+    {
+        $citations = $this->scriptureCitationSpans($text);
 
-                        foreach ($matches[0] as $found) {
-                            $match = $found[0];
-                            $time = $this->normalizeTime($match);
+        preg_match_all(
+            '~\b(?:\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2})\b~i',
+            $text,
+            $matches,
+            PREG_OFFSET_CAPTURE
+        );
 
-                            if ($time === null) {
-                                continue;
-                            }
+        foreach ($matches[0] as [$match, $offset]) {
+            if ($this->isScriptureCitation($citations, $offset, strlen($match))) {
+                continue;
+            }
 
-                            // A bare `12:45` with no `am`/`pm` is also what a scripture citation looks
-                            // like. When the surrounding wording reads as a citation the number is
-                            // not a start time at all, so it is skipped rather than published as a
-                            // time the parish never gave (tracked as issue #128).
-                            if (preg_match('/[ap]m/i', $match) !== 1
-                                && $this->looksLikeCitation($text, (int) $found[1])
-                            ) {
-                                continue;
-                            }
+            // A citation with no book name -- "Scripture for today is 12:45" -- has no citation
+            // shape to detect, so the wording in front of the number is the only cue left. Checked
+            // only for a bare number: an explicit "6pm" is unambiguous and is always a time.
+            if (preg_match('/[ap]m/i', $match) !== 1
+                && $this->isScriptureIntroduction($text, $offset)
+            ) {
+                continue;
+            }
 
-                            return [
-                                'time' => $time,
-                                'type' => preg_match('/[ap]m/i', $match) === 1 ? 'explicit' : 'bare',
-                            ];
-                        }
+            $time = $this->normalizeTime($match);
 
-                        return null;
-                    }
+            if ($time === null) {
+                continue;
+            }
+
+            return [
+                'time' => $time,
+                'type' => preg_match('/[ap]m/i', $match) === 1 ? 'explicit' : 'bare',
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether the wording immediately before a bare clock-shaped number introduces a
+     * scripture reference rather than a time: a citation is introduced by a scripture
+     * keyword ("Scripture for today is 12:45"), whereas a time is introduced by "at",
+     * "from", or nothing at all. Used only as a fallback for a citation that has no book
+     * name to key off, since a book name or a citation shape is the stronger signal.
+     */
+    private function isScriptureIntroduction(string $text, int $offset): bool
+    {
+        $before = substr($text, max(0, $offset - 60), min($offset, 60));
+
+        return preg_match(
+            '/(?:scripture|reading|readings|gospel|epistle|passage|verse|chapter|'
+            . 'psalm|romans|corinthians|ephesians|thessalonians|timothy|peter|john|'
+            . 'matthew|mark|luke|acts|colossians|hebrews)\b[^0-9]{0,20}$/iu',
+            $before
+        ) === 1;
+    }
+
+    private function scriptureCitationSpans(string $text): array
+    {
+        $spans = [];
+
+        preg_match_all(
+            '~(?<![:\w])(?<book>[A-Z][A-Za-z]{1,20}(?:\s+[A-Z][A-Za-z]{1,20}){0,2})\s+'
+            . '(?<chapter>\d{1,3}):(?<verse>\d{1,3})\b(?:'
+            . '\s*[\-–—]\s*\d{1,3}\b'
+            . ')?~u',
+            $text,
+            $matches,
+            PREG_OFFSET_CAPTURE
+        );
+
+        foreach ($matches[0] as [$citation, $offset]) {
+            $spans[] = [
+                'start' => $offset,
+                'end' => $offset + strlen($citation),
+            ];
+        }
+
+        return $spans;
+    }
+    private function isScriptureCitation(array $citations, int $offset, int $length): bool
+    {
+        foreach ($citations as $citation) {
+            if ($offset >= $citation['start'] && ($offset + $length) <= $citation['end']) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
                     /**
                      * Decide whether a bare clock-shaped number is a scripture or chapter citation rather
@@ -859,17 +1058,6 @@ final class RuleBasedExtractionStage implements StageInterface
         // A heading is a short noun phrase. Prose that had to be cut mid-sentence is long.
         return str_word_count($candidate) > 8;
     }
-
-    private function looksLikeCitation(string $text, int $offset): bool
-                    {                        $before = substr($text, max(0, $offset - 60), min($offset, 60));
-
-                        return preg_match(
-                            '/(?:scripture|reading|readings|gospel|epistle|passage|verse|chapter|'
-                            . 'psalm|romans|corinthians|ephesians|thessalonians|timothy|peter|john|'
-                            . 'matthew|mark|luke|acts|colossians|hebrews)\b[^0-9]{0,20}$/iu',
-                            $before
-                        ) === 1;
-                    }
 
     private function normalizeTime(string $time): ?string
     {
