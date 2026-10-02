@@ -119,6 +119,7 @@ For a parish with no official source, the import also registers that office emai
 2. Open **Parish Intake → Senders** to search by email address or contact name, filter by trust, see all linked parishes, and link an address to another parish. Trust is shared by the address across all of its parish links.
 3. Use **Verify address** only after checking the contact with the parish. Verification fills in the sender's linked parish information and permits immediate changes to already-published events; every new event still needs approval by a dean or archdiocese reviewer.
 4. **Block address** stops intake for that email address across every linked parish. An administrator can use **Unblock address** to return it to `unknown`; verify it again before treating it as trusted. A blocked address cannot lose its final parish link until an administrator explicitly unblocks it, so removing one of several links does not change trust for the remaining links.
+5. Learned senders listed under **Pending senders** start with reminders switched **off**, and **Confirm sender** leaves them off. That is deliberate: a learned address has not agreed to receive reminders, so the plugin never opts it in on its own. Turn reminders on deliberately by editing the contact on **Parish Intake → Parishes** and ticking **Receives reminders**; that checkbox is the only opt-in.
 
 ### Manage sources
 
