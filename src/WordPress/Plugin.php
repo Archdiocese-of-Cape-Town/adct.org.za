@@ -85,6 +85,7 @@ use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
 use ADCT\ParishIntake\WordPress\Auth\ConfirmationDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalEditHandler;
+use ADCT\ParishIntake\WordPress\Auth\RevertChangeHandler;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalNoticeJob;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalRecipients;
 use ADCT\ParishIntake\WordPress\Approval\ReviewerNotificationPreference;
@@ -487,6 +488,15 @@ final class Plugin
         }
         $this->actionTokenHandlers->register(new ApprovalEditHandler(
             $database, $approvalRecipients, $clock
+        ));
+        $this->actionTokenHandlers->register(new RevertChangeHandler(
+            $database,
+            $approvalRecipients,
+            $this->mailQueue,
+            $clock,
+            $occurrenceMaintenance,
+            $listingGeneration,
+            $timezone
         ));
         $this->actionTokenEndpointDependencies = [
             'renewals' => new ActionTokenRenewalService(

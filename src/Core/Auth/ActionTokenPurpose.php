@@ -31,8 +31,12 @@ enum ActionTokenPurpose: string
     case REJECT_EVENT = 'reject_event';
 
     /**
-     * Reserved for #71 (revert a published change from an emailed link). No
-     * handler consumes it yet, so a revert token is not actioned.
+     * Undo one recorded change to an event, from the link in a change notice.
+     * Implemented in #71 by RevertChangeHandler, which restores the before
+     * snapshot and re-resolves the recipient's live approver role at act time.
+     *
+     * The token names the change, not the person: whoever holds it has to still
+     * be an approver for the parish when they press the button.
      */
     case REVERT_CHANGE = 'revert_change';
 
