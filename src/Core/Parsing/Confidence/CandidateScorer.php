@@ -82,6 +82,15 @@ final class CandidateScorer
             'bare_time_match' => 0.05,
             'sender_fallback' => 0.00,
             'no_date_context' => 0.10,
+            // Text recognised from a photograph of a poster is real evidence -- it is what the parish
+            // actually wrote -- but a weaker reading of it. A misread digit or a broken letter is invisible
+            // to every other check in the model, because the characters were never compared against anything
+            // the parish typed. So the charge is set to land a clearly printed value at 0.53: below the field
+            // threshold and below the review threshold, at the same score as `ai`. Both are machine-read rather
+            // than machine-written, and a machine-read date is the value a human must confirm before it reaches
+            // the events page. It still scores well above zero, so an unreadable poster still produces a usable
+            // candidate instead of a blank one.
+            FieldEvidence::OCR => 0.45,
         ];
 
     /**
