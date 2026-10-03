@@ -52,3 +52,22 @@
 }
 .adct-events__subscribe-link { font-weight: 600; }
 .adct-events__subscribe-webcal { font-size: .875em; }
+
+.adct-nearme {
+    margin: 0 0 1.5rem;
+    padding: 1rem;
+    border: 1px solid #d5d9dd;
+    border-radius: 4px;
+}
+.adct-nearme h2 { margin: 0 0 .5rem; font-size: 1.125em; }
+.adct-nearme__note, .adct-nearme__active { margin: 0 0 .75rem; font-size: .875em; }
+.adct-nearme__fallback { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem; margin: 0; }
+.adct-nearme__fallback[hidden] { display: none; }
+.adct-nearme__fallback input, .adct-nearme__radius select { padding: .4rem; }
+.adct-nearme__fallback label, .adct-nearme__radius label { margin: 0; }
+.adct-nearme__radius { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem; margin: .75rem 0 0; }
+.adct-events__distance {
+    margin: 0 0 .25rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}

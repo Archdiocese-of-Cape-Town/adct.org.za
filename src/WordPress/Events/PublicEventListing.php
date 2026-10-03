@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Events;
 
+use ADCT\ParishIntake\Core\Events\GeoDistance;
 use ADCT\ParishIntake\Core\Events\IcsFeedLinks;
 use ADCT\ParishIntake\Core\Events\ListingRange;
 use ADCT\ParishIntake\Core\Events\ListingSelection;
+use ADCT\ParishIntake\Core\Events\NearMePoint;
 use ADCT\ParishIntake\Core\Events\RecurrenceSummary;
+use ADCT\ParishIntake\Core\Events\SuburbResolver;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use DateTimeZone;
 use InvalidArgumentException;
@@ -18,11 +21,37 @@ final class PublicEventListing
 {
     private const PAGE_SIZE = 20;
     private const MAX_PAGE = 100;
+
+    /**
+     * The haversine distance in kilometres from the visitor to an occurrence, as SQL.
+     *
+     * Every function used here is present on both MySQL 8 and MariaDB 10.11, which are the pair of
+     * servers this plugin has to run on. The radius of the earth is the same figure the PHP
+     * GeoDistance class uses, so the distance shown on a card and the distance a visitor sorts by
+     * are the same number.
+     *
+     * The three `%f` placeholders are latitude, latitude, longitude; NearMePoint::distanceArguments()
+     * returns those three floats in that order.
+     */
+    private function distanceSql(NearMePoint $point): string
+    {
+        return '(6371.0088 * 2 * ASIN(LEAST(1, SQRT('
+            . 'POWER(SIN(RADIANS(o.latitude - %f) / 2), 2) + COS(RADIANS(%f)) * COS(RADIANS(o.latitude))'
+            . ' * POWER(SIN(RADIANS(o.longitude - %f) / 2), 2)))))';
+    }
+
+    /**
+     * @param SuburbResolver|null $suburbs Resolves a typed suburb to a point. Null only in tests
+     *                                     that never exercise the near-me path; a request with
+     *                                     `adct_suburb` set is refused when it is missing, so the
+     *                                     listing can never silently fall back to a wrong place.
+     */
     public function __construct(
         private ClockInterface $clock,
         private DateTimeZone $timezone,
         private string $pluginFile,
-        private ?EventListingGeneration $generation = null
+        private ?EventListingGeneration $generation = null,
+        private ?SuburbResolver $suburbs = null
     ) {
     }
 
@@ -48,7 +77,7 @@ final class PublicEventListing
             'adct-events-filters',
             plugins_url('assets/events-filters.js', $this->pluginFile),
             [],
-            '1.0.0',
+            '1.1.0',
             true
         );
     }
@@ -59,7 +88,7 @@ final class PublicEventListing
             'adct-events',
             plugins_url('assets/events.css', $this->pluginFile),
             [],
-            '1.0.1'
+            '1.1.0'
         );
         wp_enqueue_script('adct-events-filters');
     }
@@ -166,10 +195,12 @@ final class PublicEventListing
     {
         try {
             $selection = new ListingSelection(wp_unslash($_GET), $attributes['period'] ?? 'upcoming');
+
             return $this->listing($selection, remove_query_arg([
                 'adct_page', 'adct_period', 'adct_from', 'adct_to',
                 'adct_types', 'adct_parish', 'adct_deanery',
-                            'adct_pin', 'adct_collapse', 'adct_ics',
+                'adct_pin', 'adct_collapse', 'adct_ics',
+                'adct_lat', 'adct_lng', 'adct_radius_km', 'adct_suburb',
             ]));
         } catch (InvalidArgumentException $error) {
             return '<p role="alert">' . esc_html($error->getMessage()) . '</p>';
@@ -202,9 +233,170 @@ final class PublicEventListing
         if ($selection->deanery !== null && ! isset($deaneries[$selection->deanery])) {
             throw new InvalidArgumentException('Choose an available deanery.');
         }
-        $result = $this->rows($range, $selection);
 
-        return $this->renderResults($selection, $result, $types, $parishes, $deaneries, $base);
+                    $nearMe = $this->nearMePoint($selection);
+        $result = $this->rows($range, $selection, $nearMe);
+
+        return $this->renderResults($selection, $result, $types, $parishes, $deaneries, $base, $nearMe);
+    }
+
+    /**
+     * Where the visitor asked to sort from, or null when they did not ask.
+     *
+     * The browser case is the coordinates in the URL, which arrive only because the visitor pressed the
+     * button (ADR 0020). The suburb case is a lookup against our own parish and venue coordinates, never
+     * a geocoding service, and an unknown suburb is reported rather than silently ignored: showing every
+     * event in date order because a suburb name was spelled differently would be worse than saying so.
+     */
+    private function nearMePoint(ListingSelection $selection): ?NearMePoint
+    {
+        $radiusKm = $selection->radiusKm ?? NearMePoint::DEFAULT_RADIUS_KM;
+
+        if ($selection->hasNearMePoint()) {
+            return NearMePoint::fromBrowserLocation(
+                (float) $selection->latitude,
+                (float) $selection->longitude,
+                $radiusKm
+            );
+        }
+
+        if ($selection->suburb === null) {
+            return null;
+        }
+
+        if ($this->suburbs === null) {
+            throw new RuntimeException('The suburb lookup is not available.');
+        }
+
+        $point = $this->suburbs->resolve($selection->suburb, $radiusKm);
+
+        if ($point === null) {
+            throw new InvalidArgumentException(
+                'We do not have a location for that suburb. Choose one from the list, '
+                . 'or use the Near me button instead.'
+            );
+        }
+
+        return $point;
+    }
+
+    /**
+     * The `page_id` or `p` that identifies the page holding the listing, so the plain GET form
+     * posts back to the same page. WordPress Pages are reached by either name.
+     */
+    private function pageIdentityInputs(string $base): string
+    {
+        $html = '';
+        $baseQuery = wp_parse_url($base, PHP_URL_QUERY);
+        if (! is_string($baseQuery)) {
+            return $html;
+        }
+
+        parse_str($baseQuery, $pageQuery);
+        foreach (['page_id', 'p'] as $queryKey) {
+            if (isset($pageQuery[$queryKey]) && is_scalar($pageQuery[$queryKey])
+                && (int) $pageQuery[$queryKey] > 0) {
+                $html .= '<input type="hidden" name="' . esc_attr($queryKey)
+                    . '" value="' . esc_attr((string) absint($pageQuery[$queryKey])) . '">';
+            }
+        }
+
+        return $html;
+    }
+
+        /**
+     * The opt-in "Near me" controls.
+     *
+     * Nothing here asks for a location on its own: the browser prompt appears only when a visitor
+     * presses the button, and the suburb box is there from the start so the feature is usable
+     * without ever granting permission (ADR 0020). The radius select only appears once a sort is on,
+     * because before then it would mean nothing to a visitor.
+     */
+    private function nearMeControls(ListingSelection $selection, ?NearMePoint $nearMe): string
+    {
+        $html = '<section class="adct-nearme" aria-labelledby="adct-nearme-heading">'
+            . '<h2 id="adct-nearme-heading">Find events near me</h2>'
+            . '<p class="adct-nearme__note">We only use your location to sort this list. '
+            . 'Nothing is saved, and the page is not shared with anyone.</p>';
+
+        if ($nearMe === null) {
+            $html .= '<button type="button" class="adct-nearme__button" data-adct-nearme-button>'
+                . 'Use my location</button>';
+        } else {
+            $html .= '<p class="adct-nearme__active">Sorted by distance from <strong>'
+                . esc_html($nearMe->describe()) . '</strong>. '
+                . '<a href="' . esc_url(add_query_arg(
+                    ['adct_lat' => false, 'adct_lng' => false, 'adct_radius_km' => false, 'adct_suburb' => false],
+                    add_query_arg($selection->query(), remove_query_arg(
+                        ['adct_page', 'adct_period', 'adct_from', 'adct_to', 'adct_types',
+                            'adct_parish', 'adct_deanery', 'adct_pin', 'adct_collapse', 'adct_ics',
+                            'adct_lat', 'adct_lng', 'adct_radius_km', 'adct_suburb'],
+                        $this->currentUrl()
+                    ))
+                )) . '">Show all events by date instead</a></p>';
+        }
+
+        $html .= '<p class="adct-nearme__fallback" data-adct-nearme-fallback '
+            . ($nearMe === null ? ' hidden' : '') . '>'
+            . '<label for="adct-suburb">Or type your suburb</label>'
+            . '<input id="adct-suburb" name="adct_suburb" type="text" maxlength="100" '
+            . 'list="adct-suburb-options" autocomplete="address-level2" '
+            . 'value="' . esc_attr($selection->suburb ?? '') . '">'
+            . '<datalist id="adct-suburb-options">';
+        foreach ($this->suburbSuggestions() as $name) {
+            $html .= '<option value="' . esc_attr($name) . '"></option>';
+        }
+        $html .= '</datalist><button type="submit" class="adct-nearme__suburb">'
+            . 'Sort by this suburb</button></p></section>';
+
+        if ($nearMe === null) {
+            return $html;
+        }
+
+        $radius = (float) ($selection->radiusKm ?? NearMePoint::DEFAULT_RADIUS_KM);
+        $html .= '<p class="adct-nearme__radius"><label for="adct-radius">How far are you willing to travel?</label>'
+            . '<select id="adct-radius" name="adct_radius_km">';
+        foreach (NearMePoint::RADIUS_CHOICES_KM as $choice) {
+            $html .= '<option value="' . esc_attr(ListingSelection::formatNumber($choice)) . '"'
+                . ($choice === $radius ? ' selected="selected"' : '') . '>'
+                . esc_html(NearMePoint::radiusLabel($choice)) . '</option>';
+        }
+
+        return $html . '</select></p>';
+    }
+
+    /**
+     * The suburb names to offer, or an empty list when the lookup fails. A listing that cannot read
+     * the lookup should still render its events, so this never throws.
+     *
+     * @return list<string>
+     */
+    private function suburbSuggestions(): array
+    {
+        static $names = null;
+
+        if ($names === null) {
+            try {
+                $names = $this->suburbs === null
+                    ? []
+                    : $this->suburbs->suggestions();
+            } catch (Throwable $error) {
+                error_log('[ADCT Parish Intake] Suburb suggestions unavailable: ' . $error->getMessage());
+                $names = [];
+            }
+        }
+
+        return $names;
+    }
+
+    /** The current request URL, used to build the link that turns the near-me sort back off. */
+    private function currentUrl(): string
+    {
+        $path = isset($_SERVER['REQUEST_URI']) && is_string($_SERVER['REQUEST_URI'])
+            ? (string) wp_unslash($_SERVER['REQUEST_URI'])
+            : '/';
+
+        return home_url($path);
     }
 
     /**
@@ -216,22 +408,25 @@ final class PublicEventListing
         array $types,
         array $parishes,
         array $deaneries,
-        string $base
-    ): string
-    {
+        string $base,
+        ?NearMePoint $nearMe = null
+    ): string {
         $html = '<section class="adct-events" aria-label="Upcoming events" data-endpoint="'
             . esc_url(rest_url('adct-parish-intake/v1/events')) . '">'
-            . '<form method="get" class="adct-events__filters">';
-        $baseQuery = wp_parse_url($base, PHP_URL_QUERY);
-        if (is_string($baseQuery)) {
-            parse_str($baseQuery, $pageQuery);
-            foreach (['page_id', 'p'] as $queryKey) {
-                if (isset($pageQuery[$queryKey]) && is_scalar($pageQuery[$queryKey])
-                    && (int) $pageQuery[$queryKey] > 0) {
-                    $html .= '<input type="hidden" name="' . esc_attr($queryKey)
-                        . '" value="' . esc_attr((string) absint($pageQuery[$queryKey])) . '">';
-                }
-            }
+            . '<form method="get" class="adct-events__filters">'
+                        . $this->pageIdentityInputs($base);
+        if ($selection->hasNearMePoint()) {
+            /** Keeps the sort when a visitor changes another filter on the same page. */
+            $html .= '<input type="hidden" name="adct_lat" value="'
+                . esc_attr(ListingSelection::formatNumber((float) $selection->latitude)) . '">'
+                . '<input type="hidden" name="adct_lng" value="'
+                . esc_attr(ListingSelection::formatNumber((float) $selection->longitude)) . '">'
+                . '<input type="hidden" name="adct_radius_km" value="'
+                . esc_attr(ListingSelection::formatNumber(
+                    (float) ($selection->radiusKm ?? NearMePoint::DEFAULT_RADIUS_KM)
+                )) . '">';
+        } elseif ($selection->suburb !== null) {
+            $html .= '<input type="hidden" name="adct_suburb" value="' . esc_attr($selection->suburb) . '">';
         }
         $html .= '<label for="adct-period">Show events</label>'
             . '<select id="adct-period" name="adct_period">';
@@ -269,7 +464,8 @@ final class PublicEventListing
             . checked($selection->collapse, true, false) . '> Show only the next date of each recurring event</label>'
             . '<label><input type="checkbox" name="adct_pin" value="1"'
             . checked($selection->pin, true, false) . '> Show featured events first</label>'
-            . '<button type="submit">Apply filters</button></form>';
+            . '<button type="submit">Apply filters</button></form>'
+            . $this->nearMeControls($selection, $nearMe);
 
         $visible = [];
         foreach ($result['rows'] as $row) {
@@ -285,8 +481,13 @@ final class PublicEventListing
             }
         }
         $html .= '<p class="adct-events__status" tabindex="-1">Showing '
-            . count($visible) . ' matching events on this page.</p>';
-                $html .= $this->subscribe($selection, $parishes, $types);
+            . count($visible) . ' matching events on this page'
+            . ($nearMe === null
+                ? '.'
+                : ', closest to ' . esc_html($nearMe->describe())
+                    . ' first. Turn Near me off to see them by date instead.')
+            . '</p>';
+        $html .= $this->subscribe($selection, $parishes, $types);
 
         $eventIds = [];
         if ($visible !== []) {
@@ -351,6 +552,11 @@ final class PublicEventListing
             if ($venueName !== '') {
                 $html .= '<p>' . esc_html($venueName) . '</p>';
             }
+            if ($nearMe !== null && is_numeric($row['distance_km'] ?? null)) {
+                $html .= '<p class="adct-events__distance">' . esc_html(
+                    GeoDistance::formatKilometres((float) $row['distance_km'])
+                ) . '</p>';
+            }
             if ($type !== '') {
                 $html .= '<span class="adct-events__badge">' . esc_html($type) . '</span> ';
             }
@@ -390,16 +596,16 @@ final class PublicEventListing
     }
 
     /**
-         * Subscribe links for the feeds matching the filters currently applied.
-         *
-         * The listing can filter by several event types at once but the feed endpoint takes one, so
-         * each selected type is offered as its own feed instead of silently widening to every event.
-         *
-         * @param array<int, string> $parishes
-         * @param array<int, \WP_Term> $types
-         */
-        private function subscribe(ListingSelection $selection, array $parishes, array $types): string
-        {
+     * Subscribe links for the feeds matching the filters currently applied.
+     *
+     * The listing can filter by several event types at once but the feed endpoint takes one, so
+     * each selected type is offered as its own feed instead of silently widening to every event.
+     *
+     * @param array<int, string> $parishes
+     * @param array<int, \WP_Term> $types
+     */
+    private function subscribe(ListingSelection $selection, array $parishes, array $types): string
+    {
             $catalogue = [];
             foreach ($types as $type) {
                 $catalogue[(int) $type->term_id] = ['name' => $type->name, 'slug' => $type->slug];
@@ -424,7 +630,7 @@ final class PublicEventListing
         }
 
         /** @return array<int, string> */
-        private function options(string $suffix): array
+    private function options(string $suffix): array
     {
         global $wpdb;
         $table = $wpdb->prefix . $suffix;
@@ -448,7 +654,7 @@ final class PublicEventListing
     /**
      * @return array{rows: array<int, array<string, mixed>>, more: bool}
      */
-    private function rows(ListingRange $range, ListingSelection $selection): array
+    private function rows(ListingRange $range, ListingSelection $selection, ?NearMePoint $nearMe): array
     {
         global $wpdb;
 
@@ -457,7 +663,8 @@ final class PublicEventListing
         $end = $range->through->modify('+1 day')->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $from = max($from, $now);
         $cacheable = $selection->period !== 'range'
-            && $selection->types === [] && $selection->parish === null && $selection->deanery === null;
+            && $selection->types === [] && $selection->parish === null && $selection->deanery === null
+            && $nearMe === null;
         $generation = '';
         $key = 'adct_pi_list_v3_' . $selection->period . '_' . $selection->page
             . '_' . (int) $selection->collapse . (int) $selection->pin;
@@ -482,7 +689,16 @@ final class PublicEventListing
         $where = '';
         $joins = '';
         $order = 'o.start_utc ASC, o.id ASC';
-        $args = [EventPostType::POST_TYPE, 'publish', $from, $end];
+        // $wpdb->prepare() pairs arguments with placeholders in the textual order of the finished
+        // SQL, not in the order the fragments were assembled, so the arguments for the SELECT list
+        // go in first: the distance expression sits ahead of every other placeholder in the query.
+        $args = $nearMe === null
+            ? []
+            : $nearMe->distanceArguments();
+        $args[] = EventPostType::POST_TYPE;
+        $args[] = 'publish';
+        $args[] = $from;
+        $args[] = $end;
         if ($selection->collapse) {
             $joins .= " LEFT JOIN {$postmeta} rm ON rm.post_id = o.event_id AND rm.meta_key = 'rrule'";
             $where .= " AND (rm.meta_value IS NULL OR rm.meta_value = '' OR NOT EXISTS "
@@ -513,11 +729,39 @@ final class PublicEventListing
             $args[] = EventPostType::TAXONOMY;
             array_push($args, ...$selection->types);
         }
+
+        $select = 'o.event_id, o.start_utc, o.end_utc, o.start_local_date, o.is_cancelled, '
+            . 'p.name AS parish_name ';
+
+        if ($nearMe !== null) {
+            /**
+             * Occurrences without a pin cannot be placed on the map, so they are left out of a
+             * distance sort rather than shown at the bottom pretending to be far away. The radius
+             * is a real filter, not just a hint: it decides which events the visitor is willing to
+             * travel to see.
+             *
+             * The distance expression is repeated for the radius filter, the SELECT and the ORDER
+             * BY, and the whole statement is assembled before a single prepare() call. Its own
+             * arguments are therefore pushed in the order those placeholders actually appear in
+             * the finished SQL — SELECT (seeded above), then WHERE, then ORDER BY — while the
+             * LIMIT and OFFSET pair goes last, because $wpdb->prepare() pairs arguments with
+             * placeholders positionally and not by name. All three runs come from
+             * NearMePoint::distanceArguments(), which is what keeps the number a visitor reads the
+             * same as the number the rows were ordered by.
+             */
+            $where .= ' AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL';
+            $where .= ' AND ' . $this->distanceSql($nearMe) . ' <= %f';
+            array_push($args, ...$nearMe->distanceArguments());
+            $args[] = $nearMe->radiusKm;
+            $select .= ', ' . $this->distanceSql($nearMe) . ' AS distance_km ';
+            $order = $this->distanceSql($nearMe) . ' ASC, o.start_utc ASC, o.id ASC';
+            array_push($args, ...$nearMe->distanceArguments());
+        }
+
         $args[] = self::PAGE_SIZE + 1;
         $args[] = ($selection->page - 1) * self::PAGE_SIZE;
         $sql = $wpdb->prepare(
-            "SELECT o.event_id, o.start_utc, o.end_utc, o.start_local_date, o.is_cancelled, "
-            . "p.name AS parish_name "
+            "SELECT {$select}"
             . "FROM {$table} o INNER JOIN {$posts} e ON e.ID = o.event_id AND e.post_type = %s AND e.post_status = %s "
             . "LEFT JOIN {$parishes} p ON p.id = o.parish_id {$joins} "
             . "WHERE o.start_utc >= %s AND o.start_utc < %s {$where} "

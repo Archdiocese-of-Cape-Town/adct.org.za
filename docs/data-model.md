@@ -68,7 +68,7 @@ Approver WordPress accounts are created with a random password and no notificati
 | parent_parish_id | FK → parishes; set for outstations, mass centres and parishes administered by another parish. Contacts of the parent parish may submit for them. |
 | deanery_id | FK → deaneries; null for groups/offices without a deanery (their events go to archdiocese reviewers only) |
 | address, suburb | |
-| latitude, longitude | decimal(9,6); used for "near me" |
+| latitude, longitude | decimal(9,6); used for "near me" distance sorting and to give a suburb visitor a starting point |
 | website, phone | |
 | official_source_id | FK → sources; the parish's current official source (kept in sync with `sources.role`) |
 | expected_cadence_days | e.g. 30; null = no expectation |
@@ -254,6 +254,8 @@ A post type (rather than only custom tables) gives WordPress revisions, search, 
 
 ### `adct_pi_occurrences`
 `event_id`, `start_utc`, `end_utc`, `start_local_date`, `parish_id` (nullable), `event_type_term_id`, `latitude`, `longitude`, `is_cancelled`, `created_at`, `updated_at`. Only published events have rows. Manual editor and REST saves replace an event's rows immediately; status changes away from Published and deletion remove them. The daily job re-expands published events for the inclusive local-date window from today through the same date next year. A leap-day end boundary clamps to February 28. The occurrence expander keeps DTSTART as the first RRULE instance and counts it once even if it does not match the filters; COUNT is applied before EXDATE, RDATE does not consume COUNT or inherit UNTIL, and EXDATE removes a matching RRULE or RDATE start. These semantics are provisional. A row's end is exclusive for all-day events (the next local midnight); timed events retain their duration on each generated start. Parish and venue coordinates are copied for filtering, with venue coordinates preferred and parish coordinates as fallback; both coordinates are NULL when the event has no location. An archdiocese-wide event has `parish_id = NULL`. The lowest assigned event-type term ID is stored when more than one term is assigned. Cancelled events retain their occurrence dates with `is_cancelled = 1`; postponed events retain their dates with `is_cancelled = 0`, and their status remains on `adct_event`. Event replacement is transactional, so failed inserts roll back the deletion and preserve prior rows. All public listing queries read from this table.
+
+The `latitude` / `longitude` pair is also what makes the public "near me" sort work: the distance is computed from these occurrence columns in SQL and a row with either one NULL is excluded from a distance sort. Because these coordinates are already copied from the parish or venue at expansion time, the feature needed **no new table and no schema migration**; a visitor's own coordinates are never written to the database ([ADR 0020](decisions/0020-opt-in-geolocation-near-me-sort.md)).
 
 ### `adct_pi_event_changes`
 event_id, candidate_id (nullable), actor (user id / email), kind (`update`, `cancel`, `postpone`, `revert`, `unpublish`), before_payload JSON, after_payload JSON, notified_at, reverted_by, reverted_at. The JSON snapshots are stored as `longtext`. Every change to a published event is written here, so approvers can see what changed and **revert with one click** ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md)).
