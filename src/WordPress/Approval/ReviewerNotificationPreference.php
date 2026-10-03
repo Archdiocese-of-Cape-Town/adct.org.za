@@ -30,9 +30,9 @@ final class ReviewerNotificationPreference
         echo '<p><label for="adct_pi_notify_mode">'
             . esc_html__('How often should approval requests be emailed?', 'adct-parish-intake')
             . '</label> <select id="adct_pi_notify_mode" name="adct_pi_notify_mode">'
-            . '<option value="each"' . selected($mode !== 'digest', true, false) . '>'
+            . '<option value="each"' . selected($mode !== 'digest', true, true) . '>'
             . esc_html__('As events arrive', 'adct-parish-intake') . '</option>'
-            . '<option value="digest"' . selected($mode === 'digest', true, false) . '>'
+            . '<option value="digest"' . selected($mode === 'digest', true, true) . '>'
             . esc_html__('Daily digest', 'adct-parish-intake') . '</option></select></p>';
         // An unchecked box is absent from $_POST entirely, so absence is the
         // "off" signal rather than a missing value to guess at.
@@ -44,7 +44,7 @@ final class ReviewerNotificationPreference
         echo '<p><label for="adct_pi_approval_reminders">'
             . '<input type="checkbox" id="adct_pi_approval_reminders"'
             . ' name="adct_pi_approval_reminders" value="1"'
-            . checked($remindersOn, true, false) . ' /> '
+            . checked($remindersOn, true, true) . ' /> '
             . esc_html__(
                 'Email me a reminder when an event has been waiting for a decision for several days.',
                 'adct-parish-intake'

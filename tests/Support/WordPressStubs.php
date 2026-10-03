@@ -105,9 +105,11 @@ namespace ADCT\ParishIntake\WordPress\Approval {
     }
 
     if (! function_exists('ADCT\ParishIntake\WordPress\Approval\user_can')) {
-        function user_can(\WP_User $user, string $capability): bool
+        function user_can(\WP_User|int $user, string $capability): bool
         {
-            return in_array($capability, $GLOBALS['adct_test_wp_caps'][$user->ID] ?? [], true);
+            $id = $user instanceof \WP_User ? $user->ID : $user;
+
+            return in_array($capability, $GLOBALS['adct_test_wp_caps'][$id] ?? [], true);
         }
     }
 
