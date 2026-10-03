@@ -3,6 +3,8 @@
 declare(strict_types=1);
 
 namespace {
+    require_once __DIR__ . '/../../../Support/WordPressStubs.php';
+
     if (! class_exists('WP_Post', false)) {
         class WP_Post
         {
@@ -119,13 +121,13 @@ namespace {
 }
 
 /**
- * No Approval stubs live here. ApprovalNoticeJobTest already declares
+ * No Approval stubs live here. tests/Support/WordPressStubs.php already declares
  * get_userdata(), user_can(), get_users() and get_user_meta() in
  * ADCT\ParishIntake\WordPress\Approval, and a second declaration in the same
  * namespace is a fatal, not a shadow. This harness drives that copy through the
  * same globals it reads, so there is one WordPress stand-in for the whole suite
  * and no test order dependency: nothing here reads a global before setUp() sets
- * it, and nothing here writes one ApprovalNoticeJobTest relies on.
+ * it, and nothing here writes one the reminder and notice jobs rely on.
  */
 
 namespace ADCT\ParishIntake\WordPress\Auth {

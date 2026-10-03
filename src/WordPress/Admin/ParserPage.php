@@ -14,8 +14,10 @@ use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use ADCT\ParishIntake\Core\Pdf\PdfExtractionResult;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Ports\AiCallGateInterface;
+use ADCT\ParishIntake\Core\Approval\ApprovalReminderSettings;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\WordPress\Ai\OpenAiCompatibleProvider;
+use ADCT\ParishIntake\WordPress\Approval\ApprovalReminderOptionReader;
 use ADCT\ParishIntake\WordPress\Attachments\AttachmentImageEndpoint;
 use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
 use ADCT\ParishIntake\WordPress\Database\Schema;
@@ -346,6 +348,25 @@ final class ParserPage
 
         update_option('adct_parish_intake_ai_threshold', (string) max(0, min(1, (float) wp_unslash($_POST['ai_threshold'] ?? '0.55'))));
 
+        // Checkbox absence is the "off" signal, so the switch is always written
+        // and never silently left at a previous value.
+        update_option(
+            ApprovalReminderOptionReader::ENABLED_OPTION,
+            isset($_POST['approval_reminders_enabled']) ? '1' : '0'
+        );
+
+        $reminderDays = filter_var(
+            wp_unslash($_POST['approval_reminders_days'] ?? null),
+            FILTER_VALIDATE_INT,
+            ['options' => ['min_range' => 1, 'max_range' => ApprovalReminderSettings::MAX_DAYS]]
+        );
+
+        // An unusable submitted period keeps the stored one rather than
+        // silently reverting the operator's other settings.
+        if (is_int($reminderDays)) {
+            update_option(ApprovalReminderOptionReader::DAYS_OPTION, (string) $reminderDays);
+        }
+
         foreach (self::CONFIDENCE_SETTINGS as $key => [$option, $default]) {
             $submitted = wp_unslash($_POST[$key] ?? null);
 
@@ -572,6 +593,28 @@ final class ParserPage
                                 Delete audit log rows older than 24 months
                             </label>
                             <p class="description">Keep this off if you need a longer review or compliance trail.</p>
+                        </td>
+                    </tr>
+                </table>
+                <h2>Approval reminders</h2>
+                <p>When an event sits in an approval queue with no decision, the daily monitoring job can email the approvers once, to say it is still waiting. Each event gets at most one reminder per approver. Approvers can also switch their own reminders off on their WordPress profile.</p>
+                <table class="form-table" role="presentation">
+                    <tr>
+                        <th scope="row">Send approval reminders</th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="approval_reminders_enabled" value="1" <?php checked($settings['approval_reminders_enabled']); ?> />
+                                Email approvers when an event has been waiting for a decision
+                            </label>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Reminder period</th>
+                        <td>
+                            <label for="adct-pi-reminder-days">Remind after</label>
+                            <input id="adct-pi-reminder-days" type="number" min="1" max="<?php echo esc_attr((string) ApprovalReminderSettings::MAX_DAYS); ?>" step="1" name="approval_reminders_days" value="<?php echo esc_attr((string) $settings['approval_reminders_days']); ?>" />
+                            <span class="description">days waiting</span>
+                            <p class="description">Defaults to <?php echo esc_html((string) ApprovalReminderSettings::DEFAULT_DAYS); ?> days. The check runs once a day, so a reminder goes out on the first run after the period elapses.</p>
                         </td>
                     </tr>
                 </table>
@@ -841,8 +884,31 @@ final class ParserPage
             ),
             'retention_action_tokens_enabled' => get_option(RetentionSettings::ACTION_TOKENS_ENABLED_OPTION, '0') === '1',
             'retention_audit_enabled' => get_option(RetentionSettings::AUDIT_ENABLED_OPTION, '0') === '1',
+            'approval_reminders_enabled' => get_option(
+                ApprovalReminderOptionReader::ENABLED_OPTION,
+                '1'
+            ) === '1',
+            'approval_reminders_days' => $this->reminderDays(),
             'section_keywords' => $this->sectionKeywords(),
         ];
+    }
+
+    /**
+     * Falls back to the default when the stored period is unusable, so a bad
+     * option renders a sane field rather than an empty one.
+     */
+    private function reminderDays(): int
+    {
+        $days = filter_var(
+            get_option(
+                ApprovalReminderOptionReader::DAYS_OPTION,
+                ApprovalReminderSettings::DEFAULT_DAYS
+            ),
+            FILTER_VALIDATE_INT,
+            ['options' => ['min_range' => 1, 'max_range' => ApprovalReminderSettings::MAX_DAYS]]
+        );
+
+        return is_int($days) ? $days : ApprovalReminderSettings::DEFAULT_DAYS;
     }
 
     private function configuredModel(): string

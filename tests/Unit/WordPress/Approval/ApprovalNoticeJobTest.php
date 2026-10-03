@@ -2,87 +2,11 @@
 
 declare(strict_types=1);
 
-namespace ADCT\ParishIntake\WordPress\Auth {
-
-    /**
-     * Stand-ins so ActionTokenEndpoint::urlForToken() can build links in a
-     * test without a WordPress runtime.
-     */
-    function home_url(string $path = ''): string
-    {
-        return 'https://adct.example.test' . $path;
-    }
-
-    function add_query_arg(string $key, string $value, string $url): string
-    {
-        return $url . (str_contains($url, '?') ? '&' : '?') . $key . '=' . rawurlencode($value);
-    }
-}
-
 namespace {
 
-    /**
-     * Real escaping, not identity, so a regression that drops escaping in the
-     * approver email would show up here rather than pass silently.
-     */
-    function esc_html(string $text): string
-    {
-        return htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-    }
-
-    function esc_url(string $url): string
-    {
-        return str_replace(['"', "'", '<', '>'], ['%22', '%27', '%3C', '%3E'], $url);
-    }
+    require_once __DIR__ . '/../../../Support/WordPressStubs.php';
 }
 
-namespace ADCT\ParishIntake\WordPress\Approval {
-
-    /**
-     * Minimal stand-ins for the WordPress user helpers ApprovalRecipients
-     * calls. Each test drives them through the globals below and restores
-     * them in tearDown.
-     */
-    function get_users(array $args = []): array
-    {
-        return $GLOBALS['adct_test_wp_users'] ?? [];
-    }
-
-    function get_userdata(int $userId): ?\WP_User
-    {
-        return ($GLOBALS['adct_test_wp_users'] ?? [])[$userId] ?? null;
-    }
-
-    function user_can(\WP_User $user, string $capability): bool
-    {
-        return in_array($capability, $GLOBALS['adct_test_wp_caps'][$user->ID] ?? [], true);
-    }
-
-    function get_user_meta(int $userId, string $key, bool $single = false): string
-    {
-        return $GLOBALS['adct_test_wp_meta'][$userId][$key] ?? '';
-    }
-}
-
-namespace {
-
-    /**
-     * Stand-in for the WordPress user class ApprovalRecipients type-checks.
-     */
-    class WP_User
-    {
-        public int $ID = 0;
-        public string $user_email = '';
-        public int $user_status = 0;
-
-        public function __construct(int $id, string $email, int $userStatus = 0)
-        {
-            $this->ID = $id;
-            $this->user_email = $email;
-            $this->user_status = $userStatus;
-        }
-    }
-}
 
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
 

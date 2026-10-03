@@ -7,11 +7,14 @@ namespace ADCT\ParishIntake\WordPress\Admin;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Jobs\JobRunStatus;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
+use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\JobStateStoreInterface;
 use ADCT\ParishIntake\Core\Mail\MailQueueService;
+use ADCT\ParishIntake\WordPress\Approval\ApprovalReminderOptionReader;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\MailboxRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\ReviewQueueRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Jobs\HealthAlerts;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
@@ -33,9 +36,22 @@ final class HealthPage
         private readonly InboundMessageRepository $inbound,
         private readonly MailQueueService $mail,
         private readonly DeaneryRepository $deaneries,
-        private readonly HealthAlerts $alerts
+        private readonly HealthAlerts $alerts,
+        private readonly ClockInterface $clock,
+        callable $reviewQueue
     ) {
+        $this->reviewQueue = $reviewQueue;
     }
+
+    /**
+     * The review queue repository is built from the WordPress database, which is
+     * not reachable from the constructor: the plugin is also constructed by the
+     * release bootstrap check, with no WordPress loaded. It is resolved on first
+     * use, by which point WordPress is up.
+     *
+     * @var callable(): ReviewQueueRepository
+     */
+    private $reviewQueue;
 
     public function registerMenu(): void
     {
@@ -83,6 +99,10 @@ final class HealthPage
         $page = (int) $requestedPage;
         $sources = $this->sources->findForAdmin([], 100, ($page - 1) * 100);
         $sourceCount = $this->sources->countForAdmin([]);
+        $reminders = (new ApprovalReminderOptionReader())->read();
+        $overdueApprovals = $reminders->enabled
+            ? ($this->reviewQueue)()->countOverdueApprovals($this->reminderCutoff($reminders->days))
+            : 0;
         ?>
         <div class="wrap">
             <h1>Parish Intake health</h1>
@@ -143,6 +163,13 @@ final class HealthPage
                 oldest waiting: <?php echo esc_html($mail->oldestPendingAgeSeconds === null ? 'None' : $this->age($mail->oldestPendingAgeSeconds)); ?>;
                 permanently failed: <?php echo esc_html((string) $mail->failedCount); ?>.
                 <a href="<?php echo esc_url(self::GUIDE . '#outbound-email-and-hourly-cap'); ?>">What to do</a></p>
+            <p>Events waiting for an approval decision for more than <?php echo esc_html((string) $reminders->days); ?> days:
+                <strong><?php echo esc_html((string) $overdueApprovals); ?></strong>.
+                <?php if ($reminders->enabled) : ?>
+                    Approvers are reminded once per event; see <a href="<?php echo esc_url(admin_url('admin.php?page=adct-parish-intake-settings')); ?>">reminder settings</a>.
+                <?php else : ?>
+                    Reminders are switched off, so nobody is emailed about these.
+                <?php endif; ?></p>
             <h2>Deaneries without an active approver</h2>
             <?php if ($deaneries === []) : ?><p>All active deaneries have an approver.</p>
             <?php else : ?><p>These deaneries need an approver; their items go to archdiocese reviewers:
@@ -199,5 +226,17 @@ final class HealthPage
     private function age(int $seconds): string
     {
         return (string) intdiv($seconds, 3600) . ' hours ' . (string) intdiv($seconds % 3600, 60) . ' minutes';
+    }
+
+    /**
+     * The same cutoff the monitoring job uses, derived from the injected clock
+     * in local time so the health screen and the job agree on "waiting too long".
+     */
+    private function reminderCutoff(int $days): string
+    {
+        return $this->clock->now()
+            ->setTimezone(new DateTimeZone('Africa/Johannesburg'))
+            ->modify('-' . $days . ' days')
+            ->format('Y-m-d H:i:s');
     }
 }

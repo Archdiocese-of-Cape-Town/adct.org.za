@@ -138,8 +138,8 @@ if (
     $fail('Fresh plugin activation did not default outbound test mode to off with an empty allow-list.');
 }
 
-if ((int) get_option('adct_pi_db_version', 0) !== 10) {
-    $fail('Activation did not set the parish intake schema version to 10.');
+if ((int) get_option('adct_pi_db_version', 0) !== 11) {
+    $fail('Activation did not set the parish intake schema version to 11.');
 }
 
 if ((int) get_option('adct_pi_roles_version', 0) !== VersionedRoleInstaller::CURRENT_VERSION) {
@@ -457,7 +457,7 @@ $occurrenceParishColumn = $wpdb->get_row(
 $processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 10
+    (int) get_option('adct_pi_db_version', 0) !== 11
     || ! is_array($occurrenceParishColumn)
     || strtoupper((string) ($occurrenceParishColumn['Null'] ?? '')) !== 'YES'
     || $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $processedOwnershipTable)) !== $processedOwnershipTable
@@ -584,7 +584,7 @@ $preservedQueueRowCount = (int) $wpdb->get_var($wpdb->prepare(
 ));
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 10
+    (int) get_option('adct_pi_db_version', 0) !== 11
     || ! $upgradedMailQueueIndexIsUnique
     || array_values($upgradedMailQueueIndexColumns) !== ['recipient', 'group_key']
     || $preservedQueueRowCount !== 1
@@ -643,7 +643,7 @@ foreach ($rateLimitIndexes as $index) {
 }
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 10
+    (int) get_option('adct_pi_db_version', 0) !== 11
     || $recreatedRateLimitTable !== $rateLimitTable
     || ! in_array('scope_hash', $rateLimitColumns, true)
     || ! in_array('window_started_at', $rateLimitColumns, true)
@@ -675,7 +675,7 @@ $recreatedProcessedOwnershipTable = $wpdb->get_var($wpdb->prepare(
 $processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 10
+    (int) get_option('adct_pi_db_version', 0) !== 11
     || $recreatedProcessedOwnershipTable !== $processedOwnershipTable
     || $processedOwnershipColumns !== $expectedProcessedOwnershipColumns
     || get_option('adct_pi_db_migration_error', '') !== ''
@@ -719,7 +719,7 @@ update_option('adct_pi_db_version', 6, false);
 do_action('admin_init');
 
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 10
+    (int) get_option('adct_pi_db_version', 0) !== 11
     || get_option('adct_pi_db_migration_error', '') !== ''
 ) {
     $fail('The v6-to-v10 migrations did not advance the schema version.');
@@ -816,7 +816,7 @@ $recreatedProcessedOwnershipTable = $wpdb->get_var($wpdb->prepare(
 $processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
 $approvalNoticeColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$approvalNoticesTable}", 0);
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 10
+    (int) get_option('adct_pi_db_version', 0) !== 11
     || $recreatedProcessedOwnershipTable !== $processedOwnershipTable
     || $processedOwnershipColumns !== $expectedProcessedOwnershipColumns
     || $approvalNoticeColumns !== [
@@ -860,7 +860,7 @@ $dropSenderSuggestionColumns('v6-to-v10 final upgrade');
 update_option('adct_pi_db_version', 6, false);
 do_action('admin_init');
 
-if ((int) get_option('adct_pi_db_version', 0) !== 10) {
+if ((int) get_option('adct_pi_db_version', 0) !== 11) {
     $fail('The v6-to-v10 migration did not advance the schema version.');
 }
 
@@ -891,7 +891,7 @@ do_action('admin_init');
 $approvalNoticeColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$approvalNoticesTable}", 0);
 $processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$processedOwnershipTable}", 0);
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 10
+    (int) get_option('adct_pi_db_version', 0) !== 11
     || $approvalNoticeColumns !== [
         'id',
         'candidate_id',
@@ -926,7 +926,7 @@ $dropSenderSuggestionColumns('v9-to-v10');
 update_option('adct_pi_db_version', 9, false);
 do_action('admin_init');
 if (
-    (int) get_option('adct_pi_db_version', 0) !== 10
+    (int) get_option('adct_pi_db_version', 0) !== 11
     || get_option('adct_pi_db_migration_error', '') !== ''
     || (array) $wpdb->get_col("SHOW COLUMNS FROM {$approvalNoticesTable}", 0) !== [
         'id',

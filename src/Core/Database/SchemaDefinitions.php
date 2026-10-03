@@ -284,7 +284,7 @@ SQL,
             'adct_pi_follow_ups' => <<<'SQL'
 CREATE TABLE {table_prefix}adct_pi_follow_ups (
     id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-    parish_id bigint(20) unsigned NOT NULL,
+    parish_id bigint(20) unsigned NULL,
     kind varchar(32) NOT NULL,
     channel varchar(20) NOT NULL,
     sent_at datetime NULL,
