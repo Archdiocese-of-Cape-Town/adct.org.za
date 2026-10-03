@@ -133,9 +133,20 @@ namespace ADCT\ParishIntake\WordPress\Approval {
     }
 
     if (! function_exists(__NAMESPACE__ . '\\wp_nonce_field')) {
-        function wp_nonce_field(string $action, string $name = '_wpnonce', bool $referer = true): string
+        /**
+         * The shared Approval-namespace copy in tests/Support/WordPressStubs.php
+         * is authoritative and is loaded first by ReviewerNotificationPreferenceTest.
+         * This declaration is retained only so this file still works when run on
+         * its own; it records the same global, so a test cannot pass here and
+         * fail there.
+         */
+        function wp_nonce_field(string $action = '-1', string $name = '_wpnonce', bool $referer = true): string
         {
-            return '<input type="hidden" name="' . $name . '" value="nonce-for-' . $action . '" />';
+            $GLOBALS['adct_test_nonce_fields'][] = ['action' => $action, 'name' => $name];
+            $markup = '<input type="hidden" name="' . $name . '" value="nonce-for-' . $action . '" />';
+            echo $markup;
+
+            return $markup;
         }
     }
 
@@ -172,6 +183,13 @@ namespace ADCT\ParishIntake\WordPress\Approval {
 
     if (! function_exists(__NAMESPACE__ . '\\current_user_can')) {
         /**
+         * The shared Approval-namespace copy in tests/Support/WordPressStubs.php
+         * is authoritative — it resolves capabilities per *user id* rather than
+         * from one flat list, which is what lets a test hold a reviewer's
+         * entitlement while denying the same capability to someone else. This
+         * declaration is retained only so the file still works when run on its
+         * own, and setUp() seeds both schemes so either answer is the same.
+         *
          * @return bool
          */
         function current_user_can(string $capability)
@@ -265,24 +283,57 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
         protected function setUp(): void
         {
             $_GET = [];
-                    $_POST = [];
-                    $_REQUEST = [];
-                    $_SERVER['HTTP_REFERER'] = 'https://example.test/approval-queue/';
+            $_POST = [];
+            $_REQUEST = [];
+            $_SERVER['HTTP_REFERER'] = 'https://example.test/approval-queue/';
             unset($GLOBALS['adct_front_shortcodes'], $GLOBALS['adct_test_blocks']);
-            $GLOBALS['adct_front_caps'] = [Capabilities::APPROVE_DEANERY];
-            $GLOBALS['adct_front_user'] = new \WP_User(11, 'dean@example.test');
+            $this->actAs(11, 'dean@example.test', [Capabilities::APPROVE_DEANERY]);
             $this->database = new FrontQueueRecordingDatabase();
             $this->database->countRows = [['category' => 'approval', 'total' => 1, 'awaiting' => 1]];
         }
 
         protected function tearDown(): void
         {
-                    $_POST = [];
-                    $_REQUEST = [];
-                    unset($GLOBALS['adct_front_caps'], $GLOBALS['adct_front_user'], $GLOBALS['adct_front_shortcodes']);
-            unset($GLOBALS['adct_test_blocks']);
+            $_POST = [];
+            $_REQUEST = [];
+            unset(
+                $GLOBALS['adct_front_caps'],
+                $GLOBALS['adct_front_user'],
+                $GLOBALS['adct_front_shortcodes'],
+                $GLOBALS['adct_test_current_user_id'],
+                $GLOBALS['adct_test_current_user'],
+                $GLOBALS['adct_test_wp_caps'],
+                $GLOBALS['adct_test_blocks']
+            );
 
             parent::tearDown();
+        }
+
+        /**
+         * Sets who is acting and what they may do.
+         *
+         * Two globals are written because the Approval namespace has two
+         * `current_user_can()` implementations in this suite — this file's own,
+         * which reads one flat list, and the shared copy in
+         * tests/Support/WordPressStubs.php, which resolves per user id. Which one
+         * is in force depends on which file PHPUnit happened to load first under
+         * `executionOrder="random"`. Writing both here means the behaviour under
+         * test is the same either way, so a test in this file cannot pass in
+         * isolation and fail in the suite.
+         *
+         * Routing every grant through this method is what keeps them in step;
+         * a test that assigned `adct_front_caps` directly would silently diverge
+         * from the per-user table the shared stub reads.
+         *
+         * @param list<string> $capabilities
+         */
+        private function actAs(int $userId, ?string $email, array $capabilities): void
+        {
+            $GLOBALS['adct_front_caps'] = $capabilities;
+            $GLOBALS['adct_front_user'] = $email === null ? null : new \WP_User($userId, $email);
+            $GLOBALS['adct_test_current_user_id'] = $userId;
+            $GLOBALS['adct_test_current_user'] = $GLOBALS['adct_front_user'];
+            $GLOBALS['adct_test_wp_caps'] = [$userId => $capabilities];
         }
 
         /**
@@ -294,7 +345,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
         {
             $this->database->rows = [$this->candidate(21, 'Parish retreat')];
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringContainsString('Parish retreat', $html);
             self::assertStringContainsString('Approve selected', $html);
@@ -320,7 +371,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
         {
             $this->database->rows = [$this->candidate(21, 'Parish retreat')];
 
-            $this->page()->render();
+            $this->renderQueue();
 
             $reads = array_values(array_filter(
                 $this->database->queries,
@@ -348,7 +399,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
             $this->database->rows = [$this->candidate(21, 'Retreat')];
             $this->database->changeRows = [$this->change(41, 21, 5)];
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringContainsString('Recent changes', $html);
 
@@ -376,7 +427,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
             $this->database->changeRows = [$this->change(41, 900, 5)];
             $this->database->rows = [];
 
-            $this->page()->render();
+            $this->renderQueue();
 
             $changeQuery = '';
             foreach ($this->database->queries as $query) {
@@ -396,9 +447,9 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
          */
         public function testAReviewerGetsTheUnscopedBranch(): void
         {
-            $GLOBALS['adct_front_caps'] = [Capabilities::REVIEW];
+            $this->actAs(11, 'dean@example.test', [Capabilities::REVIEW]);
 
-            $this->page()->render();
+            $this->renderQueue();
 
             $reads = array_values(array_filter(
                 $this->database->queries,
@@ -419,11 +470,19 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
             $page->register();
 
             self::assertArrayHasKey(FrontEndApprovalQueue::SHORTCODE, $GLOBALS['adct_front_shortcodes']);
-                        self::assertArrayHasKey(FrontEndApprovalQueue::BLOCK, $GLOBALS['adct_test_blocks']);
+            self::assertArrayHasKey(FrontEndApprovalQueue::BLOCK, $GLOBALS['adct_test_blocks']);
 
             $this->database->rows = [$this->candidate(21, 'Parish retreat')];
-            $fromShortcode = ($GLOBALS['adct_front_shortcodes'][FrontEndApprovalQueue::SHORTCODE])();
-                        $fromBlock = ($GLOBALS['adct_test_blocks'][FrontEndApprovalQueue::BLOCK]['render_callback'])([]);
+            ob_start();
+
+            try {
+                $fromShortcode = ($GLOBALS['adct_front_shortcodes'][FrontEndApprovalQueue::SHORTCODE])();
+                $fromBlock = ($GLOBALS['adct_test_blocks'][FrontEndApprovalQueue::BLOCK]['render_callback'])([]);
+            } finally {
+                // Both routes echo the nonce fields, as the shortcode does in
+                // production; capture so the run stays free of stray output.
+                ob_end_clean();
+            }
 
             self::assertSame($fromShortcode, $fromBlock);
         }
@@ -435,9 +494,9 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
          */
         public function testAParishContactSeesTheSignInPromptRatherThanAQueue(): void
         {
-            $GLOBALS['adct_front_caps'] = ['adct_pi_parish_contact'];
+            $this->actAs(11, 'dean@example.test', ['adct_pi_parish_contact']);
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringContainsString('sign in with the link emailed to you', $html);
             self::assertStringNotContainsString('Approve selected', $html);
@@ -445,9 +504,9 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
 
         public function testASignedOutVisitorSeesTheSignInPrompt(): void
         {
-            $GLOBALS['adct_front_user'] = null;
+            $this->actAs(0, null, []);
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringContainsString('sign in with the link emailed to you', $html);
             self::assertSame([], $this->database->queries, 'A signed-out visitor must not reach the database.');
@@ -460,9 +519,12 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
          */
         public function testADeactivatedDeanCannotViewTheQueue(): void
         {
+            // user_status 1 is WordPress's "deactivated" flag: capabilities survive it,
+            // standing does not.
             $GLOBALS['adct_front_user'] = new \WP_User(11, 'dean@example.test', 1);
+            $GLOBALS['adct_test_current_user'] = $GLOBALS['adct_front_user'];
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringContainsString('unavailable right now', $html);
             self::assertStringNotContainsString('Approve selected', $html);
@@ -479,16 +541,16 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
          */
         public function testTheGateAcceptsEitherReviewRole(): void
         {
-            $GLOBALS['adct_front_caps'] = [Capabilities::REVIEW];
+            $this->actAs(11, 'dean@example.test', [Capabilities::REVIEW]);
             self::assertTrue($this->page()->canView());
 
-            $GLOBALS['adct_front_caps'] = [Capabilities::APPROVE_DEANERY];
+            $this->actAs(11, 'dean@example.test', [Capabilities::APPROVE_DEANERY]);
             self::assertTrue($this->page()->canView());
 
-            $GLOBALS['adct_front_caps'] = [Capabilities::MANAGE_SETTINGS];
+            $this->actAs(11, 'dean@example.test', [Capabilities::MANAGE_SETTINGS]);
             self::assertFalse($this->page()->canView());
 
-            $GLOBALS['adct_front_user'] = null;
+            $this->actAs(0, null, []);
             self::assertFalse($this->page()->canView());
         }
 
@@ -500,7 +562,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
         {
             $this->database->rows = [];
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringContainsString('Nothing is waiting for you', $html);
             self::assertStringNotContainsString('Approve selected', $html);
@@ -521,7 +583,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
             );
             $this->database->rows = [$row];
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringNotContainsString('<script>', $html);
                         // The hostile address is escaped, so the attribute is inert text. What
@@ -539,7 +601,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
             $this->database->changeRows = [$change];
             $this->database->rows = [];
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringNotContainsString('<script>', $html);
         }
@@ -555,7 +617,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
             $row['fields'] = 'not json at all';
             $this->database->rows = [$row];
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringContainsString('needs manual repair', $html);
             self::assertStringNotContainsString('could not be loaded', $html);
@@ -566,7 +628,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
             $row = $this->candidate(21, '');
             $this->database->rows = [$row];
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringContainsString('(Title unavailable)', $html);
         }
@@ -579,7 +641,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
         {
             $this->database->failure = 'SELECT * FROM wp_adct_pi_event_candidates password=hunter2';
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringContainsString('could not be loaded', $html);
             self::assertStringNotContainsString('hunter2', $html);
@@ -594,7 +656,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
             $row['updated_at'] = '2026-10-12 07:00:00';
             $this->database->rows = [$row];
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             // 07:00 UTC is 09:00 in Africa/Johannesburg (UTC+2; SA has no DST).
             self::assertStringContainsString('12/10/2026 09:00', $html);
@@ -616,7 +678,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
                     $_GET['adct_pi_edit'] = '21';
                     $this->database->rows = [$row];
 
-                    $html = $this->page()->render();
+                    $html = $this->renderQueue();
 
                     self::assertStringContainsString('Edit candidate #21', $html);
                     // Nothing stored means nothing selected, not a PHP warning. `none` is the
@@ -642,7 +704,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
                     $_GET['adct_pi_edit'] = '21';
                     $this->database->rows = [$row];
 
-                    $html = $this->page()->render();
+                    $html = $this->renderQueue();
 
                     self::assertStringContainsString('Edit candidate #21', $html);
                     self::assertStringContainsString('<option value="monthly" selected>Monthly</option>', $html);
@@ -678,9 +740,12 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
                                     ob_start();
                                     try {
                                         $this->page()->handleSave();
-                                    } catch (\DomainException) {
+                                    } catch (\AdctTestWpDie $refused) {
                                         ob_end_clean();
-                                        self::fail('A validation failure must re-render, not refuse.');
+                                        self::fail(
+                                            'A validation failure must re-render, not refuse ('
+                                            . $refused->status . ' ' . $refused->getMessage() . ').'
+                                        );
                                     } catch (\FrontQueueRedirected) {
                                         ob_end_clean();
                                         self::fail('A validation failure must re-render, not redirect.');
@@ -765,9 +830,12 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
                                                                     ob_start();
                                                                     try {
                                                                         $this->page()->handleSave();
-                                                                    } catch (\DomainException $refusal) {
+                                                                    } catch (\AdctTestWpDie $refusal) {
                                                                         ob_end_clean();
-                                                                        self::fail('A save must not be refused: ' . $refusal->getMessage());
+                                                                        self::fail(
+                                                                            'A save must not be refused: '
+                                                                            . $refusal->status . ' ' . $refusal->getMessage()
+                                                                        );
                                                                     } catch (FrontQueueRedirected $redirected) {
                                                                         ob_end_clean();
 
@@ -786,7 +854,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
                 {
                     $this->database->rows = [$this->candidate(21, 'Retreat')];
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringContainsString('adct_pi_edit=21', $html);
             self::assertStringContainsString('Edit before deciding', $html);
@@ -797,7 +865,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
             $decided['decided_by'] = 'dean@example.test';
             $this->database->rows = [$decided];
 
-            self::assertStringNotContainsString('adct_pi_edit=22', $this->page()->render());
+            self::assertStringNotContainsString('adct_pi_edit=22', $this->renderQueue());
         }
 
         /**
@@ -812,7 +880,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
             $row['matched_candidate_id'] = 22;
             $this->database->rows = [$row];
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringContainsString('Manual resolution required before approval', $html);
             // Selectable, so it can be rejected — the aria-label says which.
@@ -828,7 +896,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
             $_GET = ['changed' => '2', 'skipped' => '1', 'manual' => '0'];
             $this->database->rows = [];
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringContainsString('2 updated, 1 already decided', $html);
         }
@@ -842,7 +910,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
             $this->database->changeRows = [$this->change(41, 21, 5, reverted: true)];
             $this->database->rows = [];
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringContainsString('Reverted by', $html);
             self::assertStringNotContainsString('Ask to revert', $html);
@@ -858,7 +926,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
             $this->database->changeRows = [$this->change(41, 21, 5)];
             $this->database->rows = [];
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringContainsString(FrontEndApprovalQueue::REVERT_ACTION, $html);
             self::assertStringContainsString('Ask to revert', $html);
@@ -875,7 +943,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
             $this->database->rows = [$this->candidate(21, 'Retreat')];
             $this->database->changeRows = [$this->change(41, 21, 5)];
 
-            $html = $this->page()->render();
+            $html = $this->renderQueue();
 
             self::assertStringContainsString('name="' . FrontEndApprovalQueue::BULK_NONCE . '"', $html);
             self::assertStringContainsString('name="' . FrontEndApprovalQueue::BULK_NONCE . '"', $html);
@@ -895,6 +963,30 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
                 ),
                 new ReviewQueuePolicy()
             );
+        }
+
+        /**
+         * `render()` both returns the markup and writes the nonce fields straight
+         * to the output buffer, which is what WordPress does — `wp_nonce_field()`
+         * echoes and returns. PHPUnit fails a test that prints anything
+         * (`beStrictAboutOutputDuringTests`), so the echo is captured and discarded
+         * here rather than left to escape into the test run.
+         *
+         * Buffering it is not a way of hiding a stray print: the assertions below
+         * read the returned markup, and the nonce field's presence in it is what
+         * several of them check.
+         */
+        private function renderQueue(): string
+        {
+            ob_start();
+
+            try {
+                $html = $this->page()->render();
+            } finally {
+                ob_end_clean();
+            }
+
+            return $html;
         }
 
         /**
