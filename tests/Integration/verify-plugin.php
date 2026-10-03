@@ -243,6 +243,10 @@ if ($actualEventTermSlugs !== $expectedEventTermSlugs) {
 require_once __DIR__ . '/EventTypeCheck.php';
 EventTypeCheck::run($fail);
 
+// Loaded early because the fixture sweep below reads its event title prefix, to
+// clear what a run killed before this check could clean up after itself.
+require_once __DIR__ . '/FrontEndApprovalQueueCheck.php';
+
 foreach (['administrator', 'editor', 'adct_pi_intake_manager', 'adct_pi_intake_reviewer'] as $roleName) {
     $role = get_role($roleName);
 
@@ -315,6 +319,23 @@ if (
 }
 
 $mailQueueTable = $wpdb->prefix . 'adct_pi_mail_queue';
+
+// Every synthetic recipient is at the reserved example.test domain, which no
+// parish can hold. Rows left by a run killed between enqueueing a fixture and
+// deleting it would otherwise outlive it twice over: the recipient/group_key
+// unique key migration refuses to run while a duplicate pair survives, and the
+// 500-per-hour reservation counts every leftover row, so a stale `sending` row
+// makes the cap test below reserve a slot that is already gone. Both failures
+// happen long before the check that owns the row could clean up after itself.
+$leftoverSyntheticQueueRows = $wpdb->query($wpdb->prepare(
+    "DELETE FROM {$mailQueueTable} WHERE recipient LIKE %s",
+    '%@example.test'
+));
+
+if ($leftoverSyntheticQueueRows === false) {
+    $fail('Mail queue rows from an earlier integration run could not be cleared.');
+}
+
 $inboundMessageTable = $wpdb->prefix . 'adct_pi_inbound_messages';
 $approvalNoticesTable = $wpdb->prefix . 'adct_pi_approval_notices';
 $processedOwnershipTable = $wpdb->prefix . 'adct_pi_processed_mail_ownership';
@@ -372,7 +393,44 @@ $dropSenderSuggestionColumns = static function (string $migrationPath) use (
             $fail('The ' . $migrationPath . ' path could not prepare the pre-v10 sender-contact schema.');
         }
     }
-};
+
+        // Dropping columns leaves the table's recorded row-size bookkeeping behind.
+        // That alone is harmless, but this table is dropped and re-created by every
+        // earlier migration path, so by the time the v10 step adds the columns back
+        // the surviving handle carries enough stale InnoDB metadata for MariaDB to
+        // reject the ADD with "Row size too large" — even though the very same DDL
+        // succeeds on a fresh table, on a clone, and after the same columns are
+        // dropped from a clone. The table's declared shape is unchanged, so a
+        // rebuild is exactly what a real install (which creates the table once with
+        // both columns) would have. It keeps the migration assertion honest: it
+        // still has to add both columns and still has to preserve the row data.
+        if ($wpdb->query("ALTER TABLE {$contactTable} FORCE") === false) {
+            $fail('The ' . $migrationPath . ' path could not rebuild the pre-v10 sender-contact schema.');
+        }
+        };
+
+        // Same reasoning as the contact-table rebuild above, generalised to the
+        // confirmation-preview columns: these paths drop columns so the migrations have
+        // to add them back, and MariaDB refuses the re-add on a table whose dropped
+        // columns left stale row-size bookkeeping behind.
+        $dropConfirmationPreviewColumns = static function (string $migrationPath) use (
+        $wpdb,
+        $confirmationSchemaColumns,
+        $fail
+        ): void {
+        $touched = [];
+        foreach ($confirmationSchemaColumns as [$table, $columnName]) {
+            if ($wpdb->query("ALTER TABLE {$table} DROP COLUMN `{$columnName}`") === false) {
+                $fail('The ' . $migrationPath . ' path could not prepare the legacy confirmation-preview schema.');
+            }
+            $touched[$table] = true;
+        }
+        foreach (array_keys($touched) as $table) {
+            if ($wpdb->query("ALTER TABLE {$table} FORCE") === false) {
+                $fail('The ' . $migrationPath . ' path could not rebuild the legacy confirmation-preview schema.');
+            }
+        }
+    };
 
 foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
     $column = $wpdb->get_row(
@@ -684,11 +742,7 @@ if (
 }
 $assertSenderSuggestionColumns('v6-to-v10 ownership upgrade');
 
-foreach ($confirmationSchemaColumns as [$table, $columnName]) {
-    if ($wpdb->query("ALTER TABLE {$table} DROP COLUMN `{$columnName}`") === false) {
-        $fail('The v6-to-v10 migration test could not prepare the legacy confirmation-preview schema.');
-    }
-}
+$dropConfirmationPreviewColumns('v6-to-v10 full upgrade');
 
 if ($wpdb->query("DROP TABLE {$approvalNoticesTable}") === false) {
     $fail('The v6-to-v10 migration test could not prepare the pre-v8 approval-notice schema.');
@@ -850,11 +904,7 @@ foreach ($confirmationSchemaColumns as [$table, $columnName, $expectedType]) {
     }
 }
 
-foreach ($confirmationSchemaColumns as [$table, $columnName]) {
-    if ($wpdb->query("ALTER TABLE {$table} DROP COLUMN `{$columnName}`") === false) {
-        $fail('The v6-to-v10 migration test could not prepare the legacy confirmation-preview schema.');
-    }
-}
+$dropConfirmationPreviewColumns('v6-to-v10 final upgrade');
 
 $dropSenderSuggestionColumns('v6-to-v10 final upgrade');
 update_option('adct_pi_db_version', 6, false);
@@ -1760,6 +1810,12 @@ $deaneryTable = $wpdb->prefix . 'adct_pi_deaneries';
 $approverTable = $wpdb->prefix . 'adct_pi_deanery_approvers';
 
 // Remove only test events from an earlier run before replacing their directory rows.
+// The prefixes are the only handle a killed run leaves behind, so each check that
+// publishes an event names its own here. A leftover post would otherwise point at a
+// parish the block below deletes, and the daily occurrence job would abort on the
+// missing parish long before the check that owns it could clean up after itself.
+$previousTestEventPrefixes = ['Fictional ', FrontEndApprovalQueueCheck::EVENT_TITLE_PREFIX];
+
 $previousTestEventIds = get_posts([
     'post_type' => EventPostType::POST_TYPE,
     'post_status' => 'any',
@@ -1770,11 +1826,20 @@ $previousTestEventIds = get_posts([
 foreach ($previousTestEventIds as $previousTestEventId) {
     $previousTestEvent = get_post((int) $previousTestEventId);
 
-    if (
-        $previousTestEvent instanceof WP_Post
-        && str_starts_with($previousTestEvent->post_title, 'Fictional ')
-        && wp_delete_post((int) $previousTestEventId, true) === false
-    ) {
+    if (! $previousTestEvent instanceof WP_Post) {
+        continue;
+    }
+
+    $isFixture = false;
+
+    foreach ($previousTestEventPrefixes as $previousTestEventPrefix) {
+        if (str_starts_with($previousTestEvent->post_title, $previousTestEventPrefix)) {
+            $isFixture = true;
+            break;
+        }
+    }
+
+    if ($isFixture && wp_delete_post((int) $previousTestEventId, true) === false) {
         $fail('An earlier fictional event integration fixture could not be removed.');
     }
 }
@@ -5384,6 +5449,21 @@ if ($deletedClaimFixtures !== 2) {
     $fail('The temporary fake-recipient claim fixtures could not be removed.');
 }
 
+// The status API and the cap reservation above both count the sent row, so this
+// is the first point at which it can go. A run killed before here leaves the
+// pre-run sweep something to clear.
+$deletedMailQueueFixture = $wpdb->delete(
+    $mailQueueTable,
+    [
+        'recipient' => $mailQueueRecipient,
+        'group_key' => $mailQueueGroupKey,
+    ]
+);
+
+if ($deletedMailQueueFixture !== 1) {
+    $fail('The immediate mail sender fixture could not be removed from the mail queue.');
+}
+
 $toggleSuffix = bin2hex(random_bytes(8));
 $toggleRecipient = 'queued-before-test-mode-' . $toggleSuffix . '@example.test';
 $toggleMail = new OutboundEmail(
@@ -5505,6 +5585,7 @@ require_once __DIR__ . '/ApprovalDecisionCheck.php';
 ApprovalDecisionCheck::run($fail);
 require_once __DIR__ . '/ReviewQueueCheck.php';
 ReviewQueueCheck::run($fail);
+FrontEndApprovalQueueCheck::run($fail);
 require_once __DIR__ . '/CandidateDetailCheck.php';
 CandidateDetailCheck::run($fail);
 require_once __DIR__ . '/AuditLogCheck.php';

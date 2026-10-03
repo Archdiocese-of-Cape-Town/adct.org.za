@@ -10,6 +10,7 @@ use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
 use ADCT\ParishIntake\WordPress\Database\Repository\ReviewQueueRepository;
 use DateTimeImmutable;
 use DateTimeZone;
+use InvalidArgumentException;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -448,9 +449,269 @@ final class ReviewQueueRepositoryTest extends TestCase
         self::assertStringContainsString('c.confidence < 0.900', $database->lastQuery());
     }
 
+            /**
+                         * A reviewer who edits a candidate's text must not unassign its parish.
+                         *
+                         * Neither the admin detail editor nor the front-end approval queue renders a
+                         * `parish_id` field — parish assignment is a separate, reviewer-only flow
+                         * (`assignParish`). So the validator returns `values` with no `parish_id` key
+                                     * at all, and reading that key as "the caller wants no parish" wrote the column
+                                     * as NULL. The candidate then matched no deanery's scope predicate, so the
+                                     * very editor who corrected it could no longer see, approve or reject it,
+                         * and neither could anybody else. Only an absent *form field* is an explicit
+                         * request to clear the parish; a missing key must leave the stored one alone.
+                                     *
+                                     * The recording double's `query()` returns 0, so `updateFields()` reports
+                                     * `not_editable` for every write; the statement is still recorded, and the
+                                     * SQL is what this behaviour is about.
+                                     */
+                                    public function testAnEditThatOmitsParishKeepsTheStoredParish(): void
+                                    {
+                                        $update = $this->editThatOmitsParishFor([
+                                            'id' => '4',
+                                            'status' => 'awaiting_approval',
+                                'parish_id' => '9',
+                                'fields' => '{"title":"Before","parish_id":9}',
+                                        ]);
+
+                                        self::assertNotNull($update, 'updateFields() must write an UPDATE.');
+                                        self::assertStringContainsString(
+                                            "parish_id = NULLIF('9', '')",
+                                            $update,
+                                            'An edit that omits the parish must carry the stored one through, never a bare NULL.'
+                                        );
+                                        self::assertStringNotContainsString("NULLIF('0', '')", $update);
+                                        self::assertStringNotContainsString("NULLIF('', '')", $update);
+                                    }
+
+                                    /**
+                                     * A candidate that never had a parish still has nothing to preserve, so the
+                                     * column is written as a real SQL NULL rather than the empty string — which
+                                     * `bigint unsigned` would coerce to `0`, a parish that does not exist.
+                                     */
+                                    public function testAnEditPreservesAnAlreadyUnassignedParish(): void
+                                    {
+                                        $update = $this->editThatOmitsParishFor([
+                                            'id' => '4',
+                                            'status' => 'awaiting_approval',
+                                            'parish_id' => null,
+                                            'fields' => '{"title":"Before"}',
+                                        ]);
+
+                                        self::assertNotNull($update, 'updateFields() must write an UPDATE.');
+                                        self::assertStringContainsString("parish_id = NULLIF('', '')", $update);
+                                    }
+
+                                    /**
+                                     * A `parish_id` of zero is not a parish. The column is
+                                     * `bigint unsigned`, so a NULL written here becomes '0' and the candidate
+                                     * silently stops belonging to any deanery — the exact failure the absent-key
+                                     * branch exists to prevent. An unusable value is ignored in favour of the
+                                     * stored one, and clearing a parish stays `assignParish()`'s audited action.
+                                     */
+                                    public function testAnEditThatSubmitsAZeroParishKeepsTheStoredParish(): void
+                                    {
+                                        $database = new ReviewQueueRecordingDatabase();
+                                        $queue = $this->repository($database);
+                                        $database->resultRows = [[
+                                            'id' => '4',
+                                            'status' => 'awaiting_approval',
+                                            'approved_by' => null,
+                                            'decided_at' => null,
+                                            'parish_id' => '9',
+                                            'fields' => '{"title":"Before","parish_id":9}',
+                                            'recurrence' => null,
+                                        ]];
+
+                                        $queue->updateFields(
+                                            4,
+                                            ['title' => 'After', 'parish_id' => 0],
+                                            [],
+                                            ['title'],
+                                            7,
+                                            'dean@example.test',
+                                            false
+                                        );
+
+                                        $update = $this->updateOfFields($database->queries);
+                                        self::assertNotNull($update, 'updateFields() must write an UPDATE.');
+                                        self::assertStringContainsString("NULLIF('9', '')", $update);
+                                        self::assertStringNotContainsString("NULLIF('0', '')", $update);
+                                    }
+
+                                    /**
+                                     * When a caller does carry a usable `parish_id` it wins, so column and JSON
+                                     * stay in step and `assignParish()`'s realignment still holds.
+                                     */
+                                    public function testAnEditThatSuppliesAParishWritesItToBothTheColumnAndTheJson(): void
+                                    {
+                                        $database = new ReviewQueueRecordingDatabase();
+                                        $queue = $this->repository($database);
+                                        $database->resultRows = [[
+                                            'id' => '4',
+                                            'status' => 'awaiting_approval',
+                                            'approved_by' => null,
+                                            'decided_at' => null,
+                                            'parish_id' => '9',
+                                            'fields' => '{"title":"Before","parish_id":9}',
+                                            'recurrence' => null,
+                                        ]];
+
+                                        $queue->updateFields(
+                                            4,
+                                            ['title' => 'After', 'parish_id' => 12],
+                                            [],
+                                            ['parish_id'],
+                                            7,
+                                            'dean@example.test',
+                                            false
+                                        );
+
+                                        $update = $this->updateOfFields($database->queries);
+                                        self::assertNotNull($update, 'updateFields() must write an UPDATE.');
+                                        self::assertStringContainsString('"parish_id":12', $update);
+                                        self::assertStringContainsString("parish_id = NULLIF('12', '')", $update);
+                                    }
+
+                                    /**
+                                     * Saves an edit of one key on a candidate with the given stored row, so the
+                                     * parish-preservation tests can share the fixture setup.
+                                     *
+                                     * @param array<string, mixed> $storedRow
+                                     */
+                                    private function editThatOmitsParishFor(array $storedRow): ?string
+                                    {
+                                        $database = new ReviewQueueRecordingDatabase();
+                                        $queue = $this->repository($database);
+                                        $database->resultRows = [$storedRow + [
+                                            'approved_by' => null,
+                                            'decided_at' => null,
+                                            'recurrence' => null,
+                                        ]];
+
+                                        $queue->updateFields(
+                                            4,
+                                            ['title' => 'After'],
+                                            [],
+                                            ['title'],
+                                            7,
+                                            'dean@example.test',
+                                            false
+                                        );
+
+                                        return $this->updateOfFields($database->queries);
+                                    }
+
+                        /**
+                         * The changes a change belongs to, and who may see it, are one rule shared by
+                         * the list and the single-row lookup (issue #72).
+             *
+             * The rule is deliberately not the candidate rule. A change carries no parish
+             * column of its own, so it inherits the candidate's parish and falls back to
+             * the event's `parish_id` post meta. If the two rules were collapsed, every
+             * change to an already-published event — which has no candidate link at all —
+             * would fall outside every dean's scope, so the change would vanish from the
+             * queue for the very people entitled to see it.
+             */
+            public function testRecordedChangesAreScopedByCandidateParishThenEventPostMeta(): void
+            {
+                $database = new ReviewQueueRecordingDatabase();
+                $queue = $this->repository($database);
+
+                $database->resultRows = [['id' => '4', 'parish_id' => '9', 'parish_name' => 'Fictional Parish']];
+                $rows = $queue->recentChanges(7, 'dean@example.test', false);
+                self::assertSame([['id' => '4', 'parish_id' => '9', 'parish_name' => 'Fictional Parish']], $rows);
+                $listQuery = $database->lastQuery();
+
+                $database->resultRows = [['id' => '4', 'parish_id' => '9', 'parish_name' => 'Fictional Parish']];
+                $single = $queue->findScopedChange(4, 7, 'dean@example.test', false);
+                self::assertSame(['id' => '4', 'parish_id' => '9', 'parish_name' => 'Fictional Parish'], $single);
+                $singleQuery = $database->lastQuery();
+
+                foreach ([$listQuery, $singleQuery] as $query) {
+                    self::assertStringContainsString(
+                        "COALESCE(c.parish_id, NULLIF(TRIM(meta.meta_value), ''))",
+                        $query,
+                        'A change inherits its candidate parish, then the event parish_id post meta.'
+                    );
+                    self::assertStringContainsString(
+                        "meta.meta_key = 'parish_id'",
+                        $query,
+                        'The fallback must read the parish_id post meta, not any meta key.'
+                    );
+                    self::assertStringContainsString(
+                        'a.wp_user_id = 7',
+                        $query,
+                        "A dean's scope is their own approver rows, not a caller-supplied flag."
+                    );
+                    self::assertStringContainsString("d.status = 'active'", $query, 'An inactive deanery grants nothing.');
+                    self::assertStringContainsString('a.active = 1', $query, 'A deactivated assignment grants nothing.');
+                    self::assertStringContainsString(
+                        "AND meta.meta_key = 'parish_id'",
+                        $query,
+                        'The meta join is constrained in the JOIN, so the scope never doubles the row count.'
+                    );
+                    self::assertStringContainsString(
+                        "COALESCE(c.parish_id, NULLIF(TRIM(meta.meta_value), '')) IS NOT NULL",
+                        $query,
+                        'A change with no parish at all belongs to nobody and must not be listed.'
+                    );
+                    }
+
+                self::assertStringContainsString('ch.id = 4', $singleQuery, 'The single-row lookup is bound by ID.');
+                self::assertStringNotContainsString('ch.id =', $listQuery, 'The list is not filtered to one change.');
+                self::assertStringContainsString('ORDER BY ch.created_at DESC, ch.id DESC LIMIT 25', $listQuery);
+            }
+
+            /**
+             * An archdiocese reviewer sees every change, which is the same carve-out
+             * findScoped() makes, so the two surfaces cannot disagree about who is
+             * archdiocese-wide.
+             */
+            public function testAReviewerIsNotScopedToAnyDeaneryForRecordedChanges(): void
+            {
+                $database = new ReviewQueueRecordingDatabase();
+                $queue = $this->repository($database);
+
+                $database->resultRows = [];
+                $queue->recentChanges(7, 'reviewer@example.test', true);
+                $query = $database->lastQuery();
+                self::assertStringContainsString('AND (1 = 1)', $query);
+                self::assertStringNotContainsString('a.wp_user_id =', $query);
+                self::assertStringNotContainsString('EXISTS (SELECT 1 FROM', $query);
+            }
+
+            /**
+             * Both bounds, so an ID of zero cannot reach the database as a real row and an
+             * unbounded limit cannot be used to pull the whole history into one request.
+             */
+            public function testRecordedChangeIdentifiersAndLimitsAreBounded(): void
+            {
+                $database = new ReviewQueueRecordingDatabase();
+                $queue = $this->repository($database);
+                $database->resultRows = [];
+
+                foreach ([
+                    'change ID' => static fn () => $queue->findScopedChange(0, 7, 'dean@example.test', false),
+                    'reviewer ID' => static fn () => $queue->recentChanges(0, 'dean@example.test', false),
+                ] as $what => $call) {
+                    try {
+                        $call();
+                        self::fail('A ' . $what . ' of zero must be refused.');
+                    } catch (InvalidArgumentException $expected) {
+                        self::assertStringContainsString('must be positive', $expected->getMessage());
+                    }
+                }
+
+                $queue->recentChanges(7, 'dean@example.test', false, 5000);
+                self::assertStringContainsString('LIMIT 100', $database->lastQuery());
+                $queue->recentChanges(7, 'dean@example.test', false, 0);
+                self::assertStringContainsString('LIMIT 1', $database->lastQuery());
+            }
+
     /**
-     * Reads the exact expression the repository sends to the database.
-     */
+         * Reads the exact expression the repository sends to the database.
+         */
     private function category(): string
     {
         $database = new ReviewQueueRecordingDatabase();
@@ -507,6 +768,22 @@ final class ReviewQueueRepositoryTest extends TestCase
 
             return $categories[0];
         }
+
+    /**
+     * The `UPDATE ... SET fields = …` that `updateFields()` issues, or null.
+     *
+     * @param list<string> $queries
+     */
+    private function updateOfFields(array $queries): ?string
+    {
+        foreach ($queries as $query) {
+                    if (str_starts_with($query, 'UPDATE ') && str_contains($query, 'adct_pi_event_candidates` SET fields = ')) {
+                return $query;
+            }
+        }
+
+        return null;
+    }
 
     private function repository(ReviewQueueRecordingDatabase $database): ReviewQueueRepository
     {

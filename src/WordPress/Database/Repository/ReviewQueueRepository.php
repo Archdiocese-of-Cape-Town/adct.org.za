@@ -44,6 +44,8 @@ final class ReviewQueueRepository
     private readonly string $contacts;
     private readonly string $venues;
     private readonly string $audit;
+    private readonly string $changes;
+    private readonly string $postmeta;
 
     public function __construct(
         private readonly DatabaseConnectionInterface $database,
@@ -66,6 +68,11 @@ final class ReviewQueueRepository
         $this->contacts = "`{$prefix}adct_pi_parish_contacts`";
         $this->venues = "`{$prefix}adct_pi_venues`";
         $this->audit = "`{$prefix}adct_pi_audit_log`";
+        $this->changes = "`{$prefix}adct_pi_event_changes`";
+        // WordPress names its post meta table from the same prefix, and the
+        // connection interface deliberately exposes nothing site-specific, so
+        // it is derived here rather than added as another port method.
+        $this->postmeta = "`{$prefix}postmeta`";
     }
 
     /**
@@ -143,6 +150,82 @@ final class ReviewQueueRepository
             . "LEFT JOIN {$this->parishes} p ON p.id = c.parish_id {$where} AND c.id = %d",
             $args
         ));
+    }
+
+    /**
+     * Changes to already-published events, scoped the way the queue is.
+     *
+     * The front-end queue lists these so a dean can see what happened to their
+     * deaneries' events, and so an out-of-scope change ID posted at the revert
+     * form resolves to nothing rather than to somebody else's history.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function recentChanges(int $userId, string $email, bool $reviewer, int $limit = 25): array
+    {
+        if ($userId < 1) {
+            throw new InvalidArgumentException('The reviewer ID must be positive.');
+        }
+        [$scope, $args] = $this->changeScope($userId, $email, $reviewer);
+        $parish = self::changeParish();
+
+        return $this->rows($this->prepared(
+            'SELECT ch.id, ch.event_id, ch.candidate_id, ch.actor, ch.kind, '
+            . 'ch.notified_at, ch.reverted_by, ch.reverted_at, ch.created_at, '
+            . "{$parish} AS parish_id, p.name AS parish_name "
+            . "FROM {$this->changes} ch "
+            . "LEFT JOIN {$this->candidates} c ON c.id = ch.candidate_id "
+            . "LEFT JOIN {$this->postmeta} meta ON meta.post_id = ch.event_id "
+            . " AND meta.meta_key = 'parish_id' "
+            . "LEFT JOIN {$this->parishes} p ON p.id = {$parish} "
+            . "WHERE {$parish} IS NOT NULL AND ({$scope}) "
+            . 'ORDER BY ch.created_at DESC, ch.id DESC LIMIT %d',
+            [...$args, max(1, min(100, $limit))]
+        ));
+    }
+
+    /**
+     * One change, or null when it is not this reviewer's to see or revert.
+     *
+     * The read-only counterpart to {@see recentChanges()}: the front end calls
+     * this before asking for a revert link, so a change ID posted from another
+     * deanery resolves to null rather than to somebody else's history.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findScopedChange(int $changeId, int $userId, string $email, bool $reviewer): ?array
+    {
+        if ($changeId < 1) {
+            throw new InvalidArgumentException('The change ID must be positive.');
+        }
+        [$scope, $args] = $this->changeScope($userId, $email, $reviewer);
+        $parish = self::changeParish();
+
+        return $this->row($this->prepared(
+            'SELECT ch.id, ch.event_id, ch.candidate_id, ch.actor, ch.kind, ch.notified_at, '
+            . 'ch.reverted_by, ch.reverted_at, ch.created_at, '
+            . "{$parish} AS parish_id, p.name AS parish_name "
+            . "FROM {$this->changes} ch "
+            . "LEFT JOIN {$this->candidates} c ON c.id = ch.candidate_id "
+            . "LEFT JOIN {$this->postmeta} meta ON meta.post_id = ch.event_id "
+            . " AND meta.meta_key = 'parish_id' "
+            . "LEFT JOIN {$this->parishes} p ON p.id = {$parish} "
+            . "WHERE ch.id = %d AND {$parish} IS NOT NULL AND ({$scope})",
+            [$changeId, ...$args]
+        ));
+    }
+
+    /**
+     * The parish a recorded change belongs to.
+     *
+     * The change row itself has no parish column, so it inherits the candidate
+     * that produced it and falls back to the event's `parish_id` post meta,
+     * exactly as RevertChangeHandler reads it. Named once here so the list and
+     * the single-row lookup cannot disagree about who a change belongs to.
+     */
+    private static function changeParish(): string
+    {
+        return "COALESCE(c.parish_id, NULLIF(TRIM(meta.meta_value), ''))";
     }
 
     /**
@@ -471,8 +554,8 @@ final class ReviewQueueRepository
          * edited, and the row is locked for the duration so a decision made in
          * another tab cannot be overwritten by an edit that started earlier. The
          * parish column is realigned with the JSON, because {@see assignParish()}
-         * keeps the two in step and a reviewer changing the parish on this form must
-         * not desynchronise them.
+                  * keeps the two in step; see {@see self::parishIdFor()} for why an edit that
+                  * carries no `parish_id` preserves the stored one.
          *
          * Returns `saved` when the candidate was rewritten, `unchanged` when the
          * reviewer's form matched what was already stored, and `not_editable` when
@@ -512,17 +595,17 @@ final class ReviewQueueRepository
                     return 'unchanged';
                 }
                 $now = $this->timestamp();
-                $parishId = isset($fields['parish_id']) ? (int) $fields['parish_id'] : null;
-                $updated = $this->execute($this->database->prepare(
-                    "UPDATE {$this->candidates} SET fields = %s, recurrence = %s, parish_id = %s, updated_at = %s "
-                    . 'WHERE id = %d AND status = %s AND approved_by IS NULL AND decided_at IS NULL',
-                    json_encode($fields, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE),
-                    $this->encodeRecurrence($recurrence),
-                    $parishId,
-                    $now,
-                    $id,
-                    'awaiting_approval'
-                ));
+                                $parishId = $this->parishIdFor($fields, $candidate);
+                                $updated = $this->execute($this->database->prepare(
+                                    "UPDATE {$this->candidates} SET fields = %s, recurrence = %s, parish_id = NULLIF(%s, ''), updated_at = %s "
+                                    . 'WHERE id = %d AND status = %s AND approved_by IS NULL AND decided_at IS NULL',
+                                    json_encode($fields, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE),
+                                    $this->encodeRecurrence($recurrence),
+                                    $parishId === null ? '' : (string) $parishId,
+                                    $now,
+                                    $id,
+                                    'awaiting_approval'
+                                ));
                 if ($updated !== 1) {
                     $this->execute('ROLLBACK');
 
@@ -542,7 +625,45 @@ final class ReviewQueueRepository
         }
 
         /**
-         * The recurrence JSON, or SQL NULL when the reviewer cleared the rule.
+                 * The parish an edit leaves on the candidate.
+                 *
+                 * `fields['parish_id']` and the `parish_id` column are two statements of one
+                 * fact, and {@see assignParish()} is the only supported way to change the
+                 * fact. Neither candidate editor renders a `parish_id` field, so the
+                 * validator's `values` never carries the key and treating "absent" as
+                 * "clear" wrote the column as SQL NULL on every text correction. A candidate
+                 * with no parish matches no deanery scope predicate, so the editor who fixed
+                 * the title lost sight of the item and so did every other approver — the row
+                 * became unapprovable while still sitting in `awaiting_approval`.
+                 *
+                 * So the key is honoured only when it is actually present. A zero or
+                 * negative value is not a parish and would write the same broken NULL, so it
+                 * is ignored too; clearing the parish is `assignParish()`'s decision, audited
+                 * as its own action.
+                 *
+                 * A genuinely parish-less candidate is written as `NULLIF(%s, '')` rather
+                 * than a plain `%s`. `parish_id` is `bigint unsigned`, and passing PHP's
+                 * `null` to `%s` stores the empty string, which MySQL coerces to `0` — a
+                 * parish that does not exist, the very failure this method exists to prevent.
+                 * Writing a real SQL NULL keeps "no parish" meaning "no parish" on both
+                 * MySQL 8 and MariaDB 10.11, in strict mode and without it.
+                 *
+                 * @param array<string, mixed> $fields
+                 * @param array<string, mixed> $candidate
+                 */
+            private function parishIdFor(array $fields, array $candidate): ?int
+            {
+                if (isset($fields['parish_id']) && (int) $fields['parish_id'] > 0) {
+                    return (int) $fields['parish_id'];
+                }
+
+                $stored = $candidate['parish_id'] ?? null;
+
+                return $stored === null ? null : (int) $stored;
+            }
+
+            /**
+                 * The recurrence JSON, or SQL NULL when the reviewer cleared the rule.
          *
          * A NULL is kept distinct from `[]` because the parser writes NULL for a
          * single event and {@see CandidatePublisher} treats the two differently.
@@ -620,6 +741,33 @@ final class ReviewQueueRepository
             . "INNER JOIN {$this->deaneries} d ON d.id = scoped_parish.deanery_id AND d.status = 'active' "
             . "INNER JOIN {$this->approvers} a ON a.deanery_id = d.id AND a.active = 1 "
             . "WHERE scoped_parish.id = c.parish_id AND a.wp_user_id = %d)",
+            [$userId],
+        ];
+    }
+
+    /**
+     * The scoping rule for recorded changes, in its own right.
+     *
+     * Kept apart from {@see where()} on purpose: `where()` filters on
+     * `c.parish_id`, which is the candidate's parish, whereas a change belongs
+     * to {@see changeParish()} — the candidate's parish or, failing that, the
+     * event's `parish_id` post meta. An event edited after publication carries
+     * no candidate link, so a dean must still see the changes to their own
+     * events. Collapsing the two rules would hide those from every dean.
+     *
+     * @return array{string, list<int|string>}
+     */
+    private function changeScope(int $userId, string $email, bool $reviewer): array
+    {
+        if ($reviewer) {
+            return ['1 = 1', []];
+        }
+        $parish = self::changeParish();
+        return [
+            "EXISTS (SELECT 1 FROM {$this->parishes} scoped_parish "
+            . "INNER JOIN {$this->deaneries} d ON d.id = scoped_parish.deanery_id AND d.status = 'active' "
+            . "INNER JOIN {$this->approvers} a ON a.deanery_id = d.id AND a.active = 1 "
+            . "WHERE scoped_parish.id = {$parish} AND a.wp_user_id = %d)",
             [$userId],
         ];
     }

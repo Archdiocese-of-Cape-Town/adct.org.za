@@ -179,6 +179,50 @@ final class ApprovalNoticeJobTest extends TestCase
         yield 'manual review flag in fields' => [['match_review_required' => true]];
     }
 
+        /**
+         * A parish row can disappear between intake and the notice run - an operator
+         * merges or deletes it, or a partially restored backup brings back the
+         * candidate without its parish. Every other candidate in the batch still
+         * needs its notice, so the orphan must be stepped over rather than thrown.
+         */
+        public function testACandidateWhoseParishNoLongerExistsIsSkippedWithoutStoppingTheRun(): void
+        {
+            $database = $this->createMock(DatabaseConnectionInterface::class);
+            $database->method('prefix')->willReturn('wp_');
+            $database->method('lastError')->willReturn('');
+            $database->method('prepare')->willReturnCallback(static fn (string $sql, mixed ...$args): string => $sql);
+            $database->method('getResults')->willReturnOnConsecutiveCalls(
+                [],
+                [
+                    ['id' => 12, 'fields' => '{"title":"Orphaned"}', 'match_kind' => 'new',
+                        'status' => 'awaiting_approval', 'parish_id' => 5, 'notes' => '[]'],
+                    ['id' => 13, 'fields' => '{"title":"Still here"}', 'match_kind' => 'new',
+                        'status' => 'awaiting_approval', 'parish_id' => 6, 'notes' => '[]'],
+                ]
+            );
+
+            $routes = $this->createMock(ApprovalRouteRepositoryInterface::class);
+            $routes->method('findForParish')->willReturnCallback(
+                static fn (int $parishId): ?ApprovalRouteSnapshot => $parishId === 5
+                    ? null
+                    : new ApprovalRouteSnapshot(1, true, [])
+            );
+
+            $job = new ApprovalNoticeJob(
+                $database,
+                new ApprovalRecipients(new ApprovalRouteResolver($routes)),
+                new ActionTokenService($this->createMock(ActionTokenStoreInterface::class), $this->createMock(ClockInterface::class)),
+                $this->createMock(MailerInterface::class),
+                $this->createMock(MailQueueRepositoryInterface::class),
+                $this->createMock(ClockInterface::class)
+            );
+
+            $result = $job->processNext(null);
+
+            self::assertNotNull($result);
+            self::assertSame('13', $result->checkpoint());
+        }
+
     #[DataProvider('digestHours')]
     public function testDigestGateOpensAtTheConfiguredLocalHour(int $hour, int $digestHour, bool $open): void
     {

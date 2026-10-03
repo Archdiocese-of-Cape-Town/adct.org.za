@@ -575,10 +575,12 @@ final class ActionTokenEndpoint
     /**
      * The response for a valid token whose purpose has no registered handler.
      *
-     * A reserved purpose (#71 revert, #72 login) can mint tokens before its
-     * handler exists, so this is an expected state rather than an attack. It is
-     * logged all the same: a silent no-op reads like a broken link, and the
-     * log line is the only trace that the purpose is still unimplemented.
+     * A reserved purpose can mint tokens before its handler exists, so this is
+     * an expected state rather than an attack. As of #72 nothing is reserved:
+     * every case on the enum has a handler, so reaching this branch means a
+     * registration was dropped and is a drift alarm. Either way it is logged: a
+     * silent no-op reads like a broken link, and the log line is the only trace
+     * that the purpose is unserviceable.
      */
     private function unavailableResponse(ActionTokenPurpose $purpose): ActionTokenHttpResponse
     {

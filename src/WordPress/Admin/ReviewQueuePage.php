@@ -252,7 +252,7 @@ final class ReviewQueuePage
                 <?php endforeach; ?>
             </nav>
             <?php if ($tab === 'recent_changes') : ?>
-                <p>Instant changes and Revert are not available until the verified-contact change workflow (#71) exists. Ordinary approval updates are not instant changes.</p>
+                <p>Instant changes and Revert are not available until the verified-contact change workflow (#71) exists. Ordinary approval updates are not instant changes. Deans see the changes to their own deaneries&rsquo; events on the front-end queue (<code>[adct_pi_approval_queue]</code>, issue #72) and can ask for the emailed revert link from there.</p>
             <?php else : ?>
                 <form method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>">
                     <input type="hidden" name="page" value="<?php echo esc_attr(self::PAGE_SLUG); ?>" />
@@ -891,13 +891,20 @@ final class ReviewQueuePage
                     if ($saved === 'not_editable') {
                         wp_die(esc_html('This candidate was decided while you were editing it.'), '', ['response' => 409]);
                     }
-                    $decision = null;
-                    if ($mode !== 'save' && $saved !== 'unchanged') {
-                        $decision = $this->queue->decide($id, $mode, $userId, $email, $reviewer, $reason);
-                        if ($decision === 'decided' && $mode === 'approve') {
-                            $this->publisher->publish($id);
-                        }
-                    }
+                    // An unchanged *text edit* is not an unchanged *decision*: see the same
+                                        // branch in `FrontEndApprovalQueue::handleSave()`. Gating the
+                                        // decision on the save reporting a change meant a reviewer who
+                                        // pressed "Save and approve" on an already-correct candidate was
+                                        // redirected with `saved=unchanged` and no decision at all.
+                                        // `decide()` re-resolves the live scope and returns
+                                        // `already_decided`, `manual_review` or `retry` on its own.
+                                        $decision = null;
+                                        if ($mode !== 'save') {
+                                            $decision = $this->queue->decide($id, $mode, $userId, $email, $reviewer, $reason);
+                                            if ($decision === 'decided' && $mode === 'approve') {
+                                                $this->publisher->publish($id);
+                                            }
+                                        }
                 } catch (DomainException $failure) {
                     wp_die(esc_html($failure->getMessage()), '', ['response' => 409]);
                 } catch (Throwable $failure) {

@@ -20,6 +20,7 @@ use ADCT\ParishIntake\Core\Ports\MailQueueRepositoryInterface;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
 use DateTimeZone;
+use OutOfBoundsException;
 use RuntimeException;
 
 final class ApprovalNoticeJob extends AbstractJob implements JobRunLifecycleInterface
@@ -103,7 +104,20 @@ final class ApprovalNoticeJob extends AbstractJob implements JobRunLifecycleInte
                 $after = $id;
                 continue;
             }
-            foreach ($this->recipients->forParish((int) $candidate['parish_id'] ?: null) as $email => $recipient) {
+            try {
+                $recipients = $this->recipients->forParish(
+                    $candidate['parish_id'] === null ? null : (int) $candidate['parish_id']
+                );
+            } catch (OutOfBoundsException) {
+                // The parish row went away after intake. There is nobody left to
+                // notify, so step over this candidate instead of abandoning the
+                // batch and leaving every later candidate unnotified.
+                error_log('[ADCT Parish Intake] Approval notice skipped candidate ' . $id
+                    . ': its parish no longer exists.');
+                $after = $id;
+                continue;
+            }
+            foreach ($recipients as $email => $recipient) {
                 if ($this->noticeExists($id, $email)) {
                     continue;
                 }

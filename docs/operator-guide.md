@@ -202,6 +202,24 @@ A parish in an inactive deanery, a parish with no deanery, or a parish whose dea
 
 After a submitter confirms, run **Parish Intake → Scheduled jobs → Queue approver decisions and digests** if you need to send notices before the next scheduled run. Each eligible deanery approver and reviewer receives at most one grouped email of up to 20 events per run; a reviewer can switch between grouped notices and a daily digest on their WordPress profile, while deanery assignments set that preference for deans. A digest is sent at most once per local day; new items after it was queued wait for the next day. Links show the preview on GET, and only pressing the POST button records a decision. The first approver wins; later visitors see who decided and when. The Edit link lets an approver correct title, date, time and description without publishing; parish or venue corrections and ambiguous matches need manual attention. Rejection may include a short reason for the submitter. The submitter gets a queued live link after successful publication. All mail passes through the same capped outbound queue without attachments.
 
+## Deans approve without wp-admin
+
+A deanery approver can work from a public page instead of `wp-admin`. Create one page, insert the **Approval queue** block, or put `[adct_approval_queue]` in the page content. Put `[adct_approval_queue_login]` on the same or a separate page: it shows the sign-in form for anyone not yet signed in. Neither needs a page template, a menu item or a capability; whoever holds the page can reach the page.
+
+A signed-out visitor sees only the sign-in form. There is no password and no account to create. The visitor enters their own email address and the plugin sends a sign-in link. The link works once, expires after **30 minutes**, and a GET only shows a confirmation page &mdash; signing in happens when the visitor presses the button on that page, so a link scanner that follows mail links cannot sign anyone in. A Deanery approver or Parish contact can sign in; any other account is refused with the same neutral "if that address can sign in" wording whether or not it exists, so the form cannot be used to test for accounts. Repeated requests for one address are rate limited in the normal way, and the link is not created until it is needed.
+
+Once signed in, a dean sees only the candidates, decisions and changes belonging to the parishes in their own active deaneries. A dean of another deanery sees none of them: the list query, the item lookup and the approve, reject, save and revert actions each re-resolve that scope at the moment of use, so removing a dean from a deanery, deactivating their assignment, deactivating the deanery or suspending the account takes effect immediately, including on a page they had already left open. An archdiocese reviewer with `adct_pi_review` sees every deanery as well.
+
+The queue offers the same actions as the admin Review queue: approve, reject, and correct title, date, time and description before publishing. Selecting up to 25 items approves or rejects them together. **Recent changes** lists changes to the dean's own events, and **Ask for the revert link** emails the same single-use revert link the admin screen offers rather than reverting immediately. Every action is re-checked on submit, and every request carries a nonce that is refused if it does not match.
+
+Sign-in sessions for these two roles last **365 days** so a dean is not asked for a link every week. This applies to Deanery approvers and Parish contacts only; Administrators and Editors keep the WordPress default. A technical operator can change it in `wp-config.php` with `ADCT_PI_AUTH_COOKIE_LIFETIME_DAYS`, an integer from 1 to 3650; if it is absent the default stands, and an invalid or absurd value is logged and safely ignored in favour of the default:
+
+```php
+define('ADCT_PI_AUTH_COOKIE_LIFETIME_DAYS', 365);
+```
+
+Every sign-in link mail passes through the same capped outbound queue as all other plugin mail, and no details of the queue are shown on the public pages.
+
 ## Add or change a parish
 
 An Administrator or Intake manager with the `adct_pi_manage_directory` capability can open **Parish Intake → Parishes**. The list searches name, slug, area and suburb, and can be filtered by kind, deanery and status. Use **Add parish** or select a parish name to edit it. The form includes its deanery and parent parish, address, coordinates, website, phone, expected cadence, reminders, status and notes.
