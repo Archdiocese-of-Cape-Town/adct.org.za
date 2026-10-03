@@ -247,6 +247,215 @@ try {
         $fail('The event block did not apply the same filters as the shortcode.');
     }
 
+        // Near me (issue #55). Three fictional events, all on the listing's own test day, sitting at
+        // three known points around Cape Town, so the order the visitor sees is a fact and not a
+        // guess. The nearest is due last by date, which proves the sort is by distance and not by date.
+        $nearMeParish = 'Fictional near me suburb';
+        if ($wpdb->insert($wpdb->prefix . 'adct_pi_parishes', [
+            'name' => 'Fictional near me parish',
+            'slug' => 'fictional-near-me-parish',
+            'status' => 'active',
+            'area' => 'Southern Suburbs',
+            'suburb' => $nearMeParish,
+            'latitude' => '-34.010000',
+            'longitude' => '18.440000',
+            'created_at' => gmdate('Y-m-d H:i:s'),
+            'updated_at' => gmdate('Y-m-d H:i:s'),
+        ]) !== 1) {
+            $fail('Could not seed the fictional near-me parish: ' . $wpdb->last_error);
+        }
+        $nearMeParishId = (int) $wpdb->insert_id;
+
+        $nearMePoints = [
+            // Held back: 30 km away, but the earliest of the three.
+            ['Fictional near me far event', '-33.850000', '18.500000', 0],
+            // Middle: about 9 km.
+            ['Fictional near me middle event', '-33.960000', '18.460000', 1],
+            // Closest: about 3 km.
+            ['Fictional near me close event', '-33.990000', '18.430000', 2],
+        ];
+        foreach ($nearMePoints as [$title, $latitude, $longitude, $dayOffset]) {
+            $nearMeEventId = wp_insert_post([
+                'post_type' => EventPostType::POST_TYPE,
+                'post_status' => 'publish',
+                'post_title' => $title,
+            ], true);
+            if (is_wp_error($nearMeEventId) || (int) $nearMeEventId < 1) {
+                $fail('Could not seed the fictional near-me event.');
+            }
+            $nearMeStart = $listingStart->modify('+' . $dayOffset . ' days');
+            $nearMeUtc = $nearMeStart->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+            if ($wpdb->insert($occurrencesTable, [
+                'event_id' => (int) $nearMeEventId,
+                'start_utc' => $nearMeUtc,
+                'start_local_date' => $nearMeStart->format('Y-m-d'),
+                'parish_id' => $nearMeParishId,
+                'latitude' => $latitude,
+                'longitude' => $longitude,
+                'created_at' => $nearMeUtc,
+                'updated_at' => $nearMeUtc,
+            ]) !== 1) {
+                $fail('Could not seed the fictional near-me occurrence: ' . $wpdb->last_error);
+            }
+        }
+
+        // The three days the fictional near-me events sit in. Both near-me routes search this window,
+                // so each of the three events is in range and the order proves the sort rather than the dates.
+                $nearMeThreeDays = [
+                    'adct_period' => 'range',
+                    'adct_from' => $listingStart->format('Y-m-d'),
+                    'adct_to' => $listingStart->modify('+2 days')->format('Y-m-d'),
+                ];
+                $nearMeDay = $nearMeThreeDays + [
+                    'adct_lat' => '-34.000000',
+                    'adct_lng' => '18.440000',
+                    'adct_radius_km' => '25',
+                ];
+        $_GET = $nearMeDay;
+        $beforeNearMeCache = $transientCount();
+        $nearMeHtml = do_shortcode('[adct_events]');
+                $closeAt = strpos($nearMeHtml, 'Fictional near me close event</a>');
+        $middleAt = strpos($nearMeHtml, 'Fictional near me middle event</a>');
+        $farAt = strpos($nearMeHtml, 'Fictional near me far event</a>');
+        if ($closeAt === false || $middleAt === false || $farAt === false) {
+            $fail(sprintf('A distance sort dropped one of the three fictional near-me events: %s', substr(strip_tags($nearMeHtml), 0, 2000)));
+        }
+        if ($closeAt > $middleAt || $middleAt > $farAt) {
+            $fail(sprintf('Events were not sorted nearest first: close %d, middle %d, far %d.', $closeAt, $middleAt, $farAt));
+        }
+        if (
+            ! str_contains($nearMeHtml, 'adct-events__distance')
+            || ! str_contains($nearMeHtml, 'km away')
+            || ! str_contains($nearMeHtml, 'Sorted by distance from')
+            || ! str_contains($nearMeHtml, 'Show all events by date instead')
+            || str_contains($nearMeHtml, 'data-adct-nearme-button')
+            || $transientCount() !== $beforeNearMeCache
+        ) {
+            $fail('The distance sort lost its distance labels, its way back to date order, or cached itself.');
+        }
+
+        // A radius is a real filter, not a hint: the far event is outside 25 km from the City Hall
+        // point, so a smaller radius must drop it while the other two stay.
+        $nearMeTight = $nearMeDay;
+        $nearMeTight['adct_radius_km'] = '10';
+        $_GET = $nearMeTight;
+        $nearMeTightHtml = do_shortcode('[adct_events]');
+        if (
+            ! str_contains($nearMeTightHtml, 'Fictional near me close event')
+            || ! str_contains($nearMeTightHtml, 'Fictional near me middle event')
+            || str_contains($nearMeTightHtml, 'Fictional near me far event')
+        ) {
+            $fail('A 10 km radius did not filter out the event that is 30 km away.');
+        }
+        $nearMeWide = $nearMeDay;
+        $nearMeWide['adct_radius_km'] = '50';
+        $_GET = $nearMeWide;
+        if (! str_contains(do_shortcode('[adct_events]'), 'Fictional near me far event')) {
+            $fail('A 50 km radius dropped an event that is only 30 km away.');
+        }
+
+        // An occurrence we cannot place is left out of a distance sort rather than shown as "far away".
+        $_GET = $nearMeDay;
+        $unplacedAt = strpos(do_shortcode('[adct_events]'), 'Fictional listing event 1</a>');
+        if ($unplacedAt !== false) {
+            $fail('An occurrence with no coordinates was ranked in a distance sort as if it had a place.');
+        }
+
+        // The suburb route. Nothing is asked of the browser, so this is the path that works with
+                // JavaScript off and with location sharing refused. It searches the same three days as the
+                // browser route, so all three events are in range and the order proves the sort.
+                $_GET = $nearMeThreeDays + ['adct_suburb' => $nearMeParish];
+                $suburbHtml = do_shortcode('[adct_events]');
+                $suburbCloseAt = strpos($suburbHtml, 'Fictional near me close event</a>');
+                $suburbMiddleAt = strpos($suburbHtml, 'Fictional near me middle event</a>');
+                $suburbFarAt = strpos($suburbHtml, 'Fictional near me far event</a>');
+                if ($suburbCloseAt === false || $suburbMiddleAt === false || $suburbFarAt === false) {
+                    $fail(sprintf(
+                        'A suburb distance sort dropped one of the three fictional near-me events: %s',
+                        substr(strip_tags($suburbHtml), 0, 2000)
+                    ));
+                }
+                if ($suburbCloseAt > $suburbMiddleAt || $suburbMiddleAt > $suburbFarAt) {
+                    $fail(sprintf(
+                        'A suburb sort was not nearest first: close %d, middle %d, far %d.',
+                        $suburbCloseAt,
+                        $suburbMiddleAt,
+                        $suburbFarAt
+                    ));
+                }
+                // The suburb the visitor typed is echoed back inside the sort label, so a lookup that quietly
+                // resolved to some other place cannot pass this check.
+                if (
+                    ! str_contains($suburbHtml, 'Sorted by distance from <strong>' . $nearMeParish . '</strong>')
+                    || $transientCount() !== $beforeNearMeCache
+                ) {
+                    $fail('Typing a known suburb did not sort the listing by distance from that suburb.');
+                }
+
+        // An unknown suburb is reported in plain English rather than quietly falling back to date order,
+        // because a silently wrong suburb looks exactly like a working one.
+        $_GET = $listingPeriod + ['adct_suburb' => 'Fictional nowhere'];
+        $unknownSuburbHtml = do_shortcode('[adct_events]');
+        if (
+            ! str_contains($unknownSuburbHtml, 'role="alert"')
+            || ! str_contains($unknownSuburbHtml, 'We do not have a location for that suburb')
+        ) {
+            $fail('An unknown suburb was not reported to the visitor.');
+        }
+        if (str_contains($unknownSuburbHtml, 'Sorted by distance from')) {
+            $fail('An unknown suburb silently fell back to some other place.');
+        }
+
+        // The suburb box is always in the markup, hidden until the visitor declines or has no browser
+        // location, so the decline path works without a script-driven fetch.
+        $_GET = $listingPeriod;
+        $plainHtml = do_shortcode('[adct_events]');
+        if (
+            ! str_contains($plainHtml, 'data-adct-nearme-button')
+            || ! str_contains($plainHtml, 'name="adct_suburb"')
+            || ! str_contains($plainHtml, 'Or type your suburb')
+            || ! str_contains($plainHtml, 'adct-suburb-options')
+            || ! preg_match('/<p class="adct-nearme__fallback"[^>]*\shidden>/', $plainHtml)
+        ) {
+            $fail('The near-me controls did not offer a suburb fallback for a visitor who declines.');
+        }
+        if (! str_contains($plainHtml, 'We only use your location to sort this list')) {
+            $fail('The near-me controls did not tell the visitor what happens to their location.');
+        }
+        foreach (['12.3456789', '91', '1000'] as $badLatitude) {
+            $_GET = $nearMeDay;
+            $_GET['adct_lat'] = $badLatitude;
+            if (! str_contains(do_shortcode('[adct_events]'), 'role="alert"')) {
+                $fail('The listing accepted an out-of-range latitude: ' . $badLatitude);
+            }
+        }
+        // Only the radii actually on offer are usable, so a crafted radius cannot reach the query with a
+                // shape we have not tested. "26" is off the ladder even though it is a sensible number.
+                foreach (['26', '0', 'abc', '-10'] as $badRadius) {
+                    $_GET = $nearMeDay;
+                    $_GET['adct_radius_km'] = $badRadius;
+                    if (! str_contains(do_shortcode('[adct_events]'), 'role="alert"')) {
+                        $fail('The listing accepted an unusable radius: ' . $badRadius);
+                    }
+                }
+                // The smallest radius on offer is a real choice, not a mistake, and must keep working.
+                $_GET = $nearMeDay;
+                $_GET['adct_radius_km'] = '5';
+                $smallestRadiusHtml = do_shortcode('[adct_events]');
+                if (
+                    str_contains($smallestRadiusHtml, 'role="alert"')
+                    || ! str_contains($smallestRadiusHtml, 'Sorted by distance from')
+                    || str_contains($smallestRadiusHtml, 'Fictional near me far event')
+                ) {
+                    $fail('The smallest radius on offer was refused or did not filter.');
+                }
+        $_GET = $nearMeDay;
+        $_GET['adct_lat'] = ['-34'];
+        if (! str_contains(do_shortcode('[adct_events]'), 'role="alert"')) {
+            $fail('The listing accepted an array-valued latitude.');
+        }
+        $_GET = $listingPeriod;
+
     $restListing = static function (array $params): WP_REST_Response|WP_Error {
         $request = new WP_REST_Request('GET', '/adct-parish-intake/v1/events');
         $request->set_query_params($params + ['page_url' => home_url('/events/')]);

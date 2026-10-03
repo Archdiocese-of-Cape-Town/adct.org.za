@@ -89,4 +89,73 @@
             load(section, window.location.href, false);
         }
     });
+
+    /**
+     * The "Near me" button.
+     *
+     * The browser prompt appears only because a visitor pressed this button, never on page load.
+     * The position is put in the page URL and sent to our own server in the same request as the
+     * rest of the filters, and nowhere else: it is not stored in a cookie, in local storage, or in
+     * a third-party service, and it is not logged (ADR 0020). If permission is refused, or the
+     * browser will not ask at all, the suburb box is shown instead and the feature still works.
+     */
+    function useMyLocation(section, button) {
+        var fallback = section.querySelector('[data-adct-nearme-fallback]');
+        var status = section.querySelector('.adct-events__status');
+        button.disabled = true;
+
+        function showSuburbBox(message) {
+            button.disabled = false;
+            if (fallback) {
+                fallback.hidden = false;
+            }
+            if (message !== '' && status) {
+                status.textContent = message;
+            }
+            if (fallback) {
+                var field = fallback.querySelector('input[name="adct_suburb"]');
+                if (field) {
+                    field.focus();
+                }
+            }
+        }
+
+        if (!navigator.geolocation) {
+            showSuburbBox('This browser will not share your location, so please type your suburb instead.');
+            return;
+        }
+
+        navigator.geolocation.getCurrentPosition(function (position) {
+            var url = new URL(window.location.href);
+            url.searchParams.delete('adct_suburb');
+            url.searchParams.delete('adct_page');
+            url.searchParams.set('adct_lat', position.coords.latitude.toFixed(6));
+            url.searchParams.set('adct_lng', position.coords.longitude.toFixed(6));
+            if (!url.searchParams.has('adct_radius_km')) {
+                url.searchParams.set('adct_radius_km', '25');
+            }
+            load(section, url.toString(), true);
+        }, function (error) {
+            if (error && error.code === 1) {
+                showSuburbBox('No problem. Type your suburb instead and we will sort the list from there.');
+                return;
+            }
+            showSuburbBox('We could not work out where you are. Please type your suburb instead.');
+        }, {
+            enableHighAccuracy: false,
+            timeout: 10000,
+            maximumAge: 300000
+        });
+    }
+
+    document.addEventListener('click', function (event) {
+        var button = event.target.closest('[data-adct-nearme-button]');
+        if (!button) {
+            return;
+        }
+        var section = button.closest('.adct-events');
+        if (section) {
+            useMyLocation(section, button);
+        }
+    });
 }());

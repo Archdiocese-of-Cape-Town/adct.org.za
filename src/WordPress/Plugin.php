@@ -21,6 +21,7 @@ use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
 use ADCT\ParishIntake\Core\Events\OccurrenceExpander;
 use ADCT\ParishIntake\Core\Events\RRulePresetMapper;
 use ADCT\ParishIntake\Core\Events\RRuleValidator;
+use ADCT\ParishIntake\Core\Events\SuburbResolver;
 use ADCT\ParishIntake\Core\Directory\DeaneryCsvImporter;
 use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\ParishCsvImporter;
@@ -166,6 +167,7 @@ use ADCT\ParishIntake\WordPress\Events\PublicEventPage;
 use ADCT\ParishIntake\WordPress\Events\EventTypeKeywords;
 use ADCT\ParishIntake\WordPress\Events\PublicEventListing;
 use ADCT\ParishIntake\WordPress\Events\PublicIcsFeed;
+use ADCT\ParishIntake\WordPress\Events\PlaceCoordinateLookup;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
 use ADCT\ParishIntake\WordPress\Ingestion\WordPressConfirmationEmailJobSource;
 use ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance;
@@ -386,7 +388,8 @@ final class Plugin
             $clock,
             new DateTimeZone('Africa/Johannesburg'),
             $pluginFile,
-            $listingGeneration
+            $listingGeneration,
+            new SuburbResolver(new PlaceCoordinateLookup($database))
         );
         $this->publicIcsFeed = new PublicIcsFeed($clock, $listingGeneration, new IcsCalendar());
         $this->publicEventPage = new PublicEventPage(

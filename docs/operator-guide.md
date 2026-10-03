@@ -182,6 +182,16 @@ Insert the **Upcoming events** block in the block editor, or put `[adct_events]`
 
 Featured cards have a distinct highlight; recurring cards show their repeat pattern and next visible date. The optional **Show only the next date of each recurring event** checkbox collapses a series to its first occurrence within the selected date range. The optional **Show featured events first** checkbox pins featured occurrences ahead of routine ones on every page. Both options work with or without JavaScript, survive pagination, and are encoded as `adct_collapse=1` and `adct_pin=1` in shareable URLs. Without these options, the listing remains chronological with every occurrence visible.
 
+### Find events near you
+
+Visitors can put the events in order of how far away they are, in two ways. They press **Use my location** and their browser asks whether to share their position — nothing happens until they press that button themselves, and the browser's own wording is shown. Or they type a suburb into the box underneath and pick it from the list. People who would rather not share their location, or who open the page on a browser or phone that cannot, use the suburb box in exactly the same way and get exactly the same result.
+
+Once a near-me sort is on, each event card says how far away it is, for example "3,2 km away", and the listing says what it is measuring from — either the place the visitor shared, or the suburb they typed. **Show all events by date instead** puts the usual date order back. There is also a **Within** dropdown to narrow the search to 5, 10, 25, 50 or 100 km, which really does hide anything further away rather than just pushing it down the page.
+
+We take this seriously because a person's location is private information under POPIA. What the site does with it is deliberately short: the visitor's choice is kept in the address of the page they are looking at, and nowhere else. It is not written down, not emailed to anybody, and not sent to any outside service. Closing the tab loses it. Sharing the page you are looking at also shares your suburb or location, so staff should send the plain events page link rather than a link copied while a near-me sort is active.
+
+No setup is needed. There is nothing for you to switch on and no coordinates for visitors to enter. It only works for parishes and venues that already have a latitude and longitude saved on **Parish Intake → Parishes**, so events from a place without coordinates simply do not appear in a distance sort rather than appearing as "very far away". If you want your parish's events to show up when people sort by distance, fill in its coordinates on the parish form; **Parish Intake → Parishes** explains how to copy them from the map helper.
+
 ## Manage deaneries and approvers
 
 An Administrator or Intake manager with the `adct_pi_manage_directory` capability can open **Parish Intake → Deaneries**. Add, edit or deactivate a deanery; its dean, vice-dean and secretary names are display-only and do not grant approval access. The seeded deanery CSV can still be imported from **Parish Intake → Parishes**; it imports no approver accounts or email addresses.
