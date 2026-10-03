@@ -1,4 +1,4 @@
-# ADR 0020: Opt-in server-side queue OCR for image posters
+# ADR 0021: Opt-in server-side queue OCR for image posters
 
 - Status: Accepted
 - Date: 2026-10-05

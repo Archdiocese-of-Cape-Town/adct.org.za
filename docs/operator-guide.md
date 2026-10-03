@@ -425,7 +425,7 @@ Both controls change only what is on screen. Neither is remembered between page 
 
 ### Read posters automatically in the background (optional)
 
-The button above needs a person. **Poster image OCR** is a separate, optional setting that does the same job inside the background inbox job, so a poster arriving at 18:00 is already read before anyone opens a screen ([ADR 0020](decisions/0020-opt-in-server-side-queue-ocr.md)).
+The button above needs a person. **Poster image OCR** is a separate, optional setting that does the same job inside the background inbox job, so a poster arriving at 18:00 is already read before anyone opens a screen ([ADR 0021](decisions/0021-opt-in-server-side-queue-ocr.md)).
 
 It is **off by default**, and turning it on is a decision to send parish posters to a third party. Read this before ticking the box.
 
