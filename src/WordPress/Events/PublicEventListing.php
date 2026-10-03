@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Events;
 
+use ADCT\ParishIntake\Core\Events\IcsFeedLinks;
 use ADCT\ParishIntake\Core\Events\ListingRange;
 use ADCT\ParishIntake\Core\Events\ListingSelection;
 use ADCT\ParishIntake\Core\Events\RecurrenceSummary;
@@ -168,7 +169,7 @@ final class PublicEventListing
             return $this->listing($selection, remove_query_arg([
                 'adct_page', 'adct_period', 'adct_from', 'adct_to',
                 'adct_types', 'adct_parish', 'adct_deanery',
-                'adct_pin', 'adct_collapse',
+                            'adct_pin', 'adct_collapse', 'adct_ics',
             ]));
         } catch (InvalidArgumentException $error) {
             return '<p role="alert">' . esc_html($error->getMessage()) . '</p>';
@@ -285,6 +286,7 @@ final class PublicEventListing
         }
         $html .= '<p class="adct-events__status" tabindex="-1">Showing '
             . count($visible) . ' matching events on this page.</p>';
+                $html .= $this->subscribe($selection, $parishes, $types);
 
         $eventIds = [];
         if ($visible !== []) {
@@ -387,8 +389,42 @@ final class PublicEventListing
         return $html . '</nav></section>';
     }
 
-    /** @return array<int, string> */
-    private function options(string $suffix): array
+    /**
+         * Subscribe links for the feeds matching the filters currently applied.
+         *
+         * The listing can filter by several event types at once but the feed endpoint takes one, so
+         * each selected type is offered as its own feed instead of silently widening to every event.
+         *
+         * @param array<int, string> $parishes
+         * @param array<int, \WP_Term> $types
+         */
+        private function subscribe(ListingSelection $selection, array $parishes, array $types): string
+        {
+            $catalogue = [];
+            foreach ($types as $type) {
+                $catalogue[(int) $type->term_id] = ['name' => $type->name, 'slug' => $type->slug];
+            }
+
+            $links = (new IcsFeedLinks($catalogue))->links(
+                $selection->parish,
+                $selection->parish === null ? null : ($parishes[$selection->parish] ?? null),
+                $selection->types
+            );
+
+            $html = '<nav class="adct-events__subscribe" aria-label="Subscribe to a calendar">';
+            foreach ($links as $link) {
+                $url = PublicIcsFeed::url($link['parish'], $link['type']);
+                $html .= '<a class="adct-events__subscribe-link" href="' . esc_url($url) . '">'
+                    . esc_html($link['label']) . '</a> '
+                    . '<a class="adct-events__subscribe-webcal" href="' . esc_url(IcsFeedLinks::webcal($url))
+                    . '">Add to calendar app</a> ';
+            }
+
+            return $html . '</nav>';
+        }
+
+        /** @return array<int, string> */
+        private function options(string $suffix): array
     {
         global $wpdb;
         $table = $wpdb->prefix . $suffix;

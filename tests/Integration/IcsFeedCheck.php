@@ -79,4 +79,59 @@ foreach ([['1[]', null], ['0', null], [null, ['social']], [null, 'missing-type']
     } catch (InvalidArgumentException) {
     }
 }
+
+// The listing must offer feeds that match the filters a visitor actually applied, and the
+// one-click webcal variant must point at the same feed over a scheme calendar clients accept.
+$listingGet = $_GET;
+$listingUser = get_current_user_id();
+wp_set_current_user(0);
+$feedDay = (new DateTimeImmutable('today', new DateTimeZone('Africa/Johannesburg')))
+    ->modify('+5 days')->format('Y-m-d');
+$_GET = ['adct_period' => 'range', 'adct_from' => $feedDay, 'adct_to' => $feedDay];
+$unfilteredSubscribe = do_shortcode('[adct_events]');
+$parishName = 'Fictional feed parish';
+$_GET['adct_parish'] = (string) $feedParishId;
+$_GET['adct_types'] = [(string) $occurrenceType->term_id];
+$scopedSubscribe = do_shortcode('[adct_events]');
+$expectedScoped = 'adct_ics=1&#038;parish=' . $feedParishId . '&#038;type='
+    . rawurlencode((string) $occurrenceType->slug);
+$_GET = $listingGet;
+wp_set_current_user($listingUser);
+
+$subscribeBlock = static function (string $html): string {
+    $start = strpos($html, '<nav class="adct-events__subscribe"');
+    if ($start === false) {
+        return '';
+    }
+    $end = strpos($html, '</nav>', $start);
+
+    return $end === false ? '' : substr($html, $start, $end - $start);
+};
+$allBlock = $subscribeBlock($unfilteredSubscribe);
+$scopedBlock = $subscribeBlock($scopedSubscribe);
+if (! str_contains($allBlock, 'Subscribe to all events')
+    || str_contains($allBlock, 'parish=')
+    || ! str_contains($allBlock, 'webcal://')) {
+    $fail('The unfiltered public listing did not offer a whole-feed subscribe link with a webcal variant.');
+}
+if (! str_contains($scopedBlock, $expectedScoped)
+    || ! str_contains($scopedBlock, 'Fictional feed parish')
+    || ! str_contains($scopedBlock, 'webcal://')
+    || str_contains($scopedBlock, 'Subscribe to all events')) {
+    $fail('The filtered public listing did not offer subscribe links scoped to the selected parish and type.');
+}
+// Each feed is offered twice: the plain URL and the webcal one-click variant.
+foreach ([$allBlock, $scopedBlock] as $block) {
+    if (substr_count($block, 'href="') % 2 !== 0 || substr_count($block, 'href="') < 2) {
+        $fail('Subscribe links were not rendered in plain and webcal pairs.');
+    }
+}
+// A calendar subscribe marker on the listing page must never leak into filter or pagination links.
+$_GET = ['adct_period' => 'upcoming', 'adct_ics' => '1'];
+$leak = do_shortcode('[adct_events]');
+$_GET = $listingGet;
+if (str_contains($leak, 'adct_ics=1&amp;adct_page') || str_contains($leak, 'adct_ics=1&#038;adct_period')) {
+    $fail('The calendar subscribe marker leaked into listing filter links.');
+}
 WP_CLI::log('Installed ZIP calendar feed filtering, recurrence, privacy and invalidation checks passed.');
+WP_CLI::log('Installed ZIP listing subscribe links, webcal variants and scope checks passed.');
