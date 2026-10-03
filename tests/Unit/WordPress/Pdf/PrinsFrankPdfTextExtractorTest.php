@@ -14,7 +14,7 @@ final class PrinsFrankPdfTextExtractorTest extends TestCase
 {
     public function testExtractsTextFromASingleColumnPoster(): void
     {
-        $result = (new PrinsFrankPdfTextExtractor())->extract(
+        $result = $this->extractor()->extract(
             $this->fixture('single-column-poster.pdf'),
             PdfExtractionLimits::defaults()
         );
@@ -34,7 +34,7 @@ final class PrinsFrankPdfTextExtractorTest extends TestCase
      */
     public function testReadsTwoColumnsInReadingOrderRatherThanInterleaved(): void
     {
-        $text = (new PrinsFrankPdfTextExtractor())->extract(
+        $text = $this->extractor()->extract(
             $this->fixture('two-column-bulletin.pdf'),
             PdfExtractionLimits::defaults()
         )->text;
@@ -57,7 +57,7 @@ final class PrinsFrankPdfTextExtractorTest extends TestCase
 
     public function testKeepsTheTwoColumnsAsSeparateBlocks(): void
     {
-        $text = (new PrinsFrankPdfTextExtractor())->extract(
+        $text = $this->extractor()->extract(
             $this->fixture('two-column-bulletin.pdf'),
             PdfExtractionLimits::defaults()
         )->text;
@@ -67,7 +67,7 @@ final class PrinsFrankPdfTextExtractorTest extends TestCase
 
     public function testReportsAnImageOnlyPdfAsHavingNoTextLayer(): void
     {
-        $result = (new PrinsFrankPdfTextExtractor())->extract(
+        $result = $this->extractor()->extract(
             $this->fixture('image-only.pdf'),
             PdfExtractionLimits::defaults()
         );
@@ -80,7 +80,7 @@ final class PrinsFrankPdfTextExtractorTest extends TestCase
 
     public function testSkipsAPdfWithMorePagesThanTheLimit(): void
     {
-        $result = (new PrinsFrankPdfTextExtractor())->extract(
+        $result = $this->extractor()->extract(
             $this->fixture('over-page-limit.pdf'),
             PdfExtractionLimits::defaults()
         );
@@ -175,10 +175,22 @@ final class PrinsFrankPdfTextExtractorTest extends TestCase
         self::assertSame(PdfExtractionResult::STATUS_EXTRACTED, $result->status);
     }
 
-    private function fixture(string $name): string
-    {
-        return dirname(__DIR__, 3) . '/fixtures/pdfs/' . $name;
-    }
+    /**
+         * The extractor checks its time budget against a stopwatch, so building it
+         * without one makes the result depend on how loaded the machine is. These
+         * fixtures are small and the assertions are about content and reading
+         * order, never about timing, so pin the clock and keep the outcome stable.
+         * The timeout path is covered separately, with an explicit budget.
+         */
+        private function extractor(): PrinsFrankPdfTextExtractor
+        {
+            return new PrinsFrankPdfTextExtractor(stopwatch: new FixedStopwatch(0.0));
+        }
+
+        private function fixture(string $name): string
+        {
+            return dirname(__DIR__, 3) . '/fixtures/pdfs/' . $name;
+        }
 
     private function temporaryFile(string $contents): string
     {
