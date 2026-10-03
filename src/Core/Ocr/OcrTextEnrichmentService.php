@@ -51,29 +51,29 @@ final class OcrTextEnrichmentService
     private const OCR_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
     /**
-         * Whether the operator has opted in, asked afresh on every message.
-         *
-         * A resolver rather than a plain bool so that the WordPress adapter can
-         * read the setting lazily. Core must not touch WordPress, and an opt-in
-         * recorded after this object was built has to take effect on the next
-         * message without anything being re-wired.
-         *
-         * @var \Closure():bool
-         */
-        private readonly \Closure $isEnabled;
+     * Whether the operator has opted in, asked afresh on every message.
+     *
+     * A resolver rather than a plain bool so that the WordPress adapter can
+     * read the setting lazily. Core must not touch WordPress, and an opt-in
+     * recorded after this object was built has to take effect on the next
+     * message without anything being re-wired.
+     *
+     * @var \Closure():bool
+     */
+    private readonly \Closure $isEnabled;
 
-        public function __construct(
-            private readonly ImageExtractionStoreInterface $store,
-            private readonly OcrProviderInterface $provider,
-            private readonly InboundMailStorageReaderInterface $storage,
-            private readonly ?OcrExtractionLimits $limits = null,
-            private readonly ?StopwatchInterface $stopwatch = null,
-            bool|\Closure $enabled = true,
-        ) {
-            $this->isEnabled = $enabled instanceof \Closure
-                ? $enabled
-                : static fn (): bool => $enabled;
-        }
+    public function __construct(
+        private readonly ImageExtractionStoreInterface $store,
+        private readonly OcrProviderInterface $provider,
+        private readonly InboundMailStorageReaderInterface $storage,
+        private readonly ?OcrExtractionLimits $limits = null,
+        private readonly ?StopwatchInterface $stopwatch = null,
+        bool|\Closure $enabled = true,
+    ) {
+        $this->isEnabled = $enabled instanceof \Closure
+            ? $enabled
+            : static fn (): bool => $enabled;
+    }
 
     public function enrich(int $messageId, Message $message): OcrEnrichmentResult
     {
