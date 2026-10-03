@@ -70,6 +70,7 @@ use ADCT\ParishIntake\WordPress\Pdf\PrinsFrankPdfTextExtractor;
 use ADCT\ParishIntake\WordPress\Pdf\WordPressAttachmentExtractionStore;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
 use ADCT\ParishIntake\WordPress\Admin\HealthPage;
+use ADCT\ParishIntake\WordPress\Admin\WordPressHelp;
 use ADCT\ParishIntake\WordPress\Admin\InboundMessagesPage;
 use ADCT\ParishIntake\WordPress\Admin\DeaneriesPage;
 use ADCT\ParishIntake\WordPress\Admin\MailboxesPage;
@@ -211,6 +212,7 @@ final class Plugin
     private WordPressJobScheduler $jobScheduler;
     private ScheduledJobsPage $scheduledJobsPage;
     private HealthPage $healthPage;
+    private WordPressHelp $adminHelp;
     private HealthAlerts $healthAlerts;
     private MailQueueService $mailQueue;
     private OutboundMailPage $outboundMailPage;
@@ -678,6 +680,7 @@ final class Plugin
             $this->mailQueue,
             $clock
         );
+        $this->adminHelp = new WordPressHelp();
         $this->healthPage = new HealthPage(
             $this->jobScheduler,
             $jobRunner,
@@ -985,6 +988,7 @@ final class Plugin
         add_action('admin_menu', [$this->outboundMailPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
         add_action('admin_menu', [$this->healthPage, 'registerMenu']);
+        $this->adminHelp->register();
         add_action('admin_post_adct_pi_health_check_now', [$this->healthPage, 'handleCheckNow']);
         add_action('init', [$this, 'checkHealthAlerts'], 20);
         add_action('admin_init', [$this, 'maybeUpgradeRoles'], 1);

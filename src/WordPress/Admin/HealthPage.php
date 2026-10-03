@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Admin;
 
+use ADCT\ParishIntake\Core\Admin\AdminGuideLinks;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Jobs\JobRunStatus;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
@@ -25,7 +26,6 @@ final class HealthPage
 {
     public const SLUG = 'adct-parish-intake-health';
     private const ACTION = 'adct_pi_health_check_now';
-    private const GUIDE = 'https://github.com/Archdiocese-of-Cape-Town/adct.org.za/blob/main/docs/operator-guide.md';
 
     public function __construct(
         private readonly WordPressJobScheduler $scheduler,
@@ -109,15 +109,15 @@ final class HealthPage
             <p>This page shows when intake was last checked and what needs attention. Times are in South African time.</p>
             <?php if ($this->alerts->isStalled()) : ?>
                 <div class="notice notice-error"><p>Background jobs haven't run for more than 2 hours 15 minutes.
-                    Check the cron job. <a href="<?php echo esc_url(self::GUIDE . '#keep-scheduled-jobs-running'); ?>">What to do</a></p></div>
+                    Check the cron job. <a href="<?php echo esc_url(AdminGuideLinks::operator('keep-scheduled-jobs-running')); ?>">What to do</a></p></div>
             <?php endif; ?>
             <?php if (defined('DISABLE_WP_CRON') && DISABLE_WP_CRON) : ?>
                 <div class="notice notice-warning"><p>WordPress background jobs are disabled.
-                    <a href="<?php echo esc_url(self::GUIDE . '#keep-scheduled-jobs-running'); ?>">What to do</a></p></div>
+                    <a href="<?php echo esc_url(AdminGuideLinks::operator('keep-scheduled-jobs-running')); ?>">What to do</a></p></div>
             <?php endif; ?>
             <?php if (! $this->smtpPluginActive()) : ?>
                 <div class="notice notice-warning"><p>No supported SMTP plugin is active. Email may use PHP mail without DKIM.
-                    <a href="<?php echo esc_url(self::GUIDE . '#outbound-email-and-hourly-cap'); ?>">What to do</a></p></div>
+                    <a href="<?php echo esc_url(AdminGuideLinks::operator('outbound-email-and-hourly-cap')); ?>">What to do</a></p></div>
             <?php endif; ?>
             <?php if (isset($_GET['checked']) && is_string($_GET['checked'])) :
                 $results = explode(',', sanitize_text_field(wp_unslash($_GET['checked'])));
@@ -144,7 +144,7 @@ final class HealthPage
                 <p>Checks mailboxes, processes saved messages and sends queued email in three limited batches (up to 25 seconds each). It does not wait for the next cron run.</p>
             <?php endif; ?>
             <h2>Background jobs</h2>
-            <p><a href="<?php echo esc_url(self::GUIDE . '#keep-scheduled-jobs-running'); ?>">What to do if a job fails</a></p>
+            <p><a href="<?php echo esc_url(AdminGuideLinks::operator('keep-scheduled-jobs-running')); ?>">What to do if a job fails</a></p>
             <table class="widefat striped"><thead><tr><th>Job</th><th>Last run</th><th>Trigger</th><th>Last success</th><th>Failures in a row</th></tr></thead><tbody>
             <?php foreach ($this->scheduler->registeredJobs() as $job) :
                 $state = $this->states->load($job->id()); ?>
@@ -162,7 +162,7 @@ final class HealthPage
             <p>Outbound email waiting: <strong><?php echo esc_html((string) $mail->pendingCount); ?></strong>;
                 oldest waiting: <?php echo esc_html($mail->oldestPendingAgeSeconds === null ? 'None' : $this->age($mail->oldestPendingAgeSeconds)); ?>;
                 permanently failed: <?php echo esc_html((string) $mail->failedCount); ?>.
-                <a href="<?php echo esc_url(self::GUIDE . '#outbound-email-and-hourly-cap'); ?>">What to do</a></p>
+                <a href="<?php echo esc_url(AdminGuideLinks::operator('outbound-email-and-hourly-cap')); ?>">What to do</a></p>
             <p>Events waiting for an approval decision for more than <?php echo esc_html((string) $reminders->days); ?> days:
                 <strong><?php echo esc_html((string) $overdueApprovals); ?></strong>.
                 <?php if ($reminders->enabled) : ?>

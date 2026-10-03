@@ -1,5 +1,56 @@
 # ADCT Parish Intake operator guide
 
+How to run parish event intake: what to do each day, and what to do when
+something looks wrong. This guide is for whoever looks after the website. You
+do not need to be a programmer.
+
+**Where the help actually is.** Every screen under **Parish Intake** carries
+its own **Help** tab, on the same screen, at the top right next to **Screen
+Options**. Press **Help** on any page and it says what that screen is for and
+which button to press. You do not need this guide to use the plugin day to
+day.
+
+Two shorter guides exist for other people:
+
+- **[Sending a parish event in](parish-submission-guide.md)** — for parish
+  staff. How to email a notice so that it is read correctly.
+- **[Approving an event](approver-guide.md)** — for deans and archdiocese
+  reviewers. How to decide on an event, from an email or from WordPress.
+
+## Your daily routine
+
+If you do nothing else, do these five things.
+
+1. **Look at Health.** Open **Parish Intake → Health**. If everything is
+   green, you are finished for the day. If something is red, the problems
+   table below says which button to press.
+2. **Look at Review queue.** Open **Parish Intake → Review queue**. Anything
+   waiting there is an event a parish has sent that nobody has decided about.
+   It does not go on the events page until somebody decides.
+3. **Check that confirmations are going out.** The Review queue does not show
+   events that are waiting for the parish to confirm. **Health** shows
+   outgoing email waiting to be sent.
+4. **Nothing else needs doing.** The plugin reads the mailbox, reads the
+   saved messages and sends the email by itself, roughly every ten minutes.
+5. **Once a week, look at Scheduled jobs.** If a job has not run for more
+   than two hours, follow
+   [Keep scheduled jobs running](#keep-scheduled-jobs-running).
+
+### Problems and what to do
+
+| What you see | What it means | What to do |
+|---|---|---|
+| **Health** shows a job that has not run for over 2 hours 15 minutes | The background work has stopped. Nothing will be read or sent until it restarts. | Follow [Keep scheduled jobs running](#keep-scheduled-jobs-running). |
+| **Health** shows saved mail waiting, and the number is growing | The mailbox is not being read, or a backlog is building. | Press **Test connection** on **Parish Intake → Mailboxes**. Then **Run now** beside the mailbox job on **Scheduled jobs**. |
+| **Health** shows outgoing email waiting, and the number is growing | Mail is queued but not going out. Usually an SMTP problem on the site. | Ask the website administrator to check the SMTP plugin. See [Outbound email and hourly cap](#outbound-email-and-hourly-cap). |
+| **Review queue** shows **Failed** items | An event was approved but could not be published. The decision itself was recorded. | Fix the event details, then select the item again and approve it. See [Review, approve and correct](#review-approve-and-correct). |
+| **Parishes** shows a parish marked **Reviewers only** | Nobody at the archdiocese is set up to approve that parish's events. | Assign an approver on **Parish Intake → Deaneries**, or let an archdiocese reviewer handle it for now. |
+| **Sources** shows a source as **Unreliable** | That source failed five times in a row and has stopped being read. | Fix the connection, then set the source back to **Active**. |
+| **Outbound email** lists suppressed messages | Test mode is on, or the recipient is not allowed to receive mail. | See [Outbound email and hourly cap](#outbound-email-and-hourly-cap). Turn Test mode off on the live site. |
+| A parish says their event never arrived | The sending address may not be a registered contact for that parish. | Look the address up on **Parish Intake → Senders**. See [Manage parish contacts and senders](#manage-parish-contacts-and-senders). |
+| An event shows the wrong date | Usually the notice used an ambiguous date such as `12/10`, or no year. | Correct the event, or reject it so the parish can resend it. See [Review, approve and correct](#review-approve-and-correct). |
+| An error message appears at the top of any screen | WordPress itself is reporting a problem. | Screenshot it and give it to the website administrator. |
+
 ## Install and upgrade
 
 You need a WordPress administrator account that is allowed to install plugins. Use the `adct-parish-intake.zip` file attached to the GitHub Release. Do not download GitHub's source-code archive or unzip the plugin package yourself.
@@ -43,9 +94,38 @@ A deanery approver must also have an active assignment to one or more deaneries.
 
 The parish portal, magic-link sign-in and its long-session policy are separate later work. Parish contacts still cannot use `wp-admin`; assigned deanery approvers can open only their Review queue.
 
-### Review incoming events
+## Review, approve and correct
 
-Reviewers open **Parish Intake → Review queue**. Assigned deanery approvers can open the **Review queue** top-level menu; they see only candidates for parishes in their active deaneries. The menu badge counts all their awaiting-approval candidates, including flagged ones. Use the sender, parish or event-title search to narrow results; counts then reflect that search. **Awaiting approval** is a scoped all-items view, while **Unknown senders** and **Low confidence** are disjoint priority categories (unknown sender takes precedence). **Failed** includes expired items, failed previews, unusual states and approvals still awaiting publication; **Awaiting submitter** includes unsent drafts and is read-only. **Recently published** and **Recent decisions** show only the past 30 days. **Recent changes** stays empty until #71 implements verified-contact instant changes; ordinary approved updates are not shown as instant changes.
+This is the screen to spend the day on. Every event a parish emails arrives
+here as a draft, and stays here until somebody decides about it.
+
+**Who sees it.** Reviewers open **Parish Intake → Review queue**. A dean who
+is not an archdiocese reviewer sees **Review queue** as its own top-level
+menu. Either way it is the same screen.
+
+**What to do with an item.** Open it and check four things against the notice
+the parish sent: the date, the start time, the place, and whether it is
+really an event rather than Mass times or a collection list. If all four are
+right, approve it. If the date, time or title is wrong, correct it and then
+approve it. If the parish or venue is wrong, reject it with a note saying
+what it should be; you cannot change those from the queue.
+
+Approving puts the event on the public events page and in the calendar feed.
+
+If somebody decides by email instead, they do not need the queue. See
+[Approving an event](approver-guide.md).
+
+**How to find things.** Use the sender, parish or event-title search to
+narrow results; counts then reflect that search. **Awaiting approval** is a
+scoped all-items view, while **Unknown senders** and **Low confidence** are
+disjoint priority categories (unknown sender takes precedence). **Failed**
+includes expired items, failed previews, unusual states and approvals still
+awaiting publication; **Awaiting submitter** includes unsent drafts and is
+read-only. **Recently published** and **Recent decisions** show only the past
+30 days. **Recent changes** stays empty until #71 implements verified-contact
+instant changes; ordinary approved updates are not shown as instant changes.
+
+**Problems.** Assigned deanery approvers can open the **Review queue** top-level menu; they see only candidates for parishes in their active deaneries. The menu badge counts all their awaiting-approval candidates, including flagged ones. Use the sender, parish or event-title search to narrow results; counts then reflect that search. **Awaiting approval** is a scoped all-items view, while **Unknown senders** and **Low confidence** are disjoint priority categories (unknown sender takes precedence). **Failed** includes expired items, failed previews, unusual states and approvals still awaiting publication; **Awaiting submitter** includes unsent drafts and is read-only. **Recently published** and **Recent decisions** show only the past 30 days. **Recent changes** stays empty until #71 implements verified-contact instant changes; ordinary approved updates are not shown as instant changes.
 
 Select up to 25 pending items to approve or reject. The first decision wins; subsequent attempts cannot overwrite it, and the row displays the deciding address and UTC time. If publishing fails after an approval is recorded, the item stays in the queue's **Failed** category, and the same approver can select it again to retry publication without another decision or audit record. Dean retries are matched to the active deanery assignment, even when its email differs from the WordPress account email. Fix invalid event details before retrying. Ambiguous matches and pending duplicates cannot be bulk-approved: they need manual match resolution in the future candidate editor (#61); an undecided item still in awaiting approval can instead be rejected. The candidate link opens a bounded read-only preview, not an editor.
 
@@ -82,7 +162,7 @@ A parish in an inactive deanery, a parish with no deanery, or a parish whose dea
 
 After a submitter confirms, run **Parish Intake → Scheduled jobs → Queue approver decisions and digests** if you need to send notices before the next scheduled run. Each eligible deanery approver and reviewer receives at most one grouped email of up to 20 events per run; a reviewer can switch between grouped notices and a daily digest on their WordPress profile, while deanery assignments set that preference for deans. A digest is sent at most once per local day; new items after it was queued wait for the next day. Links show the preview on GET, and only pressing the POST button records a decision. The first approver wins; later visitors see who decided and when. The Edit link lets an approver correct title, date, time and description without publishing; parish or venue corrections and ambiguous matches need manual attention. Rejection may include a short reason for the submitter. The submitter gets a queued live link after successful publication. All mail passes through the same capped outbound queue without attachments.
 
-## Manage the parish directory
+## Add or change a parish
 
 An Administrator or Intake manager with the `adct_pi_manage_directory` capability can open **Parish Intake → Parishes**. The list searches name, slug, area and suburb, and can be filtered by kind, deanery and status. Use **Add parish** or select a parish name to edit it. The form includes its deanery and parent parish, address, coordinates, website, phone, expected cadence, reminders, status and notes.
 
