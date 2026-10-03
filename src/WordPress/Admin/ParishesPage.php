@@ -6,6 +6,7 @@ namespace ADCT\ParishIntake\WordPress\Admin;
 
 use ADCT\ParishIntake\Core\Approval\ApprovalRoute;
 use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;
+use ADCT\ParishIntake\Core\Audit\AuditAction;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\CsvFormulaGuard;
@@ -18,6 +19,7 @@ use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use ADCT\ParishIntake\Core\Directory\Venue;
 use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
+use ADCT\ParishIntake\WordPress\Audit\ContactAuditRecorder;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
@@ -45,7 +47,8 @@ final class ParishesPage
         private VenueRepository $venues,
         private VenueAdministrationService $venueService,
         private ClockInterface $clock,
-        private SourcesPage $sourcesPage
+        private SourcesPage $sourcesPage,
+        private ?ContactAuditRecorder $audit = null
     ) {
     }
 
@@ -520,8 +523,22 @@ final class ParishesPage
                         $receivesReminders
                     );
                 }
+
+                $this->auditContact(
+                    $contactId > 0 ? AuditAction::CONTACT_EDITED : AuditAction::CONTACT_LINKED,
+                    $email,
+                    $parishId,
+                    $contactId > 0 ? $contactId : null
+                );
             } elseif ($action === 'remove') {
+                $existing = $this->contacts->findLink($contactId, $parishId);
                 $this->contactService->removeLink($contactId, $parishId);
+                $this->auditContact(
+                    AuditAction::CONTACT_REMOVED,
+                    EmailAddress::normalize((string) ($existing['email'] ?? '')),
+                    $parishId,
+                    $contactId
+                );
             } else {
                 $contact = $this->contacts->findLink($contactId, $parishId);
 
@@ -535,10 +552,13 @@ final class ParishesPage
 
                 if ($action === 'verify') {
                     $this->contactService->verify($email);
+                    $this->auditContact(AuditAction::CONTACT_VERIFIED, $email, $parishId, $contactId);
                 } elseif ($action === 'block') {
                     $this->contactService->block($email);
+                    $this->auditContact(AuditAction::CONTACT_BLOCKED, $email, $parishId, $contactId);
                 } else {
                     $this->contactService->unblock($email);
+                    $this->auditContact(AuditAction::CONTACT_UNBLOCKED, $email, $parishId, $contactId);
                 }
             }
         } catch (DomainException | InvalidArgumentException $failure) {
@@ -1531,6 +1551,27 @@ final class ParishesPage
     private function contactNonceAction(string $action, int $parishId, int $contactId): string
     {
         return 'adct_pi_parish_contact_' . $action . '_' . $parishId . '_' . $contactId;
+    }
+
+    /**
+     * Records a parish contact change for the audit log.
+     *
+     * Trust decisions are the ones with security weight here, so every link
+     * add, edit, removal and trust change lands in the trail.
+     */
+    private function auditContact(
+        AuditAction $action,
+        string $email,
+        int $parishId,
+        ?int $contactId = null
+    ): void {
+        $this->audit?->record(
+            $action,
+            $email,
+            $parishId,
+            $contactId,
+            $this->contactService->lookup($email)->trust
+        );
     }
 
     private function venueNonceAction(string $action, int $parishId, int $venueId): string

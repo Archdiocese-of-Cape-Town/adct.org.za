@@ -5507,6 +5507,8 @@ require_once __DIR__ . '/ReviewQueueCheck.php';
 ReviewQueueCheck::run($fail);
 require_once __DIR__ . '/CandidateDetailCheck.php';
 CandidateDetailCheck::run($fail);
+require_once __DIR__ . '/AuditLogCheck.php';
+AuditLogCheck::run($fail);
 require_once __DIR__ . '/OcrImageCheck.php';
 OcrImageCheck::run($fail, $pluginFile);
 

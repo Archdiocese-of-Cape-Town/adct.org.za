@@ -133,6 +133,36 @@ If a future parser supplies skipped-section notes, the queue shows only a generi
 
 Reviewers may assign selected *undecided awaiting-approval* candidates to an active parish. This updates the candidate and approval route, **not** the sender's trust; verify or link the sender separately on **Parish Intake → Senders**. If the candidate has a venue from a different parish, assignment stops until the venue is resolved. A deanery approver cannot reassign a parish. Each successful decision or assignment creates a candidate audit record. Nothing on this screen sends email or changes the live site without an operator's action.
 
+### Read the audit log
+
+Anyone who can view reports opens **Parish Intake → Audit log** to see who
+approved, rejected, edited, reverted, assigned or published what, and when. The
+screen defaults to the **last 3 months** and shows 25 rows per page. Narrow it
+with the action, record type, record ID, actor and window filters; combining them
+is useful, for example *action: Approver approved* with *record type: Event
+candidate* to review one decision stream, or an actor address to trace one
+person's activity.
+
+Each row shows the time (SAST), the actor's email address, what they did, and
+which record it happened to. The details column shows the extra context the
+step recorded — the fields an approver changed, the roles involved in a
+decision, and so on.
+
+Two things to know:
+
+- **The screen is read-only.** There is no edit or delete button anywhere in
+  wp-admin, and that is deliberate. The log is the record asked for when
+  something needs checking, so it is kept append-only: rows are added by the
+  actions listed above and removed only by the 24-month retention cleanup. If a
+  row is wrong, the answer is to find out why through the log's other columns,
+  not to remove the row.
+- **Older than 24 months is gone.** The retention job prunes the trail on the
+  same schedule as the rest of the personal data, so the oldest selectable window
+  is 24 months and anything older will not appear.
+
+The per-candidate **History** list on the candidate detail screen reads the same
+rows and is usually the faster way to answer "what happened to *this* event".
+
 ### Create and edit events
 
 Users with event-management access can open **Events → Add New**. Enter the public title and description in the standard WordPress editor, then complete the **Event details** box. A parish may be selected, or left blank for an archdiocese-wide event. Venue choices are filtered to the selected parish. Start and end values use the site's local timezone (`Africa/Johannesburg`); an end is optional but cannot be earlier than the start. For an all-day event, the saved times are normalized to local midnight and the selected end date is inclusive.

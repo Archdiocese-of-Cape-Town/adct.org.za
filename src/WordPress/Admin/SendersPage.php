@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Admin;
 
+use ADCT\ParishIntake\Core\Audit\AuditAction;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\EmailAddress;
 use ADCT\ParishIntake\Core\Directory\SenderTrust;
+use ADCT\ParishIntake\WordPress\Audit\ContactAuditRecorder;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use DomainException;
@@ -22,7 +24,8 @@ final class SendersPage
     public function __construct(
         private ParishContactRepository $contacts,
         private ContactService $contactService,
-        private ParishRepository $parishes
+        private ParishRepository $parishes,
+        private ?ContactAuditRecorder $audit = null
     ) {
     }
 
@@ -270,11 +273,12 @@ final class SendersPage
 
                 $this->contactService->link(
                     $parishId,
-                    $this->postText('email'),
+                    $email = EmailAddress::normalize($this->postText('email')),
                     sanitize_text_field($this->postText('display_name')),
                     sanitize_text_field($this->postText('role_label')),
                     $this->postText('receives_reminders') === '1'
                 );
+                $this->auditContact(AuditAction::CONTACT_LINKED, $email, $parishId);
             } else {
                 $email = EmailAddress::normalize($this->postText('email'));
                 check_admin_referer($this->nonceAction($action, $email), 'sender_nonce');
@@ -292,12 +296,16 @@ final class SendersPage
                         wp_die(esc_html__('Choose a parish from the list.', 'adct-parish-intake'), '', ['response' => 400]);
                     }
                     $this->contactService->confirmPending($parishId, $email);
+                    $this->auditContact(AuditAction::CONTACT_CONFIRMED, $email, $parishId);
                 } elseif ($action === 'verify') {
                     $this->contactService->verify($email);
+                    $this->auditContact(AuditAction::CONTACT_VERIFIED, $email);
                 } elseif ($action === 'block') {
                     $this->contactService->block($email);
+                    $this->auditContact(AuditAction::CONTACT_BLOCKED, $email);
                 } else {
                     $this->contactService->unblock($email);
+                    $this->auditContact(AuditAction::CONTACT_UNBLOCKED, $email);
                 }
             }
         } catch (DomainException | InvalidArgumentException $failure) {
@@ -362,6 +370,33 @@ final class SendersPage
     private function nonceAction(string $action, string $email): string
     {
         return 'adct_pi_sender_' . $action . '_' . $email;
+    }
+
+    /**
+     * Records a sender trust or link change for the audit log.
+     *
+     * The contact row id is the subject where one exists. An address can be
+     * blocked before it is linked to any parish, so a missing row is normal and
+     * the address is then the only stable identifier available.
+     */
+    private function auditContact(AuditAction $action, string $email, ?int $parishId = null): void
+    {
+        if (! $this->audit instanceof ContactAuditRecorder) {
+            return;
+        }
+
+        $contactId = null;
+        foreach ($this->contacts->findByEmail($email) as $row) {
+            $contactId ??= (int) ($row['id'] ?? 0);
+        }
+
+        $this->audit->record(
+            $action,
+            $email,
+            $parishId,
+            $contactId,
+            $this->contactService->lookup($email)->trust
+        );
     }
 
     private function pageUrl(array $arguments = []): string

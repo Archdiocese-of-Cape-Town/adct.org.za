@@ -69,6 +69,7 @@ final class PublicationCheck
         };
         $changes = $wpdb->prefix . 'adct_pi_event_changes';
         $occurrences = $wpdb->prefix . 'adct_pi_occurrences';
+        $audit = $wpdb->prefix . 'adct_pi_audit_log';
         $count = static fn (string $table, int $id): int => (int) $wpdb->get_var($wpdb->prepare(
             "SELECT COUNT(*) FROM {$table} WHERE event_id = %d", $id
         ));
@@ -307,11 +308,41 @@ final class PublicationCheck
                 || $occurrenceType !== $youth->term_id) {
                 $fail('An automatic type overwrote an intentionally selected published event type.');
             }
+
+            // Every successful publication is a change to something the public
+            // can see, so each one leaves exactly one audit row. Republishing the
+            // same candidate is not a new change and must not add a second row.
+            $auditRows = static fn (int $id): array => $wpdb->get_results($wpdb->prepare(
+                "SELECT * FROM {$audit} WHERE subject_type = %s AND subject_id = %d ORDER BY id ASC",
+                'event',
+                $id
+            ), ARRAY_A);
+            $published = $make('update', $eventId, 'reviewer', 'Audited publication');
+            $beforeRows = count($auditRows($eventId));
+            $publisher->publish($published);
+            $rows = $auditRows($eventId);
+            $details = json_decode((string) ($rows[$beforeRows]['details'] ?? ''), true);
+            if (
+                count($rows) !== $beforeRows + 1
+                || ($rows[$beforeRows]['action'] ?? '') !== 'event_published'
+                || ($rows[$beforeRows]['actor'] ?? '') !== 'reviewer@example.test'
+                || ($details['candidate_id'] ?? null) != $published
+                || ($details['kind'] ?? '') !== 'update'
+            ) {
+                $fail('A publication did not leave exactly one attributable audit row.');
+            }
+            $beforeRows = count($auditRows($eventId));
+            if ($publisher->publish($published) !== $eventId
+                || count($auditRows($eventId)) !== $beforeRows
+            ) {
+                $fail('Republishing the same candidate added a duplicate audit row.');
+            }
         } finally {
             if ($eventId !== null) {
                 wp_delete_post($eventId, true);
                 $wpdb->delete($occurrences, ['event_id' => $eventId], ['%d']);
                 $wpdb->delete($changes, ['event_id' => $eventId], ['%d']);
+                $wpdb->delete($audit, ['subject_type' => 'event', 'subject_id' => $eventId], ['%s', '%d']);
             }
             foreach ($candidateIds as $id) {
                 $candidates->delete($id);

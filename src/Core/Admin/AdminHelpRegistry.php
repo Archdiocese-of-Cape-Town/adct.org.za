@@ -129,6 +129,14 @@ final class AdminHelpRegistry
                 . ' last ran, what is waiting, and what needs attention.',
             'anchor' => 'check-intake-health',
         ],
+                'adct-parish-intake_page_adct-parish-intake-audit-log' => [
+                    'capability' => Capabilities::VIEW_REPORTS,
+                    'title' => 'Audit log',
+                    'body' => 'Who approved, rejected, edited, reverted, assigned or published what, and when.'
+                        . ' Read-only: the trail is kept append-only and pruned by the retention cleanup, so if'
+                        . ' a row looks wrong the answer is in the other columns, not in removing it.',
+                    'anchor' => 'read-the-audit-log',
+                ],
         'adct-parish-intake_page_adct-parish-intake-retention' => [
             'capability' => Capabilities::MANAGE_SETTINGS,
             'title' => 'Data retention',
