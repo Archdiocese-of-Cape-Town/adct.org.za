@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Tests\Unit\Parsing;
 
+use ADCT\ParishIntake\Core\Ocr\OcrTextEnrichmentService;
 use ADCT\ParishIntake\Core\Parsing\Contracts\StageInterface;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\ParseContext;
@@ -72,15 +73,56 @@ final class PipelineContextTest extends TestCase
         self::assertContains('Split message into 2 event blocks.', $outcome->getNotes());
     }
 
-    private static function message(string $identifier): Message
-    {
-        return new Message(
-            'email',
-            $identifier,
-            'events@example.test',
-            'Example Parish Office',
-            'Example event',
-            'An event at Example Parish Hall.'
-        );
+    /**
+         * `ocrStartIndex()` returns the block's array key and compares it against the loop's
+         * position, so the two only agree while the block list is an ordinal list. Slicing it to
+         * the candidate limit is the one place that could quietly break that, so the first block
+         * that carries OCR text has to stay OCR-derived and the ones before it must not.
+         */
+        public function testOcrTextMarksBlocksFromTheOcrHeadingOnwards(): void
+        {
+            $heading = OcrTextEnrichmentService::SECTION_HEADING;
+            $stage = new class implements StageInterface {
+                public function process(Message $message, ParseResult $result, ParseContext $context): ParseResult
+                {
+                    $result->addNote($context->getRuntimeValue('ocr_derived') === true ? 'ocr' : 'typed');
+
+                    return $result;
+                }
+            };
+
+            $pipeline = new Pipeline([$stage], new ParseContext());
+            $outcome = $pipeline->parseAll(new Message(
+                'email',
+                'poster',
+                'events@example.test',
+                'Example Parish Office',
+                'October bulletin',
+                "EVENTS\n"
+                    . "- Typed gathering on Saturday 10 October 2026 at 10:00.\n"
+                    . "- Another typed meeting on Sunday 11 October 2026 at 11:00.\n\n"
+                    . $heading . "\n\n"
+                    . "Poster retreat on Saturday 17 October 2026 at 14:00."
+            ));
+
+            self::assertSame(
+                ['typed', 'typed', 'ocr'],
+                array_map(
+                    static fn (ParseResult $candidate): string => $candidate->getNotes()[0] ?? '',
+                    $outcome->getCandidates()
+                )
+            );
+        }
+
+        private static function message(string $identifier): Message
+        {
+            return new Message(
+                'email',
+                $identifier,
+                'events@example.test',
+                'Example Parish Office',
+                'Example event',
+                'An event at Example Parish Hall.'
+            );
+        }
     }
-}

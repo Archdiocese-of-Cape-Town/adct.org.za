@@ -1639,8 +1639,11 @@ if (
         'ocr_enabled' => '1',
         'ocr_daily_call_limit' => '7',
         'ocr_api_key' => '',
-        'section_keywords' => [],
-    ];
+                // The real form posts every keyword field, so this block has to as well: posting an
+                // empty list would wipe the custom sick_list keyword the bulletin fixture relies on
+                // and silently un-skip its care-circle section.
+                'section_keywords' => ['sick_list' => 'Care Circle'],
+            ];
     $_REQUEST = $_POST;
     do_action('admin_init');
 
@@ -1768,19 +1771,23 @@ try {
     update_option('adct_parish_intake_ai_provider', 'none');
 }
 
-if (
-    $httpAttempts !== 0
-    ||
-    strpos($submittedParserHtml, 'Latest parse outcome') === false
-    || strpos($submittedParserHtml, 'candidate_count') === false
-    || strpos($submittedParserHtml, 'Youth gathering') === false
-    || strpos($submittedParserHtml, 'Family picnic') === false
-    || strpos($submittedParserHtml, 'skipped_sections: sick_list=1') === false
-    || strpos($submittedParserHtml, 'Fictional Person Alpha') !== false
-    || strpos($submittedParserHtml, $storedTestApiKey) !== false
-    || strpos($submittedParserHtml, $constantTestApiKey) !== false
-) {
-    $fail('The Manual parser did not render candidates and text-free skip metadata for a bulletin.');
+$manualParserChecks = [
+    'no_ai_http' => $httpAttempts === 0,
+    'latest_parse_outcome' => strpos($submittedParserHtml, 'Latest parse outcome') !== false,
+    'candidate_count' => strpos($submittedParserHtml, 'candidate_count') !== false,
+    'youth_gathering' => strpos($submittedParserHtml, 'Youth gathering') !== false,
+    'family_picnic' => strpos($submittedParserHtml, 'Family picnic') !== false,
+    'skipped_sections' => strpos($submittedParserHtml, 'skipped_sections: sick_list=1') !== false,
+    'no_personal_name' => strpos($submittedParserHtml, 'Fictional Person Alpha') === false,
+    'no_stored_key' => strpos($submittedParserHtml, $storedTestApiKey) === false,
+    'no_constant_key' => strpos($submittedParserHtml, $constantTestApiKey) === false,
+];
+$failedManualParserChecks = array_keys(array_filter($manualParserChecks, static fn ($ok) => ! $ok));
+if ($failedManualParserChecks !== []) {
+    $fail(
+        'The Manual parser did not render candidates and text-free skip metadata for a bulletin.'
+        . ' Failing: ' . implode(', ', $failedManualParserChecks)
+    );
 }
 
 $aiGate = new \ADCT\ParishIntake\WordPress\Ai\WordPressAiCallGate(
