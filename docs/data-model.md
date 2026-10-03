@@ -318,6 +318,7 @@ filter dropdown and the tests cannot drift apart:
 | `submitter_confirmed`, `submitter_denied` | event candidate | confirmation handler |
 | `candidate_parish_assigned` | event candidate | review queue assignment |
 | `candidate_edited` | event candidate | candidate detail save |
+| `candidate_created_by_hand` | event candidate | `ReviewQueueRepository::createManualCandidate()` |
 | `change_reverted` | event change | `RevertChangeHandler` |
 | `event_published` | event | `WordPressPublicationStore`, in the publish transaction |
 | `contact_verified`, `contact_blocked`, `contact_unblocked`, `contact_linked`, `contact_confirmed`, `contact_edited`, `contact_removed` | parish contact | `ContactAuditRecorder` on the senders screen |

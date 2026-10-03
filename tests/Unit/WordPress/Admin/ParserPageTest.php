@@ -3,15 +3,6 @@
 declare(strict_types=1);
 
 namespace {
-    /**
-     * The audit writer records the acting user's email address, matching the
-     * actor column the review queue repository has always written.
-     */
-    function wp_get_current_user(): object
-    {
-        return (object) ['user_email' => $GLOBALS['parser_page_user_email'] ?? ''];
-    }
-
     require_once __DIR__ . '/../../../Support/AdminWordPressStubs.php';
 }
 
@@ -21,7 +12,7 @@ namespace ADCT\ParishIntake\WordPress\Admin {
          * Driven through a global so the shared stub in
          * tests/Support/WordPressStubs.php can decide, whichever file PHPUnit
          * includes first. This namespace has two consumers now — ParserPage
-                  * and ReviewQueuePage — so one of them had to stop declaring its own
+                 * and ReviewQueuePage — so one of them had to stop declaring its own
          * unconditional copy. ParserPage only renders inside wp-admin, so the
          * default stays true; ReviewQueuePageTest sets the global itself.
          */
@@ -198,17 +189,27 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                 Capabilities::VIEW_REPORTS,
                 Capabilities::MANAGE_SETTINGS,
             ];
+            // ParserPage only ever renders inside wp-admin, and the shared stub
+                        // defaults this to false so that a screen test which has not said
+            // otherwise is not silently treated as an admin request. Every test in
+            // this file is about what happens once a user reaches the page, so the
+            // request is stated here rather than left to the default. Setting it per
+            // test also makes the outcome independent of which copy of is_admin()
+            // PHPUnit happened to include first.
+            $GLOBALS['adct_test_is_admin'] = true;
             // The settings screen audits who changed a setting, and the audit
             // row records the acting user's email address, matching the actor
-            // column the review queue repository has always written.
-            $GLOBALS['parser_page_user_email'] = 'chaplain@example.test';
+            // column the review queue repository has always written. The stub
+            // is the shared one in tests/Support/WordPressStubs.php, driven
+            // through its global rather than declared locally: a second
+            // declaration of the same global function is a fatal error.
+            $GLOBALS['adct_test_current_user'] = new \WP_User(4, 'chaplain@example.test');
             $_POST = [];
         }
 
         protected function tearDown(): void
         {
-            unset($GLOBALS['adct_test_wp_caps']);
-            unset($GLOBALS['parser_page_user_email']);
+            unset($GLOBALS['adct_test_wp_caps'], $GLOBALS['adct_test_is_admin'], $GLOBALS['adct_test_current_user']);
         }
 
         public function testASettingsSaveWritesOneAuditRowNamingWhatChanged(): void

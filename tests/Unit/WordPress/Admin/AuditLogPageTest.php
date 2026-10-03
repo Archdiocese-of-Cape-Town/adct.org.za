@@ -44,12 +44,20 @@ namespace {
 namespace ADCT\ParishIntake\WordPress\Admin {
     // current_user_can() and error_log() live in tests/Support so that the
     // screen tests needing different behaviour from the same names cannot
-    // collide; wp_die() is only this test's concern.
-    function wp_die(string $message, string $title = '', array $arguments = []): void
-    {
-        $GLOBALS['audit_page_died'] = ['message' => $message, 'title' => $title, 'arguments' => $arguments];
+    // collide. wp_die() is guarded for the same reason: ReviewQueuePageTest
+    // (#63) also drives the refusal paths through wp_die(), and phpunit.xml.dist
+    // has no bootstrap, so whichever file PHPUnit includes first wins. This
+    // copy records audit_page_died and throws AuditPageWentDie; the shared copy
+    // in tests/Support/WordPressStubs.php throws AdctTestWpDie carrying the
+    // status code. Both are handled below so the outcome does not depend on
+    // which one loaded.
+    if (! function_exists('ADCT\ParishIntake\WordPress\Admin\wp_die')) {
+        function wp_die(string $message, string $title = '', array $arguments = []): never
+        {
+            $GLOBALS['audit_page_died'] = ['message' => $message, 'title' => $title, 'arguments' => $arguments];
 
-        throw new \AuditPageWentDie();
+            throw new \AuditPageWentDie();
+        }
     }
 }
 
@@ -105,7 +113,13 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                     'do not have permission',
                     $GLOBALS['audit_page_died']['message']
                 );
-            }
+                            } catch (\AdctTestWpDie $refused) {
+                                // The shared wp_die() in tests/Support/WordPressStubs.php won the
+                                // include order, so the same refusal arrived as AdctTestWpDie.
+                                // The status and the message are asserted identically.
+                                self::assertSame(403, $refused->status);
+                                self::assertStringContainsString('do not have permission', $refused->getMessage());
+                            }
 
             self::assertSame([], $reader->queries, 'A refused visitor must not reach the database.');
         }

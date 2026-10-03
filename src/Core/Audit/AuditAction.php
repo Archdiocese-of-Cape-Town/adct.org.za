@@ -71,6 +71,9 @@ enum AuditAction: string
     /** A plugin setting was changed. The details diff carries the values. */
     case SETTINGS_UPDATED = 'settings_updated';
 
+        /** An approver created a blank event to type in beside a stored poster. */
+            case CANDIDATE_CREATED_BY_HAND = 'candidate_created_by_hand';
+
     /**
      * Human labels for the filter dropdown, keyed by action value.
      *
@@ -115,6 +118,7 @@ enum AuditAction: string
             self::CONTACT_EDITED => 'Contact edited',
             self::CONTACT_REMOVED => 'Contact removed',
             self::SETTINGS_UPDATED => 'Settings updated',
+            self::CANDIDATE_CREATED_BY_HAND => 'Event started by hand',
         };
     }
 }

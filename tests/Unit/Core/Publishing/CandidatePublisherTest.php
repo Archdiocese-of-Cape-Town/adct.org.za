@@ -96,42 +96,78 @@ final class CandidatePublisherTest extends TestCase
         yield 'invalid review flag' => [['match_review_required' => 'false']];
     }
 
-    public function testAHandTypedEventCannotPublishWithoutADeanOrReviewerDecision(): void
-    {
-        // Exactly the row ReviewQueueRepository::createManualCandidate() writes,
-        // then as it stands once a person has filled the edit form in. The only
-        // difference from a parsed candidate is where the text came from, so
-        // manual entry must not be a way round the approval allow-list.
-        $store = new RecordingPublicationStore([
-            'id' => '7',
-            'status' => 'awaiting_approval',
-            'approved_via' => null,
-            'approved_by' => null,
-            'approved_at' => null,
-            'match_kind' => 'new',
-            'match_event_id' => null,
-            'parish_id' => '3',
-            'fields' => json_encode([
-                'title' => 'Parish evening service',
-                'event_date' => '2026-10-12',
-                'event_time' => '18:00',
-            ], JSON_THROW_ON_ERROR),
-            'recurrence' => null,
-            'notes' => '["manual_entry"]',
-        ]);
+    /**
+         * Exactly the row ReviewQueueRepository::createManualCandidate() writes,
+         * then as it stands once a person has filled the edit form in. The only
+         * difference from a parsed candidate is where the text came from, so manual
+         * entry must not be a way round the approval allow-list.
+         *
+         * Each case withholds or corrupts one of the approval fields. They are
+         * separate data sets rather than one assertion so that dropping any single
+         * clause of the guard is caught here: a case that still passes after a
+         * clause is deleted is a clause the test was not actually reading, which is
+         * how an allow-list quietly widens.
+         *
+         * @param array{via: ?string, by: ?string, at: ?string} $approval
+         */
+        #[DataProvider('manualApprovalGaps')]
+        public function testAHandTypedEventCannotPublishWithoutADeanOrReviewerDecision(array $approval): void
+        {
+            $store = new RecordingPublicationStore([
+                'id' => '7',
+                'status' => 'awaiting_approval',
+                'approved_via' => $approval['via'],
+                'approved_by' => $approval['by'],
+                'approved_at' => $approval['at'],
+                'match_kind' => 'new',
+                'match_event_id' => null,
+                'parish_id' => '3',
+                'fields' => json_encode([
+                    'title' => 'Parish evening service',
+                    'event_date' => '2026-10-12',
+                    'event_time' => '18:00',
+                ], JSON_THROW_ON_ERROR),
+                'recurrence' => null,
+                'notes' => '["manual_entry"]',
+            ]);
 
-        try {
-            $this->publisher($store)->publish(7);
-            self::fail('A hand-typed event must not reach publication without a recorded approval.');
-        } catch (DomainException $failure) {
-            self::assertStringContainsString(
-                'recorded dean, reviewer or self approval',
-                $failure->getMessage()
-            );
+            try {
+                $this->publisher($store)->publish(7);
+                self::fail('A hand-typed event must not reach publication without a recorded approval.');
+            } catch (DomainException $failure) {
+                self::assertStringContainsString(
+                    'recorded dean, reviewer or self approval',
+                    $failure->getMessage()
+                );
+            }
+
+            self::assertNull($store->publication);
         }
 
-        self::assertNull($store->publication);
-    }
+        /**
+         * @return array<string, array{0: array{via: ?string, by: ?string, at: ?string}}>
+         */
+        public static function manualApprovalGaps(): iterable
+        {
+            // As createManualCandidate() leaves it: nothing decided, nothing stamped.
+            yield 'no decision recorded' => [['via' => null, 'by' => null, 'at' => null]];
+
+            // Every other case names someone and a time but leaves approved_via off
+            // the list. This is the case that pins the allow-list itself: if the list
+            // were widened to accept it, these would publish with nothing behind them.
+            yield 'claimed as manual, not a dean or reviewer' => [
+                ['via' => 'by_hand', 'by' => 'chaplain@example.test', 'at' => '2026-09-25 09:00:00'],
+            ];
+            yield 'blank approver' => [
+                ['via' => 'reviewer', 'by' => '   ', 'at' => '2026-09-25 09:00:00'],
+            ];
+            yield 'no approver named' => [
+                ['via' => 'reviewer', 'by' => null, 'at' => '2026-09-25 09:00:00'],
+            ];
+            yield 'no approval time' => [
+                ['via' => 'reviewer', 'by' => 'reviewer@example.test', 'at' => null],
+            ];
+        }
 
     public function testAHandTypedEventStillPublishesOnceADecisionIsRecorded(): void
     {
