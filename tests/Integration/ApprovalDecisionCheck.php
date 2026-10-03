@@ -243,8 +243,10 @@ final class ApprovalDecisionCheck
                 'a reviewer must be able to find the reminder switch on their profile.');
             $_POST['adct_pi_notify_nonce'] = wp_create_nonce('adct_pi_notify_mode_' . $reviewerId);
             $_POST['adct_pi_notify_mode'] = 'digest';
+            // A ticked checkbox is present in $_POST; absence is how 'off' arrives.
+            $_POST['adct_pi_approval_reminders'] = '1';
             $preference->save($reviewerId);
-            unset($_POST['adct_pi_notify_nonce'], $_POST['adct_pi_notify_mode']);
+            unset($_POST['adct_pi_notify_nonce'], $_POST['adct_pi_notify_mode'], $_POST['adct_pi_approval_reminders']);
             wp_set_current_user($previousUser);
             $check(get_user_meta($reviewerId, 'adct_pi_approval_notify_mode', true) === 'digest',
                 'a reviewer preference change must persist with a valid nonce.');
