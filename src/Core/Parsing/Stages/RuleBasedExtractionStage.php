@@ -21,27 +21,33 @@ final class RuleBasedExtractionStage implements StageInterface
     private const MONTH_PATTERN = '(?:January|Jan|February|Feb|March|Mar|April|Apr|May|June|Jun|July|Jul|August|Aug|September|Sept|Sep|October|Oct|November|Nov|December|Dec)';
     private const EVENT_KEYWORDS = ['mass', 'healing', 'retreat', 'novena', 'pilgrimage', 'fundraiser', 'conference', 'celebration', 'vigil', 'feast'];
     /**
-     * A clock time: an hour with a colon or dotted minute part, or a bare hour carrying
-     * a meridiem. The leading lookbehind keeps the token out of longer digit runs (phone
-     * numbers, verse numbers) and out of decimals, and the trailing guards stop a dotted
-     * date such as "15.06.24" being read as 15:06. A dotted time deliberately does not
-     * require a word boundary before it, because the dot in "10.00" is what would fail
-     * one.
-     */
-    private const TIME_TOKEN = '(?<![\d:.,A-Za-z$£€])(?:\d{1,2}(?:[:.]\d{2})(?!\d)(?!\.\d)(?:\s*[ap]m)?|\d{1,2}\s*[ap]m)(?![\d])';
-    /**
-     * A currency symbol sitting directly before a time-shaped number. This is a
-     * separate check rather than an extra lookbehind branch because a price is often
-     * spaced away from its symbol ("R 20.00"), which no fixed-width lookbehind can
-     * reach, so the symbol is matched against the text leading up to the match instead.
-     */
-    private const CURRENCY_PREFIX = '~(?:[Rr]|[$£€])\s*$~';
-    /**
-     * The opening end of a range may also be a bare hour, because "7-9pm" states its
-     * meridiem once at the far end. A bare hour is only ever read inside a range, never
-     * on its own, so "The event begins 7." is not silently promoted to 07:00.
-     */
-    private const RANGE_START_TOKEN = '(?<![\d:.,A-Za-z$£€])(?:' . self::TIME_TOKEN . '|\d{1,2}(?![\d:.,A-Za-z]))';
+         * A clock time: an hour with a colon or dotted minute part, a bare hour carrying
+         * a meridiem, or a compact run of digits carrying one ("830am"). The leading
+         * lookbehind keeps the token out of longer digit runs (phone numbers, verse numbers)
+         * and out of decimals, and the trailing guards stop a dotted date such as "15.06.24"
+         * being read as 15:06. A dotted time deliberately does not require a word boundary
+         * before it, because the dot in "10.00" is what would fail one.
+         *
+         * The compact form is only accepted with a meridiem, so "830" on its own stays a
+         * reference number rather than becoming a guess at either morning or night, and the
+         * same lookbehind keeps it out of a five-digit run, which the trailing `(?![\d])`
+         * cannot see from a shorter match.
+         */
+        private const TIME_TOKEN = '(?<![\d:.,A-Za-z$£€])(?:\d{1,2}(?:[:.]\d{2})(?!\d)(?!\.\d)(?:\s*[ap]m)?|\d{3,4}\s*[ap]m|\d{1,2}\s*[ap]m)(?![\d])';
+        /**
+         * A currency symbol sitting directly before a time-shaped number. This is a
+         * separate check rather than an extra lookbehind branch because a price is often
+         * spaced away from its symbol ("R 20.00"), which no fixed-width lookbehind can
+         * reach, so the symbol is matched against the text leading up to the match instead.
+         */
+        private const CURRENCY_PREFIX = '~(?:[Rr]|[$£€])\s*$~';
+        /**
+         * The opening end of a range may also be a bare hour, because "7-9pm" states its
+         * meridiem once at the far end. A bare compact run is allowed for the same reason,
+         * so "830-1000am" reads as a morning range. Either is only ever read inside a range,
+         * never on its own, so "The event begins 7." is not silently promoted to 07:00.
+         */
+        private const RANGE_START_TOKEN = '(?<![\d:.,A-Za-z$£€])(?:' . self::TIME_TOKEN . '|\d{3,4}(?![\d])|\d{1,2}(?![\d:.,A-Za-z]))';
     private const NOTICE_KEYWORDS = ['notice', 'announcement', 'newsletter', 'update', 'bulletin'];
 
     private ClockInterface $clock;
@@ -113,6 +119,14 @@ final class RuleBasedExtractionStage implements StageInterface
         $replacementTimes = $replacementText === null ? null : $this->extractTimes($replacementText);
         $date = $replacementDate ?? $this->extractDate($dateText, $referenceDate, $monthContext, $yearContext);
         $times = $replacementTimes ?? ($replacementDate === null ? $this->extractTimes($text) : null);
+
+        // A time that reads as a clock but cannot be resolved used to vanish with nothing
+        // recorded anywhere. Say so, so a reviewer sees that a time was written down and
+        // dropped rather than never given. Only the body is checked: when a change notice
+        // supplies its own date, the body is deliberately not read for a time.
+        if ($times === null && $replacementDate === null) {
+            $this->noteUnreadableTime($result, $text);
+        }
 
         $classification = $this->classify($lower, $date !== null, $times !== null);
         $result->setClassification($classification);
@@ -1063,43 +1077,92 @@ final class RuleBasedExtractionStage implements StageInterface
     {
         $citations ??= $this->scriptureCitationSpans($text);
 
-        preg_match_all('~' . self::TIME_TOKEN . '~i', $text, $matches, PREG_OFFSET_CAPTURE);
+            foreach ($this->timeCandidates($text, $citations) as [$match, $offset]) {
+                        $time = $this->normalizeTime($match);
 
-        foreach ($matches[0] as [$match, $offset]) {
-            if ($this->isScriptureCitation($citations, $offset, strlen($match))) {
+                        if ($time === null) {
                 continue;
             }
 
-            // An amount of money, "R50" or "$12.50", is not a time. A parish that
-            // has written a donation into the notice would otherwise publish it as a start.
-            if ($this->isCurrencyAmount($text, $offset)) {
-                continue;
-            }
+                        return [
+                            'time' => $time,
+                            'type' => preg_match('/[ap]m/i', $match) === 1 ? 'explicit' : 'bare',
+                        ];
+                    }
 
-            // A citation with no book name -- "Scripture for today is 12:45" -- has no
-            // citation shape to detect, so the wording in front of the number is the only
-            // cue left. Checked only for a bare number: an explicit "6pm" is unambiguous
-            // and is always a time.
-            if (preg_match('/[ap]m/i', $match) !== 1
-                && $this->isScriptureIntroduction($text, $offset)
-            ) {
-                continue;
-            }
+                    return null;
+                }
 
-            $time = $this->normalizeTime($match);
+                /**
+                 * Every token that reads as a clock, with anything that is really a scripture
+                 * citation or an amount of money already dropped. A token is listed whether or not
+                 * it resolves, so that a caller which found no time can say which one it could
+                 * not read instead of reporting nothing at all.
+                 *
+                 * @param list<array{start: int, end: int}> $citations
+                 *
+                 * @return list<array{string, int}>
+                 */
+                private function timeCandidates(string $text, array $citations): array
+                {
+                    preg_match_all('~' . self::TIME_TOKEN . '~i', $text, $matches, PREG_OFFSET_CAPTURE);
 
-            if ($time === null) {
-                continue;
-            }
+                    $candidates = [];
 
-            return [
-                'time' => $time,
-                'type' => preg_match('/[ap]m/i', $match) === 1 ? 'explicit' : 'bare',
-            ];
-        }
+                    foreach ($matches[0] as [$match, $offset]) {
+                        if ($this->isScriptureCitation($citations, $offset, strlen($match))) {
+                            continue;
+                        }
 
-        return null;
-    }
+                        // An amount of money, "R50" or "$12.50", is not a time. A parish that
+                        // has written a donation into the notice would otherwise publish it as a start.
+                        if ($this->isCurrencyAmount($text, $offset)) {
+                            continue;
+                        }
+
+                        // A citation with no book name -- "Scripture for today is 12:45" -- has no
+                        // citation shape to detect, so the wording in front of the number is the only
+                        // cue left. Checked only for a bare number: an explicit "6pm" is unambiguous
+                        // and is always a time.
+                        if (preg_match('/[ap]m/i', $match) !== 1
+                            && $this->isScriptureIntroduction($text, $offset)
+                        ) {
+                            continue;
+                        }
+
+                        $candidates[] = [$match, $offset];
+                    }
+
+                    return $candidates;
+                }
+
+                /**
+                 * Records that a clock-shaped phrase was written down and could not be read, naming
+                 * the phrase so a reviewer can look the notice up and correct it. A digit run that
+                 * is not a time at all -- a seat count, a reference number -- is not a time that
+                 * went unread, so it is left alone.
+                 */
+                private function noteUnreadableTime(ParseResult $result, string $text): void
+                {
+                    foreach ($this->timeCandidates($text, $this->scriptureCitationSpans($text)) as [$match]) {
+                        if ($this->normalizeTime($match) !== null) {
+                            continue;
+                        }
+
+                        // Only a phrase that spells a meridiem is claimed as a time the parish meant.
+                        // Without one, "2575" could as easily be a room number as a time.
+                        if (preg_match('/[ap]m/i', $match) !== 1) {
+                            continue;
+                        }
+
+                        $result->addNote(sprintf(
+                            'The time "%s" could not be read as a clock time; verify or correct it.',
+                            $match
+                        ));
+
+                        return;
+                    }
+                }
 
     /**
      * Whether the wording immediately before a bare clock-shaped number introduces a
@@ -1186,16 +1249,42 @@ final class RuleBasedExtractionStage implements StageInterface
         return str_word_count($candidate) > 8;
     }
 
-    private function normalizeTime(string $time): ?string
-    {
-        if (! preg_match(
-            '/^(?<hour>\d{1,2})(?:(?:[:.](?<minute>\d{2})))?\s*(?<meridiem>am|pm)?$/i',
-            trim($time),
-            $matches,
-            PREG_UNMATCHED_AS_NULL
-        )) {
-            return null;
+    /**
+         * Reads a compact clock run -- "830" in "830am", or "830" as the start of "830-1000am"
+         * -- back into a separated hour and minute. Only a run of three or four digits is
+         * compact: two digits are an hour on their own, and anything longer is not a time.
+         */
+        private function splitCompactTime(string $time): ?string
+        {
+            if (! preg_match('/^(?<hour>\d{1,2})(?<minute>\d{2})$/', trim($time), $matches)) {
+                return null;
+            }
+
+            return $matches['hour'] . ':' . $matches['minute'];
         }
+
+        private function normalizeTime(string $time): ?string
+        {
+            $time = trim($time);
+
+            // A compact run carries no separator, so it is split back into one before the
+            // separated forms are read. The meridiem is kept where it was written: on the
+            // token itself, or carried across from the other end of a range.
+            if (preg_match('/^\d{3,4}\s*[ap]m$/i', $time) === 1) {
+                $meridiem = $this->meridiem($time);
+                $digits = trim((string) preg_replace('/\s*[ap]m\s*$/i', '', $time));
+
+                return $this->normalizeTime($this->splitCompactTime($digits) . ($meridiem ?? ''));
+            }
+
+            if (! preg_match(
+                '/^(?<hour>\d{1,2})(?:(?:[:.](?<minute>\d{2})))?\s*(?<meridiem>am|pm)?$/i',
+                $time,
+                $matches,
+                PREG_UNMATCHED_AS_NULL
+            )) {
+                return null;
+            }
 
         $hour = (int) $matches['hour'];
         $minute = (int) ($matches['minute'] ?? 0);

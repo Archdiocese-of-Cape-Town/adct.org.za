@@ -276,8 +276,15 @@ final class DateParsingTest extends TestCase
             'bare dotted time without a meridiem' => ['10.00', '10:00'],
             'bare dotted time with a leading zero' => ['08.30', '08:30'],
             'bare colon time inside a dotted range is not read on its own' => ['10.00-12:00am', '10:00'],
-        ];
-    }
+                        'compact am time' => ['830am', '08:30'],
+                        'compact pm time' => ['930pm', '21:30'],
+                        'compact noon' => ['1200pm', '12:00'],
+                        'compact midnight' => ['1200am', '00:00'],
+                        'bare pm hour is twelve-hour notation' => ['7pm', '19:00'],
+                        'bare am hour is twelve-hour notation' => ['7am', '07:00'],
+                        'compact time with a space before the meridiem' => ['830 am', '08:30'],
+                    ];
+                }
 
     #[DataProvider('supportedTimeForms')]
     public function testExtractsLocalTimesAsTwentyFourHourValues(string $text, string $expectedTime): void
@@ -311,8 +318,9 @@ final class DateParsingTest extends TestCase
             'dotted range joined by an en dash' => ['8.30–10.00am', '08:30', '10:00'],
             'time range written with the word to' => ['from 10.00 to 12.00', '10:00', '12:00'],
             'a meridiem on the start carries to the end' => ['10.00am-12.00', '10:00', '12:00'],
-        ];
-    }
+                        'compact range sharing a meridiem' => ['830-1000am', '08:30', '10:00'],
+                    ];
+                }
 
     #[DataProvider('dashSeparatedTimeRanges')]
     public function testExtractsDashSeparatedTimeRanges(
@@ -399,7 +407,90 @@ final class DateParsingTest extends TestCase
         self::assertLessThan($ordered['confidence'], $reversed['confidence']);
         self::assertStringContainsString('end', strtolower(implode(' ', $reversed['notes'])));
     }
-}
+
+            /**
+             * A compact time carries its own meridiem, so it is as unambiguous as "6pm" and is
+             * recorded as explicit evidence rather than the weaker bare-clock grade.
+             */
+            public function testACompactTimeIsRecordedAsExplicitEvidence(): void
+            {
+                $result = self::parse('The pioneer picnic is 9th September at 830am.');
+
+                self::assertSame('08:30', $result['fields']['event_time'] ?? null);
+                self::assertSame(
+                    'explicit',
+                    $result['fields']['field_confidence']['fields']['event_time']['origin'] ?? null
+                );
+                self::assertStringNotContainsString('830am', implode(' ', $result['notes']));
+            }
+
+            /**
+             * #165: a time phrase that is recognised as clock-shaped but cannot be resolved used
+             * to vanish with nothing recorded anywhere. It now leaves a note a reviewer can see.
+             */
+            public function testACompactTimeWithAnImpossibleHourLeavesAVisibleNote(): void
+            {
+                $result = self::parse('The event begins at 2575am.');
+
+                self::assertArrayNotHasKey('event_time', $result['fields']);
+                self::assertStringContainsString(
+                    '2575am',
+                    implode(' ', $result['notes'])
+                );
+            }
+
+            public function testADiscardedDigitRunLeavesNoTimeNote(): void
+            {
+                $result = self::parse('The hall has 1200 seats.');
+
+                self::assertArrayNotHasKey('event_time', $result['fields']);
+                self::assertStringNotContainsString('1200', implode(' ', $result['notes']));
+            }
+
+            /**
+             * @return array<string, array{string}>
+             */
+            public static function digitRunsThatAreNotCompactTimes(): array
+            {
+                return [
+                    'a verse range in a citation' => ['Read Psalms 119:105-108 at the start of the service.'],
+                    'a scripture citation' => ['The reading is Psalms 119:105 at the start of the service.'],
+                    'a phone number' => ['Ring 021 555 1234 for details.'],
+                    'a dotted date' => ['The retreat is on Sat 15.06.24 at the hall.'],
+                    'a decimal amount' => ['Registration costs R 20.00.'],
+                    'a four digit year' => ['The hall opens in 2027.'],
+                    'a scripture verse range with a compact shape' => ['Read Psalms 119:10-5 at the start of the service.'],
+                ];
+            }
+
+            #[DataProvider('digitRunsThatAreNotCompactTimes')]
+            public function testALoosenedTimeBoundaryDoesNotReadOtherDigitRuns(string $body): void
+            {
+                $result = self::parse($body);
+
+                self::assertArrayNotHasKey('event_time', $result['fields']);
+                self::assertArrayNotHasKey('event_end_time', $result['fields']);
+            }
+
+            public function testABareFourDigitNumberIsNotReadAsACompactTime(): void
+            {
+                $result = self::parse('The hall has 1200 seats.');
+
+                self::assertArrayNotHasKey('event_time', $result['fields']);
+            }
+
+            /**
+             * A compact time without a meridiem is ambiguous -- it could be 830 in the morning or
+             * 8:30 at night -- so it is not read as a time at all. Only the forms a parish
+             * actually writes are claimed.
+             */
+            public function testACompactTimeWithoutAMeridiemIsNotReadAsATime(): void
+            {
+                $result = self::parse('Ref 830 meets in the hall.');
+
+                self::assertArrayNotHasKey('event_time', $result['fields']);
+            }
+        }
 
 final class FrozenClock implements ClockInterface
 {
