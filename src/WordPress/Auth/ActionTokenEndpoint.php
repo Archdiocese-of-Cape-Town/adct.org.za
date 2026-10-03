@@ -228,7 +228,7 @@ final class ActionTokenEndpoint
         $handler = $this->handlers->forPurpose($inspection->binding->purpose);
 
         if ($handler === null) {
-            return $this->unavailableResponse();
+            return $this->unavailableResponse($inspection->binding->purpose);
         }
 
         $preview = $handler->preview($inspection->binding);
@@ -254,7 +254,7 @@ final class ActionTokenEndpoint
         $handler = $this->handlers->forPurpose($inspection->binding->purpose);
 
         if ($handler === null) {
-            return $this->unavailableResponse();
+            return $this->unavailableResponse($inspection->binding->purpose);
         }
 
         if ($inspection->status === ActionTokenStatus::VALID && $handler->preview($inspection->binding) === null) {
@@ -572,8 +572,20 @@ final class ActionTokenEndpoint
         );
     }
 
-    private function unavailableResponse(): ActionTokenHttpResponse
+    /**
+     * The response for a valid token whose purpose has no registered handler.
+     *
+     * A reserved purpose (#71 revert, #72 login) can mint tokens before its
+     * handler exists, so this is an expected state rather than an attack. It is
+     * logged all the same: a silent no-op reads like a broken link, and the
+     * log line is the only trace that the purpose is still unimplemented.
+     */
+    private function unavailableResponse(ActionTokenPurpose $purpose): ActionTokenHttpResponse
     {
+        error_log('[ADCT Parish Intake] Action token purpose "' . $purpose->value
+            . '" has no registered handler, so the link was not actioned. Register a handler for it,'
+            . ' or keep its reservation in ActionTokenPurposeReservationTest if the owning issue is still open.');
+
         return new ActionTokenHttpResponse(
             200,
             $this->renderPage(
