@@ -72,7 +72,126 @@ The route-resolution subset is covered by #68: unit tests exercise two active ap
 - A parish in a deanery with **no active approver** (dean not set up) goes to reviewers only, is approved by a reviewer, and the dashboard lists that deanery as "no approver".
 - An unchanged repeat of a published or pending event (same parish, title, schedule) is marked `duplicate` and sends **no** confirmation or approval email.
 - Approver digest mode sends one daily email instead of one per item. Reminders respect the on/off switches.
-- Action links: GET renders only a safe preview; nonce-protected POST consumes a token once; invalid, expired and used tokens have friendly states; renewal is queued without exposing recipient data in the page; and a failed self-publication can be retried safely with the same token because the confirmation decision may already be recorded. MariaDB integration tests verify that two concurrent conditional token-consume updates admit exactly one winner, same-second N+1 request denial for both per-email and per-IP limits, and no additional queue delivery after the cap. E4.3 integration checks submitter decisions, confirm-all, rejection reason, audit flags, self-publication for assigned deans/reviewers, wrong-deanery and spoofed Reply-To safeguards, suppressed previews, ambiguous pending matches, and change/cancellation/postponement items staying in review. CandidatePublisher unit coverage rejects ambiguous and pending-candidate matches; ApprovalNoticeJob unit and installed-ZIP checks suppress fields-only pending matches before queuing notices/tokens, and the installed-ZIP approval handler check rejects a stale flagged-candidate approval before token consumption or decision while preserving rejection and genuine winner-token recovery. Existing winner-token replay checks preserve post-commit retry behavior.
+- Action links: GET renders only a safe preview; nonce-protected POST consumes a token once; invalid, expired and used tokens have friendly states; renewal is queued without exposing recipient data in the page; and a failed self-publication can be retried safely with the same token because the confirmation decision may already be recorded. MariaDB integration tests verify that two concurrent conditional token-consume updates admit exactly one winner, same-second N+1 request denial for both per-email and per-IP limits, and no additional queue delivery after the cap. E4.3 integration checks submitter decisions, confirm-all, rejection reason, audit flags, self-publication for assigned deans/reviewers, wrong-deanery and spoofed Reply-To safeguards, suppressed previews, ambiguous pending matches, and change/cancellation/postponement items staying in review. `ConfirmationRoutingCheck` adds the end-to-end submitter-to-approver routing paths listed below. CandidatePublisher unit coverage rejects ambiguous and pending-candidate matches; ApprovalNoticeJob unit and installed-ZIP checks suppress fields-only pending matches before queuing notices/tokens, and the installed-ZIP approval handler check rejects a stale flagged-candidate approval before token consumption or decision while preserving rejection and genuine winner-token recovery. Existing winner-token replay checks preserve post-commit retry behavior.
+
+### Confirmation-to-approval routing paths (E4.3)
+
+`ConfirmationDecisionCheck` proves that a submitter's own decision is recorded and `ApprovalDecisionCheck`
+proves the approver's side, but neither walks a submitter's confirmation *into* the approval queue.
+`ConfirmationRoutingCheck` drives that whole chain against the installed release ZIP — the mailed
+confirmation link through `ActionTokenEndpoint`, then `ApprovalNoticeJob`, then the emailed approver link
+— so the ADR 0008 routing table is covered without a browser. It first pins route resolution for all four
+reasons (`REASON_OK`, `REASON_NO_DEANERY`, `REASON_NO_ACTIVE_APPROVER`, `REASON_DEANERY_INACTIVE`,
+including deactivating and reactivating an appointment), then walks these paths. Each `$check` message is
+prefixed `Path N:`, so a red run points at one route rather than one opaque boolean.
+
+| Path | Scenario | Asserted outcome |
+|---|---|---|
+| 1 | A plain submitter confirms for a parish in an active deanery. | Candidate goes to `awaiting_approval` with no approver; each active dean and each archdiocese reviewer gets one priority-2 email under `approval:<id>:<hash24>` carrying Approve/Reject/Edit; the dean's mailed approval publishes once as `approved_via = dean`. |
+| 2 | The reviewer's copy is opened after the dean approved. | Preview titled *Event already decided* naming the winner, POST answers 409, the dean's decision is unchanged. |
+| 3 | A reviewer approves from their own mailed link. | Published with `approved_via = reviewer`. |
+| 4 | The submitter denies, with a reason, then replays the link. | `rejected` with the `decision_note`, one `submitter_denied` audit row, no publication, zero approval notices, replay 409. |
+| 5 | An address with no verified contact confirms. | `unknown_sender` recorded on the candidate, `WARNING: Unknown sender. Verify the parish before approving.` in the approver mail, still approvable. |
+| 6 | A message reporting a DMARC failure confirms. | `dmarc_fail` recorded, `WARNING: Reported DMARC failure.` in the approver mail, still approvable. |
+| 7 | An address linked as blocked elsewhere confirms. | Never self-approves, even as the appointed dean of the parish, but is still a routed approver and publishes through their own mailed link. |
+| 8 | A suspended dean confirms. | Never self-approves and is skipped by the notice job, while the other dean is still notified. |
+| 9 | A parish in a deanery with no active approver. | `REASON_NO_ACTIVE_APPROVER`; reviewers only; a reviewer approves it as `approved_via = reviewer`. |
+| 10 | A parish with no deanery. | `REASON_NO_DEANERY`; reviewers only; the reviewer still approves it. A dean of another deanery holding a hand-issued token is refused twice: the endpoint answers 200 with the "This link is not valid" page (`ActionTokenEndpoint::respondToAction()` rejects an approver whose `preview()` is `null` before `performAtomic()` ever runs), and a direct `performAtomic()` call asserts the handler's own refusal, `This approver is no longer assigned.`, with the token still `VALID`. |
+| 11 | A parish in a deanery whose status is not active. | `REASON_DEANERY_INACTIVE`; reviewers only; a reviewer approves it. |
+| 12 | A `match_kind = update` candidate. | Stays `awaiting_approval`, never self-publishes, routed to reviewers and not to the parish dean. |
+| 13 | The appointed dean submits for their own parish. | Publishes once on confirmation as `approved_via = self` with `decided_by` null, one `source_candidate_id` postmeta row, zero approval notices. |
+| 14 | The permalink is unreadable when a self-approval commits. | 503 with the "retrying is safe" wording, the token `USED` and the candidate already `published`. `recover()` is then called **directly** on the handler: replaying the link over HTTP cannot reach it, because `performAtomic()` leaves the row at `published` (or `rejected`), `candidates()` filters on `status = 'draft'`, so `preview()` returns `null` and the GET renders the invalid-link page. The direct call answers 200 *Your event has been approved and published.* and leaves exactly one postmeta row. |
+| 15 | A second appointed dean presses their link, then presses it again. | Publishes as `approved_via = dean`. The replay is a **200** by design, not a 409: `ApprovalDecisionHandler::preview()` keeps the winner's own link actionable so they can read the outcome, so the page reads *Already approved by …* naming the winner, the candidate and post count are unchanged, and there is a single `approver_approved` audit row. |
+| 16 | An approver is withdrawn between the notice and the click. | The endpoint answers 200 with the "This link is not valid" page, because a withdrawn approver has no `preview()` and the endpoint rejects that before `performAtomic()`. A direct `performAtomic()` call then asserts the handler's refusal `This approver is no longer assigned.`; the candidate is still `awaiting_approval` and there is no `approver_approved` audit row. |
+| 17 | A denial link is used to recover. | `There is no self-approval to complete.` |
+| 18 | A confirmation that went to approval is used to recover. | `This confirmation has already been completed.` |
+
+**Why two paths assert a 200 and a refusal separately.** `ActionTokenEndpoint::respondToAction()` checks
+`$handler->preview($binding) === null` *before* calling `performAtomic()`, so for an approver who has been
+withdrawn, suspended or never appointed, the endpoint's own guard answers 200 with the "This link is not
+valid" page. The `DomainException` that the handler would raise for the same approver is therefore
+unreachable over HTTP. Paths 10 and 16 assert both halves honestly — the endpoint's real user-visible
+answer, and the handler's own refusal reached by calling `performAtomic()` directly — rather than asserting
+a status code the endpoint can never return. Paths 14 and 15 are the mirror image: `recover()` is called
+directly because a spent confirmation token can never be routed to it, and the deciding dean's replay is a
+200 because `preview()` deliberately keeps the winner's own link actionable.
+
+### MVP demo steps 3 and 6 — owner-run checklist on a live test site
+
+Backlog demo step 3 is *"She confirms both. The dean of her deanery and the archdiocese reviewers each get
+an approval email. The dean approves from the email. The reviewers' copy now shows 'approved by the
+dean'."* Step 6 is *"An email from an unknown address goes through the same confirm-then-approve steps.
+The approver sees an 'unknown sender' warning and links the address to a parish."* Both need real mail on a
+temporary InstaWP/TasteWP site ([ADR 0009](decisions/0009-preview-and-test-environments.md)) and are
+**not** automated. `ConfirmationRoutingCheck` asserts the same routing against the installed ZIP; what it
+cannot assert is real SMTP delivery, real mail-client rendering of the links, and the reviewer actually
+performing the Senders link. An agent does not provision test sites or send real mail, so an operator runs
+this. Every address used must be a throwaway test mailbox. Never use a real parish address, and never copy
+a real bulletin into a test site.
+
+**Setup (once per run)**
+
+1. Create a throwaway site on InstaWP or TasteWP and install `dist/adct-parish-intake.zip` by URL (the
+   artifact from the `pr-preview-build` job on the branch under test).
+2. **Parish Intake → Outbound email**: switch **Test mode** on and allow-list only the test mailbox, as an
+   exact address (`events-test@example.test`) or exact domain (`@example.test`). Confirm the admin banner is
+   visible. Everything else must stay **suppressed**; check **Outbound email → Suppressed** to confirm.
+3. Add three WordPress accounts, each with the address that is allow-listed:
+   - the parish secretary — no intake capability, and a `parish_contacts` row with `trust = verified`;
+   - the dean — role **Deanery approver**, assigned to the secretary's parish's deanery via
+     **Parish Intake → Deaneries** (notify mode *each*);
+   - one **Intake reviewer**.
+   Record each address; these are the addresses you will check mailboxes for.
+4. **Parish Intake → Mailboxes**: connect the test mailbox so real mail arrives. If the external pinger is
+   not running, expect up to 2 hours ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md));
+   otherwise roughly 15 minutes.
+
+**Step 3 — confirm, route to dean and reviewers, dean approves**
+
+1. From the secretary's address, mail the intake mailbox **two events in one notice**: one once-off and one
+   "every first Friday". Use invented content only.
+2. Expect one confirmation email listing both events exactly as they will appear.
+3. Open the confirmation link in a **real mail client** (test in Outlook, Gmail and one mobile client).
+   Record whether the Approve/Deny buttons render as buttons or bare links and whether the event details
+   are readable. Press **Confirm**.
+4. Expect the success page *"Thank you, your dean or the archdiocese will approve it shortly."*
+5. Expect **two separate approval emails**: one to the dean and one to each Intake reviewer. Each must
+   contain `Parish:`, the event title, date, time, venue and `Submitted by:`, followed by **Approve**,
+   **Reject** and **Edit** links. Note the order.
+6. Dean opens their **Approve** link. Record the preview page (title *Review event*, `Parish:`, the event
+   fields, `Submitted by:`), then press the button. Expect the success page and a **View published event**
+   link that resolves.
+7. Open the **reviewer's** copy of the link. Expect the page titled *Event already decided*, naming the
+   dean's address, and expect pressing the button to be refused rather than reversing anything.
+8. Both events must appear on the public events page and in the ICS feed, and the recurring event must
+   list its upcoming dates.
+
+**Step 6 — unknown sender**
+
+1. From an address with **no** `parish_contacts` row, mail the intake mailbox a single invented event.
+2. Expect the same confirmation email, and confirm it normally.
+3. Expect the approver's approval email to carry the line
+   `WARNING: Unknown sender. Verify the parish before approving.` and **not** to publish on confirmation.
+4. The approver approves it through the mail link as normal.
+5. Link the address to a parish: **Parish Intake → Senders** (or **Parishes → Contacts**), confirm the
+   pending link against the right parish, then send a second notice from the same address. It must arrive
+   with **no** unknown-sender warning and, as a verified contact, update an existing event immediately with
+   a change notice and **Revert** link to the dean ([ADR 0008](decisions/0008-approval-by-dean-or-archdiocese-reviewer.md)).
+
+**Stop conditions and what to record**
+
+Stop and file an issue rather than working around it if: no mail arrives within the expected window; a
+confirmation or approval email is delivered to an address that is **not** on the allow-list; the Approve
+or Edit link is missing or dead in any client; a confirmation alone publishes anything; the dean's approval
+does not publish; the reviewer's copy can reverse the decision; or the unknown-sender warning is absent.
+
+Record, per step: the site URL, the three test addresses, the arrival time of each email, the exact wording
+of each screen, each mail client tested, and anything suppressed. Attach screenshots with real personal
+details removed. Then delete the site and the test mailbox.
+
+**Also required before launch:** run both steps on the temporary xneelo staging instance as part of the
+[pre-launch check](#pre-launch-check-on-a-temporary-staging-instance), because InstaWP/TasteWP cannot
+exercise the real 90 s PHP limit, the 2-hourly cron or the 500-recipients-per-hour mail cap.
 
 ## Scheduling and mail limits test cases
 
