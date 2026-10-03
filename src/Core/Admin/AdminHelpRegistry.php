@@ -148,7 +148,8 @@ final class AdminHelpRegistry
             'capability' => Capabilities::MANAGE_SETTINGS,
             'title' => 'Settings',
             'body' => 'Site-wide settings: the AI provider (off by default), how confident a parse has to'
-                . ' be, which bulletin sections to skip, and data retention.',
+                            . ' be, which bulletin sections to skip, poster image OCR (also off by default, and it'
+                            . ' sends the image to a third party when it is on), and data retention.',
             'anchor' => 'configure-parser-safeguards',
         ],
         'adct-parish-intake_page_adct-parish-intake-manual-parser' => [

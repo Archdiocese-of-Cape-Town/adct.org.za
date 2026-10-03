@@ -4,3 +4,8 @@
 # inflates the committed bytes, and the PDF text-layer tests compare fixture
 # sizes and parse content streams that corruption invalidates.
 *.pdf binary
+
+# Same reason for the poster image fixture: end-of-line conversion would corrupt
+# the bytes, and the OCR replay test compares what is uploaded against the file
+# as committed.
+*.png binary

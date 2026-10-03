@@ -17,6 +17,8 @@ use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use ADCT\ParishIntake\Core\Pdf\PdfExtractionResult;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
+use ADCT\ParishIntake\Core\Ocr\OcrExtractionLimits;
+use ADCT\ParishIntake\Core\Ocr\OcrExtractionResult;
 use ADCT\ParishIntake\Core\Ports\AiCallGateInterface;
 use ADCT\ParishIntake\Core\Approval\ApprovalReminderSettings;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
@@ -31,6 +33,8 @@ use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
 use ADCT\ParishIntake\WordPress\Jobs\RetentionSettings;
+use ADCT\ParishIntake\WordPress\Jobs\OcrSettings;
+use ADCT\ParishIntake\WordPress\Ocr\OcrSpaceProvider;
 use RuntimeException;
 use Throwable;
 
@@ -250,6 +254,50 @@ final class ParserPage
         };
     }
 
+    /**
+     * Posters still waiting to be read, newest first.
+     *
+     * A repository failure must not take the settings screen down with it, so
+     * this logs and renders nothing: this screen is how an operator notices a
+     * backlog in the first place.
+     *
+     * @return list<array{filename: string, status: string, updated_at: string}>
+     */
+    private function unreadablePosters(): array
+    {
+        if ($this->attachments === null) {
+            return [];
+        }
+
+        try {
+            return $this->attachments->findRecentUnreadableImages(5);
+        } catch (Throwable $failure) {
+            error_log(
+                '[ADCT Parish Intake] Could not load unreadable poster attachment warnings ('
+                . get_class($failure) . ').'
+            );
+
+            return [];
+        }
+    }
+
+    /**
+     * Why one poster was not read, in the operator's words.
+     */
+    private function posterStatusLabel(string $status): string
+    {
+        return match ($status) {
+            OcrExtractionResult::STATUS_NO_TEXT => 'No text could be read from it',
+            OcrExtractionResult::STATUS_SKIPPED_SIZE => 'Too large to read automatically',
+            OcrExtractionResult::STATUS_SKIPPED_TYPE => 'Not a format that can be read',
+            OcrExtractionResult::STATUS_SKIPPED_TIMEOUT => 'Took too long to read',
+            OcrExtractionResult::STATUS_SKIPPED_RATE_LIMIT => "Today's read limit was reached",
+            OcrExtractionResult::STATUS_NOT_CONFIGURED => 'Poster OCR was not configured when it arrived',
+            OcrExtractionResult::STATUS_FAILED => 'Could not be read automatically',
+            default => 'Not read',
+        };
+    }
+
     public function createConfiguredPipeline(bool $allowAi = false): Pipeline
     {
         $settings = $this->settings();
@@ -342,6 +390,21 @@ final class ParserPage
         }
 
         $recorder = $this->settingsRecorder();
+
+        // Poster OCR is validated on its own so that an unusable cap cannot be
+        // attributed to the retention settings the operator was not touching.
+        $ocrSettings = OcrSettings::fromValues(
+            isset($_POST['ocr_enabled']) ? '1' : '0',
+            wp_unslash($_POST['ocr_daily_call_limit'] ?? '')
+        );
+
+        if ($ocrSettings->configurationError() !== null) {
+            $this->settingsSaveError = $ocrSettings->configurationError();
+
+            return;
+        }
+
+        $recorder = $this->settingsRecorder();
         $recorder->record('adct_parish_intake_ai_enabled', get_option('adct_parish_intake_ai_enabled'), isset($_POST['ai_enabled']) ? '1' : '0');
         update_option('adct_parish_intake_ai_enabled', isset($_POST['ai_enabled']) ? '1' : '0');
         $recorder->record('adct_parish_intake_ai_provider', get_option('adct_parish_intake_ai_provider'), sanitize_text_field(wp_unslash($_POST['ai_provider'] ?? 'none')));
@@ -371,6 +434,49 @@ final class ParserPage
                 update_option($apiKeyOption, sanitize_text_field($apiKey));
             }
         }
+
+        $recorder->record('adct_parish_intake_ai_threshold', get_option('adct_parish_intake_ai_threshold'), (string) max(0, min(1, (float) wp_unslash($_POST['ai_threshold'] ?? '0.55'))));
+
+        // Same handling as the AI key, because it is the same kind of decision:
+        // a credential for a third party that must never appear in the audit
+        // trail, and which a constant in wp-config.php wins over a stored value.
+        $ocrKeyOption = SecretRegistry::optionName(SecretRegistry::OCR_API_KEY);
+
+        if (isset($_POST['remove_ocr_api_key'])) {
+            $recorder->recordRemoval($ocrKeyOption, get_option($ocrKeyOption));
+            delete_option($ocrKeyOption);
+        } elseif (
+            ! $secretResolver->isConstantConfigured(SecretRegistry::OCR_API_KEY)
+            && isset($_POST['ocr_api_key'])
+            && is_string($_POST['ocr_api_key'])
+        ) {
+            $ocrKey = trim(wp_unslash($_POST['ocr_api_key']));
+
+            if ($ocrKey !== '') {
+                $recorder->record($ocrKeyOption, get_option($ocrKeyOption), $ocrKey);
+                update_option($ocrKeyOption, sanitize_text_field($ocrKey));
+            }
+        }
+
+        $recorder->record(
+            OcrSettings::ENABLED_OPTION,
+            get_option(OcrSettings::ENABLED_OPTION),
+            $ocrSettings->isEnabled() ? '1' : '0'
+        );
+        update_option(
+            OcrSettings::ENABLED_OPTION,
+            $ocrSettings->isEnabled() ? '1' : '0'
+        );
+
+        $recorder->record(
+            OcrSettings::DAILY_CALL_LIMIT_OPTION,
+            get_option(OcrSettings::DAILY_CALL_LIMIT_OPTION),
+            (string) $ocrSettings->dailyCallLimit()
+        );
+        update_option(
+            OcrSettings::DAILY_CALL_LIMIT_OPTION,
+            (string) $ocrSettings->dailyCallLimit()
+        );
 
         $recorder->record('adct_parish_intake_ai_threshold', get_option('adct_parish_intake_ai_threshold'), (string) max(0, min(1, (float) wp_unslash($_POST['ai_threshold'] ?? '0.55'))));
         update_option('adct_parish_intake_ai_threshold', (string) max(0, min(1, (float) wp_unslash($_POST['ai_threshold'] ?? '0.55'))));
@@ -515,6 +621,9 @@ final class ParserPage
 
         $settings = $this->settings();
         $retentionSettings = RetentionSettings::current();
+        $ocrSettings = OcrSettings::current();
+        $secretResolver = new WordPressSecretResolver();
+        $unreadablePosters = $this->unreadablePosters();
         ?>
         <div class="wrap">
             <h1>Parish Intake Settings</h1>
@@ -672,6 +781,61 @@ final class ParserPage
                                 Delete audit log rows older than 24 months
                             </label>
                             <p class="description">Keep this off if you need a longer review or compliance trail.</p>
+                        </td>
+                    </tr>
+                </table>
+                <h2>Approval reminders</h2>
+                </table>
+                <h2>Poster image OCR</h2>
+                <p>Some parishes send a poster as a photograph or a scan with no text anyone can copy out. Leave this off and those posters are simply listed as unread, exactly as they are today. Turn it on and the plugin sends the picture to <?php echo esc_html(OcrSpaceProvider::PROVIDER_NAME); ?>, a third party, and reads the text back.</p>
+                <p class="description"><strong>What leaves this site if you turn this on:</strong> the image attachment itself and nothing else. The sender's address, the parish name, the message body, the subject and any other attachment are never sent with it. The image goes to <?php echo esc_html(OcrSpaceProvider::DEFAULT_ENDPOINT); ?> over HTTPS, and the OCR.space account that owns the key is the only party that can see it. The free tier keeps the text of what it reads, so do not enable this for posters carrying anything sensitive.</p>
+                <table class="form-table" role="presentation">
+                    <tr>
+                        <th scope="row">Read poster images automatically</th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="ocr_enabled" value="1" <?php checked($settings['ocr_enabled']); ?> />
+                                Send unreadable poster images to <?php echo esc_html(OcrSpaceProvider::PROVIDER_NAME); ?> to be read
+                            </label>
+                            <p class="description">Off by default. Switching it on is the whole opt-in: until this box is ticked, no image is read, copied or sent.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">OCR.space API key</th>
+                        <td>
+                            <?php if ($secretResolver->isConstantConfigured(SecretRegistry::OCR_API_KEY)) : ?>
+                                <p><strong>Configured in <code>wp-config.php</code>.</strong> The plugin reads the constant and ignores the stored value.</p>
+                            <?php else : ?>
+                                <input type="password" class="regular-text" name="ocr_api_key" value="" autocomplete="off" />
+                                <p class="description">Paste a valid <?php echo esc_html(OcrSpaceProvider::PROVIDER_NAME); ?> key. A saved key is never shown again after saving; clear this field and save to remove it.</p>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Daily reading limit</th>
+                        <td>
+                            <label for="adct-pi-ocr-daily-limit">Read at most</label>
+                            <input id="adct-pi-ocr-daily-limit" type="number" min="<?php echo esc_attr((string) OcrSettings::MIN_DAILY_CALL_LIMIT); ?>" max="<?php echo esc_attr((string) OcrSettings::MAX_DAILY_CALL_LIMIT); ?>" step="1" name="ocr_daily_call_limit" value="<?php echo esc_attr((string) $settings['ocr_daily_call_limit']); ?>" />
+                            <span class="description">posters a day</span>
+                            <p class="description">Defaults to <?php echo esc_html((string) OcrSettings::DEFAULT_DAILY_CALL_LIMIT); ?>. Past the limit, posters are left unread rather than queued, so a busy Monday cannot spend the account's allowance.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Posters that still need reading</th>
+                        <td>
+                            <?php if ($unreadablePosters === []) : ?>
+                                <p>Nothing is waiting. Every poster received so far has been read.</p>
+                            <?php else : ?>
+                                <ul>
+                                    <?php foreach ($unreadablePosters as $poster) : ?>
+                                        <li>
+                                            <?php echo esc_html((string) $poster['filename']); ?>
+                                            &mdash; <?php echo esc_html($this->posterStatusLabel((string) $poster['status'])); ?>
+                                        </li>
+                                    <?php endforeach; ?>
+                                </ul>
+                                <p class="description">A poster stays here until something reads it, so nothing is lost when reading is switched off.</p>
+                            <?php endif; ?>
                         </td>
                     </tr>
                 </table>
@@ -963,6 +1127,10 @@ final class ParserPage
             ),
             'retention_action_tokens_enabled' => get_option(RetentionSettings::ACTION_TOKENS_ENABLED_OPTION, '0') === '1',
             'retention_audit_enabled' => get_option(RetentionSettings::AUDIT_ENABLED_OPTION, '0') === '1',
+            'retention_audit_enabled' => get_option(RetentionSettings::AUDIT_ENABLED_OPTION, '0') === '1',
+            'ocr_enabled' => OcrSettings::current()->isEnabled(),
+            'ocr_daily_call_limit' => OcrSettings::current()->dailyCallLimit(),
+            'ocr_api_key_is_constant' => $secretResolver->isConstantConfigured(SecretRegistry::OCR_API_KEY),
             'approval_reminders_enabled' => get_option(
                 ApprovalReminderOptionReader::ENABLED_OPTION,
                 '1'

@@ -1554,6 +1554,92 @@ if (
     $fail('The Settings page did not render the read-only wp-config.php secret state.');
 }
 
+    // Issue #75: the optional poster OCR opt-in, its daily limit and its key. The unit stubs cannot see
+    // a stored option, so the "a key is saved" branch is only provable against a real wp_options table.
+    $storedTestOcrKey = 'K123456789-ocr-test-DO-NOT-ECHO-789';
+    update_option('adct_parish_intake_ocr_api_key', $storedTestOcrKey);
+
+    ob_start();
+    try {
+        do_action($settingsHook);
+    } finally {
+        $ocrSettingsHtml = (string) ob_get_clean();
+    }
+
+    if (
+        strpos($ocrSettingsHtml, $storedTestOcrKey) !== false
+        || strpos($ocrSettingsHtml, 'name="ocr_api_key" value=""') === false
+        || strpos($ocrSettingsHtml, 'A key is saved. Leave blank to keep it.') === false
+        || strpos($ocrSettingsHtml, 'name="remove_ocr_api_key"') === false
+    ) {
+        $fail('The Settings page exposed a stored OCR API key or omitted its safe saved-key controls.');
+    }
+
+    if (
+        strpos($ocrSettingsHtml, 'Poster image OCR') === false
+        || strpos($ocrSettingsHtml, 'name="ocr_enabled"') === false
+        || strpos($ocrSettingsHtml, 'name="ocr_daily_call_limit"') === false
+        || strpos($ocrSettingsHtml, 'What leaves this site') === false
+        || strpos($ocrSettingsHtml, 'off by default') === false
+    ) {
+        $fail('The Settings page did not render the optional poster OCR section, its egress note or its off-by-default statement.');
+    }
+
+    $ocrEnabledAt = strpos($ocrSettingsHtml, 'name="ocr_enabled"');
+
+    if (
+        $ocrEnabledAt !== false
+        && strpos(substr($ocrSettingsHtml, max(0, $ocrEnabledAt - 200), 200), "checked='checked'") !== false
+    ) {
+        $fail('Poster OCR was not off by default; the opt-in rendered as checked without an operator saving it.');
+    }
+
+    $originalOcrScreen = $GLOBALS['current_screen'] ?? null;
+    set_current_screen('dashboard');
+    $_POST = [
+        'adct_parish_intake_settings_nonce' => wp_create_nonce('adct_parish_intake_save_settings'),
+        'adct_parish_intake_save_settings' => '1',
+        'ai_provider' => 'none',
+        'openrouter_model' => 'openrouter/auto',
+        'openrouter_api_key' => '',
+        'ai_threshold' => '0.55',
+        'ocr_enabled' => '1',
+        'ocr_daily_call_limit' => '7',
+        'ocr_api_key' => '',
+        'section_keywords' => [],
+    ];
+    $_REQUEST = $_POST;
+    do_action('admin_init');
+
+    if (get_option('adct_pi_ocr_enabled') !== '1' || (int) get_option('adct_pi_ocr_daily_call_limit') !== 7) {
+        $fail('The Settings handler did not save the poster OCR opt-in and its daily limit.');
+    }
+
+    if (get_option('adct_parish_intake_ocr_api_key') !== $storedTestOcrKey) {
+        $fail('Saving a blank OCR API key unexpectedly removed the stored key.');
+    }
+
+    $_POST['remove_ocr_api_key'] = '1';
+    $_REQUEST = $_POST;
+    do_action('admin_init');
+
+    if (get_option('adct_parish_intake_ocr_api_key', false) !== false) {
+        $fail('The Settings handler did not remove the stored OCR API key when requested.');
+    }
+
+    if (get_option('adct_pi_ocr_enabled') !== '1') {
+        $fail('Removing the OCR key silently switched OCR off; the opt-in must survive a missing key so the fallback is used.');
+    }
+
+    $_POST = $originalSettingsPost;
+    $_REQUEST = $originalSettingsRequest;
+
+    if ($originalOcrScreen !== null) {
+        $GLOBALS['current_screen'] = $originalOcrScreen;
+    } else {
+        unset($GLOBALS['current_screen']);
+    }
+
 $_POST = $originalSettingsPost;
 $_REQUEST = $originalSettingsRequest;
 

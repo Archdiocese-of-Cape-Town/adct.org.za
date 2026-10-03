@@ -12,6 +12,7 @@ use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingFailure;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageProcessingRecord;
 use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
 use ADCT\ParishIntake\Core\Ingestion\MimeMessageParser;
+use ADCT\ParishIntake\Core\Ocr\OcrTextEnrichmentService;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\ParseOutcome;
 use ADCT\ParishIntake\Core\Parsing\Pipeline;
@@ -56,7 +57,8 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
         DirectorySnapshotProviderInterface $directorySnapshots,
         private ClockInterface $clock,
         private ?SenderLearningService $senderLearning = null,
-        private ?PdfTextEnrichmentService $pdfTextEnrichment = null
+        private ?PdfTextEnrichmentService $pdfTextEnrichment = null,
+        private ?OcrTextEnrichmentService $ocrTextEnrichment = null
     ) {
         parent::__construct(
             'process_inbound_messages',
@@ -189,6 +191,7 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
             }
 
             $parsedMessage = $this->appendPdfText($message, $parsedMessage);
+            $parsedMessage = $this->appendOcrText($message, $parsedMessage);
             $pipeline = ($this->pipelineFactory)();
 
             if (! $pipeline instanceof Pipeline) {
@@ -346,6 +349,35 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
             $this->logFailure(
                 $message->id,
                 InboundMessageProcessingFailure::CONTEXT_PDF_EXTRACTION,
+                $failure
+            );
+
+            return $parsedMessage;
+        }
+    }
+
+    /**
+     * Poster images are parsed like text pasted into the email.
+     *
+     * Like the PDF equivalent, and for the same reason, the OCR service is an
+     * optional extra that a parish's data leaves the site for. It must only
+     * ever add to what was already written, so anything it does wrong leaves
+     * the message exactly as it was.
+     */
+    private function appendOcrText(
+        InboundMessageProcessingRecord $message,
+        Message $parsedMessage
+    ): Message {
+        if ($this->ocrTextEnrichment === null) {
+            return $parsedMessage;
+        }
+
+        try {
+            return $this->ocrTextEnrichment->enrich($message->id, $parsedMessage)->message;
+        } catch (Throwable $failure) {
+            $this->logFailure(
+                $message->id,
+                InboundMessageProcessingFailure::CONTEXT_OCR_EXTRACTION,
                 $failure
             );
 

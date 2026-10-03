@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Database\Repository;
 
+use ADCT\ParishIntake\Core\Ocr\OcrExtractionResult;
 use ADCT\ParishIntake\Core\Pdf\PdfExtractionResult;
 use InvalidArgumentException;
 
@@ -128,7 +129,75 @@ final class AttachmentRepository extends AbstractRepository
     }
 
     /**
-     * The most recently received browser-readable images (ADR 0018).
+         * The stored images of one message that OCR has not yet tried, oldest first.
+         *
+         * Only rows still marked `none`/`pending` come back, so a second pass over
+         * the same message cannot re-send a poster that has already been read or
+         * deliberately skipped, and so a failed attempt is not retried on every
+         * cron tick.
+         *
+         * @return list<array<string, mixed>>
+         */
+        public function findPendingImagesForMessage(int $messageId): array
+        {
+            if ($messageId < 1) {
+                throw new InvalidArgumentException('A message ID must be positive.');
+            }
+
+            return $this->fetchRows($this->database->prepare(
+                'SELECT id, filename, mime_type, size_bytes, storage_path, extraction_method, status'
+                . ' FROM ' . $this->tableName()
+                . ' WHERE message_id = %d AND mime_type IN (%s, %s, %s)'
+                . ' AND extraction_method = %s AND status = %s'
+                . ' AND storage_path IS NOT NULL AND storage_path <> %s'
+                . ' ORDER BY id ASC',
+                $messageId,
+                'image/jpeg',
+                'image/png',
+                'image/webp',
+                OcrExtractionResult::METHOD_NONE,
+                'pending',
+                ''
+            ));
+        }
+
+        /**
+         * The most recent images that were received but produced no readable text.
+         *
+         * These are the posters an operator has to enter by hand, so the Manual
+         * parser screen lists them instead of leaving the reason only in the log.
+         *
+         * @return list<array{filename: string, status: string, updated_at: string}>
+         */
+        public function findRecentUnreadableImages(int $limit = 5): array
+        {
+            // Built from the status list so the placeholders cannot drift from the
+            // statuses again (#181).
+            $unreadableStatuses = [
+                OcrExtractionResult::STATUS_NO_TEXT,
+                OcrExtractionResult::STATUS_SKIPPED_SIZE,
+                OcrExtractionResult::STATUS_SKIPPED_TIMEOUT,
+                OcrExtractionResult::STATUS_SKIPPED_RATE_LIMIT,
+                OcrExtractionResult::STATUS_NOT_CONFIGURED,
+                OcrExtractionResult::STATUS_FAILED,
+            ];
+
+            return $this->fetchRows($this->database->prepare(
+                'SELECT filename, status, updated_at FROM ' . $this->tableName()
+                . ' WHERE mime_type IN (%s, %s, %s) AND status IN ('
+                . implode(', ', array_fill(0, count($unreadableStatuses), '%s'))
+                . ')'
+                . ' ORDER BY id DESC LIMIT %d',
+                ...array_merge(
+                    ['image/jpeg', 'image/png', 'image/webp'],
+                    array_values($unreadableStatuses),
+                    [max(1, min(50, $limit))]
+                )
+            ));
+        }
+
+        /**
+         * The most recently received browser-readable images (ADR 0018).
      *
      * These are the posters the pipeline cannot read, so the Manual parser
      * screen offers on-demand client-side OCR for them.
