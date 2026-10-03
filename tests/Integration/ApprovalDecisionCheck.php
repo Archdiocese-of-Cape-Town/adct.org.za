@@ -184,6 +184,32 @@ final class ApprovalDecisionCheck
             $check($tokens->inspect($deanLinks[0])->status === ActionTokenStatus::USED
                 && $replayed->statusCode === 200,
                 'replaying the winning token must recover without another publication.');
+
+                        // A GET that is refused must not burn the link. The unit tests pin this
+                        // per recipient; here it is pinned end to end through the endpoint, where
+                        // a mistyped or stale click is what actually happens to a dean.
+                        $stale = $candidate('stale', $parish);
+                        $job->beginRun();
+                        $job->processNext((string) ($stale - 1));
+                        [, $staleLinks] = $tokensFor($stale, $deanEmail);
+                        $wpdb->query($wpdb->prepare(
+                            "UPDATE {$base}deanery_approvers SET active = 0 WHERE wp_user_id = %d", $deanId
+                        ));
+                        $refusedGet = $endpoint->respond('GET', $staleLinks[0], '', '', '', '203.0.113.90');
+                        $check($tokens->inspect($staleLinks[0])->status === ActionTokenStatus::VALID,
+                            'a GET refused because the dean lost the deanery must leave the link usable.');
+                        $wpdb->query($wpdb->prepare(
+                            "UPDATE {$base}deanery_approvers SET active = 1 WHERE wp_user_id = %d", $deanId
+                        ));
+                        [, $staleApproved] = $act($staleLinks[0]);
+                        $check($staleApproved->statusCode === 200
+                            && $wpdb->get_var($wpdb->prepare(
+                                "SELECT status FROM {$base}event_candidates WHERE id = %d", $stale
+                            )) === 'published',
+                            'the same link must still approve once the deanery is restored.');
+                        $posts[] = (int) $wpdb->get_var($wpdb->prepare(
+                            "SELECT match_event_id FROM {$base}event_candidates WHERE id = %d", $stale
+                        ));
             $check((int) $wpdb->get_var($wpdb->prepare(
                 "SELECT COUNT(*) FROM {$base}mail_queue WHERE recipient = %s AND group_key = %s",
                 $submitter, 'approval-live:' . $first

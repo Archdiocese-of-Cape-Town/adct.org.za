@@ -192,11 +192,20 @@ namespace {
          * back which form guards which action rather than only asserting a
          * constant. A mismatch between the two is invisible in production until a
          * press is silently refused, which is exactly the bug this catches.
+         *
+         * Returns the markup *and* echoes it, because that is what WordPress
+         * does: the real function is `string wp_nonce_field(..., $display = true)`
+         * and it echoes before returning. `FrontEndApprovalQueue.php:404`
+         * concatenates the return value, so a stub that echoed but returned void
+         * would hand that form no nonce field and let the assertions pass.
          */
-        function wp_nonce_field(string $action = '-1', string $name = '_wpnonce', bool $referer = true): void
+        function wp_nonce_field(string $action = '-1', string $name = '_wpnonce', bool $referer = true): string
         {
             $GLOBALS['adct_test_nonce_fields'][] = ['action' => $action, 'name' => $name];
-            echo '<input type="hidden" name="' . $name . '" value="nonce-for-' . $action . '" />';
+            $markup = '<input type="hidden" name="' . $name . '" value="nonce-for-' . $action . '" />';
+            echo $markup;
+
+            return $markup;
         }
     }
 
@@ -368,14 +377,83 @@ namespace ADCT\ParishIntake\WordPress\Admin {
 namespace ADCT\ParishIntake\WordPress\Approval {
 
     /**
-     * Minimal stand-ins for the WordPress user helpers ApprovalRecipients
-     * calls. Each test drives them through the globals below and restores
-     * them in tearDown.
+     * Stand-ins for the WordPress functions the approval surfaces call.
+     *
+     * Two of them are load-order sensitive and therefore declared here rather
+     * than in a test file. current_user_can() and wp_die() already have
+     * namespace-specific doubles in other test files — an Approval-namespace
+     * current_user_can() in FrontEndApprovalQueueTest.php and an
+     * Admin-namespace wp_die() in AuditLogPageTest.php — and whichever is
+     * loaded first wins, which would silently give one test another's
+     * behaviour. Declaring them once here, against the fully qualified name,
+     * settles that race for every test in the suite.
+     *
+     * Each test drives these through the globals named below and clears them
+     * again in tearDown().
      */
+    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\current_user_can')) {
+        /**
+         * The *acting* user's own capability, as WordPress decides it from the
+         * current user rather than from a target. Distinct from user_can()
+         * below, which answers about a named user, and from the
+         * Admin-namespace copy, which answers about capabilities in wp-admin.
+         *
+         * The variadic second argument exists because production calls this
+         * with a user ID for the 'edit_user' meta-capability. This stub has no
+         * request context to resolve that ID against — resolving it properly
+         * needs the roles WordPress loaded for the current user, which is a
+         * WordPress service rather than plugin logic — so it answers from the
+         * acting user's own capability list, and each test that relies on the
+         * target having to say so explicitly. See
+         * ReviewerNotificationPreferenceTest::testTheTargetIsGuardedSeparatelyFromTheActor().
+         */
+        function current_user_can(string $capability, int|string ...$arguments): bool
+        {
+            $actorId = (int) ($GLOBALS['adct_test_current_user_id'] ?? 0);
+
+            return in_array($capability, $GLOBALS['adct_test_wp_caps'][$actorId] ?? [], true);
+        }
+    }
+
+    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\wp_die')) {
+        /**
+         * Real wp_die() ends the request, which no assertion could observe.
+         * Throwing \AdctTestWpDie instead carries the response status a guard
+         * chose, so a test can tell a refused permission from a refused value
+         * rather than only seeing that the request stopped.
+         *
+         * @param mixed[] $arguments
+         */
+        function wp_die(string $message = '', $title = '', array $arguments = []): never
+        {
+            throw new \AdctTestWpDie($message, (int) ($arguments['response'] ?? 500));
+        }
+    }
+
     if (! function_exists('ADCT\ParishIntake\WordPress\Approval\get_users')) {
+        /**
+         * Answers the 'capability' => REVIEW query ApprovalRecipients filters
+         * reviewers with. A user whose capability list no longer holds REVIEW
+         * drops out of the result, which is how the revocation tests withdraw
+         * an entitlement without touching production code.
+         */
         function get_users(array $args = []): array
         {
-            return $GLOBALS['adct_test_wp_users'] ?? [];
+            $users = $GLOBALS['adct_test_wp_users'] ?? [];
+            $capability = $args['capability'] ?? null;
+
+            if (! is_string($capability)) {
+                return $users;
+            }
+
+            return array_filter(
+                $users,
+                static fn (mixed $user): bool => in_array(
+                    $capability,
+                    $GLOBALS['adct_test_wp_caps'][$user instanceof \WP_User ? (int) $user->ID : (int) $user] ?? [],
+                    true
+                )
+            );
         }
     }
 
@@ -387,16 +465,153 @@ namespace ADCT\ParishIntake\WordPress\Approval {
     }
 
     if (! function_exists('ADCT\ParishIntake\WordPress\Approval\user_can')) {
-        function user_can(\WP_User $user, string $capability): bool
+        /**
+         * Accepts a user object or a bare ID, because production does both:
+         * ApprovalRecipients and ConfirmationDecisionHandler pass the object
+         * they already hold, while ReviewerNotificationPreference::save() has
+         * only the ID WordPress hands the profile-update hook. The real
+         * WordPress function takes either, so the stub must too.
+         *
+         * Capabilities are read per user from $GLOBALS['adct_test_wp_caps'],
+         * keyed by user ID, not as one flat list, so a test can hold a
+         * reviewer's entitlement while denying the same capability to someone
+         * else — which is how the "who may this belong to" guards are tested.
+         */
+        function user_can(\WP_User|int $user, string $capability): bool
         {
-            return in_array($capability, $GLOBALS['adct_test_wp_caps'][$user->ID] ?? [], true);
+            $userId = $user instanceof \WP_User ? $user->ID : $user;
+
+            return in_array($capability, $GLOBALS['adct_test_wp_caps'][$userId] ?? [], true);
         }
     }
 
     if (! function_exists('ADCT\ParishIntake\WordPress\Approval\get_user_meta')) {
         function get_user_meta(int $userId, string $key, bool $single = false): string
         {
-            return $GLOBALS['adct_test_wp_meta'][$userId][$key] ?? '';
+            return (string) ($GLOBALS['adct_test_wp_meta'][$userId][$key] ?? '');
+        }
+    }
+
+    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\update_user_meta')) {
+        /**
+         * Writes to the same global get_user_meta() reads, so a test can assert
+         * what persisted without a database.
+         *
+         * Listing a key in $GLOBALS['adct_test_wp_meta_fails'] makes the write
+         * report success while storing nothing, which is the only way to reach
+         * the read-back branches in save(). On real WordPress a write can be
+         * accepted and then not stick — a full object cache, a database that is
+         * read-only — and that is precisely the case where telling the user
+         * "saved" would be a lie.
+         *
+         * @param mixed $value
+         */
+        function update_user_meta(int $userId, string $key, $value): bool
+        {
+            if (in_array($key, (array) ($GLOBALS['adct_test_wp_meta_fails'] ?? []), true)) {
+                return true;
+            }
+            $GLOBALS['adct_test_wp_meta'][$userId][$key] = $value;
+
+            return true;
+        }
+    }
+
+    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\selected')) {
+        function selected(mixed $current, mixed $value, bool $echo = true): string
+        {
+            $markup = (string) $current === (string) $value ? " selected='selected'" : '';
+
+            if ($echo) {
+                echo $markup;
+            }
+
+            return $markup;
+        }
+    }
+
+    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\checked')) {
+        function checked(mixed $current, mixed $value, bool $echo = true): string
+        {
+            $markup = (string) $current === (string) $value ? " checked='checked'" : '';
+
+            if ($echo) {
+                echo $markup;
+            }
+
+            return $markup;
+        }
+    }
+
+    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\add_action')) {
+        /**
+         * Records the hook rather than firing it, so a test can assert that
+         * registration happened on the right hook with the right callable.
+         */
+        function add_action(string $hook, callable $callback, int $priority = 10): bool
+        {
+            $GLOBALS['adct_test_wp_actions'][$hook][] = $callback;
+
+            return true;
+        }
+    }
+
+    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\__')) {
+        function __(string $text, string $domain = 'default'): string
+        {
+            return $text;
+        }
+    }
+
+    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\esc_html__')) {
+        function esc_html__(string $text, string $domain = 'default'): string
+        {
+            return htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        }
+    }
+
+    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\esc_html')) {
+        function esc_html(mixed $value): string
+        {
+            return htmlspecialchars(is_string($value) ? $value : '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        }
+    }
+
+    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\wp_unslash')) {
+        function wp_unslash(mixed $value): mixed
+        {
+            return is_string($value) ? stripslashes($value) : $value;
+        }
+    }
+
+    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\wp_nonce_field')) {
+        /**
+         * Same contract as the global copy above, declared again in this
+         * namespace because FrontEndApprovalQueueTest already declared one that
+         * only returned markup and never recorded what it minted. Under
+         * executionOrder="random" that copy won some runs and not others, so the
+         * same assertion passed or failed on the order PHPUnit happened to pick
+         * files up in. One declaration, shared by both, settles it.
+         */
+        function wp_nonce_field(string $action = '-1', string $name = '_wpnonce', bool $referer = true): string
+        {
+            $GLOBALS['adct_test_nonce_fields'][] = ['action' => $action, 'name' => $name];
+            $markup = '<input type="hidden" name="' . $name . '" value="nonce-for-' . $action . '" />';
+            echo $markup;
+
+            return $markup;
+        }
+    }
+
+    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\wp_verify_nonce')) {
+        /**
+         * Answers only for the nonce minted for exactly this action, so a
+         * handler that verifies the wrong action — here the one carrying the
+         * user ID — fails its own test instead of passing on any truthy value.
+         */
+        function wp_verify_nonce(string $nonce, string $action): bool
+        {
+            return $nonce === 'nonce-for-' . $action;
         }
     }
 }
