@@ -50,7 +50,7 @@ final class ParserPage
     private ?AttachmentRepository $attachments;
 
     /**
-<<<<<<< origin/main
+    /**
      * Form field name to [option name, default value].
      *
      * @var array<string, array{0: string, 1: float}>
@@ -65,7 +65,12 @@ final class ParserPage
             ConfidenceScoringStage::DEFAULT_FIELD_THRESHOLD,
         ],
     ];
-=======
+
+    private ?OcrControl $ocrControl = null;
+    private bool $ocrAssetsEnqueued = false;
+    private ?AttachmentImageEndpoint $imageEndpoint = null;
+
+    /**
      * Loads the OCR module on the Manual parser screen, and only when that
      * screen actually has a control to bind to (ADR 0018).
      *
@@ -99,11 +104,6 @@ final class ParserPage
             true
         );
     }
-
-    private ?OcrControl $ocrControl = null;
-    private bool $ocrAssetsEnqueued = false;
-    private ?AttachmentImageEndpoint $imageEndpoint = null;
->>>>>>> origin/pr160
 
     public function __construct(
         Schema $schema,

@@ -5503,13 +5503,10 @@ require_once __DIR__ . '/ApprovalDecisionCheck.php';
 ApprovalDecisionCheck::run($fail);
 require_once __DIR__ . '/ReviewQueueCheck.php';
 ReviewQueueCheck::run($fail);
-<<<<<<< origin/main
 require_once __DIR__ . '/CandidateDetailCheck.php';
 CandidateDetailCheck::run($fail);
-=======
 require_once __DIR__ . '/OcrImageCheck.php';
 OcrImageCheck::run($fail, $pluginFile);
->>>>>>> origin/pr160
 
 foreach (['administrator', 'editor'] as $roleName) {
     $role = get_role($roleName);
