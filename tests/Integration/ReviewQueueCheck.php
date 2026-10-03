@@ -291,6 +291,113 @@ final class ReviewQueueCheck
                 && str_contains($matchReviewHtml, 'Manual resolution required before approval'),
                 'ambiguous awaiting items must retain rejection and manual-resolution guidance.');
 
+            // Issue #59 requires every successful bulk action to leave an audit record.
+            // handleBulk() redirects on success, so the redirect is turned into a
+            // runtime error to prove the handler reached that tail. It must be
+            // removed again even if an assertion throws.
+            $redirectHandler = static function ($location): bool {
+                throw new RuntimeException('Bulk redirect to ' . (string) $location);
+            };
+            add_filter('wp_redirect', $redirectHandler, 1);
+            try {
+                $bulkAction = static function (array $post) use ($page): void {
+                    $_POST = $post;
+                    $_REQUEST = $post;
+                    try {
+                        $page->handleBulk();
+                    } catch (RuntimeException $error) {
+                        // The intercept above stands in for the redirect and exit
+                        // that end a real bulk request.
+                        if (str_starts_with($error->getMessage(), 'Bulk redirect to ')) {
+                            return;
+                        }
+                        throw $error;
+                    }
+                    throw new RuntimeException('Bulk action did not redirect: ' . $post['bulk_action']);
+                };
+                $auditOf = static function (int $id, string $action) use ($wpdb, $prefix): array {
+                    return $wpdb->get_results($wpdb->prepare(
+                        "SELECT actor, details FROM {$prefix}audit_log WHERE subject_type = %s "
+                        . 'AND subject_id = %d AND action = %s',
+                        'event_candidate', $id, $action
+                    ), ARRAY_A);
+                };
+                // The candidates these actions run against stay available to the
+                // partition assertions above and are removed with the other fixtures.
+                $bulkApprove = $candidate('bulk-approve', 'awaiting_approval', $parishOne, $contact);
+                $bulkReject = $candidate('bulk-reject', 'awaiting_approval', $parishOne, $contact);
+                $bulkAssign = $candidate('bulk-assign', 'awaiting_approval', $parishTwo, $contact);
+                wp_set_current_user($reviewer->ID);
+                $bulkAction([
+                    'bulk_action' => 'approve',
+                    'candidate_ids' => [(string) $bulkApprove],
+                    'tab' => 'awaiting_approval',
+                    'review_nonce' => wp_create_nonce('adct_pi_review_bulk'),
+                ]);
+                // decide() records the approval but deliberately leaves the status on
+                // awaiting_approval; handleBulk() then publishes, and the publication
+                // store is what moves the candidate to published. Asserting the final
+                // state proves both halves ran, which is the point of the bulk action.
+                $approved = $wpdb->get_row($wpdb->prepare(
+                    "SELECT status, match_event_id, approved_by, approved_at, approved_via,"
+                    . " decided_by, decided_at FROM {$prefix}event_candidates WHERE id = %d",
+                    $bulkApprove
+                ), ARRAY_A);
+                $approveAudit = $auditOf($bulkApprove, 'approver_approved');
+                $approveEventId = $approved === null ? 0 : (int) $approved['match_event_id'];
+                $approveEvent = $approveEventId > 0 ? get_post($approveEventId) : null;
+                $check($approved !== null
+                    && $approved['status'] === 'published'
+                    && $approved['approved_by'] === $reviewer->user_email
+                    && $approved['approved_at'] !== null && $approved['approved_at'] !== ''
+                    && $approved['approved_via'] === 'reviewer'
+                    && $approved['decided_by'] === $reviewer->user_email
+                    && $approved['decided_at'] !== null && $approved['decided_at'] !== ''
+                    && $approveEvent instanceof WP_Post
+                    && $approveEvent->post_type === 'adct_event'
+                    && $approveEvent->post_status === 'publish'
+                    && count($approveAudit) === 1
+                    && $approveAudit[0]['actor'] === $reviewer->user_email
+                    && (json_decode($approveAudit[0]['details'], true)['role'] ?? '') === 'reviewer',
+                    'bulk approval must publish the candidate and audit the acting reviewer once.');
+                $bulkAction([
+                    'bulk_action' => 'reject',
+                    'candidate_ids' => [(string) $bulkReject],
+                    'tab' => 'awaiting_approval',
+                    'reason' => 'Not a real parish event',
+                    'review_nonce' => wp_create_nonce('adct_pi_review_bulk'),
+                ]);
+                $rejectAudit = $auditOf($bulkReject, 'approver_rejected');
+                $check($wpdb->get_var($wpdb->prepare(
+                    "SELECT status FROM {$prefix}event_candidates WHERE id = %d", $bulkReject
+                )) === 'rejected'
+                    && count($rejectAudit) === 1
+                    && $rejectAudit[0]['actor'] === $reviewer->user_email
+                    && (json_decode($rejectAudit[0]['details'], true)['reason'] ?? '') === 'Not a real parish event',
+                    'bulk rejection must audit the acting reviewer and the supplied reason once.');
+                $bulkAction([
+                    'bulk_action' => 'assign',
+                    'candidate_ids' => [(string) $bulkAssign],
+                    'parish_id' => (string) $parishOne,
+                    'tab' => 'awaiting_approval',
+                    'review_nonce' => wp_create_nonce('adct_pi_review_bulk'),
+                ]);
+                $assignAudit = $auditOf($bulkAssign, 'candidate_parish_assigned');
+                $check($wpdb->get_var($wpdb->prepare(
+                    "SELECT parish_id FROM {$prefix}event_candidates WHERE id = %d", $bulkAssign
+                )) === (string) $parishOne
+                    && count($assignAudit) === 1
+                    && $assignAudit[0]['actor'] === $reviewer->user_email
+                    && (json_decode($assignAudit[0]['details'], true)['to_parish_id'] ?? null) === $parishOne,
+                    'bulk parish assignment must audit the acting reviewer once.');
+                $check(count($auditOf($bulkApprove, 'approver_rejected')) === 0
+                    && count($auditOf($bulkReject, 'approver_approved')) === 0,
+                    'a bulk action must only audit the action it actually applied.');
+            } finally {
+                remove_filter('wp_redirect', $redirectHandler, 1);
+                wp_set_current_user($reviewer->ID);
+            }
+
             $dieHandler = static function (): callable {
                 return static function ($message): never {
                     throw new RuntimeException(wp_strip_all_tags((string) $message));
