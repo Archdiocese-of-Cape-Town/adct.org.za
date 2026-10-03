@@ -232,8 +232,8 @@ stacked PR chain; two items from those issues were deliberately deferred:
 
 Phase 0, in this order:
 1. **Archdiocese (no code needed):**
-   - Hosting answers are in (see [hosting environment](hosting-environment.md)). Still open in [#18](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/18):
-     - Can a temporary staging instance be set up later?
+   - Hosting answers are in (see [hosting environment](hosting-environment.md)). The temporary staging create/remove procedure is written ([hosting environment](hosting-environment.md#temporary-staging-instance-create-then-remove)). Still open in [#18](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/18):
+        - Only two account-specific quota checks remain: is there a free Multiple-domain slot and a free database slot? Both are read from a single konsoleH screen.
    - Done: FluentSMTP is set up, `wp_mail` works and the WP-Cron loopback check passes. Optionally send a test email and check its headers show SPF and DKIM `pass`.
    - Create a free cron-job.org account (or agree to use GitHub Actions) for the external pinger ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
    - Real samples: 13 attachments were reviewed privately ([parser findings](parser-samples.md)); the originals are not in this public repository. Anonymised fixtures derived from real examples are still needed for [#19](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/19). Keep collecting one-line email notices, forwarded emails and changes/cancellations.
