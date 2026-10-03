@@ -10,13 +10,16 @@ use ADCT\ParishIntake\Core\Events\EventValidator;
 use ADCT\ParishIntake\Core\Ports\ApprovalRouteRepositoryInterface;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\MailerInterface;
+use ADCT\ParishIntake\Core\Ports\OccurrenceMaintenanceInterface;
 use ADCT\ParishIntake\Core\Ports\PublicationStoreInterface;
 use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalRecipients;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalEditHandler;
 use ADCT\ParishIntake\WordPress\Auth\ConfirmationDecisionHandler;
+use ADCT\ParishIntake\WordPress\Auth\RevertChangeHandler;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
+use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use DateTimeZone;
 use PHPUnit\Framework\TestCase;
 
@@ -42,7 +45,6 @@ final class ActionTokenPurposeReservationTest extends TestCase
      */
     private const RESERVATIONS = [
         'login' => 72,
-        'revert_change' => 71,
     ];
 
     public function testEveryPurposeIsEitherHandledOrReservedForAnIssue(): void
@@ -174,9 +176,11 @@ final class ActionTokenPurposeReservationTest extends TestCase
             $registered[] = constant(ActionTokenPurpose::class . '::' . $case)->value;
         }
 
-        // ApprovalEditHandler is registered for its own fixed purpose, so that
-        // purpose never appears as a name in the registration block.
+        // ApprovalEditHandler and RevertChangeHandler are registered for their
+        // own fixed purposes, so those purposes never appear as a name in the
+        // registration block.
         $registered[] = self::editHandler()->purpose()->value;
+        $registered[] = self::revertHandler()->purpose()->value;
 
         $registered = array_values(array_unique($registered));
         $expected = array_keys(self::handledPurposes());
@@ -256,8 +260,27 @@ final class ActionTokenPurposeReservationTest extends TestCase
         }
         $edit = self::editHandler();
         $handlers[$edit->purpose()->value] = $edit->purpose()->defaultLifetimeSeconds();
+        $revert = self::revertHandler();
+        $handlers[$revert->purpose()->value] = $revert->purpose()->defaultLifetimeSeconds();
 
         return $handlers;
+    }
+
+    private static function revertHandler(): RevertChangeHandler
+    {
+        $clock = self::createStub(ClockInterface::class);
+
+        return new RevertChangeHandler(
+            self::createStub(DatabaseConnectionInterface::class),
+            new ApprovalRecipients(
+                new ApprovalRouteResolver(self::createStub(ApprovalRouteRepositoryInterface::class))
+            ),
+            self::createStub(MailerInterface::class),
+            $clock,
+            self::createStub(OccurrenceMaintenanceInterface::class),
+            new EventListingGeneration(),
+            new DateTimeZone('Africa/Johannesburg')
+        );
     }
 
     private static function editHandler(): ApprovalEditHandler

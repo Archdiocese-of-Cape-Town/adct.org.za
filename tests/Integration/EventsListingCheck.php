@@ -110,6 +110,34 @@ try {
         || ! str_contains($html, 'Every month')) {
         $fail('Featured and recurring events were not visually distinguished or summarized.');
     }
+
+        // A cancelled occurrence has to read as cancelled on the listing itself, not
+        // only on the event page and in the ICS feed: the events page is where a
+        // parish checks whether something is still happening. The listing badges the
+        // occurrence row, and falls back to the post's status_flag for postponement.
+        $cancelledRows = $wpdb->query($wpdb->prepare(
+            "UPDATE {$occurrencesTable} SET is_cancelled = 1 WHERE event_id = %d",
+            $seedIds[0]
+        ));
+        if ($cancelledRows !== 12) {
+            $fail('Could not flag the fictional event\'s occurrences as cancelled: ' . $wpdb->last_error);
+        }
+        update_post_meta($seedIds[5], 'status_flag', 'postponed');
+        $statusBadges = do_shortcode('[adct_events]');
+        if (
+            ! str_contains($statusBadges, 'adct-events__badge">Cancelled')
+            || ! str_contains($statusBadges, 'adct-events__badge">Postponed')
+        ) {
+            $fail('The public listing did not badge a cancelled occurrence or a postponed event.');
+        }
+        if (substr_count($statusBadges, 'adct-events__badge">Cancelled') !== 1) {
+            $fail('The public listing badged something other than only the cancelled occurrence as cancelled.');
+        }
+        $wpdb->query($wpdb->prepare(
+            "UPDATE {$occurrencesTable} SET is_cancelled = 0 WHERE event_id = %d",
+            $seedIds[0]
+        ));
+        delete_post_meta($seedIds[5], 'status_flag');
     $_GET = ['adct_period' => 'upcoming', 'adct_parish' => (string) $parishIds[0]];
     $expandedSeries = do_shortcode('[adct_events]');
     $_GET['adct_collapse'] = '1';
