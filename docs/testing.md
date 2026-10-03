@@ -249,15 +249,17 @@ expectation and delete the `known_failures` entry in the same change; the fixtur
 | `time-range-dotted-am` | [#153](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/153) | `fields.event_time` reads `00:00`; `event_end_time` missing |
 | `time-range-dotted-bare` | [#153](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/153) | `8.30-10.00am` yields the range end only |
 | `time-range-bare-hyphen` | [#153](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/153) | `7-9pm` yields the range end only |
-| `real-format-ordinal-and-bare-time` | [#165](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/165) | `fields.event_time` — compact `830am` yields no time |
 | `unheaded-event-after-sick-list` | [#98](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/98) | event after the skipped section is dropped entirely |
 | `unheaded-event-after-deceased` | [#98](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/98) | event after the skipped section is dropped entirely |
 
-Five of these nine share a cause: the value is dropped **silently**, with no error and no flag
+Six of these nine share a cause: the value is dropped **silently**, with no error and no flag
 ([#167](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/167)). Fixing the individual format
-bugs does not close that gap, because the next unrecognised format will fail the same way.
+bugs does not close that gap, because the next unrecognised format will fail the same way. The compact
+`830am` form ([#165](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/165)) is now read, and a
+compact form that cannot be resolved is noted rather than dropped in silence; the same note still does not
+cover the next format nobody has seen yet, which is what #167 remains for.
 
-Current `composer fixture-score` baseline: **348/373 fields correct (93%)**, with 10 tracked failures
+Current `composer fixture-score` baseline: **413/428 fields correct (96%)**, with 8 tracked fixtures
 above.
 
 **A falling total is expected. A falling pre-existing row is a regression.** The total percentage is the
