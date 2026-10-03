@@ -2,6 +2,10 @@
 
 namespace ADCT\ParishIntake\WordPress\Admin;
 
+use ADCT\ParishIntake\Core\Audit\AuditAction;
+use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
+use ADCT\ParishIntake\Core\Audit\AuditWriter;
+use ADCT\ParishIntake\Core\Audit\SettingsAuditRecorder;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Attachments\PreviewableImage;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
@@ -18,6 +22,8 @@ use ADCT\ParishIntake\Core\Approval\ApprovalReminderSettings;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\WordPress\Ai\OpenAiCompatibleProvider;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalReminderOptionReader;
+use ADCT\ParishIntake\WordPress\Audit\ActorResolver;
+use ADCT\ParishIntake\WordPress\Audit\WordPressActorResolver;
 use ADCT\ParishIntake\WordPress\Attachments\AttachmentImageEndpoint;
 use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
 use ADCT\ParishIntake\WordPress\Database\Schema;
@@ -25,6 +31,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
 use ADCT\ParishIntake\WordPress\Jobs\RetentionSettings;
+use RuntimeException;
 use Throwable;
 
 final class ParserPage
@@ -115,7 +122,9 @@ final class ParserPage
         AiCallGateInterface $aiGate,
         ?AttachmentRepository $attachments = null,
         private string $pluginFile = '',
-        ?AttachmentImageEndpoint $imageEndpoint = null
+        ?AttachmentImageEndpoint $imageEndpoint = null,
+        private ?AuditWriter $audit = null,
+        private ?ActorResolver $actorResolver = null
     ) {
         $this->schema = $schema;
         $this->pipelineFactory = $pipelineFactory;
@@ -299,10 +308,18 @@ final class ParserPage
         check_admin_referer('adct_parish_intake_save_settings', 'adct_parish_intake_settings_nonce');
 
         if (isset($_POST['reset_section_keywords'])) {
+            $recorder = $this->settingsRecorder();
+            $recorder->record(
+                self::SECTION_KEYWORDS_OPTION,
+                get_option(self::SECTION_KEYWORDS_OPTION),
+                SectionSkipper::defaultKeywordLists()
+            );
             update_option(
                 self::SECTION_KEYWORDS_OPTION,
                 SectionSkipper::defaultKeywordLists()
             );
+            $this->recordSettingsAudit($recorder);
+
             return;
         }
 
@@ -324,15 +341,21 @@ final class ParserPage
             return;
         }
 
+        $recorder = $this->settingsRecorder();
+        $recorder->record('adct_parish_intake_ai_enabled', get_option('adct_parish_intake_ai_enabled'), isset($_POST['ai_enabled']) ? '1' : '0');
         update_option('adct_parish_intake_ai_enabled', isset($_POST['ai_enabled']) ? '1' : '0');
+        $recorder->record('adct_parish_intake_ai_provider', get_option('adct_parish_intake_ai_provider'), sanitize_text_field(wp_unslash($_POST['ai_provider'] ?? 'none')));
         update_option('adct_parish_intake_ai_provider', sanitize_text_field(wp_unslash($_POST['ai_provider'] ?? 'none')));
+        $recorder->record('adct_parish_intake_openrouter_model', get_option('adct_parish_intake_openrouter_model'), sanitize_text_field(wp_unslash($_POST['openrouter_model'] ?? OpenAiCompatibleProvider::FREE_MODEL)));
         update_option('adct_parish_intake_openrouter_model', sanitize_text_field(wp_unslash($_POST['openrouter_model'] ?? OpenAiCompatibleProvider::FREE_MODEL)));
+        $recorder->record('adct_parish_intake_ai_base_url', get_option('adct_parish_intake_ai_base_url'), esc_url_raw(wp_unslash($_POST['ai_base_url'] ?? OpenAiCompatibleProvider::DEFAULT_URL)));
         update_option('adct_parish_intake_ai_base_url', esc_url_raw(wp_unslash($_POST['ai_base_url'] ?? OpenAiCompatibleProvider::DEFAULT_URL)));
 
         $secretResolver = new WordPressSecretResolver();
         $apiKeyOption = SecretRegistry::optionName(SecretRegistry::AI_API_KEY);
 
         if (isset($_POST['remove_openrouter_api_key'])) {
+            $recorder->recordRemoval($apiKeyOption, get_option($apiKeyOption));
             delete_option($apiKeyOption);
         } elseif (
             ! $secretResolver->isConstantConfigured(SecretRegistry::AI_API_KEY)
@@ -342,10 +365,14 @@ final class ParserPage
             $apiKey = trim(wp_unslash($_POST['openrouter_api_key']));
 
             if ($apiKey !== '') {
+                // The recorder knows this option holds a secret, so it records
+                // that a key is now set without ever recording the key itself.
+                $recorder->record($apiKeyOption, get_option($apiKeyOption), $apiKey);
                 update_option($apiKeyOption, sanitize_text_field($apiKey));
             }
         }
 
+        $recorder->record('adct_parish_intake_ai_threshold', get_option('adct_parish_intake_ai_threshold'), (string) max(0, min(1, (float) wp_unslash($_POST['ai_threshold'] ?? '0.55'))));
         update_option('adct_parish_intake_ai_threshold', (string) max(0, min(1, (float) wp_unslash($_POST['ai_threshold'] ?? '0.55'))));
 
         // Checkbox absence is the "off" signal, so the switch is always written
@@ -376,6 +403,7 @@ final class ParserPage
                 continue;
             }
 
+            $recorder->record($option, get_option($option), (string) max(0.0, min(1.0, (float) $submitted)));
             update_option($option, (string) max(0.0, min(1.0, (float) $submitted)));
         }
 
@@ -395,37 +423,88 @@ final class ParserPage
             }
         }
 
+        $recorder->record(
+            self::SECTION_KEYWORDS_OPTION,
+            get_option(self::SECTION_KEYWORDS_OPTION),
+            SectionSkipper::sanitizeKeywordLists($keywordLists)
+        );
         update_option(
             self::SECTION_KEYWORDS_OPTION,
             SectionSkipper::sanitizeKeywordLists($keywordLists)
         );
 
-        update_option(
-            RetentionSettings::RAW_ENABLED_OPTION,
-            $retentionSettings->rawCleanupEnabled() ? '1' : '0'
-        );
-        update_option(
-            RetentionSettings::RAW_DAYS_OPTION,
-            (string) $retentionSettings->rawRetentionDays()
-        );
-        update_option(
-            RetentionSettings::PROCESSED_ENABLED_OPTION,
-            $retentionSettings->processedCleanupEnabled() ? '1' : '0'
-        );
-        update_option(
-            RetentionSettings::PROCESSED_DAYS_OPTION,
-            (string) $retentionSettings->processedRetentionDays()
-        );
-        update_option(
-            RetentionSettings::ACTION_TOKENS_ENABLED_OPTION,
-            $retentionSettings->actionTokenCleanupEnabled() ? '1' : '0'
-        );
-        update_option(
-            RetentionSettings::AUDIT_ENABLED_OPTION,
-            $retentionSettings->auditCleanupEnabled() ? '1' : '0'
-        );
+        // Recording the six retention options through one loop keeps the diff
+        // next to the write, so a setting added later cannot be written without
+        // also being audited.
+        $retentionOptions = [
+            [RetentionSettings::RAW_ENABLED_OPTION, $retentionSettings->rawCleanupEnabled() ? '1' : '0'],
+            [RetentionSettings::RAW_DAYS_OPTION, (string) $retentionSettings->rawRetentionDays()],
+            [RetentionSettings::PROCESSED_ENABLED_OPTION, $retentionSettings->processedCleanupEnabled() ? '1' : '0'],
+            [RetentionSettings::PROCESSED_DAYS_OPTION, (string) $retentionSettings->processedRetentionDays()],
+            [RetentionSettings::ACTION_TOKENS_ENABLED_OPTION, $retentionSettings->actionTokenCleanupEnabled() ? '1' : '0'],
+            [RetentionSettings::AUDIT_ENABLED_OPTION, $retentionSettings->auditCleanupEnabled() ? '1' : '0'],
+        ];
+
+        foreach ($retentionOptions as [$option, $value]) {
+            $recorder->record($option, get_option($option), $value);
+            update_option($option, $value);
+        }
 
         $this->settingsSaveSucceeded = true;
+        $this->recordSettingsAudit($recorder);
+    }
+
+    /**
+     * A recorder that treats the options holding credentials as secrets.
+     */
+    private function settingsRecorder(): SettingsAuditRecorder
+    {
+        return new SettingsAuditRecorder([
+            SecretRegistry::optionName(SecretRegistry::AI_API_KEY),
+            SecretRegistry::optionName(SecretRegistry::IMAP_PASSWORD),
+            SecretRegistry::optionName(SecretRegistry::OCR_API_KEY),
+        ]);
+    }
+
+    /**
+     * Writes the single settings row for one save.
+     *
+     * No row is written when nothing changed: a settings form posts every field
+     * on every save, and a log full of "nothing changed" rows is worse than no
+     * log at all, because it buries the rows that do matter.
+     */
+    private function recordSettingsAudit(SettingsAuditRecorder $recorder): void
+    {
+        if ($this->audit === null || ! $recorder->hasChanges()) {
+            return;
+        }
+
+        try {
+            $this->audit->write(
+                $this->actor(),
+                AuditAction::SETTINGS_UPDATED,
+                AuditSubjectType::SETTINGS,
+                0,
+                $recorder->toDetails()
+            );
+        } catch (RuntimeException $failure) {
+            error_log(
+                '[ADCT Parish Intake] The settings audit row could not be written ('
+                . $failure->getMessage() . ').'
+            );
+        }
+    }
+
+    /**
+     * The actor recorded against a settings change.
+     *
+     * Every other write site resolves the signed-in user through this one
+     * collaborator, so a settings row is attributable the same way a review or a
+     * contact row is and the screen's actor filter finds both.
+     */
+    private function actor(): string
+    {
+        return ($this->actorResolver ?? new WordPressActorResolver())->actor();
     }
 
     public function renderSettingsPage(): void

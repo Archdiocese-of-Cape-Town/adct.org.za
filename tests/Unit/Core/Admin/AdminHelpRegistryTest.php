@@ -57,6 +57,7 @@ final class AdminHelpRegistryTest extends TestCase
         'adct-parish-intake-outbound-mail' => ['adct-parish-intake_page_adct-parish-intake-outbound-mail'],
         'adct-parish-intake-jobs' => ['adct-parish-intake_page_adct-parish-intake-jobs'],
         'adct-parish-intake-health' => ['adct-parish-intake_page_adct-parish-intake-health'],
+        'adct-parish-intake-audit-log' => ['adct-parish-intake_page_adct-parish-intake-audit-log'],
         'adct-parish-intake-retention' => ['adct-parish-intake_page_adct-parish-intake-retention'],
         'adct-parish-intake-settings' => ['adct-parish-intake_page_adct-parish-intake-settings'],
         'adct-parish-intake-manual-parser' => ['adct-parish-intake_page_adct-parish-intake-manual-parser'],

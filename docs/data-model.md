@@ -239,7 +239,7 @@ Candidate matching locks the inbound source row and compares at most 200 recent 
 
 A parsed message with only duplicate candidates gets `confirmation_status = suppressed`, `confirmation_reason = duplicate`; it queues no action tokens or mail. Mixed messages preview only their new or changed `draft` candidates. This is a narrow exception for verified unchanged repeats, not a change to the confirmation rule for new candidates in ADR 0004.
 
-#61 adds no columns and no migration. The candidate detail screen reads one candidate row plus its `message_id`'s `inbound_messages` row and `adct_pi_attachments` rows, and it edits only the existing `fields` and `recurrence` JSON columns. `ReviewQueueRepository::updateFields()` merges the edited keys into `fields` (never replacing the object, so parser provenance such as `venue_match` and `source_snippet` survives), rewrites `recurrence` when a recurrence control changed, and bumps `updated_at` inside one transaction. The merge is limited to the 14 keys in `CandidateFieldSet::EDITABLE_KEYS`; any other posted key is discarded rather than written, and the submitter's `contact` object is read-only by design because re-pointing an event to another sender is a manual-review decision, not an approver correction. Dates are stored as ISO `YYYY-MM-DD` after a strict day-first `DD/MM/YYYY` parse. A save that changes nothing is reported as `unchanged` and writes no audit row; a real edit writes one `update_fields` audit row whose `details` JSON is `{"role":"dean"|"reviewer","changed_fields":[…]}`, so the trail names the fields that actually moved rather than the whole form. The screen's history column reads the same `adct_pi_audit_log` rows E4.2/E4.5 already write, so Save, Save and approve, Reject and the emailed approval links all appear in one chronological list.
+#61 adds no columns and no migration. The candidate detail screen reads one candidate row plus its `message_id`'s `inbound_messages` row and `adct_pi_attachments` rows, and it edits only the existing `fields` and `recurrence` JSON columns. `ReviewQueueRepository::updateFields()` merges the edited keys into `fields` (never replacing the object, so parser provenance such as `venue_match` and `source_snippet` survives), rewrites `recurrence` when a recurrence control changed, and bumps `updated_at` inside one transaction. The merge is limited to the 14 keys in `CandidateFieldSet::EDITABLE_KEYS`; any other posted key is discarded rather than written, and the submitter's `contact` object is read-only by design because re-pointing an event to another sender is a manual-review decision, not an approver correction. Dates are stored as ISO `YYYY-MM-DD` after a strict day-first `DD/MM/YYYY` parse. A save that changes nothing is reported as `unchanged` and writes no audit row; a real edit writes one `candidate_edited` audit row whose `details` JSON is `{"role":"dean"|"reviewer","changed_fields":[…]}`, so the trail names the fields that actually moved rather than the whole form. The screen's history column reads the same `adct_pi_audit_log` rows E4.2/E4.5 already write, so Save, Save and approve, Reject and the emailed approval links all appear in one chronological list.
 
 ### `adct_event` (WordPress custom post type)
 The public `adct_event` post type has an `/events` archive and REST representation; its title, content, excerpt and featured image hold the public text. The hierarchical `adct_event_type` taxonomy is REST-enabled and seeded idempotently with Social, Spiritual, Formation, Liturgy/Mass, Youth, Outreach, Fundraising, Meeting, Pilgrimage and Other. Existing Fundraising and Meeting terms are retained; no term is renamed or deleted. Each default term receives a versioned, editable `adct_pi_type_keywords` term-meta list only when it has no list yet, so upgrades preserve site edits (including an intentionally empty list). Custom terms can have their own lists.
@@ -294,6 +294,36 @@ For **new** events, self-approval additionally requires the bound confirmation r
 
 ### `adct_pi_audit_log`
 actor (user id / email / `system`), action, subject_type, subject_id, details JSON, created_at, updated_at.
+
+The table, its indexes and `ReviewQueueRepository::audit()` predate #58 and are
+unchanged by it. #58 adds no columns and no migration. What it adds is a read
+path and a screen over rows that were already being written.
+
+`actor` holds the acting person's **email address** (or `system`), not a user ID.
+`subject_type` is one of `event_candidate`, `event_change`, `parish_contact`,
+`parish`, `event` or `settings`; `subject_id` is the row ID in that table, or `0`
+for `settings`. `details` is a JSON object written by the caller and is never
+interpreted by storage — the log records what happened, it does not drive
+behaviour.
+
+Actions are declared once as `AuditAction` cases so the catalogue, the screen's
+filter dropdown and the tests cannot drift apart:
+
+| Action | Subject | Written by |
+| --- | --- | --- |
+| `approver_approved`, `approver_rejected` | event candidate | `ApprovalDecisionHandler`, `ReviewQueueRepository` |
+| `approver_edited` | event candidate | `ApprovalDecisionHandler`, `ReviewQueueRepository` |
+| `submitter_confirmed`, `submitter_denied` | event candidate | confirmation handler |
+| `candidate_parish_assigned` | event candidate | review queue assignment |
+| `candidate_edited` | event candidate | candidate detail save |
+| `change_reverted` | event change | `RevertChangeHandler` |
+| `event_published` | event | `WordPressPublicationStore`, in the publish transaction |
+| `contact_verified`, `contact_blocked`, `contact_unblocked`, `contact_linked`, `contact_confirmed`, `contact_edited`, `contact_removed` | parish contact | `ContactAuditRecorder` on the senders screen |
+| `settings_updated` | settings | `SettingsAuditRecorder` |
+
+#61's data-model note above calls the candidate-detail row `update_fields`; the
+code has always written `candidate_edited`. The constant is `candidate_edited`
+and this section is the correction.
 
 ## State machines
 
@@ -354,6 +384,21 @@ The listing cache generation is a random, option-backed `adct_pi_event_listing_g
 - Bulletin sections with personal information (Mass intentions, sick lists, finances) are skipped by the parser and never copied into candidates, events or AI prompts ([E3.7](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/74)).
 - Event change history (`event_changes`): kept while the event exists, then deleted with it.
 - Audit log: 24 months.
+
+The audit log is append-only. There is no screen, button, capability or code
+path that edits or deletes a single audit row, and #58 deliberately adds none:
+the log is the evidence for who approved, changed or rejected what, so a way to
+change it after the fact would defeat its purpose. Rows are removed only by the
+retention job, in bounded steps, and only once they are past the 24-month horizon
+described above.
+
+The **Audit log** screen (`Parish Intake → Audit log`, capability
+`adct_pi_view_reports`) is read-only. Its default window is the last 3 months,
+with a bounded choice of 1, 3, 6, 12 or 24 months and 25 rows per page; an
+unbounded scan of the table would not finish inside the 90-second host limit.
+The window may not be stretched past the 24-month retention period, because
+anything older has already been pruned and a wider window can only return a
+misleading partial answer.
 
 The daily `retention_cleanup` job uses the existing `retention_until`
 timestamp on each inbound message, set at receipt from the configurable

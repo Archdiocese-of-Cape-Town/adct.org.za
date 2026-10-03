@@ -68,6 +68,7 @@ use ADCT\ParishIntake\Core\Review\CandidateEditValidator;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use ADCT\ParishIntake\WordPress\Pdf\PrinsFrankPdfTextExtractor;
 use ADCT\ParishIntake\WordPress\Pdf\WordPressAttachmentExtractionStore;
+use ADCT\ParishIntake\WordPress\Admin\AuditLogPage;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
 use ADCT\ParishIntake\WordPress\Admin\HealthPage;
 use ADCT\ParishIntake\WordPress\Admin\WordPressHelp;
@@ -112,6 +113,8 @@ use ADCT\ParishIntake\WordPress\Attachments\AttachmentImageEndpoint;
 use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
 use ADCT\ParishIntake\WordPress\Attachments\WordPressCandidateSourceMessage;
 use ADCT\ParishIntake\WordPress\Attachments\WordPressPreviewableImageRepository;
+use ADCT\ParishIntake\WordPress\Audit\AuditLogRepository;
+use ADCT\ParishIntake\WordPress\Audit\ContactAuditRecorder;
 use ADCT\ParishIntake\Core\Attachments\CandidateSourceImageResolver;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
@@ -229,6 +232,13 @@ final class Plugin
     private PublicIcsFeed $publicIcsFeed;
     private MailboxesPage $mailboxesPage;
     private InboundMessagesPage $inboundMessagesPage;
+    private AuditLogPage $auditLogPage;
+
+    /**
+     * Kept so the audit screen and the integration check read the same
+     * repository the rest of the plugin writes through.
+     */
+    private AuditLogRepository $auditLog;
     private ?ReviewQueuePage $reviewQueuePage = null;
     private ?ReviewQueueRepository $reviewQueue = null;
     private ReviewerNotificationPreference $reviewerNotificationPreference;
@@ -295,6 +305,12 @@ final class Plugin
             $previewableImages,
             new ProtectedInboundMailStorage()
         );
+        $auditLog = new AuditLogRepository($database, $clock);
+        $this->auditLog = $auditLog;
+        // One resolver for every screen that writes a row, so the repository
+        // and the screens agree on who the actor is.
+        $actorResolver = $auditLog->actorResolver();
+        $contactAudit = new ContactAuditRecorder($auditLog, $actorResolver);
         $this->parserPage = new ParserPage(
             $this->schema,
             $this->pipelineFactory,
@@ -306,7 +322,9 @@ final class Plugin
             ),
             $attachmentRepository,
             $this->pluginFile,
-            $this->attachmentImageEndpoint
+            $this->attachmentImageEndpoint,
+            $auditLog,
+            $actorResolver
         );
         $sourceRegistryService = new SourceRegistryService($sources, $clock);
         $this->mailboxesPage = new MailboxesPage(
@@ -357,9 +375,10 @@ final class Plugin
             $venues,
             $venueAdministrationService,
             $clock,
-            $this->sourcesPage
+            $this->sourcesPage,
+            $contactAudit
         );
-        $this->sendersPage = new SendersPage($contacts, $contactService, $parishes);
+        $this->sendersPage = new SendersPage($contacts, $contactService, $parishes, $contactAudit);
         $this->eventPostType = new EventPostType();
         $listingGeneration = new EventListingGeneration();
         $occurrences = new OccurrenceRepository($database);
@@ -401,7 +420,8 @@ final class Plugin
                 $occurrenceMaintenance,
                 $listingGeneration,
                 $clock,
-                $timezone
+                $timezone,
+                $auditLog
             ),
             new EventValidator($timezone, $rruleValidator)
         );
@@ -636,6 +656,11 @@ final class Plugin
             $jobRunner,
             $clock
         );
+        $this->auditLogPage = new AuditLogPage(
+            $auditLog,
+            $clock,
+            new DateTimeZone('Africa/Johannesburg')
+        );
         $this->jobScheduler = new WordPressJobScheduler(
             [
                 new FrameworkHeartbeatJob(),
@@ -771,6 +796,15 @@ final class Plugin
         }
 
         return self::$instance->publicEventPage;
+    }
+
+    public static function auditLog(): AuditLogRepository
+    {
+        if (! self::$instance instanceof self) {
+            throw new \RuntimeException('The Parish Intake plugin has not been booted.');
+        }
+
+        return self::$instance->auditLog;
     }
 
     public static function activate(): void
@@ -989,6 +1023,7 @@ final class Plugin
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
         add_action('admin_menu', [$this->healthPage, 'registerMenu']);
         $this->adminHelp->register();
+        add_action('admin_menu', [$this->auditLogPage, 'registerMenu']);
         add_action('admin_post_adct_pi_health_check_now', [$this->healthPage, 'handleCheckNow']);
         add_action('init', [$this, 'checkHealthAlerts'], 20);
         add_action('admin_init', [$this, 'maybeUpgradeRoles'], 1);

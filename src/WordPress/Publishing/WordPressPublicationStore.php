@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Publishing;
 
+use ADCT\ParishIntake\Core\Audit\AuditAction;
+use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
+use ADCT\ParishIntake\Core\Audit\AuditWriter;
 use ADCT\ParishIntake\Core\Events\OccurrenceWindow;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\PublicationStoreInterface;
@@ -28,7 +31,8 @@ final class WordPressPublicationStore implements PublicationStoreInterface
         private WordPressEventOccurrenceMaintenance $occurrences,
         private EventListingGeneration $listingGeneration,
         private ClockInterface $clock,
-        private DateTimeZone $timezone
+        private DateTimeZone $timezone,
+        private ?AuditWriter $audit = null
     ) {
     }
 
@@ -192,6 +196,23 @@ final class WordPressPublicationStore implements PublicationStoreInterface
             ]) !== 1) {
                 throw new RuntimeException('The candidate publication state could not be saved.');
             }
+
+            // Inside the transaction: a published event that is not in the trail
+            // is a gap we can never fill accurately afterwards.
+            if ($eventId !== null) {
+                $this->audit?->write(
+                    $publication->actor,
+                    AuditAction::EVENT_PUBLISHED,
+                    AuditSubjectType::EVENT,
+                    $eventId,
+                    [
+                        'candidate_id' => $candidateId,
+                        'kind' => $publication->kind,
+                        'superseded_candidate_id' => $previousCandidateId,
+                    ]
+                );
+            }
+
             if ($previousCandidateId !== null && $previousCandidateId > 0 && $previousCandidateId !== $candidateId) {
                 $this->execute($this->database->prepare(
                     "UPDATE {$table} SET status = %s, updated_at = %s "
