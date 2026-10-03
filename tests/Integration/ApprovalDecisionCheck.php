@@ -239,6 +239,8 @@ final class ApprovalDecisionCheck
             $profileHtml = (string) ob_get_clean();
             $check(str_contains($profileHtml, 'Daily digest'),
                 'a reviewer must be able to find the daily digest preference on their profile.');
+            $check(str_contains($profileHtml, 'adct_pi_approval_reminders'),
+                'a reviewer must be able to find the reminder switch on their profile.');
             $_POST['adct_pi_notify_nonce'] = wp_create_nonce('adct_pi_notify_mode_' . $reviewerId);
             $_POST['adct_pi_notify_mode'] = 'digest';
             $preference->save($reviewerId);
@@ -246,6 +248,17 @@ final class ApprovalDecisionCheck
             wp_set_current_user($previousUser);
             $check(get_user_meta($reviewerId, 'adct_pi_approval_notify_mode', true) === 'digest',
                 'a reviewer preference change must persist with a valid nonce.');
+            $check(get_user_meta($reviewerId, 'adct_pi_approval_reminders', true) === '1',
+                'a reviewer who leaves the reminder box ticked keeps reminders on.');
+            wp_set_current_user($reviewerId);
+            $_POST['adct_pi_notify_nonce'] = wp_create_nonce('adct_pi_notify_mode_' . $reviewerId);
+            $_POST['adct_pi_notify_mode'] = 'digest';
+            // An unticked box is absent from $_POST, which is how the 'off' signal arrives.
+            $preference->save($reviewerId);
+            unset($_POST['adct_pi_notify_nonce'], $_POST['adct_pi_notify_mode']);
+            wp_set_current_user($previousUser);
+            $check(get_user_meta($reviewerId, 'adct_pi_approval_reminders', true) === '0',
+                'a reviewer who unticks the reminder box turns their own reminders off.');
             $wpdb->update($base . 'deanery_approvers', ['notify_mode' => 'digest'], ['wp_user_id' => $deanId]);
             $digest1 = $candidate('digest-one', $parish);
             $digest2 = $candidate('digest-two', $parish);

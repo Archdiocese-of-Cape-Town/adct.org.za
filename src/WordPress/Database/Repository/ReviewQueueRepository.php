@@ -191,6 +191,26 @@ final class ReviewQueueRepository
     }
 
     /**
+     * How many items are still awaiting approval past the reminder period.
+     *
+     * The health screen shows this so an administrator can tell at a glance
+     * whether reminders are reaching approvers or whether a queue has gone
+     * stale. The caller supplies the cutoff rather than the repository, so the
+     * period stays owned by ApprovalReminderSettings and the injected clock.
+     */
+    public function countOverdueApprovals(string $cutoff): int
+    {
+        $row = $this->row($this->database->prepare(
+            "SELECT COUNT(*) AS total FROM {$this->candidates}"
+            . " WHERE status = %s AND approved_by IS NULL AND decided_at IS NULL AND updated_at < %s",
+            'awaiting_approval',
+            $cutoff
+        ));
+
+        return (int) ($row['total'] ?? 0);
+    }
+
+    /**
      * @return 'decided'|'already_decided'|'manual_review'|'retry'
      */
     public function decide(int $id, string $action, int $userId, string $email, bool $reviewer, string $reason = ''): string

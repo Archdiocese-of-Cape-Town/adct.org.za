@@ -9,6 +9,8 @@ use ADCT\ParishIntake\Core\Auth\Capabilities;
 final class ReviewerNotificationPreference
 {
     private const META_KEY = 'adct_pi_approval_notify_mode';
+    private const REMINDERS_META_KEY = ApprovalRecipients::REVIEWER_REMINDERS_META_KEY;
+    private const NONCE_ACTION_PREFIX = 'adct_pi_notify_mode_';
 
     public function registerHooks(): void
     {
@@ -32,7 +34,23 @@ final class ReviewerNotificationPreference
             . esc_html__('As events arrive', 'adct-parish-intake') . '</option>'
             . '<option value="digest"' . selected($mode === 'digest', true, false) . '>'
             . esc_html__('Daily digest', 'adct-parish-intake') . '</option></select></p>';
-        wp_nonce_field('adct_pi_notify_mode_' . $user->ID, 'adct_pi_notify_nonce');
+        // An unchecked box is absent from $_POST entirely, so absence is the
+        // "off" signal rather than a missing value to guess at.
+        $remindersOn = ! in_array(
+            get_user_meta($user->ID, self::REMINDERS_META_KEY, true),
+            ['0', 'off', 'false', 'no'],
+            true
+        );
+        echo '<p><label for="adct_pi_approval_reminders">'
+            . '<input type="checkbox" id="adct_pi_approval_reminders"'
+            . ' name="adct_pi_approval_reminders" value="1"'
+            . checked($remindersOn, true, false) . ' /> '
+            . esc_html__(
+                'Email me a reminder when an event has been waiting for a decision for several days.',
+                'adct-parish-intake'
+            )
+            . '</label></p>';
+        wp_nonce_field(self::NONCE_ACTION_PREFIX . $user->ID, 'adct_pi_notify_nonce');
     }
 
     public function save(int $userId): void
@@ -45,7 +63,7 @@ final class ReviewerNotificationPreference
             || ! is_string($_POST['adct_pi_notify_nonce'])
             || ! wp_verify_nonce(
                 sanitize_text_field(wp_unslash($_POST['adct_pi_notify_nonce'])),
-                'adct_pi_notify_mode_' . $userId
+                self::NONCE_ACTION_PREFIX . $userId
             )) {
             wp_die(esc_html__('Approval notification settings could not be verified.', 'adct-parish-intake'), '', [
                 'response' => 403,
@@ -61,6 +79,14 @@ final class ReviewerNotificationPreference
         update_user_meta($userId, self::META_KEY, $mode);
         if (get_user_meta($userId, self::META_KEY, true) !== $mode) {
             wp_die(esc_html__('The approval notification setting could not be saved.', 'adct-parish-intake'), '', [
+                'response' => 503,
+            ]);
+        }
+
+        $reminders = isset($_POST['adct_pi_approval_reminders']) ? '1' : '0';
+        update_user_meta($userId, self::REMINDERS_META_KEY, $reminders);
+        if ((string) get_user_meta($userId, self::REMINDERS_META_KEY, true) !== $reminders) {
+            wp_die(esc_html__('The approval reminder setting could not be saved.', 'adct-parish-intake'), '', [
                 'response' => 503,
             ]);
         }

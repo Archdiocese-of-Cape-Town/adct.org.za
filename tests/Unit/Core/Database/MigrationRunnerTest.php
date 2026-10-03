@@ -92,11 +92,12 @@ final class MigrationRunnerTest extends TestCase
 
     public static function migrationPathCases(): iterable
     {
-        yield 'fresh 0 to v10' => [0, 10, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]];
-        yield 'legacy upgrade 6 to v10' => [6, 10, [7, 8, 9, 10]];
-        yield 'installed upgrade 7 to v10' => [7, 10, [8, 9, 10]];
-        yield 'installed upgrade 8 to v10' => [8, 10, [9, 10]];
-        yield 'installed upgrade 9 to v10' => [9, 10, [10]];
+        yield 'fresh 0 to v11' => [0, 11, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]];
+        yield 'legacy upgrade 6 to v11' => [6, 11, [7, 8, 9, 10, 11]];
+        yield 'installed upgrade 7 to v11' => [7, 11, [8, 9, 10, 11]];
+        yield 'installed upgrade 8 to v11' => [8, 11, [9, 10, 11]];
+        yield 'installed upgrade 9 to v11' => [9, 11, [10, 11]];
+        yield 'installed upgrade 10 to v11' => [10, 11, [11]];
     }
 
     public function testVersionIsWrittenOnlyAfterItsMigrationSucceeds(): void

@@ -86,7 +86,10 @@ use ADCT\ParishIntake\WordPress\Auth\ConfirmationDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalEditHandler;
 use ADCT\ParishIntake\WordPress\Auth\RevertChangeHandler;
+use ADCT\ParishIntake\Core\Approval\ApprovalReminderSettings;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalNoticeJob;
+use ADCT\ParishIntake\WordPress\Approval\ApprovalReminderJob;
+use ADCT\ParishIntake\WordPress\Approval\ApprovalReminderOptionReader;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalRecipients;
 use ADCT\ParishIntake\WordPress\Approval\ReviewerNotificationPreference;
 use ADCT\ParishIntake\WordPress\Auth\WordPressConfirmationActionLinkProvider;
@@ -98,8 +101,10 @@ use ADCT\ParishIntake\WordPress\Database\ActionTokenRateLimitSchemaMigration;
 use ADCT\ParishIntake\WordPress\Database\ApprovalNoticesMigration;
 use ADCT\ParishIntake\WordPress\Database\ConfirmationEmailPreviewSchemaMigration;
 use ADCT\ParishIntake\WordPress\Database\DbDeltaSchemaInstaller;
+use ADCT\ParishIntake\WordPress\Database\FollowUpParishNullableMigration;
 use ADCT\ParishIntake\WordPress\Database\MailQueueGroupKeyMigration;
 use ADCT\ParishIntake\WordPress\Database\OccurrenceParishNullableMigration;
+use ADCT\ParishIntake\WordPress\Database\Repository\FollowUpRepository;
 use ADCT\ParishIntake\WordPress\Database\SenderSuggestionMigration;
 use ADCT\ParishIntake\WordPress\Attachments\ActionTokenImageEndpoint;
 use ADCT\ParishIntake\WordPress\Attachments\AttachmentImageEndpoint;
@@ -223,6 +228,7 @@ final class Plugin
     private MailboxesPage $mailboxesPage;
     private InboundMessagesPage $inboundMessagesPage;
     private ?ReviewQueuePage $reviewQueuePage = null;
+    private ?ReviewQueueRepository $reviewQueue = null;
     private ReviewerNotificationPreference $reviewerNotificationPreference;
     private ?OcrControl $ocrControl = null;
     private AttachmentImageEndpoint $attachmentImageEndpoint;
@@ -406,8 +412,14 @@ final class Plugin
                 'adct_parish_intake_confidence_threshold',
                 ReviewQueuePolicy::DEFAULT_CONFIDENCE_THRESHOLD
             );
+            $this->reviewQueue = new ReviewQueueRepository(
+                $database,
+                $clock,
+                new ReviewQueuePolicy(),
+                $confidenceThreshold
+            );
             $this->reviewQueuePage = new ReviewQueuePage(
-                new ReviewQueueRepository($database, $clock, new ReviewQueuePolicy(), $confidenceThreshold),
+                $this->reviewQueue,
                 $this->candidatePublisher,
                 new ReviewQueuePolicy(),
                 $inboundMessages,
@@ -632,6 +644,19 @@ final class Plugin
                     $this->mailQueue, $mailQueueRepository, $clock,
                     self::approvalDigestHour()
                 ),
+                // The settings reader is resolved on first use, not here: this block
+                // runs during plugins_loaded, before WordPress options are safe to read,
+                // and no constructor may call get_option().
+                new ApprovalReminderJob(
+                    $database,
+                    $approvalRecipients,
+                    $this->actionTokenService,
+                    $this->mailQueue,
+                    $mailQueueRepository,
+                    new FollowUpRepository($database, $clock),
+                    $clock,
+                    static fn (): ApprovalReminderSettings => (new ApprovalReminderOptionReader())->read()
+                ),
                 $inboundMessageProcessingJob,
                 $retentionCleanupJob,
                 new OccurrenceExpansionJob($occurrenceMaintenance, $clock, $timezone),
@@ -662,8 +687,23 @@ final class Plugin
             $inboundMessages,
             $this->mailQueue,
             $deaneries,
-            $this->healthAlerts
+            $this->healthAlerts,
+            $clock,
+            fn (): ReviewQueueRepository => $this->reviewQueue()
         );
+    }
+
+    /**
+     * The review queue repository is only built once WordPress has loaded, so it
+     * is resolved on first use rather than in the constructor.
+     */
+    private function reviewQueue(): ReviewQueueRepository
+    {
+        if ($this->reviewQueue === null) {
+            throw new \LogicException('The review queue was not initialized.');
+        }
+
+        return $this->reviewQueue;
     }
 
     public static function boot(string $pluginFile): void
@@ -1078,6 +1118,7 @@ final class Plugin
                 new ApprovalNoticesMigration(new DbDeltaSchemaInstaller($database)),
                 new ProcessedMailboxOwnershipSchemaMigration(new DbDeltaSchemaInstaller($database)),
                 new SenderSuggestionMigration(new DbDeltaSchemaInstaller($database)),
+                new FollowUpParishNullableMigration($database),
             ],
             new WordPressMigrationVersionStore(),
             new WordPressMigrationLogger()
