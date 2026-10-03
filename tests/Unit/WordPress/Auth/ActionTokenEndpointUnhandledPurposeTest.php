@@ -4,30 +4,14 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Auth {
 
-    function __(string $text, string $domain = 'default'): string
-    {
-        return $text;
-    }
+    require_once __DIR__ . '/../../../Support/WordPressAuthDoubles.php';
 
-    function esc_html(mixed $value): string
-    {
-        return htmlspecialchars(is_string($value) ? $value : '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-    }
-
-    function esc_attr(mixed $value): string
-    {
-        return htmlspecialchars(is_string($value) ? $value : '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-    }
-
-    function esc_url(mixed $value): string
-    {
-        return htmlspecialchars(is_string($value) ? $value : '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-    }
-
-    /**
-     * A deterministic stand-in: the endpoint only asks whether the nonce it
-     * holds matches the action it built, so a test can build the same one.
-     */
+        // __(), esc_html(), esc_attr() and esc_url() come from the shared doubles;
+        // only what is specific to the endpoint is declared here.
+        /**
+         * A deterministic stand-in: the endpoint only asks whether the nonce it
+         * holds matches the action it built, so a test can build the same one.
+         */
     function wp_create_nonce(string $action): string
     {
         return 'nonce-for-' . $action;
@@ -75,10 +59,12 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
         use PHPUnit\Framework\TestCase;
 
     /**
-     * A reserved purpose has no handler, so a link for one cannot do anything.
-     * That is a known state with a named owning issue, not an attack, but a
-     * silent no-op on a page reads like a broken link, so the endpoint has to
-     * say so in the log and name the purpose.
+     * The endpoint must refuse a purpose it has no handler for, rather than
+          * guessing. As of #72 every case on the enum is handled in Plugin, so this
+          * registry is deliberately empty: reaching the branch means a registration
+          * was dropped, which is a drift alarm, not a normal state. Either way a
+          * silent no-op reads like a broken link, so the response says so and names
+          * the purpose.
      */
     final class ActionTokenEndpointUnhandledPurposeTest extends TestCase
     {
@@ -96,7 +82,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
             parent::tearDown();
         }
 
-        public function testOpeningALinkForAReservedPurposeLogsThePurposeAndActionsNothing(): void
+        public function testOpeningALinkForAnUnhandledPurposeLogsThePurposeAndActionsNothing(): void
         {
             $purpose = ActionTokenPurpose::LOGIN;
             $response = $this->getResponseFor($purpose);
@@ -116,11 +102,13 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
         }
 
         /**
-         * Every reserved purpose is reachable in the same way, and each one has
-         * to name itself rather than log a generic line.
-         */
-        #[DataProvider('reservedPurposes')]
-        public function testEveryReservedPurposeIsNamedInItsOwnLogLine(ActionTokenPurpose $purpose): void
+         * Every purpose reaches the branch the same way, and each one has to name
+                  * itself rather than log a generic line. Covering all the cases, not only
+                  * the ones that were once reserved, keeps a purpose added later from
+                  * logging something unreadable if its registration is ever dropped.
+                  */
+        #[DataProvider('allPurposes')]
+        public function testEveryPurposeIsNamedInItsOwnLogLine(ActionTokenPurpose $purpose): void
         {
             $response = $this->getResponseFor($purpose);
 
@@ -134,10 +122,10 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
         /**
          * @return array<string, array{0: ActionTokenPurpose}>
          */
-        public static function reservedPurposes(): array
+        public static function allPurposes(): array
         {
             $purposes = [];
-            foreach ([ActionTokenPurpose::LOGIN, ActionTokenPurpose::REVERT_CHANGE] as $purpose) {
+                    foreach (ActionTokenPurpose::cases() as $purpose) {
                 $purposes[$purpose->value] = [$purpose];
             }
 
@@ -150,7 +138,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
          * either. The token is left usable: an unusable purpose must not burn
          * the token of an event that is still decidable.
          */
-        public function testSubmittingAReservedPurposeLogsAndLeavesTheTokenUsable(): void
+        public function testSubmittingAnUnhandledPurposeLogsAndLeavesTheTokenUsable(): void
         {
             $tokens = $this->service();
             $token = $this->issue($tokens, ActionTokenPurpose::REVERT_CHANGE);

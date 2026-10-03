@@ -21,9 +21,14 @@ enum ActionTokenPurpose: string
     case EDIT = 'edit';
 
     /**
-     * Reserved for #72 (E7.6 front-end dean approval queue, magic-link login).
-     * No handler consumes it yet, so a login token is not actioned. The shorter
-     * default lifetime is already specified in ADR 0007.
+     * Sign in to the front-end approval queue (#72, E7.6), with the magic link
+     * specified in ADR 0007. Handled by LoginHandler, which re-resolves the live
+     * user — active, still holding an approval capability — on both the GET
+     * preview and the POST, so a revoked dean cannot ride an old link.
+     *
+     * The shorter default lifetime is ADR 0007's 30 minutes, not the 14 days the
+     * decision-making purposes get: the link only has to survive long enough to
+     * walk from the inbox to the queue.
      */
     case LOGIN = 'login';
 

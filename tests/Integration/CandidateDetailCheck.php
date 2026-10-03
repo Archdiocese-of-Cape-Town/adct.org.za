@@ -1207,15 +1207,15 @@ final class CandidateDetailCheck
 
             return $location;
         } catch (Throwable) {
-            ob_end_clean();
+                    ob_end_clean();
 
-            return null;
-        } finally {
-            remove_filter('wp_redirect', $capture, 1);
-        }
-        // No redirect: the handler rendered instead, so the check failed.
-        ob_end_clean();
+                    return null;
+                } finally {
+                    remove_filter('wp_redirect', $capture, 1);
+                }
+                // No redirect: the handler rendered instead, so the check failed.
+                ob_end_clean();
 
-        return null;
+                return null;
     }
 }

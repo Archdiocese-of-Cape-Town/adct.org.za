@@ -5,9 +5,11 @@ namespace ADCT\ParishIntake\WordPress;
 use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Auth\ActionTokenHandlerRegistry;
+use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 use ADCT\ParishIntake\Core\Auth\ActionTokenRateLimiter;
 use ADCT\ParishIntake\Core\Auth\ActionTokenRenewalService;
 use ADCT\ParishIntake\Core\Auth\ActionTokenService;
+use ADCT\ParishIntake\Core\Auth\MagicLinkLoginService;
 use ADCT\ParishIntake\Core\Auth\RoleInstaller;
 use ADCT\ParishIntake\Core\Auth\VersionedRoleInstaller;
 use ADCT\ParishIntake\Core\Database\CreateSchemaMigration;
@@ -88,12 +90,17 @@ use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
 use ADCT\ParishIntake\WordPress\Auth\ConfirmationDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalEditHandler;
+use ADCT\ParishIntake\WordPress\Auth\LoginHandler;
+use ADCT\ParishIntake\WordPress\Auth\MagicLinkLoginRequestPage;
 use ADCT\ParishIntake\WordPress\Auth\RevertChangeHandler;
 use ADCT\ParishIntake\Core\Approval\ApprovalReminderSettings;
+use ADCT\ParishIntake\WordPress\Auth\WordPressLoginSubjectResolver;
+use ADCT\ParishIntake\WordPress\Auth\WordPressMagicLinkDelivery;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalNoticeJob;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalReminderJob;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalReminderOptionReader;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalRecipients;
+use ADCT\ParishIntake\WordPress\Approval\FrontEndApprovalQueue;
 use ADCT\ParishIntake\WordPress\Approval\ReviewerNotificationPreference;
 use ADCT\ParishIntake\WordPress\Auth\WordPressConfirmationActionLinkProvider;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRateLimitKeyProvider;
@@ -177,6 +184,13 @@ use DateTimeZone;
 
 final class Plugin
 {
+    /**
+     * ADR 0007: a magic-link sign-in gets a long session for the two portal
+     * roles. Overridable with `ADCT_PI_AUTH_COOKIE_LIFETIME_DAYS` in
+     * `wp-config.php`, because it is a hosting decision.
+     */
+    public const DEFAULT_AUTH_COOKIE_LIFETIME_DAYS = 365;
+
     private static ?self $instance = null;
 
     private string $pluginFile;
@@ -242,7 +256,9 @@ final class Plugin
      */
     private AuditLogRepository $auditLog;
     private ?ReviewQueuePage $reviewQueuePage = null;
-    private ?ReviewQueueRepository $reviewQueue = null;
+private ?ReviewQueueRepository $reviewQueue = null;
+    private ?FrontEndApprovalQueue $frontEndApprovalQueue = null;
+    private ?MagicLinkLoginRequestPage $magicLinkLoginRequestPage = null;
     private ReviewerNotificationPreference $reviewerNotificationPreference;
     private ?OcrControl $ocrControl = null;
     private AttachmentImageEndpoint $attachmentImageEndpoint;
@@ -455,6 +471,15 @@ final class Plugin
                 $this->ocrControl(),
                 $this->attachmentImageEndpoint
             );
+        // #72: the same repository and policy behind a front-end page, so a
+        // dean is scoped by exactly the same predicate as a reviewer in
+        // wp-admin (ADR 0008: deans never need wp-admin).
+        $this->frontEndApprovalQueue = new FrontEndApprovalQueue(
+            new ReviewQueueRepository($database, $clock, new ReviewQueuePolicy(), $confidenceThreshold),
+            $this->candidatePublisher,
+            new ReviewQueuePolicy(),
+            new CandidateEditValidator()
+        );
         }
         $this->eventOccurrenceHooks = new EventOccurrenceHooks(
             $occurrenceMaintenance,
@@ -537,6 +562,18 @@ final class Plugin
             $listingGeneration,
             $timezone
         ));
+        // ADR 0007: the magic link that signs a dean in to the front-end
+        // approval queue. Registered against LOGIN here so the reservation test
+        // can see the purpose and its handler from one place.
+        $this->actionTokenHandlers->register(new LoginHandler(ActionTokenPurpose::LOGIN));
+        $this->magicLinkLoginRequestPage = new MagicLinkLoginRequestPage(
+            new MagicLinkLoginService(
+                $this->actionTokenService,
+                $actionTokenRateLimiter,
+                new WordPressLoginSubjectResolver(),
+                new WordPressMagicLinkDelivery($this->mailQueue)
+            )
+        );
         $this->actionTokenEndpointDependencies = [
             'renewals' => new ActionTokenRenewalService(
                 $this->actionTokenService,
@@ -1015,6 +1052,32 @@ final class Plugin
         add_filter('rest_pre_insert_adct_event', [$this->eventEditor, 'validateRestRequest'], 10, 2);
         add_action('rest_after_insert_adct_event', [$this->eventEditor, 'markRestFeaturedChoice'], 10, 2);
         add_filter('show_admin_bar', [$this, 'hideAdminBarForPortalRoles']);
+        // #72: deans reach the queue on the front end (ADR 0007 long session),
+        // so the shortcode/block, its POST handlers and the cookie lifetime are
+        // all registered here rather than behind an admin menu.
+        if ($this->frontEndApprovalQueue !== null) {
+            add_action('init', [$this->frontEndApprovalQueue, 'register'], 11);
+            add_action(
+                'admin_post_' . FrontEndApprovalQueue::BULK_ACTION,
+                [$this->frontEndApprovalQueue, 'handleBulk']
+            );
+            add_action(
+                'admin_post_' . FrontEndApprovalQueue::SAVE_ACTION,
+                [$this->frontEndApprovalQueue, 'handleSave']
+            );
+            add_action(
+                'admin_post_' . FrontEndApprovalQueue::REVERT_ACTION,
+                [$this->frontEndApprovalQueue, 'handleRevertRequest']
+            );
+        }
+        if ($this->magicLinkLoginRequestPage !== null) {
+            add_action('init', [$this->magicLinkLoginRequestPage, 'register'], 11);
+            add_action(
+                'admin_post_' . MagicLinkLoginRequestPage::ACTION,
+                [$this->magicLinkLoginRequestPage, 'handleRequest']
+            );
+        }
+        add_filter('auth_cookie_expiration', [$this, 'authCookieExpiration'], 10, 3);
         add_action('admin_menu', [$this->parserPage, 'registerMenu']);
         add_action('admin_menu', [$this->deaneriesPage, 'registerMenu']);
         add_action('admin_menu', [$this->parishesPage, 'registerMenu']);
@@ -1149,6 +1212,43 @@ final class Plugin
     {
         return in_array('parish_contact', $user->roles, true)
             || in_array('deanery_approver', $user->roles, true);
+    }
+
+    /**
+     * ADR 0007: a magic-link sign-in gets a long session, so a dean is not
+     * asked for a new link every time they open the queue.
+     *
+     * Only the two portal roles get the long cookie — an archdiocese reviewer
+     * keeps WordPress's own expiry, so widening this filter cannot quietly
+     * extend a staff session. The lifetime is a `wp-config.php` constant
+     * (`ADCT_PI_AUTH_COOKIE_LIFETIME_DAYS`) because it is a hosting decision,
+     * and an absurd value is ignored in favour of the documented default.
+     */
+    public function authCookieExpiration(
+        int $expiration,
+        int $userId,
+        bool $remember = false
+    ): int {
+        unset($remember);
+
+        $days = defined('ADCT_PI_AUTH_COOKIE_LIFETIME_DAYS')
+            ? constant('ADCT_PI_AUTH_COOKIE_LIFETIME_DAYS')
+            : self::DEFAULT_AUTH_COOKIE_LIFETIME_DAYS;
+
+        if (! is_numeric($days) || (int) $days < 1) {
+            error_log(
+                '[ADCT Parish Intake] Ignoring ADCT_PI_AUTH_COOKIE_LIFETIME_DAYS; using the default of '
+                . self::DEFAULT_AUTH_COOKIE_LIFETIME_DAYS . ' days.'
+            );
+            $days = self::DEFAULT_AUTH_COOKIE_LIFETIME_DAYS;
+        }
+
+        $user = get_userdata($userId);
+        if (! $user instanceof \WP_User || ! $this->hasPortalOnlyRole($user)) {
+            return $expiration;
+        }
+
+        return (int) $days * DAY_IN_SECONDS;
     }
 
     private static function createMigrationRunner(): MigrationRunner

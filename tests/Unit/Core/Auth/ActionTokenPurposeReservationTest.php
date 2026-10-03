@@ -17,6 +17,7 @@ use ADCT\ParishIntake\WordPress\Approval\ApprovalRecipients;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalEditHandler;
 use ADCT\ParishIntake\WordPress\Auth\ConfirmationDecisionHandler;
+use ADCT\ParishIntake\WordPress\Auth\LoginHandler;
 use ADCT\ParishIntake\WordPress\Auth\RevertChangeHandler;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
@@ -43,9 +44,7 @@ final class ActionTokenPurposeReservationTest extends TestCase
      *
      * @var array<string, int>
      */
-    private const RESERVATIONS = [
-        'login' => 72,
-    ];
+    private const RESERVATIONS = [];
 
     public function testEveryPurposeIsEitherHandledOrReservedForAnIssue(): void
     {
@@ -84,6 +83,10 @@ final class ActionTokenPurposeReservationTest extends TestCase
      * A reservation only means something while the enum still has the case.
      * Without this, deleting a case would leave a reservation behind and it
      * would quietly stop protecting anything.
+     *
+     * $RESERVATIONS is empty since #72, so the mismatches are collected and
+     * asserted once rather than inside the loop: an empty loop would report
+     * nothing and PHPUnit would flag the test as risky.
      */
     public function testEveryReservationNamesAPurposeThatStillExists(): void
     {
@@ -92,14 +95,18 @@ final class ActionTokenPurposeReservationTest extends TestCase
             ActionTokenPurpose::cases()
         );
 
+        $problems = [];
+
         foreach (self::RESERVATIONS as $value => $issue) {
-            self::assertContains(
-                $value,
-                $values,
-                'A reservation is recorded for "' . $value . '", which is no longer an ActionTokenPurpose case.'
-            );
-            self::assertGreaterThan(0, $issue, 'A reservation must name the issue that owns the handler.');
+            if (! in_array($value, $values, true)) {
+                $problems[] = '"' . $value . '" is no longer an ActionTokenPurpose case.';
+            }
+            if (! is_int($issue) || $issue < 1) {
+                $problems[] = 'The reservation for "' . $value . '" names no owning issue.';
+            }
         }
+
+        self::assertSame([], $problems);
     }
 
     /**
@@ -196,25 +203,28 @@ final class ActionTokenPurposeReservationTest extends TestCase
     }
 
     /**
-     * ADR 0007 specifies a 30-minute magic link, and the reserved login purpose
-     * is that magic link, so the shorter window has to survive the reservation
-     * rather than quietly inheriting the 14-day event default.
+     * ADR 0007 specifies a 30-minute magic link, and the login purpose is that
+     * magic link, so the shorter window has to survive #72 rather than quietly
+     * inheriting the 14-day event default.
      *
      * ActionTokenServiceTest covers the lifetime as minted; this covers it as
-     * declared, so a reserved purpose cannot be left without a bound at all.
+     * declared, so a purpose cannot be left without a bound at all.
      */
-    public function testTheReservedLoginPurposeKeepsTheMagicLinkLifetime(): void
+    public function testTheLoginPurposeKeepsTheMagicLinkLifetime(): void
     {
-        self::assertArrayHasKey('login', self::RESERVATIONS);
+        $login = self::loginHandler();
 
-        foreach (self::RESERVATIONS as $value => $issue) {
-            $purpose = ActionTokenPurpose::from($value);
+        self::assertSame(
+            ActionTokenPurpose::LOGIN,
+            $login->purpose(),
+            '#72 consumes "login": it is handled by LoginHandler, so it is no longer a reservation.'
+        );
 
+        foreach (self::handledPurposes() as $value => $lifetime) {
             self::assertGreaterThan(
                 0,
-                $purpose->defaultLifetimeSeconds(),
-                'The reserved "' . $value . '" purpose (#' . $issue . ') must still expire, or its inert tokens'
-                    . ' would sit in the table forever.'
+                $lifetime,
+                'The "' . $value . '" purpose must still expire, or its tokens would sit in the table forever.'
             );
         }
 
@@ -262,8 +272,19 @@ final class ActionTokenPurposeReservationTest extends TestCase
         $handlers[$edit->purpose()->value] = $edit->purpose()->defaultLifetimeSeconds();
         $revert = self::revertHandler();
         $handlers[$revert->purpose()->value] = $revert->purpose()->defaultLifetimeSeconds();
+        $login = self::loginHandler();
+        $handlers[$login->purpose()->value] = $login->purpose()->defaultLifetimeSeconds();
 
         return $handlers;
+    }
+
+    /**
+     * Built the way Plugin builds it: the purpose is the only thing a login
+     * handler is told, so that is all this can assert.
+     */
+    private static function loginHandler(): LoginHandler
+    {
+        return new LoginHandler(ActionTokenPurpose::LOGIN);
     }
 
     private static function revertHandler(): RevertChangeHandler
