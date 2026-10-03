@@ -165,6 +165,23 @@ All of these use the **same zip that CI builds**. The plugin bundles prefixed Co
 
 **Pending for E4.2:** visually inspect the confirmation preview in Outlook, Gmail and on a mobile device using a temporary InstaWP/TasteWP site with Test mode enabled and only a dedicated test inbox allow-listed. No external site or mailbox was provisioned and no email was sent as part of this implementation; the local HTML/plain-text snapshots and intercepted WordPress integration delivery do not replace this client-rendering check.
 
+## Client-side OCR test cases
+
+Covered automatically by `OcrImageCheck` (integration, real database) plus unit tests for `PreviewableImage`, `CandidateSourceImageResolver`, both image endpoints and `OcrControl`:
+
+- A candidate whose message has no previewable image renders **no** OCR button and does not load `assets/ocr.js` or `assets/ocr.css` at all.
+- A candidate with a poster renders exactly one `data-adct-ocr` control pointing at the description field, and the page links both assets.
+- The control's `data-target` **resolves to a real form control** on the same page, matched as an `id` or a `name` on an `input`, `textarea` or `select`. This is asserted by resolution, not by string match, because a target that never resolves still renders perfectly valid HTML while the recognised text is silently discarded — a control that cannot write its result anywhere is worse than no control.
+- The token page renders exactly one layout selector and one confidence slider, both inside exactly one `<details data-adct-ocr-settings>` folded behind one `<summary>` labelled **Advanced**, with no `<details open>`. The summary's `title` names the Tesseract PSM of the current layout, and every option's `title` restates that option's own label with its PSM. Each marker is counted as a distinct string, because `data-adct-ocr-settings` and `data-adct-ocr-summary` are prefixes of no other attribute in play and a bare `data-adct-ocr` count would silently count all of them.
+- The page links both assets and loads `assets/ocr-settings.js` **before** `assets/ocr.js`. Both are deferred, so document order is what guarantees the OCR module can read the layout list; swapped, it would fall back to the default silently.
+- `OcrControlTest` cross-checks the PHP `LAYOUTS` list against the `LAYOUTS` in `assets/ocr-settings.js`, so the two renderings of the same choices cannot drift apart unnoticed. It checks the **labels** as well as the PSM numbers, because `ocr-settings.js` writes the readout and the disclosure's tooltip from its own copy: a label that drifted would have the summary naming a layout other than the one on screen. Only the numbers were cross-checked before, which is exactly how the two lists first diverged.
+- `tests/Node/ocr-settings.test.mjs` and `tests/Node/ocr-target.test.mjs` run under the built-in Node test runner (`npm run test:assets`, its own CI job, no dependencies). They cover the layout and confidence arithmetic, the line filter including the case where a result carries no block data, and the target resolver against a hand-built fake DOM — both spellings, and the guarantee that a field name is never used as a selector.
+- Serving a poster leaks nothing: the rendered page contains the attachment id in its own image URL but no storage name, no submitter email and no other candidate's id.
+- The attachment row is byte-identical after OCR is offered — `extracted_text` stays null, `extraction_method` stays `none`, and no row is added or removed.
+- `ActionTokenImageEndpoint::allowedImage()` returns the token's own poster, and null for another candidate's poster, a non-existent id, and a HEIC/PDF. Reading the image does **not** consume the token.
+
+**Still to check by hand, in a browser** (ADR 0018): that clicking the button loads tesseract.js from jsDelivr and fills the description field; that typed text is never overwritten; that an empty result or a failed/blocked CDN request leaves the field for manual entry and shows a clear message; and that the reviewer's approval still publishes only what they confirmed. These need a real browser and network access, so no automated check asserts them.
+
 ## Pre-launch check on a temporary staging instance
 
 There is no permanent staging site. Before the first launch (and optionally before big releases):

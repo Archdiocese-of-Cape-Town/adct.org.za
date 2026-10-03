@@ -32,7 +32,7 @@ Before launch, the release checklist runs once on a temporary xneelo staging ins
 
 ### Phase 1.5 – Posters and PDFs
 Text from PDF attachments, manual entry beside an attachment preview, bulletin splitting quality.
-**Status:** PDF text extraction is done (E8.1, [ADR 0015](decisions/0015-pure-php-pdf-text-extraction.md)): text-layer posters and bulletins are read in pure PHP with size, page and time limits, and anything unreadable is listed for manual entry. Manual entry beside an attachment preview (E8.2) and optional OCR (E8.3) are still to do.
+**Status:** PDF text extraction is done (E8.1, [ADR 0015](decisions/0015-pure-php-pdf-text-extraction.md)): text-layer posters and bulletins are read in pure PHP with size, page and time limits, and anything unreadable is listed for manual entry. Image posters are now shown next to the edit form on both the Manual parser screen and the emailed approval page, with an opt-in button that runs OCR in the reviewer's own browser to help fill the description ([ADR 0018](decisions/0018-client-side-ocr-for-image-posters.md)); the text is never stored. Queue-based OCR (E8.3) is still to do.
 **Exit criteria:** a PDF poster with a text layer produces a correct candidate. A multi-column bulletin is read column by column. An image-only poster is either read by the optional OCR provider (when switched on) or shown beside the edit form for manual entry. Real samples showed about 1 in 4 posters are image-only ([parser findings](parser-samples.md)).
 
 ### Phase 2 – Self-service, monitoring and more inputs
@@ -157,8 +157,9 @@ Phase 0, 1 and 1.5 items have GitHub issues. Phase 2 and 3 items are listed as c
 | ID | Item | Pri | Dep | Acceptance |
 |---|---|---|---|---|
 | [E8.1](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/65) | PDF text extraction with size/page limits, column-aware | Done | E2.3 | Text-layer PDFs parsed; multi-column bulletins read column by column using text positions; oversized files flagged, not crashed. |
-| [E8.2](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/63) | Manual entry beside attachment preview | P1 | E7.2 | Image/PDF shown next to the edit form in the admin area (and later the portal). |
-| [E8.3](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/75) | Optional OCR for image-only posters (OCR.space / vision model) | P1 | E8.1, E8.2, E12.1 | Off by default; runs in the queue job with a timeout and daily cap; always falls back to manual entry. |
+| [E8.2](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/63) | Manual entry beside attachment preview | P1 | E7.2 | Image/PDF shown next to the edit form in the admin area (and later the portal). Image posters are now shown on the Manual parser screen and on the emailed action-token page. |
+| *Shipped* | On-demand client-side OCR for image posters ([ADR 0018](decisions/0018-client-side-ocr-for-image-posters.md)) | Done | E8.2 | Opt-in button on both image screens runs tesseract.js in the reviewer's browser to fill the description field. Ephemeral: nothing is stored, no schema change. Separate from E8.3. |
+| [E8.3](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/75) | Optional OCR for image-only posters (OCR.space / vision model) | P1 | E8.1, E8.2, E12.1 | Off by default; runs in the queue job with a timeout and daily cap; always falls back to manual entry. Unaffected by the client-side OCR above, which needs no paid service and no server work — this one runs in the queue so it can read posters nobody reviews. |
 | *Later* | Poster as featured image | P2 | E8.2 | |
 
 ### E9 – Parish self-service portal (Phase 2, checklist) ([E9](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/13))

@@ -21,6 +21,7 @@ Short records of important decisions: what was decided, why, and what follows fr
 | [0015](0015-pure-php-pdf-text-extraction.md) | Pure-PHP PDF text extraction with hard limits | Accepted |
 | [0016](0016-pre-release-schema-changes.md) | Pre-release schema changes on disposable installations; migrations after first release | Accepted |
 | [0017](0017-library-first-protocol-and-format-handling.md) | Library-first protocol and format handling | Accepted |
+| [0018](0018-client-side-ocr-for-image-posters.md) | Opt-in client-side OCR for image posters; server-side OCR still out of scope | Accepted |
 
 Template:
 

@@ -14,8 +14,11 @@ use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 use ADCT\ParishIntake\Core\Auth\ActionTokenService;
 use ADCT\ParishIntake\Core\Ports\ActionTokenHandlerRegistryInterface;
 use ADCT\ParishIntake\Core\Ports\AtomicActionTokenHandlerInterface;
+use ADCT\ParishIntake\WordPress\Attachments\ActionTokenImageEndpoint;
+use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
 use DomainException;
 use RuntimeException;
+use Throwable;
 
 final class ActionTokenEndpoint
 {
@@ -30,7 +33,9 @@ final class ActionTokenEndpoint
     public function __construct(
         private ActionTokenService $tokens,
         private ActionTokenHandlerRegistryInterface $handlers,
-        private ActionTokenRenewalService $renewals
+        private ActionTokenRenewalService $renewals,
+        private ?ActionTokenImageEndpoint $images = null,
+        private ?OcrControl $ocr = null
     ) {
     }
 
@@ -54,6 +59,13 @@ final class ActionTokenEndpoint
 
         $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
         $queryToken = $this->stringInput(get_query_var(self::TOKEN_PARAM));
+
+        // The poster image is a sub-route of the same page. It is still a GET
+        // that only ever shows something, and it never consumes the token.
+        if ($method === 'GET' && $this->serveImageIfRequested($queryToken)) {
+            return;
+        }
+
         $postToken = $this->stringInput($_POST[self::TOKEN_PARAM] ?? null);
         $postAction = $this->stringInput($_POST[self::ACTION_FIELD] ?? null);
         $nonce = $this->stringInput($_POST[self::NONCE_FIELD] ?? null);
@@ -139,6 +151,57 @@ final class ActionTokenEndpoint
             $token,
             add_query_arg(self::QUERY_VAR, self::ROUTE_VALUE, home_url('/'))
         );
+    }
+
+    /**
+     * The URL that serves the token's own poster image to this browser.
+     *
+     * The image id is repeated here so the link is explicit in the page source,
+     * but the server re-resolves it from the token's own candidate, so the id
+     * cannot be edited to reach another parish's poster.
+     */
+    public function imageUrlForToken(string $token, int $attachmentId): string
+    {
+        return add_query_arg(
+            ActionTokenImageEndpoint::IMAGE_PARAM,
+            $attachmentId,
+            add_query_arg(self::TOKEN_PARAM, $token, $this->endpointUrl())
+        );
+    }
+
+    /**
+     * Serves the poster image when the request is for one, and reports whether
+     * it did so.
+     *
+     * A request for an image that this token may not see is refused with a 404
+     * rather than falling through to the ordinary page, so a wrong id never
+     * looks like a broken link.
+     */
+    private function serveImageIfRequested(string $token): bool
+    {
+        $attachmentId = ActionTokenImageEndpoint::requestedAttachmentId();
+
+        if ($attachmentId < 1) {
+            return false;
+        }
+
+        if ($this->images === null) {
+            $this->notFoundResponse();
+        }
+
+        $image = $this->images->allowedImage($token, $attachmentId);
+
+        if ($image === null) {
+            $this->notFoundResponse();
+        }
+
+        $path = $this->images->resolvePath($image);
+
+        if ($path === null) {
+            $this->notFoundResponse();
+        }
+
+        $this->images->send($image, $path);
     }
 
     private function respondToGet(string $token): ActionTokenHttpResponse
@@ -334,8 +397,11 @@ final class ActionTokenEndpoint
         return $this->invalidResponse();
     }
 
-    private function renderPreview(ActionTokenPreview $preview, string $token, ActionTokenPurpose $purpose): string
-    {
+    private function renderPreview(
+        ActionTokenPreview $preview,
+        string $token,
+        ActionTokenPurpose $purpose
+    ): string {
         $details = '';
 
         if ($preview->details !== []) {
@@ -360,10 +426,41 @@ final class ActionTokenEndpoint
             . '<button type="submit">' . esc_html($preview->submitLabel) . '</button>'
             . '</form>';
 
+        $ocr = $this->renderOcrControl($token);
+
         return $this->renderPage(
             $preview->title,
             $preview->summary,
-            $details . $form
+            $details . $ocr . $form,
+            $ocr !== ''
+        );
+    }
+
+    /**
+     * The poster control for this token's own candidate, or an empty string
+     * when there is no image to show.
+     *
+     * The extracted text is appended to the description box as a suggestion to
+     * check before confirming. It is never sent back to the server as OCR
+     * output: whatever the reviewer finally submits is their own edit, and
+     * nothing about the image is stored (ADR 0018).
+     */
+    private function renderOcrControl(string $token): string
+    {
+        if ($this->ocr === null || $this->images === null) {
+            return '';
+        }
+
+        $image = $this->images->imageForToken($token);
+
+        if ($image === null) {
+            return '';
+        }
+
+        return $this->ocr->render(
+            $this->imageUrlForToken($token, $image->attachmentId),
+            'adct_edit_description',
+            __('Read the text on the poster this event came from', 'adct-parish-intake')
         );
     }
 
@@ -440,13 +537,28 @@ final class ActionTokenEndpoint
         return add_query_arg(self::QUERY_VAR, self::ROUTE_VALUE, home_url('/'));
     }
 
-    private function renderPage(string $title, string $message, string $content = ''): string
+    private function renderPage(string $title, string $message, string $content = '', bool $withOcr = false): string
     {
         return '<!doctype html><html lang="en"><head><meta charset="utf-8">'
             . '<meta name="viewport" content="width=device-width, initial-scale=1">'
             . '<meta name="referrer" content="no-referrer"><title>' . esc_html($title)
-            . '</title></head><body><main><h1>' . esc_html($title) . '</h1><p>'
+            . '</title>'
+            // The emailed pages render outside the theme, so the OCR module is
+            // added here as plain tags rather than through wp_head().
+            . ($withOcr && $this->ocr !== null ? $this->ocr->headTags() : '')
+            . '</head><body><main><h1>' . esc_html($title) . '</h1><p>'
             . esc_html($message) . '</p>' . $content . '</main></body></html>';
+    }
+
+    private function notFoundResponse(): never
+    {
+        $this->send(new ActionTokenHttpResponse(
+            404,
+            $this->renderPage(
+                __('This image is not available', 'adct-parish-intake'),
+                __('The image for this link could not be found.', 'adct-parish-intake')
+            )
+        ));
     }
 
     private function invalidResponse(): ActionTokenHttpResponse

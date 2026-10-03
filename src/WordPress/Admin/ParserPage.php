@@ -3,6 +3,7 @@
 namespace ADCT\ParishIntake\WordPress\Admin;
 
 use ADCT\ParishIntake\Core\Auth\Capabilities;
+use ADCT\ParishIntake\Core\Attachments\PreviewableImage;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\Pipeline;
@@ -15,6 +16,8 @@ use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Ports\AiCallGateInterface;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\WordPress\Ai\OpenAiCompatibleProvider;
+use ADCT\ParishIntake\WordPress\Attachments\AttachmentImageEndpoint;
+use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
 use ADCT\ParishIntake\WordPress\Database\Schema;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
@@ -29,6 +32,13 @@ final class ParserPage
     private const REVIEW_CAPABILITY = Capabilities::REVIEW;
     private const REPORTS_CAPABILITY = Capabilities::VIEW_REPORTS;
     private const SECTION_KEYWORDS_OPTION = 'adct_parish_intake_section_keywords';
+    private const MENU_SLUG = 'toplevel_page_adct-parish-intake';
+
+    /**
+     * Bump this whenever assets/ocr.js or assets/ocr.css changes, so browsers
+     * pick up a new copy instead of a cached one.
+     */
+    private const ASSET_VERSION = '1.0.0';
 
     private Schema $schema;
     private PipelineFactory $pipelineFactory;
@@ -39,6 +49,7 @@ final class ParserPage
     private ?string $settingsSaveError = null;
     private ?AttachmentRepository $attachments;
 
+    /**
     /**
      * Form field name to [option name, default value].
      *
@@ -55,13 +66,54 @@ final class ParserPage
         ],
     ];
 
+    private ?OcrControl $ocrControl = null;
+    private bool $ocrAssetsEnqueued = false;
+    private ?AttachmentImageEndpoint $imageEndpoint = null;
+
+    /**
+     * Loads the OCR module on the Manual parser screen, and only when that
+     * screen actually has a control to bind to (ADR 0018).
+     *
+     * `admin_enqueue_scripts` runs on every admin page, so the screen is
+     * checked first: the poster query must not run site-wide.
+     */
+    public function enqueueOcrAssets(?string $hookSuffix = null): void
+    {
+        if ($this->ocrAssetsEnqueued || $hookSuffix !== self::MENU_SLUG) {
+            return;
+        }
+
+        if ($this->recentImages() === []) {
+            return;
+        }
+
+        $this->ocrAssetsEnqueued = true;
+
+        wp_enqueue_style(
+            'adct-parish-intake-ocr',
+            plugins_url('assets/ocr.css', $this->pluginFile),
+            [],
+            self::ASSET_VERSION
+        );
+
+        wp_enqueue_script(
+            'adct-parish-intake-ocr',
+            plugins_url('assets/ocr.js', $this->pluginFile),
+            [],
+            self::ASSET_VERSION,
+            true
+        );
+    }
+
     public function __construct(
         Schema $schema,
         PipelineFactory $pipelineFactory,
         StaticReportGenerator $reportGenerator,
         HttpClientInterface $httpClient,
         AiCallGateInterface $aiGate,
-        ?AttachmentRepository $attachments = null
+        ?AttachmentRepository $attachments = null,
+        private string $pluginFile = '',
+        ?AttachmentImageEndpoint $imageEndpoint = null
     ) {
         $this->schema = $schema;
         $this->pipelineFactory = $pipelineFactory;
@@ -69,6 +121,76 @@ final class ParserPage
         $this->httpClient = $httpClient;
         $this->aiGate = $aiGate;
         $this->attachments = $attachments;
+        $this->imageEndpoint = $imageEndpoint;
+    }
+
+    /**
+     * The on-demand OCR control, built once per request from the plugin's own
+     * asset URLs (ADR 0018).
+     */
+    private function ocr(): OcrControl
+    {
+        if ($this->ocrControl === null) {
+            $this->ocrControl = new OcrControl(
+                plugins_url('assets/ocr.js', $this->pluginFile),
+                plugins_url('assets/ocr.css', $this->pluginFile),
+                plugins_url('assets/ocr-settings.js', $this->pluginFile)
+            );
+        }
+
+        return $this->ocrControl;
+    }
+
+    /**
+     * The posters an operator can still read text out of in their browser.
+     *
+     * Only rows that pass the full `PreviewableImage` validation get a control,
+     * so an image that is not browser-readable, or is missing from disk, quietly
+     * falls back to manual entry rather than offering a button that cannot work.
+     *
+     * @return list<PreviewableImage>
+     */
+    private function recentImages(): array
+    {
+        if ($this->attachments === null || $this->imageEndpoint === null) {
+            return [];
+        }
+
+        if (! current_user_can(self::REVIEW_CAPABILITY)) {
+            return [];
+        }
+
+        try {
+            $rows = $this->attachments->findRecentImages(5);
+        } catch (Throwable $failure) {
+            error_log(
+                '[ADCT Parish Intake] Could not load recent image attachments ('
+                . get_class($failure) . ').'
+            );
+
+            return [];
+        }
+
+        $images = [];
+
+        foreach ($rows as $row) {
+            try {
+                $images[] = new PreviewableImage(
+                    (int) $row['id'],
+                    (int) $row['message_id'],
+                    (string) $row['filename'],
+                    (string) $row['storage_path'],
+                    (string) $row['mime_type'],
+                    (int) $row['size_bytes']
+                );
+            } catch (Throwable) {
+                // Not browser-readable, oversized, or a row we cannot trust:
+                // fall back to manual entry rather than a broken control.
+                continue;
+            }
+        }
+
+        return $images;
     }
 
     /**
@@ -614,6 +736,27 @@ final class ParserPage
                             </li>
                         <?php endforeach; ?>
                     </ul>
+                </div>
+            <?php endif; ?>
+
+            <?php $posterImages = $this->recentImages(); ?>
+            <?php if ($posterImages !== []) : ?>
+                <h2>Recent poster images</h2>
+                <p><?php echo esc_html__('These images arrived as attachments and were not read by the parser, so any event in them must be entered by hand. You can read the text off a poster here in your own browser: nothing is uploaded, and nothing is saved.', 'adct-parish-intake'); ?></p>
+                <div class="adct-ocr-list">
+                    <?php foreach ($posterImages as $image) : ?>
+                        <div class="adct-ocr-list__item">
+                            <code><?php echo esc_html($image->filename); ?></code>
+                            <?php echo $this->ocr()->render( // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- OcrControl escapes every part.
+                                $this->imageEndpoint->imageUrl($image->attachmentId),
+                                'adct-ocr-result-' . $image->attachmentId
+                            ); ?>
+                            <label class="adct-ocr-list__label">
+                                <?php echo esc_html__('Text you read from this poster', 'adct-parish-intake'); ?>
+                                <textarea id="adct-ocr-result-<?php echo esc_attr((string) $image->attachmentId); ?>" rows="4" class="large-text"></textarea>
+                            </label>
+                        </div>
+                    <?php endforeach; ?>
                 </div>
             <?php endif; ?>
 
