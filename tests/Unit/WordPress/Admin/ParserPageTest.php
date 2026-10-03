@@ -17,9 +17,17 @@ namespace {
 
 namespace ADCT\ParishIntake\WordPress\Admin {
     if (! function_exists('ADCT\ParishIntake\WordPress\Admin\is_admin')) {
+        /**
+         * Driven through a global so the shared stub in
+         * tests/Support/WordPressStubs.php can decide, whichever file PHPUnit
+         * includes first. This namespace has two consumers now — ParserPage
+                  * and ReviewQueuePage — so one of them had to stop declaring its own
+         * unconditional copy. ParserPage only renders inside wp-admin, so the
+         * default stays true; ReviewQueuePageTest sets the global itself.
+         */
         function is_admin(): bool
         {
-            return true;
+            return (bool) ($GLOBALS['adct_test_is_admin'] ?? true);
         }
     }
 
@@ -141,6 +149,8 @@ namespace ADCT\ParishIntake\WordPress\Admin {
 }
 
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
+    require_once __DIR__ . '/../../../Support/WordPressStubs.php';
+
     use ADCT\ParishIntake\Core\Auth\Capabilities;
     use ADCT\ParishIntake\Core\Audit\AuditAction;
     use ADCT\ParishIntake\Core\Audit\AuditSubjectType;

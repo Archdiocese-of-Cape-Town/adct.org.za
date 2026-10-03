@@ -20,9 +20,17 @@ final class CandidateSourceFiles
      * @param callable(string): bool|null $isDownloadable tells the view whether a
      *        stored name still resolves to a real file, so a Download button is
      *        only offered when the request would actually succeed.
+     * @param bool $canStartManual whether to offer opening a blank event to type in
+     *        from one of these files. A PDF never offers it: a typed-in event is
+     *        for a poster or photograph a person can read, and every notice has
+     *        a PDF if this were not limited to images.
      */
-    public function render(?array $message, array $attachments, ?callable $isDownloadable = null): void
-    {
+    public function render(
+        ?array $message,
+        array $attachments,
+        ?callable $isDownloadable = null,
+        bool $canStartManual = false
+    ): void {
         ?>
         <h2>Source email and attachments</h2>
         <p class="description">
@@ -41,7 +49,7 @@ final class CandidateSourceFiles
                 </tr></thead>
                 <tbody>
                 <?php foreach ($attachments as $attachment) : ?>
-                    <?php $this->attachmentRow($attachment, $isDownloadable); ?>
+                    <?php $this->attachmentRow($attachment, $isDownloadable, $canStartManual); ?>
                 <?php endforeach; ?>
                 </tbody>
             </table>
@@ -91,13 +99,14 @@ final class CandidateSourceFiles
     }
 
     /** @param array<string, mixed> $attachment */
-    private function attachmentRow(array $attachment, ?callable $isDownloadable): void
+    private function attachmentRow(array $attachment, ?callable $isDownloadable, bool $canStartManual): void
     {
         $id = (int) ($attachment['id'] ?? 0);
         $method = trim((string) ($attachment['extraction_method'] ?? ''));
         $path = trim((string) ($attachment['storage_path'] ?? ''));
         $stored = $id > 0 && $path !== ''
             && ($isDownloadable === null || $isDownloadable($path));
+        $poster = $id > 0 && str_starts_with((string) ($attachment['mime_type'] ?? ''), 'image/');
         ?>
         <tr>
             <td><?php echo esc_html((string) ($attachment['filename'] ?? '(unnamed)')); ?></td>
@@ -110,6 +119,12 @@ final class CandidateSourceFiles
                         name="attachment_id" value="<?php echo esc_attr((string) $id); ?>" formnovalidate>
                         Download
                     </button>
+                    <?php if ($canStartManual && $poster) : ?>
+                        <button type="submit" class="button button-secondary" form="adct-pi-create-manual-form"
+                            name="attachment_id" value="<?php echo esc_attr((string) $id); ?>" formnovalidate>
+                            Create event from this poster
+                        </button>
+                    <?php endif; ?>
                 <?php else : ?>
                     <span class="description">No longer stored; only its extracted text was kept.</span>
                 <?php endif; ?>

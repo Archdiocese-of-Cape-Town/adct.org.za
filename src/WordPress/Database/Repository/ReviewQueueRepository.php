@@ -26,6 +26,16 @@ final class ReviewQueueRepository
         'recent_changes' => 'Recent changes',
     ];
 
+    /**
+     * The note that marks a candidate a person typed in rather than one the
+     * parser read.
+     *
+     * It is deliberately not a parser warning: `unknown_sender` in particular
+     * would file the candidate under Unknown senders and read as "this needs a
+     * parish lookup", which is the opposite of what happened.
+     */
+    public const MANUAL_NOTE = 'manual_entry';
+
     private readonly string $candidates;
     private readonly string $messages;
     private readonly string $parishes;
@@ -188,6 +198,130 @@ final class ReviewQueueRepository
             $id,
             max(1, min(100, $limit))
         ));
+    }
+
+    /**
+     * An empty candidate for an event a person is typing in by hand.
+     *
+     * A scanned poster usually yields nothing the parser can use, so the
+     * reviewer starts a blank candidate beside it and fills in the ordinary
+     * edit form. The new row deliberately carries nothing that would let it
+     * reach the publisher: it is `awaiting_approval` with no approver recorded,
+     * so the one approval route — `decide()` followed by
+     * `CandidatePublisher::publish()` — stays the only way an event is
+     * published, however it was entered.
+     *
+     * The message and parish are taken from the candidate the reviewer was
+     * already looking at, inside the lock, and never from the request. That way
+     * the new event routes to the same dean or reviewer a parsed one would, and
+     * a row that has moved since the page was rendered cannot be used as a
+     * starting point for someone else's event.
+     *
+     * @param string $actor  the person creating it, for the audit trail
+     * @param bool   $reviewer whether they hold the archdiocese-wide capability
+     * @param int|null $attachmentId the poster this event is being typed from,
+     *        recorded for the audit trail only. The caller verifies it belongs to
+     *        the same message; nothing here trusts it.
+     */
+    public function createManualCandidate(
+        int $sourceCandidateId,
+        string $actor,
+        bool $reviewer,
+        ?int $attachmentId = null
+    ): int {
+        if ($sourceCandidateId < 1) {
+            throw new InvalidArgumentException('A manual entry needs a candidate to start from.');
+        }
+
+        $this->execute('START TRANSACTION');
+        try {
+            $source = $this->row($this->database->prepare(
+                "SELECT id, message_id, parish_id FROM {$this->candidates} WHERE id = %d FOR UPDATE",
+                $sourceCandidateId
+            ));
+            if ($source === null) {
+                throw new RuntimeException('The candidate this event is being typed from is no longer available.');
+            }
+            $messageId = (int) ($source['message_id'] ?? 0);
+            $parishId = (int) ($source['parish_id'] ?? 0);
+            if ($messageId < 1) {
+                throw new RuntimeException('The candidate this event is being typed from has no stored email.');
+            }
+            $blockIndex = $this->nextBlockIndex($messageId);
+            $now = $this->timestamp();
+
+            $inserted = $this->execute($this->database->prepare(
+                "INSERT INTO {$this->candidates}"
+                . ' (`message_id`, `block_index`, `parish_id`, `fields`, `confidence`,'
+                . ' `parser_version`, `notes`, `match_kind`, `status`, `created_at`, `updated_at`)'
+                . ' VALUES (%d, %d, %d, %s, %f, %s, %s, %s, %s, %s, %s)',
+                $messageId,
+                $blockIndex,
+                $parishId,
+                // '{}' rather than '[]' or '': the review queue decodes `fields`
+                // and insists on an object, so a blank candidate has to be one.
+                '{}',
+                0.0,
+                '',
+                json_encode([self::MANUAL_NOTE], JSON_THROW_ON_ERROR),
+                'new',
+                'awaiting_approval',
+                $now,
+                $now
+            ));
+            $id = $inserted === 1 ? $this->database->insertId() : 0;
+            if ($id < 1) {
+                throw new RuntimeException('The manual event could not be saved: ' . $this->database->lastError());
+            }
+
+            $this->audit(
+                $actor,
+                'candidate_created_by_hand',
+                $id,
+                [
+                    'role' => $reviewer ? 'reviewer' : 'dean',
+                    'source_candidate_id' => $sourceCandidateId,
+                ] + ($attachmentId === null ? [] : ['attachment_id' => $attachmentId]),
+                $now
+            );
+            $this->execute('COMMIT');
+
+            return $id;
+        } catch (Throwable $failure) {
+            $this->rollback($failure);
+            throw $failure;
+        }
+    }
+
+    /**
+     * The next free block on a message.
+     *
+     * `block_index` is unique per message, so a second event typed from the same
+     * email has to land after the blocks already there. The read is locked for
+     * the same reason the parser locks it: two people working the same notice
+     * must not both decide that block five is free.
+     */
+    private function nextBlockIndex(int $messageId): int
+    {
+        $rows = $this->rows($this->database->prepare(
+            "SELECT block_index FROM {$this->candidates} WHERE message_id = %d"
+            . ' ORDER BY block_index ASC FOR UPDATE',
+            $messageId
+        ));
+        $highest = -1;
+        foreach ($rows as $row) {
+            $index = filter_var(
+                $row['block_index'] ?? null,
+                FILTER_VALIDATE_INT,
+                ['options' => ['min_range' => 0]]
+            );
+            if (! is_int($index)) {
+                throw new RuntimeException('An existing event candidate has an invalid block index.');
+            }
+            $highest = max($highest, $index);
+        }
+
+        return $highest + 1;
     }
 
     /**

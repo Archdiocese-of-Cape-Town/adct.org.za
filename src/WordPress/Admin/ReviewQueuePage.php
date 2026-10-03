@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Admin;
 
 use ADCT\ParishIntake\Core\Auth\Capabilities;
+use ADCT\ParishIntake\Core\Attachments\PreviewableImage;
 use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
@@ -12,10 +13,13 @@ use ADCT\ParishIntake\Core\Review\CandidateEditResult;
 use ADCT\ParishIntake\Core\Review\CandidateEditValidator;
 use ADCT\ParishIntake\Core\Review\CandidateFieldSet;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
+use ADCT\ParishIntake\WordPress\Attachments\AttachmentImageEndpoint;
+use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ReviewQueueRepository;
 use DomainException;
+use InvalidArgumentException;
 use Throwable;
 
 final class ReviewQueuePage
@@ -35,6 +39,16 @@ final class ReviewQueuePage
     public const ATTACHMENT_ACTION = 'adct_pi_candidate_attachment';
 
     /**
+     * The POST action and nonce for starting a hand-typed event beside a poster.
+     *
+     * Deliberately its own action rather than a mode on `SAVE_ACTION`: the only
+     * thing it does is open a blank candidate, so a stray press of it cannot be
+     * mistaken for a save or an approval. Nothing is published by pressing it.
+     */
+    public const CREATE_MANUAL_ACTION = 'adct_pi_candidate_create_manual';
+    public const CREATE_MANUAL_NONCE = 'manual_nonce';
+
+    /**
      * One nonce name for both download actions. The file a reviewer is allowed to
      * see is decided by the candidate they came from, not by the button, so
      * there is nothing to vary.
@@ -47,7 +61,16 @@ final class ReviewQueuePage
     private const PAGE_SIZE = 25;
 
     /**
+     * The shared OCR assets' cache-busting version, matching the other screen
+     * that enqueues them so a browser only ever holds one copy.
+     */
+    private const ASSET_VERSION = '1.0.0';
+
+    /**
      * @param string $pluginFile the plugin's main file, so assets resolve and cache-bust
+     * @param OcrControl|null $ocr the shared client-side reader for a poster preview (ADR 0018)
+     * @param AttachmentImageEndpoint|null $imageEndpoint builds the nonce-bound URL that
+     *        serves one stored poster to an already-authorised reviewer
      */
     public function __construct(
         private readonly ReviewQueueRepository $queue,
@@ -57,7 +80,9 @@ final class ReviewQueuePage
         private readonly ?AttachmentRepository $attachments = null,
         private readonly ?InboundMailStorageReaderInterface $storage = null,
         private readonly ?CandidateEditValidator $validator = null,
-        private readonly string $pluginFile = ''
+        private readonly string $pluginFile = '',
+        private readonly ?OcrControl $ocr = null,
+        private readonly ?AttachmentImageEndpoint $imageEndpoint = null
     ) {
     }
 
@@ -74,7 +99,7 @@ final class ReviewQueuePage
             return;
         }
         // Bumped by hand when these files change, matching the public listing.
-        $version = '1.0.0';
+        $version = '1.1.0';
         wp_enqueue_style(
             'adct-parish-intake-candidate-detail',
             plugins_url('assets/candidate-detail.css', $this->pluginFile),
@@ -88,6 +113,66 @@ final class ReviewQueuePage
             $version,
             true
         );
+    }
+
+    /**
+     * Add the client-side OCR module to the detail screen.
+     *
+     * Only when a poster preview is actually on the page, so a reviewer who is
+     * not looking at an image never loads a parser (ADR 0018).
+     */
+    public function enqueueDetailOcrAssets(string $hookSuffix): void
+    {
+        if ($this->ocr === null || $this->pluginFile === '' || ! str_contains($hookSuffix, self::PAGE_SLUG)) {
+            return;
+        }
+
+        if (! $this->detailShowsPoster()) {
+            return;
+        }
+
+        wp_enqueue_style(
+            'adct-parish-intake-ocr',
+            plugins_url('assets/ocr.css', $this->pluginFile),
+            [],
+            self::ASSET_VERSION
+        );
+        wp_enqueue_script(
+            'adct-parish-intake-ocr',
+            plugins_url('assets/ocr.js', $this->pluginFile),
+            [],
+            self::ASSET_VERSION,
+            true
+        );
+        wp_enqueue_script(
+            'adct-parish-intake-ocr-settings',
+            plugins_url('assets/ocr-settings.js', $this->pluginFile),
+            [],
+            self::ASSET_VERSION,
+            true
+        );
+    }
+
+    /**
+     * Whether this request is a detail screen that would show a stored poster.
+     *
+     * A plain check of the query, deliberately cheap and deliberately not a
+     * query: the enqueue runs on every admin request, so it must not touch the
+     * database. A screen that answers yes but turns out to be empty simply loads
+     * a module with nothing to bind to, which costs nothing.
+     */
+    private function detailShowsPoster(): bool
+    {
+        if ($this->attachments === null || $this->imageEndpoint === null || ! is_admin()) {
+            return false;
+        }
+
+        $screen = get_current_screen();
+        if ($screen === null || $screen->base !== self::PAGE_SLUG) {
+            return false;
+        }
+
+        return absint($this->text($_GET['candidate'] ?? '0')) > 0;
     }
 
     public function registerMenu(): void
@@ -553,6 +638,7 @@ final class ReviewQueuePage
             : [];
         $editable = $this->canEdit($row);
         $canApprove = $editable && $this->canApproveRow($row);
+        $poster = $this->posterImageFor($messageId);
 
         $view = new CandidateDetailView();
         $view->render(
@@ -566,9 +652,81 @@ final class ReviewQueuePage
             $canApprove,
             $attempt,
             $this->isDownloadable(...),
-            $this->renderFieldConfidence(...)
+            $this->renderFieldConfidence(...),
+            $this->posterPanel($poster),
+            $editable && $messageId > 0
         );
         $view->renderAuditTrail($this->queue->history($id));
+    }
+
+    /**
+     * The first browser-readable poster on a candidate's message, or null.
+     *
+     * Only one poster is previewed: the point is to read the event beside the
+     * form, and a notice with six photographs is not six events. Every
+     * attachment is still listed and downloadable below, so nothing is hidden.
+     */
+    private function posterImageFor(int $messageId): ?PreviewableImage
+    {
+        if ($messageId < 1 || $this->attachments === null) {
+            return null;
+        }
+
+        try {
+            $rows = $this->attachments->findStoredImagesForMessage($messageId);
+        } catch (Throwable $failure) {
+            error_log(
+                '[ADCT Parish Intake] Could not look for a poster preview (' . get_class($failure) . ').'
+            );
+
+            return null;
+        }
+
+        foreach ($rows as $row) {
+            try {
+                return new PreviewableImage(
+                    (int) ($row['id'] ?? 0),
+                    (int) ($row['message_id'] ?? 0),
+                    (string) ($row['filename'] ?? ''),
+                    (string) ($row['storage_path'] ?? ''),
+                    (string) ($row['mime_type'] ?? ''),
+                    (int) ($row['size_bytes'] ?? 0)
+                );
+            } catch (InvalidArgumentException) {
+                // Not a browser-readable image, or not one this plugin stored.
+                // Skip to the next rather than offering a preview that fails.
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The poster preview panel for the side column, as ready-to-print markup.
+     *
+     * Empty when there is nothing safe to show. The recognised text is put into
+     * the description box so a secretary can correct a paragraph rather than
+     * retype it; it is never posted back as OCR output (ADR 0018).
+     */
+    private function posterPanel(?PreviewableImage $poster): string
+    {
+        if ($poster === null || $this->ocr === null || $this->imageEndpoint === null) {
+            return '';
+        }
+
+        return sprintf(
+            '<div class="adct-pi-card">'
+            . '<h2>Poster</h2>'
+            . '<p class="description">Check the details against the poster before approving. '
+            . 'You can also read the words off it in your own browser and correct them here.'
+            . '</p>%s</div>',
+            $this->ocr->render(
+                $this->imageEndpoint->imageUrl($poster->attachmentId),
+                'adct-pi-field-description',
+                __('Read the text on this poster', 'adct-parish-intake')
+            )
+        );
     }
 
     /**
@@ -744,6 +902,113 @@ final class ReviewQueuePage
                 wp_safe_redirect(add_query_arg($query, $this->url($tab, $search)));
                 exit;
             }
+
+    /**
+     * Open a blank candidate to type an event in by hand, beside a stored poster.
+     *
+     * This only ever creates the empty row. Everything after that is the
+     * ordinary editor and the ordinary approval route, so a hand-typed event is
+     * not a second way into the publisher: the new row records no approver, and
+     * `handleSave()` is the only thing that can give it one.
+     *
+     * The live relationship is re-resolved here rather than trusted from the
+     * form. The candidate the reviewer names decides the message, the parish and
+     * the routing; the attachment is then checked against that same message
+     * server-side, so a crafted POST cannot start an event from somebody else's
+     * poster.
+     */
+    public function handleCreateManual(): void
+    {
+        [$userId, $email, $reviewer] = $this->identity();
+        check_admin_referer(self::CREATE_MANUAL_ACTION, self::CREATE_MANUAL_NONCE);
+
+        $candidateId = absint($this->text($_POST['candidate'] ?? '0'));
+        $attachmentId = absint($this->text($_POST['attachment_id'] ?? '0'));
+        $tab = $this->tab($this->text($_POST['tab'] ?? 'awaiting_approval'));
+        $search = substr(sanitize_text_field($this->text($_POST['search'] ?? '')), 0, 100);
+
+        if ($candidateId < 1) {
+            wp_die(esc_html('That candidate is not valid.'), '', ['response' => 400]);
+        }
+        $source = $this->scopedCandidate($candidateId, $userId, $email, $reviewer);
+        if ($source === null) {
+            wp_die(esc_html('This candidate is not in your review queue.'), '', ['response' => 404]);
+        }
+        // The source must still be open. Copying details from a candidate that
+        // has already been approved would produce a second event nobody approved.
+        if (! $this->canEdit($source)) {
+            wp_die(esc_html('This candidate has already been decided.'), '', ['response' => 409]);
+        }
+
+        $messageId = $this->queue->findMessageOf($candidateId);
+        $attachment = null;
+        if ($attachmentId > 0) {
+            $attachment = $this->attachmentRecord($attachmentId);
+            if ($attachment === null || $messageId !== (int) ($attachment['message_id'] ?? 0)) {
+                wp_die(
+                    esc_html('That file is not attached to this email.'),
+                    '',
+                    ['response' => 404]
+                );
+            }
+        }
+
+        try {
+            $created = $this->queue->createManualCandidate(
+                $candidateId,
+                $email,
+                $reviewer,
+                $attachmentId > 0 ? $attachmentId : null
+            );
+        } catch (DomainException $failure) {
+            wp_die(esc_html($failure->getMessage()), '', ['response' => 409]);
+        } catch (Throwable $failure) {
+            error_log('[ADCT Parish Intake] Manual candidate create failed: ' . $failure->getMessage());
+            wp_die(esc_html('The new event could not be started. Try again in a moment.'), '', [
+                'response' => 500,
+            ]);
+        }
+
+        wp_safe_redirect(add_query_arg(
+            [
+                'candidate' => $created,
+                'tab' => $tab,
+                'search' => $search,
+                'created' => 1,
+            ],
+            self::queueUrl($tab, $search)
+        ));
+        exit;
+    }
+
+    /**
+     * A stored attachment row, when it is one this plugin still holds.
+     *
+     * Null means "no such stored attachment", which is what the callers above
+     * turn into a 404. Deliberately returns the row rather than a file path: the
+     * caller only ever needs to compare which message it belongs to.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function attachmentRecord(int $attachmentId): ?array
+    {
+        if ($attachmentId < 1 || $this->attachments === null) {
+            return null;
+        }
+
+        try {
+            $row = $this->attachments->find($attachmentId);
+        } catch (Throwable $failure) {
+            error_log(
+                '[ADCT Parish Intake] Could not read attachment ' . $attachmentId
+                . ' (' . get_class($failure) . ').'
+            );
+
+            return null;
+        }
+
+        return $row === null ? null : $row;
+    }
 
     /**
      * Serve the stored original message for a candidate.
@@ -992,6 +1257,13 @@ final class ReviewQueuePage
             if (! is_string($note)) {
                 continue;
             }
+            if ($note === ReviewQueueRepository::MANUAL_NOTE) {
+                // Not a parser problem: this row exists because a person is
+                // typing the event in. Say so plainly, and do not imply the
+                // parser had a go at the poster and gave up.
+                $warnings[] = 'A person entered this event by hand from the email.';
+                continue;
+            }
             if (preg_match('/\Apossible_missed_event_after_skipped_section:\s*(\d+)\z/D', $note, $matches) === 1) {
                 $warnings[] = 'Possible missed event after ' . (int) $matches[1] . ' skipped sections.';
             } elseif (str_starts_with($note, 'skipped_sections:')) {
@@ -1048,6 +1320,15 @@ final class ReviewQueuePage
 
     private function renderNotice(): void
     {
+        if (isset($_GET['created'])) {
+            ?>
+            <div class="notice notice-success"><p><?php echo esc_html(
+                'A blank event has been created below, beside the poster. Fill in what the poster says, '
+                . 'check it against the poster, then choose Approve. Nothing is published until you do.'
+            ); ?></p></div>
+            <?php
+            return;
+        }
         if (! isset($_GET['changed'], $_GET['skipped'], $_GET['manual'])) {
             return;
         }

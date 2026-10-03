@@ -96,6 +96,70 @@ final class CandidatePublisherTest extends TestCase
         yield 'invalid review flag' => [['match_review_required' => 'false']];
     }
 
+    public function testAHandTypedEventCannotPublishWithoutADeanOrReviewerDecision(): void
+    {
+        // Exactly the row ReviewQueueRepository::createManualCandidate() writes,
+        // then as it stands once a person has filled the edit form in. The only
+        // difference from a parsed candidate is where the text came from, so
+        // manual entry must not be a way round the approval allow-list.
+        $store = new RecordingPublicationStore([
+            'id' => '7',
+            'status' => 'awaiting_approval',
+            'approved_via' => null,
+            'approved_by' => null,
+            'approved_at' => null,
+            'match_kind' => 'new',
+            'match_event_id' => null,
+            'parish_id' => '3',
+            'fields' => json_encode([
+                'title' => 'Parish evening service',
+                'event_date' => '2026-10-12',
+                'event_time' => '18:00',
+            ], JSON_THROW_ON_ERROR),
+            'recurrence' => null,
+            'notes' => '["manual_entry"]',
+        ]);
+
+        try {
+            $this->publisher($store)->publish(7);
+            self::fail('A hand-typed event must not reach publication without a recorded approval.');
+        } catch (DomainException $failure) {
+            self::assertStringContainsString(
+                'recorded dean, reviewer or self approval',
+                $failure->getMessage()
+            );
+        }
+
+        self::assertNull($store->publication);
+    }
+
+    public function testAHandTypedEventStillPublishesOnceADecisionIsRecorded(): void
+    {
+        // The counterpart: manual entry is not a slower or a different route.
+        // Once the reviewer records the ordinary decision, the same row
+        // publishes exactly like a parsed one.
+        $store = new RecordingPublicationStore([
+            'id' => '7',
+            'status' => 'approved',
+            'approved_via' => 'dean',
+            'approved_by' => 'dean@example.test',
+            'approved_at' => '2026-09-25 09:00:00',
+            'match_kind' => 'new',
+            'match_event_id' => null,
+            'parish_id' => '3',
+            'fields' => json_encode([
+                'title' => 'Parish evening service',
+                'event_date' => '2026-10-12',
+                'event_time' => '18:00',
+            ], JSON_THROW_ON_ERROR),
+            'recurrence' => null,
+            'notes' => '["manual_entry"]',
+        ]);
+
+        self::assertSame(34, $this->publisher($store)->publish(7));
+        self::assertSame('Parish evening service', $store->publication->title);
+    }
+
     public function testRetryUsesPublishedCandidateLink(): void
     {
         $row = $this->candidate();
