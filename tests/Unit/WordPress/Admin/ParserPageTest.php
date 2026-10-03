@@ -8,11 +8,6 @@ namespace ADCT\ParishIntake\WordPress\Admin {
         return true;
     }
 
-    function current_user_can(string $capability): bool
-    {
-        return true;
-    }
-
     function check_admin_referer(string $action, string $name): void
     {
     }
@@ -62,6 +57,7 @@ namespace ADCT\ParishIntake\WordPress\Admin {
 }
 
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
+    use ADCT\ParishIntake\Core\Auth\Capabilities;
     use ADCT\ParishIntake\Core\Ports\AiCallGateInterface;
     use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
     use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
@@ -94,8 +90,21 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             ];
             $GLOBALS['parser_page_updates'] = [];
             $GLOBALS['parser_page_logs'] = [];
-            $_POST = [];
-        }
+                        // These tests are about what happens once a user reaches the page,
+                        // so the shared capability stub grants everything they need. The
+                        // refusal path is covered where the gate itself is.
+                        $GLOBALS['adct_test_wp_caps'] = [
+                            Capabilities::REVIEW,
+                            Capabilities::VIEW_REPORTS,
+                            Capabilities::MANAGE_SETTINGS,
+                        ];
+                        $_POST = [];
+                    }
+
+                    protected function tearDown(): void
+                    {
+                        unset($GLOBALS['adct_test_wp_caps']);
+                    }
 
         public function testInvalidRetentionLeavesEverySettingUnchanged(): void
         {

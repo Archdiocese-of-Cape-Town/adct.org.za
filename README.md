@@ -17,7 +17,7 @@ A WordPress plugin to collect parish notices and show upcoming events on the Arc
 2. Open **Parish Intake -> Manual parser** to try a fictional notice. For a public preview, publish a sample event under **Events -> Add New** and place the **Upcoming events** block or `[adct_events]` on a test page.
 3. To test email separately, configure a **test** source and mailbox under **Parish Intake -> Sources / Mailboxes**, use **Test connection**, run jobs under **Parish Intake -> Scheduled jobs**, then inspect **Inbox**. Do not connect the live mailbox; enable outbound **Test mode** with an allow-list on test sites that may send mail.
 
-For passwords, cron, roles and upgrades, see the [operator guide](docs/operator-guide.md).
+For passwords, cron, roles and upgrades, see the [operator guide](docs/operator-guide.md). If you write the event email, see the [parish submission guide](docs/parish-submission-guide.md). If you approve events, see the [approver guide](docs/approver-guide.md). The same help sits on the **Help** tab of every Parish Intake admin screen.
 
 ## Run the project locally
 

@@ -5,7 +5,9 @@ Design and knowledge for the ADCT parish intake plugin.
 | Document | What it covers |
 |---|---|
 | [Development guide](development.md) | Local setup with Docker, rules, definition of done, first build order |
-| [Operator guide](operator-guide.md) | Plain-language instructions to install and upgrade the plugin |
+| [Operator guide](operator-guide.md) | Plain-language instructions for parish staff and administrators: the daily routine, and what to do about each problem |
+| [Parish submission guide](parish-submission-guide.md) | How a parish emails an event notice, one page, for whoever writes the email |
+| [Approver guide](approver-guide.md) | How a dean or archdiocese reviewer approves or corrects a submitted event, one page |
 | [Backlog and coordination guide](parish-intake-project-backlog.md) | Phases, epics, work items, how to work on issues |
 | [Architecture](architecture.md) | Components, data flow, scheduled jobs, trust model, security |
 | [Data model](data-model.md) | Tables, event post type, state machines, retention |
