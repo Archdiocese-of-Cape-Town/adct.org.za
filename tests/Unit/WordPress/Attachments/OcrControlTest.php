@@ -312,7 +312,8 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Attachments {
         {
             $control = $this->control();
             $method = new \ReflectionMethod(OcrControl::class, 'summaryTooltip');
-            $method->setAccessible(true);
+            // No setAccessible() call: it has been a no-op since PHP 8.1 and is
+            // deprecated in 8.5, which the advisory CI job fails on.
 
             // The truth about which number belongs to which layout is the
             // rendered select, so the test reads it from there rather than
