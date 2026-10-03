@@ -476,14 +476,14 @@ final class ReviewQueuePage
     }
 
     /**
-         * The per-field evidence behind the event score, as a read-only table.
-         *
-         * This is what a reviewer needs in order to judge the notice: not just "72%" but *which*
-         * detail is unsupported. Values the parser invented are labelled as such and come first.
-         *
-         * @param array<string, mixed> $fields
-         */
-        private function renderFieldConfidence(array $fields): void
+     * The per-field evidence behind the event score, as a read-only table.
+     *
+     * This is what a reviewer needs in order to judge the notice: not just "72%" but *which*
+     * detail is unsupported. Values the parser invented are labelled as such and come first.
+     *
+     * @param array<string, mixed> $fields
+     */
+    private function renderFieldConfidence(array $fields): void
         {
             $stored = $fields['field_confidence'] ?? null;
 
@@ -564,32 +564,32 @@ final class ReviewQueuePage
         }
 
         /**
-         * The reviewer-facing explanation of one field's evidence.
-         *
-         * @param array{label: string, score: float, origin: string, flags: list<string>} $entry
-         */
-            private function fieldConfidenceNote(array $entry): string
-            {
-            if ($entry['origin'] === 'unsupported') {
-                return 'Not stated in the notice; the parser fell back to a guess.';
-            }
+     * The reviewer-facing explanation of one field's evidence.
+     *
+     * @param array{label: string, score: float, origin: string, flags: list<string>} $entry
+     */
+    private function fieldConfidenceNote(array $entry): string
+    {
+        if ($entry['origin'] === 'unsupported') {
+            return 'Not stated in the notice; the parser fell back to a guess.';
+        }
 
-            if ($entry['flags'] === []) {
-                return '—';
-            }
+        if ($entry['flags'] === []) {
+            return '—';
+        }
 
-            return implode(', ', array_map(
-                fn (string $flag): string => str_replace('_', ' ', $flag),
-                $entry['flags']
-            ));
-            }
+        return implode(', ', array_map(
+            fn (string $flag): string => str_replace('_', ' ', $flag),
+            $entry['flags']
+        ));
+    }
 
-            /**
-         * How many scored fields fall below the field threshold, for the queue list.
-         *
-         * @param array<string, mixed> $fields
-         */
-        private function uncertainFieldCount(array $fields): int
+    /**
+     * How many scored fields fall below the field threshold, for the queue list.
+     *
+     * @param array<string, mixed> $fields
+     */
+    private function uncertainFieldCount(array $fields): int
         {
             $stored = $fields['field_confidence'] ?? null;
 
@@ -708,6 +708,12 @@ final class ReviewQueuePage
      * Empty when there is nothing safe to show. The recognised text is put into
      * the description box so a secretary can correct a paragraph rather than
      * retype it; it is never posted back as OCR output (ADR 0018).
+     *
+     * The inline preview is scaled down to fit the column, but a poster is often
+     * a photographed A4 sheet whose dates are unreadable at that size. The
+     * sentence under the heading therefore offers the same bytes at their natural
+     * size in a new tab: a plain link to the identical, already-authorised URL,
+     * so there is no lightbox, no JavaScript and nothing new to authenticate.
      */
     private function posterPanel(?PreviewableImage $poster): string
     {
@@ -715,14 +721,19 @@ final class ReviewQueuePage
             return '';
         }
 
+        $imageUrl = $this->imageEndpoint->imageUrl($poster->attachmentId);
+
         return sprintf(
             '<div class="adct-pi-card">'
             . '<h2>Poster</h2>'
             . '<p class="description">Check the details against the poster before approving. '
-            . 'You can also read the words off it in your own browser and correct them here.'
-            . '</p>%s</div>',
+            . 'You can also read the words off it in your own browser and correct them here. '
+            . '<a href="%1$s" target="_blank" rel="noopener">Open the poster at full size</a> '
+            . 'if the words here are too small.'
+            . '</p>%2$s</div>',
+            esc_url($imageUrl),
             $this->ocr->render(
-                $this->imageEndpoint->imageUrl($poster->attachmentId),
+                $imageUrl,
                 'adct-pi-field-description',
                 __('Read the text on this poster', 'adct-parish-intake')
             )

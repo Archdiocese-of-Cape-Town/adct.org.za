@@ -843,6 +843,22 @@ final class CandidateDetailCheck
                 && str_contains($mainDetailHtml, 'Read the text on this poster'),
                 'the stored image must be previewed inline beside the form, not only offered as a download.');
 
+            // The preview is scaled to the column, so a photographed A4 poster
+            // is unreadable at that size. The full-size offer must point at the
+            // *same* already-authorised URL as the preview image: the endpoint
+            // streams the original bytes, so no second route, endpoint or
+            // permission is needed for the full resolution, and inventing one
+            // would be a second way in.
+            $check(preg_match(
+                '#<a href="([^"]+)" target="_blank" rel="noopener">Open the poster at full size</a>#',
+                $mainDetailHtml,
+                $fullSizeMatch
+            ) === 1
+                && preg_match('#<img class="adct-ocr__preview" src="([^"]+)"#', $mainDetailHtml, $previewMatch) === 1
+                && $fullSizeMatch[1] === $previewMatch[1],
+                'the full-size link must open the very URL the preview image uses, so the full-resolution '
+                . 'poster needs no second endpoint and no second authorisation.');
+
             // The button is posted, not linked: nothing is created by a GET.
             $check(! str_contains($mainDetailHtml, 'candidate=' . $main['candidate'] . '&amp;attachment_id'),
                 'a hand-typed event must never be reachable from a link.');

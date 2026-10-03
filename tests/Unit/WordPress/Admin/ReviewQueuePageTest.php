@@ -254,34 +254,34 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
         public function testTheEventIsAnchoredToTheEmailTheReviewerWasAlreadyOn(): void
         {
             $database = new ManualEntryDatabase();
-                    $database->sourceId = 8123;
-                    $database->sourceMessageId = 8749;
-                    $database->sourceParishId = 3317;
-                    $_POST = ['candidate' => '8123'];
+            $database->sourceId = 8123;
+            $database->sourceMessageId = 8749;
+            $database->sourceParishId = 3317;
+            $_POST = ['candidate' => '8123'];
 
-                    try {
-                        $this->page($database)->handleCreateManual();
-                    } catch (\AdctTestRedirect) {
-                        // Expected.
-                    }
+            try {
+                $this->page($database)->handleCreateManual();
+            } catch (\AdctTestRedirect) {
+                // Expected.
+            }
 
-                    $arguments = $database->insert(self::CANDIDATES_TABLE)['arguments'];
-                    self::assertSame(
-                        8749,
-                        $arguments[0],
-                        'The message comes from the source candidate, never from the request. These ids are '
-                        . 'not the ones the default fixture serves, so a hardcoded number cannot pass.'
-                    );
-                    self::assertSame(
-                        3317,
-                        $arguments[2],
-                        'The parish comes from the source candidate, so approval routes where a parsed one would.'
-                    );
-                    self::assertSame(
-                                    ReviewQueuePageTestIds::EXISTING_BLOCKS + 1,
-                                    $arguments[1],
-                                    'The blank event lands after the blocks already on the email, not on top of one.'
-                                );
+            $arguments = $database->insert(self::CANDIDATES_TABLE)['arguments'];
+            self::assertSame(
+                8749,
+                $arguments[0],
+                'The message comes from the source candidate, never from the request. These ids are '
+                . 'not the ones the default fixture serves, so a hardcoded number cannot pass.'
+            );
+            self::assertSame(
+                3317,
+                $arguments[2],
+                'The parish comes from the source candidate, so approval routes where a parsed one would.'
+            );
+            self::assertSame(
+                ReviewQueuePageTestIds::EXISTING_BLOCKS + 1,
+                $arguments[1],
+                'The blank event lands after the blocks already on the email, not on top of one.'
+            );
         }
 
         /**
@@ -636,14 +636,14 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
         /** Whether the source candidate is inside the reviewer's own queue. */
         public bool $visible = true;
 
-                public int $sourceId = ReviewQueuePageTestIds::SOURCE_CANDIDATE;
+        public int $sourceId = ReviewQueuePageTestIds::SOURCE_CANDIDATE;
 
-                public int $sourceMessageId = ReviewQueuePageTestIds::MESSAGE;
+        public int $sourceMessageId = ReviewQueuePageTestIds::MESSAGE;
 
-                public int $sourceParishId = ReviewQueuePageTestIds::PARISH;
+        public int $sourceParishId = ReviewQueuePageTestIds::PARISH;
 
-                /** The status the source candidate is served with. */
-                public string $sourceStatus = 'awaiting_approval';
+        /** The status the source candidate is served with. */
+        public string $sourceStatus = 'awaiting_approval';
 
         /** Which message the served attachment belongs to. */
         public int $attachmentMessageId = ReviewQueuePageTestIds::MESSAGE;
@@ -670,84 +670,84 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
         }
 
         /**
-                 * Real `$wpdb->prepare()` substitutes here; this does too, so a read can
-                 * be answered per statement rather than by guessing from the SQL alone.
-                 */
-                public function prepare(string $query, mixed ...$arguments): string
-                {
-                    $values = array_values($arguments);
-                    $this->preparedQueries[] = ['query' => $query, 'arguments' => $values];
+         * Real `$wpdb->prepare()` substitutes here; this does too, so a read can
+         * be answered per statement rather than by guessing from the SQL alone.
+         */
+        public function prepare(string $query, mixed ...$arguments): string
+        {
+            $values = array_values($arguments);
+            $this->preparedQueries[] = ['query' => $query, 'arguments' => $values];
 
-                    return preg_replace_callback(
-                        '/%[sdf]/',
-                        static function (array $match) use (&$values): string {
-                            $value = array_shift($values);
+            return preg_replace_callback(
+                '/%[sdf]/',
+                static function (array $match) use (&$values): string {
+                    $value = array_shift($values);
 
-                            return match ($match[0]) {
-                                '%d' => (string) (int) $value,
-                                '%f' => (string) (float) $value,
-                                default => (string) $value,
-                            };
-                        },
-                        $query
-                    ) ?? $query;
-                }
+                    return match ($match[0]) {
+                        '%d' => (string) (int) $value,
+                        '%f' => (string) (float) $value,
+                        default => (string) $value,
+                    };
+                },
+                $query
+            ) ?? $query;
+        }
 
-                public function query(string $query): int|false
-                {
-                    $this->executedQueries[] = $query;
-                    if (preg_match('/^INSERT INTO `([^`]+)`/i', $query, $parts) === 1) {
-                        $this->inserts[str_replace('wp_', '', $parts[1])] = [
-                            'query' => $query,
-                            'arguments' => $this->lastArguments(),
-                        ];
-                        $this->lastError = '';
-                    }
+        public function query(string $query): int|false
+        {
+            $this->executedQueries[] = $query;
+            if (preg_match('/^INSERT INTO `([^`]+)`/i', $query, $parts) === 1) {
+                $this->inserts[str_replace('wp_', '', $parts[1])] = [
+                    'query' => $query,
+                    'arguments' => $this->lastArguments(),
+                ];
+                $this->lastError = '';
+            }
 
-                    return $this->lastError === '' ? 1 : false;
-                }
+            return $this->lastError === '' ? 1 : false;
+        }
 
-                public function getRow(string $query): ?array
-                {
-                    return $this->getResults($query)[0] ?? null;
-                }
+        public function getRow(string $query): ?array
+        {
+            return $this->getResults($query)[0] ?? null;
+        }
 
-                public function getResults(string $query): array
-                {
-                    $table = $this->tableIn($query);
+        public function getResults(string $query): array
+        {
+            $table = $this->tableIn($query);
 
-                    if ($table === 'adct_pi_attachments') {
-                        return $this->attachmentRow($query);
-                    }
+            if ($table === 'adct_pi_attachments') {
+                return $this->attachmentRow($query);
+            }
 
-                    // The attachments table arrives unquoted, from tableName().
-                    if (str_contains($query, 'FROM wp_adct_pi_attachments')) {
-                        return $this->attachmentRow($query);
-                    }
+            // The attachments table arrives unquoted, from tableName().
+            if (str_contains($query, 'FROM wp_adct_pi_attachments')) {
+                return $this->attachmentRow($query);
+            }
 
-                    if ($table !== 'adct_pi_event_candidates') {
-                        return [];
-                    }
+            if ($table !== 'adct_pi_event_candidates') {
+                return [];
+            }
 
-                    // The next free block on the message.
-                    if (str_contains($query, 'SELECT block_index')) {
-                        return [['block_index' => (string) ReviewQueuePageTestIds::EXISTING_BLOCKS]];
-                    }
+            // The next free block on the message.
+            if (str_contains($query, 'SELECT block_index')) {
+                return [['block_index' => (string) ReviewQueuePageTestIds::EXISTING_BLOCKS]];
+            }
 
-                    // findScoped(): the candidate as the reviewer's own queue serves it.
-                    if (str_contains($query, 'SELECT c.*')) {
-                        return $this->visible ? [$this->sourceCandidate()] : [];
-                    }
+            // findScoped(): the candidate as the reviewer's own queue serves it.
+            if (str_contains($query, 'SELECT c.*')) {
+                return $this->visible ? [$this->sourceCandidate()] : [];
+            }
 
-                    // findMessageOf(), and createManualCandidate()'s locked re-read. Both
-                    // read straight from the table, so scoping is not their business:
-                    // the route authorises through findScoped() before either is called.
-                    if (str_contains($query, 'SELECT message_id FROM') || str_contains($query, 'SELECT id, message_id, parish_id')) {
-                        return [$this->sourceCandidate()];
-                    }
+            // findMessageOf(), and createManualCandidate()'s locked re-read. Both
+            // read straight from the table, so scoping is not their business:
+            // the route authorises through findScoped() before either is called.
+            if (str_contains($query, 'SELECT message_id FROM') || str_contains($query, 'SELECT id, message_id, parish_id')) {
+                return [$this->sourceCandidate()];
+            }
 
-                    return [];
-                }
+            return [];
+        }
 
         public function escapeLike(string $text): string
         {
@@ -775,28 +775,28 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
         }
 
         /**
-                 * The candidate every read is served from.
-                 *
-                 * Its ids are properties rather than constants so a test can move them
-                 * and still expect the same outcome — which is what stops an anchoring
-                 * assertion from passing just because the code hardcoded the number the
-                 * fake happens to serve.
-                 *
-                 * @return array<string, mixed>
-                 */
-                private function sourceCandidate(): array
-                {
-                    return [
-                        'id' => (string) $this->sourceId,
-                        'message_id' => (string) $this->sourceMessageId,
-                        'parish_id' => (string) $this->sourceParishId,
-                        'status' => $this->sourceStatus,
-                        'approved_by' => null,
-                        'decided_at' => null,
-                        'fields' => '{}',
-                        'notes' => '[]',
-                        'block_index' => '0',
-                    ];
+         * The candidate every read is served from.
+         *
+         * Its ids are properties rather than constants so a test can move them
+         * and still expect the same outcome — which is what stops an anchoring
+         * assertion from passing just because the code hardcoded the number the
+         * fake happens to serve.
+         *
+         * @return array<string, mixed>
+         */
+        private function sourceCandidate(): array
+        {
+            return [
+                'id' => (string) $this->sourceId,
+                'message_id' => (string) $this->sourceMessageId,
+                'parish_id' => (string) $this->sourceParishId,
+                'status' => $this->sourceStatus,
+                'approved_by' => null,
+                'decided_at' => null,
+                'fields' => '{}',
+                'notes' => '[]',
+                'block_index' => '0',
+            ];
         }
 
         /**
@@ -807,26 +807,26 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
          *
          * @return list<array<string, mixed>>
          */
-            private function attachmentRow(string $query): array
-            {
-                if (preg_match('/WHERE id = (\d+)/', $query, $parts) !== 1) {
-                    return [];
-                }
-                $id = (int) $parts[1];
-                $owned = $id === ReviewQueuePageTestIds::OWN_ATTACHMENT;
-                if (! $owned && $id !== ReviewQueuePageTestIds::OTHER_ATTACHMENT) {
-                    return [];
-                }
+        private function attachmentRow(string $query): array
+        {
+            if (preg_match('/WHERE id = (\d+)/', $query, $parts) !== 1) {
+                return [];
+            }
+            $id = (int) $parts[1];
+            $owned = $id === ReviewQueuePageTestIds::OWN_ATTACHMENT;
+            if (! $owned && $id !== ReviewQueuePageTestIds::OTHER_ATTACHMENT) {
+                return [];
+            }
 
-                return [[
-                    'id' => (string) $id,
-                    'message_id' => (string) ($owned ? $this->attachmentMessageId : ReviewQueuePageTestIds::FOREIGN_MESSAGE),
-                    'filename' => 'poster.jpg',
-                    'mime_type' => 'image/jpeg',
-                    'size_bytes' => '2048',
-                    'storage_path' => str_repeat('a', 64) . '.jpg',
-                    'status' => 'stored',
-                ]];
+            return [[
+                'id' => (string) $id,
+                'message_id' => (string) ($owned ? $this->attachmentMessageId : ReviewQueuePageTestIds::FOREIGN_MESSAGE),
+                'filename' => 'poster.jpg',
+                'mime_type' => 'image/jpeg',
+                'size_bytes' => '2048',
+                'storage_path' => str_repeat('a', 64) . '.jpg',
+                'status' => 'stored',
+            ]];
         }
 
         private function tableIn(string $query): string
