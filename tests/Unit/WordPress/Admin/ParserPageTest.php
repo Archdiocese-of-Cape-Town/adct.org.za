@@ -226,6 +226,8 @@ namespace ADCT\ParishIntake\WordPress\Admin {
 // namespaced settings objects read the values a settings screen would see.
 
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
+
+    use ADCT\ParishIntake\Core\Security\SecretLookupInterface;
     require_once __DIR__ . '/../../../Support/WordPressStubs.php';
 
     use ADCT\ParishIntake\Core\Auth\Capabilities;
@@ -638,7 +640,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             // cannot make the POPIA decision the opt-in exists to force.
             self::assertStringContainsString('the image attachment itself and nothing else', $html);
             self::assertStringContainsString('never sent with it', $html);
-            self::assertStringContainsString('never shown again after saving', $html);
+            self::assertStringContainsString('never shown again', $html);
         }
 
         public function testTheSettingsPageSaysPosterOcrIsOffByDefault(): void
@@ -654,28 +656,94 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             self::assertStringNotContainsString('name="ocr_enabled" value="1" checked', $html);
         }
 
+        public function testTheSettingsPageNeverEchoesASavedOcrKey(): void
+        {
+            $html = $this->renderSettings(storedKeys: [SecretRegistry::OCR_API_KEY => 'K811-never-shown']);
+
+            // The field stays empty and the key appears nowhere, so the secret never
+            // reaches the page HTML or the admin DOM.
+            self::assertStringNotContainsString('K811-never-shown', $html);
+            self::assertStringContainsString('name="ocr_api_key" value=""', $html);
+            // A saved key is never re-pasted over by the paste prompt.
+            self::assertStringNotContainsString($this->ocrKeyPrompt(), $html);
+        }
+
+        public function testTheSettingsPageOffersToRemoveASavedOcrKey(): void
+        {
+            $html = $this->renderSettings(storedKeys: [SecretRegistry::OCR_API_KEY => 'K811-saved']);
+
+            // Without this control a saved key can only be removed by editing the
+            // database, which is exactly what the no-WP-CLI rule rules out.
+            self::assertStringContainsString('A key is saved. Leave blank to keep it.', $html);
+            self::assertStringContainsString('name="remove_ocr_api_key"', $html);
+        }
+
+        public function testTheSettingsPagePromptsForAOcrKeyWhenNoneIsSaved(): void
+        {
+            $html = $this->renderSettings();
+
+            self::assertStringContainsString($this->ocrKeyPrompt(), $html);
+            self::assertStringNotContainsString('name="remove_ocr_api_key"', $html);
+        }
+
         /**
-                 * Reading "is a key saved?" goes through the global get_option(), which
-                 * this unit stub does not declare, so the saved-key branch is asserted in
-                 * tests/Integration/verify-plugin.php against the real wp_options. What
-                 * this proves is that no branch here can put the value into the field,
-                 * and that the paste prompt is rendered.
-                 */
-                public function testTheSettingsPageNeverEchoesASavedOcrKey(): void
-                {
-                    $GLOBALS['parser_page_options'][SecretRegistry::optionName(SecretRegistry::OCR_API_KEY)] = 'K811-never-shown';
+         * The OCR row's "paste a key" prompt.
+         *
+         * Distinct from the AI key prompt directly above it, which reads "Paste a
+         * valid API key" and does not name the provider. Asserting on the bare
+         * phrase "Paste a valid" therefore passes for the wrong row.
+         */
+        private function ocrKeyPrompt(): string
+        {
+            return 'Paste a valid ' . \ADCT\ParishIntake\WordPress\Ocr\OcrSpaceProvider::PROVIDER_NAME
+                . ' key only when you need to add or replace it.';
+        }
 
-                    ob_start();
-                    try {
-                        $this->page()->renderSettingsPage();
-                    } finally {
-                        $html = (string) ob_get_clean();
-                    }
-
-                    self::assertStringNotContainsString('K811-never-shown', $html);
-                    self::assertStringContainsString('name="ocr_api_key" value=""', $html);
-                    self::assertStringContainsString('Paste a valid', $html);
+        /**
+         * Renders the Settings screen and returns its HTML. Asserting on the
+         * markup, rather than on the array behind it, is the only way to prove a
+         * secret is not rendered: a value can be absent from the settings array
+         * and still be printed by the template.
+         *
+         * The secret state is injected as a lookup rather than staged into an
+         * options table. `WordPressSecretResolver` reads the *global* WordPress
+         * `get_option`, and this suite deliberately declares several different
+         * stand-ins for that function, so whichever one PHPUnit happened to
+         * include first used to decide what the screen rendered. Injecting the
+         * port makes the saved-key branch reachable no matter the load order.
+         *
+         * @param array<string, string> $storedKeys Secret ids that have a non-empty
+         *                                           value in the options table.
+         * @param list<string>           $constants  Secret ids that wp-config.php defines.
+         */
+        private function renderSettings(array $storedKeys = [], array $constants = []): string
+        {
+            $page = $this->page(secretLookup: new class ($storedKeys, $constants) implements SecretLookupInterface {
+                /** @param array<string, string> $stored */
+                public function __construct(
+                    private array $stored,
+                    private array $constants
+                ) {
                 }
+
+                public function isConstantConfigured(string $secretId, ?string $scope = null): bool
+                {
+                    return in_array($secretId, $this->constants, true);
+                }
+
+                public function hasStoredOption(string $secretId, ?string $scope = null): bool
+                {
+                    return ($this->stored[$secretId] ?? '') !== '';
+                }
+            });
+
+            ob_start();
+            try {
+                $page->renderSettingsPage();
+            } finally {
+                return (string) ob_get_clean();
+            }
+        }
 
         private function settingsPost(): array
         {
@@ -768,8 +836,11 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             self::assertStringNotContainsString('sensitive SQL error', $GLOBALS['parser_page_logs'][0]);
         }
 
-        private function page(?AttachmentRepository $attachments = null, ?AuditWriter $audit = null): ParserPage
-        {
+        private function page(
+            ?AttachmentRepository $attachments = null,
+            ?AuditWriter $audit = null,
+            ?SecretLookupInterface $secretLookup = null
+        ): ParserPage {
             return new ParserPage(
                 new Schema(),
                 new PipelineFactory(),
@@ -798,7 +869,9 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                 $attachments,
                 '',
                 null,
-                $audit
+                $audit,
+                null,
+                $secretLookup
             );
         }
 

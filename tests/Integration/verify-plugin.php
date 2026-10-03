@@ -1575,6 +1575,39 @@ if (
         $fail('The Settings page exposed a stored OCR API key or omitted its safe saved-key controls.');
     }
 
+    // Issue #75: a wp-config.php OCR constant shadowing a stored key, mirroring the AI case
+    // above. A constant cannot be undefined inside one PHP process, so this combination is
+    // only reachable here and not in the unit suite. It must follow the stored-key render
+    // above, because defining it flips the screen to the read-only branch.
+    $constantTestOcrKey = 'K123456789-ocr-constant-DO-NOT-ECHO-321';
+    define('ADCT_PI_OCR_API_KEY', $constantTestOcrKey);
+
+    if (
+        (new \ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver())
+            ->resolve(\ADCT\ParishIntake\Core\Security\SecretRegistry::OCR_API_KEY)
+        !== $constantTestOcrKey
+    ) {
+        $fail('The wp-config.php OCR key constant did not take precedence over the stored option.');
+    }
+
+    ob_start();
+    try {
+        do_action($settingsHook);
+    } finally {
+        $constantOcrSettingsHtml = (string) ob_get_clean();
+    }
+
+    if (
+        strpos($constantOcrSettingsHtml, 'Configured in <code>wp-config.php</code>') === false
+        || strpos($constantOcrSettingsHtml, $constantTestOcrKey) !== false
+        || strpos($constantOcrSettingsHtml, $storedTestOcrKey) !== false
+        || strpos($constantOcrSettingsHtml, 'A database key is also saved.') === false
+        || strpos($constantOcrSettingsHtml, 'name="remove_ocr_api_key"') === false
+        || strpos($constantOcrSettingsHtml, 'name="ocr_api_key" value=""') !== false
+    ) {
+        $fail('The Settings page did not render the read-only wp-config.php OCR secret state.');
+    }
+
     if (
         strpos($ocrSettingsHtml, 'Poster image OCR') === false
         || strpos($ocrSettingsHtml, 'name="ocr_enabled"') === false

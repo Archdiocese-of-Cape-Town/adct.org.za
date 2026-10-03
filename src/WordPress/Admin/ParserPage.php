@@ -21,6 +21,7 @@ use ADCT\ParishIntake\Core\Ocr\OcrExtractionLimits;
 use ADCT\ParishIntake\Core\Ocr\OcrExtractionResult;
 use ADCT\ParishIntake\Core\Ports\AiCallGateInterface;
 use ADCT\ParishIntake\Core\Approval\ApprovalReminderSettings;
+use ADCT\ParishIntake\Core\Security\SecretLookupInterface;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\WordPress\Ai\OpenAiCompatibleProvider;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalReminderOptionReader;
@@ -128,7 +129,8 @@ final class ParserPage
         private string $pluginFile = '',
         ?AttachmentImageEndpoint $imageEndpoint = null,
         private ?AuditWriter $audit = null,
-        private ?ActorResolver $actorResolver = null
+        private ?ActorResolver $actorResolver = null,
+        private ?SecretLookupInterface $secretLookup = null
     ) {
         $this->schema = $schema;
         $this->pipelineFactory = $pipelineFactory;
@@ -622,7 +624,7 @@ final class ParserPage
         $settings = $this->settings();
         $retentionSettings = RetentionSettings::current();
         $ocrSettings = OcrSettings::current();
-        $secretResolver = new WordPressSecretResolver();
+        $secretResolver = $this->secretLookup();
         $unreadablePosters = $this->unreadablePosters();
         ?>
         <div class="wrap">
@@ -805,9 +807,18 @@ final class ParserPage
                         <td>
                             <?php if ($secretResolver->isConstantConfigured(SecretRegistry::OCR_API_KEY)) : ?>
                                 <p><strong>Configured in <code>wp-config.php</code>.</strong> The plugin reads the constant and ignores the stored value.</p>
+                                <?php if ($settings['ocr_api_key_is_saved']) : ?>
+                                    <p class="description">A database key is also saved.</p>
+                                    <label><input type="checkbox" name="remove_ocr_api_key" value="1" /> Remove saved key</label>
+                                <?php endif; ?>
                             <?php else : ?>
-                                <input type="password" class="regular-text" name="ocr_api_key" value="" autocomplete="off" />
-                                <p class="description">Paste a valid <?php echo esc_html(OcrSpaceProvider::PROVIDER_NAME); ?> key. A saved key is never shown again after saving; clear this field and save to remove it.</p>
+                                <input class="regular-text" type="password" name="ocr_api_key" value="" autocomplete="new-password" />
+                                <?php if ($settings['ocr_api_key_is_saved']) : ?>
+                                    <p class="description">A key is saved. Leave blank to keep it.</p>
+                                    <label><input type="checkbox" name="remove_ocr_api_key" value="1" /> Remove saved key</label>
+                                <?php else : ?>
+                                    <p class="description">Paste a valid <?php echo esc_html(OcrSpaceProvider::PROVIDER_NAME); ?> key only when you need to add or replace it. A saved key is never shown again.</p>
+                                <?php endif; ?>
                             <?php endif; ?>
                         </td>
                     </tr>
@@ -1101,17 +1112,30 @@ final class ParserPage
         );
     }
 
+    /**
+     * The stored-state questions behind the key rows on this screen.
+     *
+     * Injected so a test can prove what the screen renders for a saved key without
+     * depending on which of the suite's several `get_option` stubs PHPUnit happened
+     * to include first. Resolved lazily, and defaulted on first use, because a
+     * constructor must not call a WordPress function.
+     */
+    private function secretLookup(): SecretLookupInterface
+    {
+        return $this->secretLookup ??= new WordPressSecretResolver();
+    }
+
     private function settings(): array
     {
-        $secretResolver = new WordPressSecretResolver();
+        $secretLookup = $this->secretLookup();
 
         return [
             'ai_enabled' => get_option('adct_parish_intake_ai_enabled', '0') === '1',
             'ai_provider' => (string) get_option('adct_parish_intake_ai_provider', 'none'),
             'openrouter_model' => $this->configuredModel(),
             'ai_base_url' => $this->configuredBaseUrl(),
-            'openrouter_api_key_is_constant' => $secretResolver->isConstantConfigured(SecretRegistry::AI_API_KEY),
-            'openrouter_api_key_is_saved' => $secretResolver->hasStoredOption(SecretRegistry::AI_API_KEY),
+            'openrouter_api_key_is_constant' => $secretLookup->isConstantConfigured(SecretRegistry::AI_API_KEY),
+            'openrouter_api_key_is_saved' => $secretLookup->hasStoredOption(SecretRegistry::AI_API_KEY),
             'ai_threshold' => (float) get_option('adct_parish_intake_ai_threshold', '0.55'),
             'confidence_threshold' => $this->confidenceSetting('confidence_threshold'),
             'field_confidence_threshold' => $this->confidenceSetting('field_confidence_threshold'),
@@ -1130,7 +1154,8 @@ final class ParserPage
             'retention_audit_enabled' => get_option(RetentionSettings::AUDIT_ENABLED_OPTION, '0') === '1',
             'ocr_enabled' => OcrSettings::current()->isEnabled(),
             'ocr_daily_call_limit' => OcrSettings::current()->dailyCallLimit(),
-            'ocr_api_key_is_constant' => $secretResolver->isConstantConfigured(SecretRegistry::OCR_API_KEY),
+            'ocr_api_key_is_constant' => $secretLookup->isConstantConfigured(SecretRegistry::OCR_API_KEY),
+            'ocr_api_key_is_saved' => $secretLookup->hasStoredOption(SecretRegistry::OCR_API_KEY),
             'approval_reminders_enabled' => get_option(
                 ApprovalReminderOptionReader::ENABLED_OPTION,
                 '1'
