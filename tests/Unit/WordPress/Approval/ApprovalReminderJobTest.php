@@ -2,11 +2,15 @@
 
 declare(strict_types=1);
 
-namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
+namespace {
 
-// The WordPress stand-ins (get_users, get_userdata, user_can, get_user_meta,
-// esc_html, esc_url and WP_User) live in ApprovalNoticeJobTest, which loads
-// first. Reusing them keeps a single definition of each helper.
+    // The WordPress stand-ins (get_users, get_userdata, user_can, get_user_meta,
+    // home_url, add_query_arg and WP_User) are declared once in Support/WordPressStubs.php
+    // and required here, so this file runs on its own as well as in a full suite run.
+    require_once __DIR__ . '/../../../Support/WordPressStubs.php';
+}
+
+namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
 
 use ADCT\ParishIntake\Core\Approval\ApprovalReminderSettings;
 use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;

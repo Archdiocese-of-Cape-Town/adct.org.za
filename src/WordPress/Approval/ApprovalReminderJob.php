@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Approval;
 
 use ADCT\ParishIntake\Core\Approval\ApprovalReminderSettings;
-use ADCT\ParishIntake\Core\Approval\Approver;
 use ADCT\ParishIntake\Core\Auth\ActionTokenBinding;
 use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 use ADCT\ParishIntake\Core\Auth\ActionTokenService;
@@ -46,10 +45,10 @@ use RuntimeException;
 final class ApprovalReminderJob extends AbstractJob implements JobRunLifecycleInterface
 {
     private const BATCH_SIZE = 20;
-        private const DEFAULT_INTERVAL_SECONDS = 86400;
+    private const DEFAULT_INTERVAL_SECONDS = 86400;
 
-        /** @var callable */
-        private $settingsProvider;
+    /** @var callable */
+    private $settingsProvider;
 
     public function __construct(
         private readonly DatabaseConnectionInterface $database,
@@ -85,8 +84,8 @@ final class ApprovalReminderJob extends AbstractJob implements JobRunLifecycleIn
         $after = ctype_digit($checkpoint ?? '') ? (int) $checkpoint : 0;
 
         // The cutoff is computed from the local clock and handed to the query as
-        // a literal parameter, so the index on (status, updated_at) still does
-        // the filtering and no per-row date maths happens in SQL.
+        // a literal parameter, so the index still does the filtering and no
+        // per-row date maths happens in SQL.
         $cutoff = $this->localNow()
             ->modify('-' . $settings->days . ' days')
             ->format('Y-m-d H:i:s');
@@ -146,33 +145,34 @@ final class ApprovalReminderJob extends AbstractJob implements JobRunLifecycleIn
             ? $fields['title']
             : 'Untitled event';
 
-                // A reminder is always about one item and one approver, so it goes straight
-                        // out whatever the approver's original notify mode was. There is no digest
-                        // to fold it into: the group key is per item and per approver either way,
-                        // and a digest would only obscure the nudge.
-                        $line = $this->summary($event, $fields);
+        // A reminder is always about one item and one approver, so it goes
+        // straight out whatever the approver's original notify mode was. There
+        // is no digest to fold it into: the group key is per item and per
+        // approver either way, and a digest would only obscure the nudge.
+        $line = $this->summary($event, $fields);
 
-                        foreach ($this->recipients->forParish($parishId) as $email => $recipient) {
-                            if (! $recipient['reminders']) {
-                                continue;
-                            }
+        foreach ($this->recipients->forParish($parishId) as $email => $recipient) {
+            if (! $recipient['reminders']) {
+                continue;
+            }
 
-                            $key = 'approval-reminder:' . $candidateId . ':' . substr(hash('sha256', $email), 0, 24);
+            $key = 'approval-reminder:' . $candidateId . ':' . substr(hash('sha256', $email), 0, 24);
 
-                            if ($this->queue->findByRecipientAndGroupKey($email, $key) !== null) {
-                                continue;
-                            }
+            if ($this->queue->findByRecipientAndGroupKey($email, $key) !== null) {
+                continue;
+            }
 
-                            $this->send(
-                                $email,
-                                $key,
-                                $title,
-                                [$line],
-                                $this->links($candidateId, $email),
-                                $settings->days
-                            );
+            $this->send(
+                $email,
+                $key,
+                $title,
+                [$line],
+                $this->links($candidateId, $email),
+                $settings->days
+            );
+
             $this->followUps->record(
-                                $parishId,
+                $parishId,
                 FollowUpRepositoryInterface::KIND_APPROVAL_REMINDER,
                 FollowUpRepositoryInterface::CHANNEL_EMAIL,
                 'candidate ' . $candidateId,
@@ -191,11 +191,11 @@ final class ApprovalReminderJob extends AbstractJob implements JobRunLifecycleIn
         string $key,
         string $title,
         array $lines,
-                        array $links,
-                        int $waitingDays
-                    ): void {
-                        $intro = 'This event has been waiting for a decision for '
-                            . $waitingDays . ' days.';
+        array $links,
+        int $waitingDays
+    ): void {
+        $intro = 'This event has been waiting for a decision for '
+            . $waitingDays . ' days.';
 
         $text = $title . "\n\n" . $intro . "\n\n" . implode("\n", $lines) . "\n";
         $html = '<p>' . esc_html($intro) . '</p><h2>' . esc_html($title) . '</h2>';
@@ -300,23 +300,23 @@ final class ApprovalReminderJob extends AbstractJob implements JobRunLifecycleIn
     }
 
     private function localNow(): DateTimeImmutable
-        {
-            return $this->clock->now()->setTimezone(new DateTimeZone('Africa/Johannesburg'));
+    {
+        return $this->clock->now()->setTimezone(new DateTimeZone('Africa/Johannesburg'));
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function rows(string $sql): array
+    {
+        $this->database->clearLastError();
+        $rows = $this->database->getResults($sql);
+        if ($this->database->lastError() !== '') {
+            throw new RuntimeException('The approval reminder lookup failed.');
         }
 
-        /**
-         * @return list<array<string, mixed>>
-         */
-        private function rows(string $sql): array
-        {
-            $this->database->clearLastError();
-            $rows = $this->database->getResults($sql);
-            if ($this->database->lastError() !== '') {
-                throw new RuntimeException('The approval reminder lookup failed.');
-            }
-
-            return array_values($rows);
-        }
+        return array_values($rows);
+    }
 
     private function table(string $suffix): string
     {
