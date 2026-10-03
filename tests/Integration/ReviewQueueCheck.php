@@ -334,14 +334,28 @@ final class ReviewQueueCheck
                     'tab' => 'awaiting_approval',
                     'review_nonce' => wp_create_nonce('adct_pi_review_bulk'),
                 ]);
+                // decide() records the approval but deliberately leaves the status on
+                // awaiting_approval; handleBulk() then publishes, and the publication
+                // store is what moves the candidate to published. Asserting the final
+                // state proves both halves ran, which is the point of the bulk action.
                 $approved = $wpdb->get_row($wpdb->prepare(
-                    "SELECT status, approved_by, approved_via FROM {$prefix}event_candidates WHERE id = %d",
+                    "SELECT status, match_event_id, approved_by, approved_at, approved_via,"
+                    . " decided_by, decided_at FROM {$prefix}event_candidates WHERE id = %d",
                     $bulkApprove
                 ), ARRAY_A);
                 $approveAudit = $auditOf($bulkApprove, 'approver_approved');
-                $check($approved !== null && $approved['status'] === 'awaiting_approval'
+                $approveEventId = $approved === null ? 0 : (int) $approved['match_event_id'];
+                $approveEvent = $approveEventId > 0 ? get_post($approveEventId) : null;
+                $check($approved !== null
+                    && $approved['status'] === 'published'
                     && $approved['approved_by'] === $reviewer->user_email
+                    && $approved['approved_at'] !== null && $approved['approved_at'] !== ''
                     && $approved['approved_via'] === 'reviewer'
+                    && $approved['decided_by'] === $reviewer->user_email
+                    && $approved['decided_at'] !== null && $approved['decided_at'] !== ''
+                    && $approveEvent instanceof WP_Post
+                    && $approveEvent->post_type === 'adct_event'
+                    && $approveEvent->post_status === 'publish'
                     && count($approveAudit) === 1
                     && $approveAudit[0]['actor'] === $reviewer->user_email
                     && (json_decode($approveAudit[0]['details'], true)['role'] ?? '') === 'reviewer',
