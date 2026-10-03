@@ -448,7 +448,9 @@ final class Plugin
                 $attachmentRepository,
                 new ProtectedInboundMailStorage(),
                 new CandidateEditValidator(),
-                $this->pluginFile
+                $this->pluginFile,
+                $this->ocrControl(),
+                $this->attachmentImageEndpoint
             );
         }
         $this->eventOccurrenceHooks = new EventOccurrenceHooks(
@@ -1019,6 +1021,7 @@ final class Plugin
         add_action('admin_menu', [$this->inboundMessagesPage, 'registerMenu']);
         add_action('admin_menu', [$this->reviewQueuePage, 'registerMenu']);
         add_action('admin_enqueue_scripts', [$this->reviewQueuePage, 'enqueueDetailAssets']);
+        add_action('admin_enqueue_scripts', [$this->reviewQueuePage, 'enqueueDetailOcrAssets']);
         add_action('admin_menu', [$this->outboundMailPage, 'registerMenu']);
         add_action('admin_menu', [$this->scheduledJobsPage, 'registerMenu']);
         add_action('admin_menu', [$this->healthPage, 'registerMenu']);
@@ -1051,6 +1054,10 @@ final class Plugin
         add_action(
             'admin_post_adct_pi_candidate_attachment',
             [$this->reviewQueuePage, 'handleAttachment']
+        );
+        add_action(
+            'admin_post_' . ReviewQueuePage::CREATE_MANUAL_ACTION,
+            [$this->reviewQueuePage, 'handleCreateManual']
         );
         add_action('admin_post_adct_pi_test_mailbox', [$this->mailboxesPage, 'handleTestConnection']);
         add_action(

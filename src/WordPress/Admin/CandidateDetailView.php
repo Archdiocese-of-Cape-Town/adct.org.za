@@ -6,6 +6,7 @@ namespace ADCT\ParishIntake\WordPress\Admin;
 
 use ADCT\ParishIntake\Core\Review\CandidateEditResult;
 use ADCT\ParishIntake\Core\Review\CandidateFieldSet;
+use ADCT\ParishIntake\WordPress\Database\Repository\ReviewQueueRepository;
 
 /**
  * The single-candidate detail screen: what the parish sent, every field the
@@ -29,6 +30,10 @@ final class CandidateDetailView
      * @param list<array<string, mixed>> $attachments
      * @param list<array<string, mixed>> $parishes
      * @param array<string, string> $errors
+     * @param string $posterPanel the stored poster shown beside the form, or ''
+     *        when the notice had no browser-readable image to show
+     * @param bool $canStartManual whether this reviewer may open a blank event to
+     *        type in beside the poster
      */
     public function render(
         array $row,
@@ -41,7 +46,9 @@ final class CandidateDetailView
         bool $canApprove,
         ?CandidateEditResult $attempt = null,
         ?callable $isDownloadable = null,
-        ?callable $renderFieldConfidence = null
+        ?callable $renderFieldConfidence = null,
+        string $posterPanel = '',
+        bool $canStartManual = false
     ): void {
         $id = (int) $row['id'];
         $fields = CandidateFieldSet::decodeFields($row['fields'] ?? null);
@@ -72,11 +79,14 @@ final class CandidateDetailView
                     ); ?>
                 </div>
                 <div class="adct-pi-detail-side">
+                    <?php if ($posterPanel !== '') {
+                        echo $posterPanel; // already-escaped markup built by the page
+                    } ?>
                     <?php $this->renderSummary($fields, $renderFieldConfidence); ?>
                     <?php $this->renderProvenance($row); ?>
                 </div>
             </div>
-            <?php $this->source->render($message, $attachments, $isDownloadable); ?>
+            <?php $this->source->render($message, $attachments, $isDownloadable, $canStartManual); ?>
             <?php $this->renderDownloadForms($id); ?>
         </div>
         <?php
@@ -170,11 +180,11 @@ final class CandidateDetailView
     }
 
     /**
-     * The two POST forms the download buttons submit through.
+     * The POST forms the buttons on this screen submit through.
      *
      * They are separate from the edit form so that pressing Enter in a text
-     * field can never trigger a download. Each carries the candidate the
-     * reviewer opened, which is what the attachment handler checks the file
+     * field can never trigger a download or a new blank event. Each carries the
+     * candidate the reviewer opened, which is what the handlers check the request
      * against.
      */
     private function renderDownloadForms(int $candidateId): void
@@ -189,6 +199,11 @@ final class CandidateDetailView
             <input type="hidden" name="action" value="<?php echo esc_attr(ReviewQueuePage::ATTACHMENT_ACTION); ?>" />
             <input type="hidden" name="candidate" value="<?php echo esc_attr((string) $candidateId); ?>" />
             <?php wp_nonce_field(ReviewQueuePage::ATTACHMENT_ACTION, ReviewQueuePage::SOURCE_NONCE); ?>
+        </form>
+        <form id="adct-pi-create-manual-form" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+            <input type="hidden" name="action" value="<?php echo esc_attr(ReviewQueuePage::CREATE_MANUAL_ACTION); ?>" />
+            <input type="hidden" name="candidate" value="<?php echo esc_attr((string) $candidateId); ?>" ?>
+            <?php wp_nonce_field(ReviewQueuePage::CREATE_MANUAL_ACTION, ReviewQueuePage::CREATE_MANUAL_NONCE); ?>
         </form>
         <?php
     }
@@ -252,6 +267,11 @@ final class CandidateDetailView
         $warnings = [];
         foreach ($notes as $note) {
             if (! is_string($note)) {
+                continue;
+            }
+            if ($note === ReviewQueueRepository::MANUAL_NOTE) {
+                // This row was typed in by a person, so there is no parsing to
+                // report. Saying "parser warning" would be misleading.
                 continue;
             }
             if (preg_match('/\Apossible_missed_event_after_skipped_section:\s*(\d+)\z/D', $note, $matches) === 1) {

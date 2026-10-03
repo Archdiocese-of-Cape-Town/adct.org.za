@@ -7,6 +7,9 @@ use ADCT\ParishIntake\Core\Review\CandidateFieldSet;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\WordPress\Admin\ReviewQueuePage;
+use ADCT\ParishIntake\WordPress\Attachments\AttachmentImageEndpoint;
+use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
+use ADCT\ParishIntake\WordPress\Attachments\WordPressPreviewableImageRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ReviewQueueRepository;
@@ -46,6 +49,19 @@ final class CandidateDetailCheck
         $messages = new InboundMessageRepository($db);
         $attachments = new AttachmentRepository($db);
         $storage = new ProtectedInboundMailStorage();
+        $pluginFile = 'adct-parish-intake/adct-parish-intake.php';
+        // The same collaborators Plugin.php injects, so the poster panel and
+        // its hand-typed-event button are built exactly as they are in
+        // production rather than by a stand-in.
+        $ocr = new OcrControl(
+            plugins_url('adct-pi-ocr.js', $pluginFile),
+            plugins_url('adct-pi-ocr.css', $pluginFile),
+            plugins_url('adct-pi-parser.js', $pluginFile)
+        );
+        $imageEndpoint = new AttachmentImageEndpoint(
+            new WordPressPreviewableImageRepository($attachments),
+            $storage
+        );
         $page = new ReviewQueuePage(
             $queue,
             Plugin::candidatePublisher(),
@@ -54,7 +70,9 @@ final class CandidateDetailCheck
             $attachments,
             $storage,
             new CandidateEditValidator(),
-            'adct-parish-intake/adct-parish-intake.php'
+            $pluginFile,
+            $ocr,
+            $imageEndpoint
         );
 
         $inserted = [];
@@ -175,7 +193,11 @@ final class CandidateDetailCheck
             $rawPath = $storage->storeRawMessage($rawMessage);
             $posterBytes = 'FICTIONAL-POSTER-BYTES-' . $suffix;
             $posterPath = $storage->storeAttachment($posterBytes, 'pdf');
-            $storedFiles = [$rawPath, $posterPath];
+                        $imagePosterPath = $storage->storeAttachment(
+                            'FICTIONAL-IMAGE-POSTER-BYTES-' . $suffix,
+                            'jpg'
+                        );
+                        $storedFiles = [$rawPath, $posterPath, $imagePosterPath];
 
             $makeCandidate = static function (
                 string $label,
@@ -241,6 +263,26 @@ final class CandidateDetailCheck
                     'updated_at' => $stamp,
                 ]);
             };
+                        // A stored image, which is the only kind of file a hand-typed event
+                        // is offered for: it is something a person can read off the screen.
+                        $addImagePoster = static function (int $messageId, string $path, string $name) use (
+                            $prefix,
+                            $insert,
+                            $suffix,
+                            $stamp
+                        ): int {
+                            return $insert($prefix . 'attachments', [
+                                'message_id' => $messageId,
+                                'filename' => $name . '-' . $suffix . '.jpg',
+                                'mime_type' => 'image/jpeg',
+                                'size_bytes' => 34,
+                                'storage_path' => $path,
+                                'extraction_method' => 'none',
+                                'status' => 'stored',
+                                'created_at' => $stamp,
+                                'updated_at' => $stamp,
+                            ]);
+                        };
 
             $main = $makeCandidate('main', 'awaiting_approval', $parish, $contact, $rawPath, [
                 'field_confidence' => [
@@ -257,6 +299,13 @@ final class CandidateDetailCheck
                 ],
             ]);
             $posterId = $addPoster($main['message'], $posterPath, 'fictional-poster');
+            // The image on the same email, so the hand-typed-event route has a
+            // real stored poster to be started from.
+            $imagePosterId = $addImagePoster(
+                $main['message'],
+                $imagePosterPath,
+                'fictional-photo-poster'
+            );
 
             // A second candidate on the same parish, to prove one candidate's
             // attachments are not reachable from another's detail screen.
@@ -772,6 +821,239 @@ final class CandidateDetailCheck
                 remove_filter('wp_die_handler', $dieHandler);
             }
 
+            // --- Manual entry beside the poster -----------------------------------
+            // The whole point of #63: a poster the parser could not read must
+            // still be typable by hand, and the typed event must go through the
+            // same approval route as a parsed one.
+            $mainDetailHtml = $openDetail($main['candidate']);
+            $check(str_contains($mainDetailHtml, 'adct-pi-create-manual-form'),
+                'the detail screen must carry the form that starts a hand-typed event.');
+            $check(str_contains($mainDetailHtml, 'name="' . ReviewQueuePage::CREATE_MANUAL_NONCE . '"')
+                && str_contains($mainDetailHtml, 'value="' . ReviewQueuePage::CREATE_MANUAL_ACTION . '"'),
+                'the hand-typed-event form must carry its own action and nonce, not the save route\'s.');
+            $check(substr_count($mainDetailHtml, 'Create event from this poster') === 1,
+                'only the stored image may offer a hand-typed event.');
+            $check(str_contains($mainDetailHtml, 'fictional-photo-poster-' . $suffix . '.jpg'),
+                'the stored image must be listed beside the notice.');
+
+            // And it is actually shown to the reviewer, not merely downloadable:
+            // the whole reason manual entry sits *beside* the poster.
+            $check(str_contains($mainDetailHtml, 'alt="Event poster"')
+                && str_contains($mainDetailHtml, AttachmentImageEndpoint::ACTION)
+                && str_contains($mainDetailHtml, 'Read the text on this poster'),
+                'the stored image must be previewed inline beside the form, not only offered as a download.');
+
+            // The preview is scaled to the column, so a photographed A4 poster
+            // is unreadable at that size. The full-size offer must point at the
+            // *same* already-authorised URL as the preview image: the endpoint
+            // streams the original bytes, so no second route, endpoint or
+            // permission is needed for the full resolution, and inventing one
+            // would be a second way in.
+            $check(preg_match(
+                '#<a href="([^"]+)" target="_blank" rel="noopener">Open the poster at full size</a>#',
+                $mainDetailHtml,
+                $fullSizeMatch
+            ) === 1
+                && preg_match('#<img class="adct-ocr__preview" src="([^"]+)"#', $mainDetailHtml, $previewMatch) === 1
+                && $fullSizeMatch[1] === $previewMatch[1],
+                'the full-size link must open the very URL the preview image uses, so the full-resolution '
+                . 'poster needs no second endpoint and no second authorisation.');
+
+            // The button is posted, not linked: nothing is created by a GET.
+            $check(! str_contains($mainDetailHtml, 'candidate=' . $main['candidate'] . '&amp;attachment_id'),
+                'a hand-typed event must never be reachable from a link.');
+
+            // A poster that is no longer on disk must not offer the button,
+            // because there would be nothing to read beside the typed fields.
+            $missingImageHtml = $openDetail($missing['candidate']);
+            $check(str_contains($missingImageHtml, 'No longer stored'),
+                'a missing image must say so rather than offer a hand-typed event.');
+
+            // A read-only candidate must not offer it either: the new row would
+            // be refused by the same check that makes this one read-only.
+            $check(! str_contains($decidedHtml, 'Create event from this poster'),
+                'an already decided candidate must not offer to start a hand-typed event.');
+
+            // The seed of the button: an image on the source candidate's own
+            // email. A PDF on that same email is not offered, because a typed
+            // event is for something a person can read.
+            $posterRow = static function (int $attachmentId) use ($wpdb, $prefix): ?array {
+                $row = $wpdb->get_row($wpdb->prepare(
+                    "SELECT message_id, mime_type FROM {$prefix}attachments WHERE id = %d",
+                    $attachmentId
+                ), ARRAY_A);
+
+                return is_array($row) ? $row : null;
+            };
+            $check(($posterRow($posterId)['mime_type'] ?? '') === 'application/pdf'
+                && ($posterRow($imagePosterId)['mime_type'] ?? '') === 'image/jpeg',
+                'the fixture must offer a PDF and an image on the same email.');
+
+            wp_set_current_user($reviewer->ID);
+            $manualPost = [
+                'action' => ReviewQueuePage::CREATE_MANUAL_ACTION,
+                'candidate' => (string) $main['candidate'],
+                'attachment_id' => (string) $imagePosterId,
+                'tab' => 'awaiting_approval',
+                'search' => 'Fictional',
+                ReviewQueuePage::CREATE_MANUAL_NONCE => wp_create_nonce(
+                    ReviewQueuePage::CREATE_MANUAL_ACTION
+                ),
+            ];
+
+            // A nonce is bound to the user, so it is re-minted after every
+            // switch; otherwise a stale nonce fails first and masks the check
+            // under test.
+            $_POST = $manualPost;
+            $_POST[ReviewQueuePage::CREATE_MANUAL_NONCE] = 'invalid';
+            $_REQUEST = $_POST;
+            $before = self::candidateCount($wpdb, $prefix);
+            add_filter('wp_die_handler', $dieHandler);
+            try {
+                $page->handleCreateManual();
+                $fail('Candidate detail: an invalid hand-typed-event nonce was accepted.');
+            } catch (RuntimeException) {
+                $check(true, 'the hand-typed-event nonce check fired.');
+            } finally {
+                remove_filter('wp_die_handler', $dieHandler);
+            }
+            $check(self::candidateCount($wpdb, $prefix) === $before,
+                'an invalid nonce must not open an event.');
+
+            // A parish contact must not be able to open one.
+            wp_set_current_user($contactUser->ID);
+            $_POST = $manualPost;
+            $_POST[ReviewQueuePage::CREATE_MANUAL_NONCE] = wp_create_nonce(
+                ReviewQueuePage::CREATE_MANUAL_ACTION
+            );
+            $_REQUEST = $_POST;
+            add_filter('wp_die_handler', $dieHandler);
+            try {
+                $page->handleCreateManual();
+                $fail('Candidate detail: a parish contact opened a hand-typed event.');
+            } catch (RuntimeException $error) {
+                $check(str_contains($error->getMessage(), 'cannot view'),
+                    'a parish contact must be refused: ' . $error->getMessage());
+            } finally {
+                remove_filter('wp_die_handler', $dieHandler);
+            }
+            $check(self::candidateCount($wpdb, $prefix) === $before,
+                'a refused request must not open an event.');
+
+            // An attachment from another parish's email must be refused, so a
+            // crafted POST cannot start an event from someone else's poster.
+            $foreignAttachmentId = $addImagePoster(
+                $foreign['message'],
+                $imagePosterPath,
+                'fictional-foreign-poster'
+            );
+            wp_set_current_user($reviewer->ID);
+            $_POST = $manualPost;
+            $_POST['attachment_id'] = (string) $foreignAttachmentId;
+            $_POST[ReviewQueuePage::CREATE_MANUAL_NONCE] = wp_create_nonce(
+                ReviewQueuePage::CREATE_MANUAL_ACTION
+            );
+            $_REQUEST = $_POST;
+            add_filter('wp_die_handler', $dieHandler);
+            try {
+                $page->handleCreateManual();
+                $fail('Candidate detail: an event was started from another email\'s poster.');
+            } catch (RuntimeException $error) {
+                $check(str_contains($error->getMessage(), 'not attached to this email'),
+                    'a foreign attachment must be refused: ' . $error->getMessage());
+            } finally {
+                remove_filter('wp_die_handler', $dieHandler);
+            }
+            $check(self::candidateCount($wpdb, $prefix) === $before,
+                'a refused attachment must not open an event.');
+
+            // A decided candidate cannot seed a new one either.
+            $_POST = $manualPost;
+            $_POST['candidate'] = (string) $decided['candidate'];
+            $_POST[ReviewQueuePage::CREATE_MANUAL_NONCE] = wp_create_nonce(
+                ReviewQueuePage::CREATE_MANUAL_ACTION
+            );
+            $_REQUEST = $_POST;
+            add_filter('wp_die_handler', $dieHandler);
+            try {
+                $page->handleCreateManual();
+                $fail('Candidate detail: a decided candidate seeded a hand-typed event.');
+            } catch (RuntimeException $error) {
+                $check(str_contains($error->getMessage(), 'already been decided'),
+                    'a decided source must be refused: ' . $error->getMessage());
+            } finally {
+                remove_filter('wp_die_handler', $dieHandler);
+            }
+
+            // The happy path: a blank event, on the same email and parish, with
+            // no approver of any kind.
+            $_POST = $manualPost;
+            $_POST[ReviewQueuePage::CREATE_MANUAL_NONCE] = wp_create_nonce(
+                ReviewQueuePage::CREATE_MANUAL_ACTION
+            );
+            $_REQUEST = $_POST;
+            $redirect = $redirectFor($page, 'handleCreateManual', $_POST);
+            $check($redirect !== null && str_contains($redirect, 'created=1'),
+                'starting a hand-typed event must redirect with a notice.');
+            $createdId = self::queryInt($redirect, 'candidate');
+            $check($createdId > 0 && $createdId !== $main['candidate'],
+                'the redirect must point at the new blank event, not the one it was started from.');
+            if ($createdId > 0) {
+                $inserted[] = [$main['message'], $createdId];
+                $blank = $wpdb->get_row($wpdb->prepare(
+                    "SELECT message_id, parish_id, status, fields, approved_by, approved_via,"
+                        . " approved_at, decided_by, decided_at FROM {$prefix}event_candidates WHERE id = %d",
+                    $createdId
+                ), ARRAY_A);
+                $check($blank !== null && (int) $blank['message_id'] === $main['message'],
+                    'a hand-typed event must belong to the email it was started from.');
+                $check($blank !== null && (int) $blank['parish_id'] === $parish,
+                    'a hand-typed event must inherit the parish, so approval routes where a parsed one would.');
+                $check($blank !== null && $blank['status'] === 'awaiting_approval',
+                    'a hand-typed event must start awaiting approval, like any other.');
+                $check($blank !== null && $blank['approved_by'] === null
+                    && $blank['approved_via'] === null
+                    && $blank['approved_at'] === null
+                    && $blank['decided_by'] === null
+                    && $blank['decided_at'] === null,
+                    'a hand-typed event must record no approver at all: typing one is not approving one.');
+                $blankFields = json_decode((string) ($blank['fields'] ?? '{}'), true);
+                $check(is_array($blankFields) && $blankFields === [],
+                    'a hand-typed event must start empty, so nothing from the parsed row is mistaken for an answer.');
+
+                // It is edited and approved through the ordinary save route, with
+                // no special-casing for hand-typed events.
+                $manualSave = $validPost;
+                $manualSave['candidate_id'] = (string) $createdId;
+                $manualSave['save_mode'] = 'approve';
+                $manualSave['title'] = 'Hand Typed Fictional Event ' . $suffix;
+                $manualSave['event_date'] = '09/11/2026';
+                $manualSave['recurrence_preset'] = 'none';
+                $_POST = $manualSave;
+                $_REQUEST = $_POST;
+                $redirect = $redirectFor($page, 'handleSave', $_POST);
+                $check($redirect !== null && str_contains($redirect, 'decision='),
+                    'a hand-typed event must be approvable through the ordinary save route.');
+                $typed = $wpdb->get_row($wpdb->prepare(
+                    "SELECT status, decided_by, approved_via FROM {$prefix}event_candidates WHERE id = %d",
+                    $createdId
+                ), ARRAY_A);
+                $check($typed !== null && $typed['status'] !== 'awaiting_approval',
+                    'a hand-typed event must be decided by the ordinary save route.');
+                $check($typed !== null && (string) $typed['decided_by'] === $reviewer->user_email,
+                    'a hand-typed event must record who decided it.');
+                $check($typed !== null && $typed['approved_via'] !== null
+                    && $typed['approved_via'] !== 'self',
+                    'a hand-typed event must only ever be approved the way any other event is.');
+                $typedPublishedId = (int) $wpdb->get_var($wpdb->prepare(
+                    "SELECT match_event_id FROM {$prefix}event_candidates WHERE id = %d",
+                    $createdId
+                ));
+                if ($typedPublishedId > 0) {
+                    $published[] = $typedPublishedId;
+                }
+            }
+
             // --- Reject ------------------------------------------------------------
             $rejectCandidate = $makeCandidate('reject', 'awaiting_approval', $parish, $contact, $rawPath);
             $reject = $validPost;
@@ -815,6 +1097,8 @@ final class CandidateDetailCheck
                 'the raw-message action must be registered on the installed plugin.');
             $check(has_action('admin_post_adct_pi_candidate_attachment') !== false,
                 'the attachment action must be registered on the installed plugin.');
+                        $check(has_action('admin_post_' . ReviewQueuePage::CREATE_MANUAL_ACTION) !== false,
+                            'the hand-typed-event action must be registered on the installed plugin.');
         } finally {
             $_GET = $originalGet;
             $_POST = $originalPost;
@@ -850,7 +1134,33 @@ final class CandidateDetailCheck
     }
 
     /**
-     * A candidate's stored title, read with PHP rather than `JSON_EXTRACT`.
+         * How many candidates exist, so a refused request can be proved to have
+         * written nothing without depending on which row it would have written.
+         */
+        private static function candidateCount(wpdb $wpdb, string $prefix): int
+        {
+            return (int) $wpdb->get_var("SELECT COUNT(*) FROM {$prefix}event_candidates");
+        }
+
+        /**
+         * The `candidate` query argument of a redirect location.
+         *
+         * Parsed rather than read with `parse_url()`, because the harness location
+         * is a relative path and `parse_str()` handles both forms.
+         */
+        private static function queryInt(?string $location, string $key): int
+        {
+            if ($location === null) {
+                return 0;
+            }
+            $query = [];
+            parse_str((string) parse_url($location, PHP_URL_QUERY), $query);
+
+            return (int) ($query[$key] ?? 0);
+        }
+
+        /**
+         * A candidate's stored title, read with PHP rather than `JSON_EXTRACT`.
      *
      * MariaDB and MySQL differ over JSON functions in the test harness, so the
      * column is fetched and decoded in PHP instead.
