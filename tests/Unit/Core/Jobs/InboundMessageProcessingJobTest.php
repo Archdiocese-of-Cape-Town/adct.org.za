@@ -23,6 +23,12 @@ use ADCT\ParishIntake\Core\Ports\EventCandidateStoreInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingFailureLoggerInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMessageProcessingStoreInterface;
+use ADCT\ParishIntake\Core\Ocr\OcrExtractionLimits;
+use ADCT\ParishIntake\Core\Ocr\OcrExtractionResult;
+use ADCT\ParishIntake\Core\Ocr\OcrTextEnrichmentService;
+use ADCT\ParishIntake\Core\Ocr\StoredImageAttachment;
+use ADCT\ParishIntake\Core\Ports\ImageExtractionStoreInterface;
+use ADCT\ParishIntake\Core\Ports\OcrProviderInterface;
 use ADCT\ParishIntake\Core\Pdf\PdfExtractionLimits;
 use ADCT\ParishIntake\Core\Pdf\PdfExtractionResult;
 use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
@@ -31,8 +37,10 @@ use ADCT\ParishIntake\Core\Ports\AttachmentExtractionStoreInterface;
 use ADCT\ParishIntake\Core\Ports\PdfTextExtractorInterface;
 use DateTimeImmutable;
 use DateTimeZone;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use Throwable;
 
 final class InboundMessageProcessingJobTest extends TestCase
 {
@@ -355,13 +363,16 @@ final class InboundMessageProcessingJobTest extends TestCase
      *     storage: ProcessingFileStorage,
      *     candidates: ProcessingCandidateStore,
      *     directory: ProcessingDirectorySnapshotProvider,
-     *     failureLogger: ProcessingFailureLogger
+     *     failureLogger: ProcessingFailureLogger,
+     *     ocrStore: ProcessingImageExtractionStore|null
      * }
      */
     private function fixture(
         DirectorySnapshot $snapshot,
         bool $pipelineFactoryThrows = false,
-        ?PdfTextEnrichmentService $pdfTextEnrichment = null
+        ?PdfTextEnrichmentService $pdfTextEnrichment = null,
+        ?ProcessingImageExtractionStore $ocrStore = null,
+        bool $ocrEnabled = true
     ): array {
         $clock = new ProcessingClock();
         $directory = new ProcessingDirectorySnapshotProvider($snapshot);
@@ -377,6 +388,16 @@ final class InboundMessageProcessingJobTest extends TestCase
 
             return $pipelineFactory->create();
         };
+        $ocrTextEnrichment = $ocrStore === null
+            ? null
+            : new OcrTextEnrichmentService(
+                $ocrStore,
+                $ocrStore->provider,
+                $ocrStore->storage,
+                OcrExtractionLimits::defaults(),
+                null,
+                $ocrEnabled
+            );
         $job = new InboundMessageProcessingJob(
             $messages,
             $storage,
@@ -386,7 +407,8 @@ final class InboundMessageProcessingJobTest extends TestCase
             $failureLogger,
             $directory,
             $clock,
-            pdfTextEnrichment: $pdfTextEnrichment
+            pdfTextEnrichment: $pdfTextEnrichment,
+            ocrTextEnrichment: $ocrTextEnrichment
         );
 
         return [
@@ -396,6 +418,7 @@ final class InboundMessageProcessingJobTest extends TestCase
             'candidates' => $candidates,
             'directory' => $directory,
             'failureLogger' => $failureLogger,
+            'ocrStore' => $ocrStore,
         ];
     }
 
@@ -446,6 +469,201 @@ final class InboundMessageProcessingJobTest extends TestCase
 
         self::assertSame('parsed', $fixture['messages']->statuses[self::MESSAGE_ID]);
         self::assertCount(1, $fixture['candidates']->candidates[self::MESSAGE_ID]);
+    }
+
+    /**
+     * An event that exists only as words inside a poster image must reach the
+     * parser, otherwise the parish is told to retype something they already
+     * sent as a picture.
+     */
+    public function testAnEventSentOnlyAsAPosterStillProducesACandidate(): void
+    {
+        $fixture = $this->fixture(
+            new DirectorySnapshot([], [], []),
+            ocrStore: $this->ocrStore(OcrExtractionResult::extracted(
+                "Parish Retreat Day\nSaturday 17 October 2026 from 9am to 3pm at Example Parish Hall.",
+                OcrExtractionResult::METHOD_OCR_EXTERNAL
+            ))
+        );
+        $fixture['messages']->add($this->message());
+        $fixture['storage']->files['private-message.eml'] = $this->emailWithoutAnEvent();
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame('parsed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        self::assertNotSame([], $fixture['candidates']->candidates[self::MESSAGE_ID] ?? []);
+        self::assertStringContainsString(
+            'Parish Retreat Day',
+            $fixture['messages']->bodies[self::MESSAGE_ID]
+        );
+        self::assertStringContainsString(
+            OcrTextEnrichmentService::SECTION_HEADING,
+            $fixture['messages']->bodies[self::MESSAGE_ID],
+            'read text is marked, so an operator knows a date came out of a photograph'
+        );
+        self::assertSame(
+            OcrExtractionResult::STATUS_EXTRACTED,
+            $fixture['ocrStore']->recorded[1]->status
+        );
+    }
+
+    /**
+     * "Always falls back" is the load-bearing requirement of optional OCR. Each
+     * way the third party can let us down has to leave the email around the
+     * poster exactly as it would have been with OCR switched off entirely: a
+     * parsed message, the ordinary candidate, and a recorded reason.
+     *
+     * @param ProcessingImageExtractionStore|null $ocrStore
+     */
+    #[DataProvider('waysTheOcrServiceCanLetUsDown')]
+    public function testAnUnreadablePosterDoesNotStopTheEmailBeingParsed(
+        ?OcrExtractionResult $result,
+        bool $available,
+        bool $ocrEnabled,
+        ?string $storedStatus
+    ): void {
+        $fixture = $this->fixture(
+            new DirectorySnapshot([], [], []),
+            ocrStore: $this->ocrStore($result, $available),
+            ocrEnabled: $ocrEnabled
+        );
+        $fixture['messages']->add($this->message());
+        $fixture['storage']->files['private-message.eml'] = $this->validEmail();
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame(
+            'parsed',
+            $fixture['messages']->statuses[self::MESSAGE_ID],
+            'an OCR failure must never stop the email being processed'
+        );
+        self::assertCount(
+            1,
+            $fixture['candidates']->candidates[self::MESSAGE_ID],
+            'the fallback is the ordinary parse, not a blank candidate'
+        );
+        self::assertStringNotContainsString(
+            OcrTextEnrichmentService::SECTION_HEADING,
+            $fixture['messages']->bodies[self::MESSAGE_ID] ?? '',
+            'nothing is appended when no words were read'
+        );
+
+        if ($storedStatus === null) {
+            // Two cases record nothing at all, both deliberately: an operator
+            // who declined, and an operator who simply has not added a key
+            // yet. In both the poster stays `pending`, so it can still be read
+            // the moment OCR is switched on — burning the row would make an
+            // unreadable poster permanently unreadable.
+            self::assertSame([], $fixture['ocrStore']->recorded);
+            self::assertSame([], $fixture['ocrStore']->provider->requestedPaths);
+
+            return;
+        }
+
+        self::assertSame(
+            $storedStatus,
+            $fixture['ocrStore']->recorded[1]->status,
+            'the outcome is stored so the poster is not offered again next tick'
+        );
+        self::assertNotNull(
+            $fixture['ocrStore']->recorded[1]->reason,
+            'a poster that produced nothing explains itself to the operator'
+        );
+    }
+
+    public static function waysTheOcrServiceCanLetUsDown(): iterable
+    {
+        yield 'the service times out' => [
+            OcrExtractionResult::skippedTimeout(20),
+            true,
+            true,
+            OcrExtractionResult::STATUS_SKIPPED_TIMEOUT,
+        ];
+
+        yield 'the service rate-limits us' => [
+            OcrExtractionResult::rateLimited('The daily OCR limit was reached.'),
+            true,
+            true,
+            OcrExtractionResult::STATUS_SKIPPED_RATE_LIMIT,
+        ];
+
+        yield 'the service fails outright' => [
+            OcrExtractionResult::failed('The OCR service replied with an error.'),
+            true,
+            true,
+            OcrExtractionResult::STATUS_FAILED,
+        ];
+
+        yield 'the poster is too large to send' => [
+            OcrExtractionResult::skippedSize(20_000_000, 15_000_000),
+            true,
+            true,
+            OcrExtractionResult::STATUS_SKIPPED_SIZE,
+        ];
+
+        yield 'the poster has no readable text' => [
+            OcrExtractionResult::noTextFound(),
+            true,
+            true,
+            OcrExtractionResult::STATUS_NO_TEXT,
+        ];
+
+        yield 'no API key is configured' => [
+            null,
+            false,
+            true,
+            null,
+        ];
+
+        yield 'the operator declined to send posters to a third party' => [
+            OcrExtractionResult::extracted('never used'),
+            true,
+            false,
+            null,
+        ];
+    }
+
+    public function testAnUnreadableAttachmentTableDoesNotStopTheEmailBeingParsed(): void
+    {
+        $fixture = $this->fixture(
+            new DirectorySnapshot([], [], []),
+            ocrStore: $this->ocrStore(
+                OcrExtractionResult::extracted('never used'),
+                findFailure: new RuntimeException('The attachment table is unavailable.')
+            )
+        );
+        $fixture['messages']->add($this->message());
+        $fixture['storage']->files['private-message.eml'] = $this->validEmail();
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame('parsed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        self::assertCount(1, $fixture['candidates']->candidates[self::MESSAGE_ID]);
+        self::assertSame([], $fixture['failureLogger']->failures);
+    }
+
+    public function testMessagesAreProcessedWhenOcrEnrichmentIsNotConfigured(): void
+    {
+        $fixture = $this->fixture(new DirectorySnapshot([], [], []));
+        $fixture['messages']->add($this->message());
+        $fixture['storage']->files['private-message.eml'] = $this->validEmail();
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame('parsed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        self::assertCount(1, $fixture['candidates']->candidates[self::MESSAGE_ID]);
+    }
+
+    private function ocrStore(
+        ?OcrExtractionResult $result,
+        bool $available = true,
+        ?Throwable $findFailure = null
+    ): ProcessingImageExtractionStore {
+        return new ProcessingImageExtractionStore(
+            new ProcessingOcrTextExtractor($result ?? OcrExtractionResult::noTextFound(), $available),
+            new ProcessingFileStorage(attachmentPaths: ['poster.png' => '/var/private/poster.png']),
+            $findFailure
+        );
     }
 
     private function pdfEnrichment(string $filename, PdfExtractionResult $result): PdfTextEnrichmentService
@@ -705,6 +923,60 @@ final class ProcessingAttachmentExtractionStore implements AttachmentExtractionS
     }
 
     public function recordResult(int $attachmentId, PdfExtractionResult $result): void
+    {
+        $this->recorded[$attachmentId] = $result;
+    }
+}
+
+final class ProcessingOcrTextExtractor implements OcrProviderInterface
+{
+    /** @var list<string> */
+    public array $requestedPaths = [];
+
+    public function __construct(
+        private readonly OcrExtractionResult $result,
+        private readonly bool $available = true
+    ) {
+    }
+
+    public function isAvailable(): bool
+    {
+        return $this->available;
+    }
+
+    public function extractText(string $filePath, int $timeoutSeconds): OcrExtractionResult
+    {
+        $this->requestedPaths[] = $filePath;
+
+        return $this->result;
+    }
+}
+
+final class ProcessingImageExtractionStore implements ImageExtractionStoreInterface
+{
+    /** @var array<int, OcrExtractionResult> */
+    public array $recorded = [];
+
+    public ?Throwable $findFailure = null;
+
+    public function __construct(
+        public readonly ProcessingOcrTextExtractor $provider,
+        public readonly ProcessingFileStorage $storage,
+        ?Throwable $findFailure = null
+    ) {
+        $this->findFailure = $findFailure;
+    }
+
+    public function findPendingImagesForMessage(int $messageId): array
+    {
+        if ($this->findFailure !== null) {
+            throw $this->findFailure;
+        }
+
+        return [new StoredImageAttachment(1, 'poster.png', 'poster.png', 'pending', 'none', 40_000, 'image/png')];
+    }
+
+    public function recordResult(int $attachmentId, OcrExtractionResult $result): void
     {
         $this->recorded[$attachmentId] = $result;
     }

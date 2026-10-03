@@ -2,10 +2,11 @@
 
 namespace ADCT\ParishIntake\WordPress\Security;
 
+use ADCT\ParishIntake\Core\Security\SecretLookupInterface;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Security\SecretResolver;
 
-final class WordPressSecretResolver
+final class WordPressSecretResolver implements SecretLookupInterface
 {
     private SecretResolver $resolver;
 

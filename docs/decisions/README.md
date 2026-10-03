@@ -24,6 +24,7 @@ Short records of important decisions: what was decided, why, and what follows fr
 | [0018](0018-client-side-ocr-for-image-posters.md) | Opt-in client-side OCR for image posters; server-side OCR still out of scope | Accepted |
 | [0019](0019-handwritten-ics-feed-renderer.md) | Handwritten ICS feed renderer, validated by a test-only library (ADR 0017 exception) | Proposed |
 | [0020](0020-opt-in-geolocation-near-me-sort.md) | Opt-in geolocation "Near me" sort with a suburb fallback | Accepted |
+| [0021](0021-opt-in-server-side-queue-ocr.md) | Opt-in server-side queue OCR for image posters, with unconditional fallback | Proposed |
 
 Template:
 

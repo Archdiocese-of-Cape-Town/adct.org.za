@@ -55,6 +55,12 @@ final class ConfidenceScoringStage implements StageInterface
         $result->pruneFieldEvidence();
         $this->recordResultLevelEvidence($result);
 
+        $ocrDerived = $context->getRuntimeValue('ocr_derived', false) === true;
+
+        if ($ocrDerived) {
+            $this->markOcrEvidence($result);
+        }
+
         $scored = $this->scorer->score($result->fieldEvidence());
         $score = $this->scorer->applyWholeCandidatePenalties(
             $scored['score'],
@@ -85,7 +91,39 @@ final class ConfidenceScoringStage implements StageInterface
             ));
         }
 
+        if ($ocrDerived) {
+            $context->addNote(
+                'These values were read from an image attachment by OCR, so they are scored below '
+                . 'typed text and need checking before the event is published.'
+            );
+        }
+
         return $result;
+    }
+
+    /**
+     * Record that every value this candidate holds was read out of a photograph.
+     *
+     * The flag rides alongside the origin instead of replacing it, so a plainly printed date
+     * is still `explicit` and simply scores lower, rather than being demoted to the weakest
+     * origin and becoming indistinguishable from a value the parser invented. A field already
+     * `unsupported` is skipped: it scores zero whatever else is true of it, so the flag would
+     * change no number while implying the value had been read at all.
+     */
+    private function markOcrEvidence(ParseResult $result): void
+    {
+        foreach ($result->fieldEvidence() as $field => $evidence) {
+            if ($evidence->origin() === FieldEvidence::UNSUPPORTED
+                || $evidence->hasFlag(FieldEvidence::OCR)
+            ) {
+                continue;
+            }
+
+            $result->recordFieldEvidence(
+                (string) $field,
+                new FieldEvidence($evidence->origin(), [...$evidence->flags(), FieldEvidence::OCR])
+            );
+        }
     }
 
     /**

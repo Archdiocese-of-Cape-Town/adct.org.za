@@ -2,6 +2,7 @@
 
 namespace ADCT\ParishIntake\Core\Parsing;
 
+use ADCT\ParishIntake\Core\Ocr\OcrTextEnrichmentService;
 use ADCT\ParishIntake\Core\Parsing\Contracts\StageInterface;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
 
@@ -48,14 +49,17 @@ final class Pipeline
             )
             : null;
 
-        foreach ($blocks as $block) {
+        $ocrStartIndex = $this->ocrStartIndex($blocks);
+
+        foreach ($blocks as $position => $block) {
             $subject = $this->subjectForBlock($message, $block, $candidateCount);
             $blockMessage = $message->withBody($block->getParseText(), $subject);
             $useBlockTitle = $candidateCount > 1 || $subject !== $message->getSubject();
             $candidate = $this->parseBlock(
                 $blockMessage,
                 $block,
-                $useBlockTitle ? $block->getTitle() : null
+                $useBlockTitle ? $block->getTitle() : null,
+                $ocrStartIndex !== null && $position >= $ocrStartIndex
             );
 
             if ($candidateLimitExceeded) {
@@ -145,9 +149,40 @@ final class Pipeline
         );
     }
 
-    private function parseBlock(Message $message, ?EventBlock $block, ?string $blockTitle): ParseResult
+    /**
+     * The position of the first block holding OCR text, or null when the message carries none.
+     *
+     * The OCR stage appends its sections after a blank line, so the heading always opens its
+     * own block and every block from there to the end of the message is machine-read text.
+     * Blocks arrive in document order, which makes the heading's position the whole answer.
+     * Matching against the block's own source text rather than its cleaned copy is deliberate:
+     * the cleaner rewrites what the extractor sees, and the heading is a marker we wrote, so it
+     * has to be recognised in the text we did not edit.
+     *
+     * @param EventBlock[] $blocks
+     */
+    private function ocrStartIndex(array $blocks): ?int
     {
+        foreach ($blocks as $position => $block) {
+            if (str_contains($block->getSourceText(), OcrTextEnrichmentService::SECTION_HEADING)) {
+                return $position;
+            }
+        }
+
+        return null;
+    }
+
+    private function parseBlock(
+        Message $message,
+        ?EventBlock $block,
+        ?string $blockTitle,
+        bool $ocrDerived = false
+    ): ParseResult {
         $this->context->reset();
+
+        if ($ocrDerived) {
+            $this->context->setRuntimeValue('ocr_derived', true);
+        }
 
         if ($block !== null) {
             $blockContext = $block->getContext();

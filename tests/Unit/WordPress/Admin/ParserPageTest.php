@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace {
     require_once __DIR__ . '/../../../Support/AdminWordPressStubs.php';
+    require_once __DIR__ . '/../../../Support/WordPressOptionsStubs.php';
 }
 
 namespace ADCT\ParishIntake\WordPress\Admin {
@@ -137,9 +138,96 @@ namespace ADCT\ParishIntake\WordPress\Admin {
             return $value;
         }
     }
-}
+
+        if (! function_exists('ADCT\ParishIntake\WordPress\Admin\checked')) {
+            function checked(mixed $checked, mixed $current = true, bool $echo = true): string
+            {
+                return __checked_selected_helper($checked, $current, $echo, 'checked');
+            }
+        }
+
+        if (! function_exists('ADCT\ParishIntake\WordPress\Admin\selected')) {
+            function selected(mixed $selected, mixed $current = true, bool $echo = true): string
+            {
+                return __checked_selected_helper($selected, $current, $echo, 'selected');
+            }
+        }
+
+        /**
+         * Mirrors WordPress: the attribute is omitted entirely when it does not
+         * apply, so a test asserting on the raw markup sees "checked" as a word,
+         * never as `checked="0"`.
+         */
+        function __checked_selected_helper(mixed $helper, mixed $current, bool $echo, string $type): string
+        {
+            $actual = __checked_selected_helper_value($helper);
+            $expected = __checked_selected_helper_value($current);
+
+            if ((string) $actual === (string) $expected) {
+                $result = " {$type}='{$type}'";
+            } else {
+                $result = '';
+            }
+
+            if ($echo) {
+                echo $result;
+            }
+
+            return $result;
+        }
+
+        function __checked_selected_helper_value(mixed $value): string
+        {
+            if (is_bool($value)) {
+                return $value ? '1' : '';
+            }
+
+            return is_scalar($value) ? (string) $value : '';
+        }
+
+        if (! function_exists('ADCT\ParishIntake\WordPress\Admin\esc_textarea')) {
+            function esc_textarea(mixed $text): string
+            {
+                return htmlspecialchars(is_string($text) ? $text : '', ENT_QUOTES, 'UTF-8');
+            }
+        }
+
+        if (! function_exists('ADCT\ParishIntake\WordPress\Admin\wp_nonce_field')) {
+            function wp_nonce_field(string $action = '-1', string $name = '_wpnonce', bool $referer = true, bool $echo = true): string
+            {
+                $field = '<input type="hidden" name="' . $name . '" value="nonce" />';
+
+                if ($echo) {
+                    echo $field;
+                }
+
+                return $field;
+            }
+        }
+
+        if (! function_exists('ADCT\ParishIntake\WordPress\Admin\submit_button')) {
+            function submit_button(string $text = 'Save Changes', string $type = 'primary', string $name = 'submit', bool $echo = true): string
+            {
+                $button = '<button type="submit" class="button button-primary">' . esc_html($text) . '</button>';
+
+                if ($echo) {
+                    echo $button;
+                }
+
+                return $button;
+            }
+        }
+    }
+
+// The Jobs-namespace option functions OcrSettings and RetentionSettings call
+// are NOT declared here. They live in tests/Support/WordPressOptionsStubs.php,
+// which every test that reaches a Jobs-namespace option store requires, and
+// setUp() below seeds their shared store with this test's baseline so both
+// namespaced settings objects read the values a settings screen would see.
 
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
+
+    use ADCT\ParishIntake\Core\Security\SecretLookupInterface;
     require_once __DIR__ . '/../../../Support/WordPressStubs.php';
 
     use ADCT\ParishIntake\Core\Auth\Capabilities;
@@ -150,12 +238,15 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
     use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
     use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
     use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
-    use ADCT\ParishIntake\Core\Security\SecretRegistry;
+        use ADCT\ParishIntake\Core\Ocr\OcrExtractionResult;
+        use ADCT\ParishIntake\Core\Security\SecretRegistry;
     use ADCT\ParishIntake\WordPress\Admin\ParserPage;
     use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
     use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
     use ADCT\ParishIntake\WordPress\Database\Schema;
     use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
+        use ADCT\ParishIntake\WordPress\Ocr\OcrSpaceProvider;
+    use ADCT\ParishIntake\WordPress\Jobs\OcrSettings;
     use ADCT\ParishIntake\WordPress\Jobs\RetentionSettings;
     use PHPUnit\Framework\TestCase;
     use ReflectionProperty;
@@ -178,8 +269,17 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                 RetentionSettings::PROCESSED_DAYS_OPTION => (string) RetentionSettings::DEFAULT_PROCESSED_DAYS,
                 RetentionSettings::ACTION_TOKENS_ENABLED_OPTION => '0',
                 RetentionSettings::AUDIT_ENABLED_OPTION => '0',
+                OcrSettings::ENABLED_OPTION => '0',
+                OcrSettings::DAILY_CALL_LIMIT_OPTION => (string) OcrSettings::DEFAULT_DAILY_CALL_LIMIT,
             ];
-            $GLOBALS['parser_page_updates'] = [];
+                        // OcrSettings and RetentionSettings sit in the Jobs namespace, so
+                        // their unqualified reads reach the shared option store rather than
+                        // this one. Seeding it with the same baseline keeps the settings
+                        // screen and the value objects looking at one set of options; it is
+                        // reset per test, so the Jobs tests that share the stub are
+                        // unaffected.
+                        \new_options_database($GLOBALS['parser_page_options']);
+                        $GLOBALS['parser_page_updates'] = [];
             $GLOBALS['parser_page_logs'] = [];
             // These tests are about what happens once a user reaches the page,
             // so the shared capability stub grants everything they need. The
@@ -326,6 +426,325 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
          *
          * @return array<string, string|array<string, string>>
          */
+        public function testTheOcrOptInIsOffUntilAnAdministratorTurnsItOn(): void
+        {
+            self::assertSame('0', $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION]);
+
+            $_POST = $this->settingsPost();
+            $_POST['ocr_enabled'] = '1';
+
+            $audit = new RecordingAuditWriter();
+            $this->page(audit: $audit)->maybeHandleSettings();
+
+            self::assertSame('1', $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION]);
+            self::assertCount(1, $audit->rows);
+            $options = array_column($audit->rows[0]['details']['changed'], 'option', 'option');
+            self::assertArrayHasKey(OcrSettings::ENABLED_OPTION, $options);
+        }
+
+        public function testUncheckingTheOcrOptInWritesItOffRatherThanLeavingItOn(): void
+        {
+            // An unchecked checkbox is not submitted at all, so the handler has
+            // to read absence as "off" or a revoke would silently do nothing.
+            $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION] = '1';
+
+            $_POST = $this->settingsPost();
+
+            $audit = new RecordingAuditWriter();
+            $this->page(audit: $audit)->maybeHandleSettings();
+
+            self::assertSame('0', $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION]);
+            self::assertCount(1, $audit->rows);
+        }
+
+        public function testTheOcrDailyCallLimitIsStoredAndAudited(): void
+        {
+            $_POST = $this->settingsPost();
+            $_POST['ocr_daily_call_limit'] = '3';
+
+            $audit = new RecordingAuditWriter();
+            $this->page(audit: $audit)->maybeHandleSettings();
+
+            self::assertSame('3', $GLOBALS['parser_page_options'][OcrSettings::DAILY_CALL_LIMIT_OPTION]);
+            self::assertArrayHasKey(
+                OcrSettings::DAILY_CALL_LIMIT_OPTION,
+                array_column($audit->rows[0]['details']['changed'], 'option', 'option')
+            );
+        }
+
+        public function testAnUnusableOcrLimitLeavesEverySettingUnchanged(): void
+        {
+            $_POST = $this->settingsPost();
+            $_POST['ocr_enabled'] = '1';
+            $_POST['ocr_daily_call_limit'] = '0';
+            $_POST['ai_provider'] = 'openrouter';
+
+            $page = $this->page();
+            $page->maybeHandleSettings();
+
+            self::assertSame([], $GLOBALS['parser_page_updates']);
+            self::assertSame('none', $GLOBALS['parser_page_options']['adct_parish_intake_ai_provider']);
+            self::assertSame('0', $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION]);
+            self::assertSame(
+                'Poster OCR is enabled, but the daily call limit must be a whole number between '
+                . OcrSettings::MIN_DAILY_CALL_LIMIT . ' and ' . OcrSettings::MAX_DAILY_CALL_LIMIT . '.',
+                $this->privateProperty($page, 'settingsSaveError')
+            );
+        }
+
+        public function testAnOcrLimitThatIsMerelyUnusableIsIgnoredWhenOcrStaysOff(): void
+        {
+            // Switching OCR off must never be blocked by a bad cap field: the
+            // operator's way out of the feature has to keep working.
+            $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION] = '1';
+            $_POST = $this->settingsPost();
+            $_POST['ocr_daily_call_limit'] = 'not a number';
+
+            $audit = new RecordingAuditWriter();
+            $this->page(audit: $audit)->maybeHandleSettings();
+
+            self::assertSame('0', $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION]);
+            self::assertSame(
+                (string) OcrSettings::DEFAULT_DAILY_CALL_LIMIT,
+                $GLOBALS['parser_page_options'][OcrSettings::DAILY_CALL_LIMIT_OPTION]
+            );
+            self::assertCount(1, $audit->rows);
+        }
+
+        public function testASavedOcrApiKeyIsNeverEchoedIntoTheAuditRow(): void
+        {
+            $_POST = $this->settingsPost();
+            $_POST['ocr_enabled'] = '1';
+            $_POST['ocr_api_key'] = 'K811-do-not-log-ocr';
+
+            $audit = new RecordingAuditWriter();
+            $this->page(audit: $audit)->maybeHandleSettings();
+
+            self::assertCount(1, $audit->rows);
+            self::assertStringNotContainsString(
+                'K811-do-not-log-ocr',
+                json_encode($audit->rows[0]['details'], JSON_THROW_ON_ERROR)
+            );
+            self::assertSame(
+                'K811-do-not-log-ocr',
+                $GLOBALS['parser_page_options'][SecretRegistry::optionName(SecretRegistry::OCR_API_KEY)]
+            );
+        }
+
+        public function testRemovingTheOcrApiKeyIsRecordedAsRemovalRatherThanSilently(): void
+        {
+            $GLOBALS['parser_page_options'][SecretRegistry::optionName(SecretRegistry::OCR_API_KEY)] = 'K811-old';
+
+            $_POST = $this->settingsPost();
+            $_POST['remove_ocr_api_key'] = '1';
+
+            $audit = new RecordingAuditWriter();
+            $this->page(audit: $audit)->maybeHandleSettings();
+
+            $option = SecretRegistry::optionName(SecretRegistry::OCR_API_KEY);
+            self::assertArrayNotHasKey($option, $GLOBALS['parser_page_options']);
+            self::assertCount(1, $audit->rows);
+            self::assertStringNotContainsString(
+                'K811-old',
+                json_encode($audit->rows[0]['details'], JSON_THROW_ON_ERROR)
+            );
+        }
+
+        public function testAnOcrKeyIsNotStoredWhileOneIsDefinedInWpConfig(): void
+        {
+                    // A wp-config.php constant cannot be defined and then undefined
+                    // inside one PHP process, so the constant path is exercised in its
+                    // own process by tests/Integration/verify-plugin.php. What matters
+                    // here is the writable half: a submitted key is stored, and nothing
+                    // about it reaches the audit row.
+                    $_POST = $this->settingsPost();
+                    $_POST['ocr_enabled'] = '1';
+                    $_POST['ocr_api_key'] = 'K811-writable';
+
+                    $audit = new RecordingAuditWriter();
+                    $this->page(audit: $audit)->maybeHandleSettings();
+
+                    self::assertSame(
+                        'K811-writable',
+                        $GLOBALS['parser_page_options'][SecretRegistry::optionName(SecretRegistry::OCR_API_KEY)]
+                    );
+                    self::assertStringNotContainsString(
+                        'K811-writable',
+                        json_encode($audit->rows[0]['details'], JSON_THROW_ON_ERROR)
+                    );
+                }
+
+        public function testAnUnreadablePosterLookupFailureIsLoggedWithoutExposingDatabaseDetails(): void
+        {
+            $database = $this->createMock(DatabaseConnectionInterface::class);
+            $database->method('prefix')->willReturn('wp_');
+            $database->method('prepare')->willReturnCallback(
+                static fn (string $query, mixed ...$arguments): string => $query
+            );
+            $database->method('getResults')->willThrowException(
+                new RuntimeException('sensitive SQL error')
+            );
+            $database->method('lastError')->willReturn('sensitive SQL error');
+
+            $page = $this->page(new AttachmentRepository($database));
+            $method = new \ReflectionMethod(ParserPage::class, 'unreadablePosters');
+
+            self::assertSame([], $method->invoke($page));
+            self::assertSame(
+                ['[ADCT Parish Intake] Could not load unreadable poster attachment warnings (RuntimeException).'],
+                $GLOBALS['parser_page_logs']
+            );
+            self::assertStringNotContainsString('sensitive SQL error', $GLOBALS['parser_page_logs'][0]);
+        }
+
+        public function testEveryPosterStatusIsExplainedInTheOperatorsWords(): void
+        {
+            $page = $this->page();
+            $method = new \ReflectionMethod(ParserPage::class, 'posterStatusLabel');
+
+            // An unrecognised status must still render as something, never as a
+            // raw enum value or an empty label in the notice.
+            foreach ([
+                OcrExtractionResult::STATUS_NO_TEXT,
+                OcrExtractionResult::STATUS_SKIPPED_SIZE,
+                OcrExtractionResult::STATUS_SKIPPED_TYPE,
+                OcrExtractionResult::STATUS_SKIPPED_TIMEOUT,
+                OcrExtractionResult::STATUS_SKIPPED_RATE_LIMIT,
+                OcrExtractionResult::STATUS_NOT_CONFIGURED,
+                OcrExtractionResult::STATUS_FAILED,
+                'something_new',
+                '',
+            ] as $status) {
+                $label = $method->invoke($page, $status);
+
+                self::assertIsString($label);
+                self::assertNotSame('', $label);
+                self::assertStringNotContainsString('_', $label);
+            }
+        }
+
+        public function testTheSettingsPageExplainsWhatPosterOcrSendsOffTheSite(): void
+        {
+            ob_start();
+            try {
+                $this->page()->renderSettingsPage();
+            } finally {
+                $html = (string) ob_get_clean();
+            }
+
+            self::assertStringContainsString('name="ocr_enabled"', $html);
+            self::assertStringContainsString('name="ocr_daily_call_limit"', $html);
+            self::assertStringContainsString('name="ocr_api_key" value=""', $html);
+            self::assertStringContainsString(OcrSpaceProvider::PROVIDER_NAME, $html);
+            // The egress note has to say what is NOT sent, or an operator
+            // cannot make the POPIA decision the opt-in exists to force.
+            self::assertStringContainsString('the image attachment itself and nothing else', $html);
+            self::assertStringContainsString('never sent with it', $html);
+            self::assertStringContainsString('never shown again', $html);
+        }
+
+        public function testTheSettingsPageSaysPosterOcrIsOffByDefault(): void
+        {
+            ob_start();
+            try {
+                $this->page()->renderSettingsPage();
+            } finally {
+                $html = (string) ob_get_clean();
+            }
+
+            self::assertStringContainsString('off by default', $html);
+            self::assertStringNotContainsString('name="ocr_enabled" value="1" checked', $html);
+        }
+
+        public function testTheSettingsPageNeverEchoesASavedOcrKey(): void
+        {
+            $html = $this->renderSettings(storedKeys: [SecretRegistry::OCR_API_KEY => 'K811-never-shown']);
+
+            // The field stays empty and the key appears nowhere, so the secret never
+            // reaches the page HTML or the admin DOM.
+            self::assertStringNotContainsString('K811-never-shown', $html);
+            self::assertStringContainsString('name="ocr_api_key" value=""', $html);
+            // A saved key is never re-pasted over by the paste prompt.
+            self::assertStringNotContainsString($this->ocrKeyPrompt(), $html);
+        }
+
+        public function testTheSettingsPageOffersToRemoveASavedOcrKey(): void
+        {
+            $html = $this->renderSettings(storedKeys: [SecretRegistry::OCR_API_KEY => 'K811-saved']);
+
+            // Without this control a saved key can only be removed by editing the
+            // database, which is exactly what the no-WP-CLI rule rules out.
+            self::assertStringContainsString('A key is saved. Leave blank to keep it.', $html);
+            self::assertStringContainsString('name="remove_ocr_api_key"', $html);
+        }
+
+        public function testTheSettingsPagePromptsForAOcrKeyWhenNoneIsSaved(): void
+        {
+            $html = $this->renderSettings();
+
+            self::assertStringContainsString($this->ocrKeyPrompt(), $html);
+            self::assertStringNotContainsString('name="remove_ocr_api_key"', $html);
+        }
+
+        /**
+         * The OCR row's "paste a key" prompt.
+         *
+         * Distinct from the AI key prompt directly above it, which reads "Paste a
+         * valid API key" and does not name the provider. Asserting on the bare
+         * phrase "Paste a valid" therefore passes for the wrong row.
+         */
+        private function ocrKeyPrompt(): string
+        {
+            return 'Paste a valid ' . \ADCT\ParishIntake\WordPress\Ocr\OcrSpaceProvider::PROVIDER_NAME
+                . ' key only when you need to add or replace it.';
+        }
+
+        /**
+         * Renders the Settings screen and returns its HTML. Asserting on the
+         * markup, rather than on the array behind it, is the only way to prove a
+         * secret is not rendered: a value can be absent from the settings array
+         * and still be printed by the template.
+         *
+         * The secret state is injected as a lookup rather than staged into an
+         * options table. `WordPressSecretResolver` reads the *global* WordPress
+         * `get_option`, and this suite deliberately declares several different
+         * stand-ins for that function, so whichever one PHPUnit happened to
+         * include first used to decide what the screen rendered. Injecting the
+         * port makes the saved-key branch reachable no matter the load order.
+         *
+         * @param array<string, string> $storedKeys Secret ids that have a non-empty
+         *                                           value in the options table.
+         * @param list<string>           $constants  Secret ids that wp-config.php defines.
+         */
+        private function renderSettings(array $storedKeys = [], array $constants = []): string
+        {
+            $page = $this->page(secretLookup: new class ($storedKeys, $constants) implements SecretLookupInterface {
+                /** @param array<string, string> $stored */
+                public function __construct(
+                    private array $stored,
+                    private array $constants
+                ) {
+                }
+
+                public function isConstantConfigured(string $secretId, ?string $scope = null): bool
+                {
+                    return in_array($secretId, $this->constants, true);
+                }
+
+                public function hasStoredOption(string $secretId, ?string $scope = null): bool
+                {
+                    return ($this->stored[$secretId] ?? '') !== '';
+                }
+            });
+
+            ob_start();
+            try {
+                $page->renderSettingsPage();
+            } finally {
+                return (string) ob_get_clean();
+            }
+        }
+
         private function settingsPost(): array
         {
             return [
@@ -338,7 +757,8 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                 'section_keywords' => SectionSkipper::defaultKeywordLists(),
                 'retention_raw_days' => (string) RetentionSettings::DEFAULT_RAW_DAYS,
                 'retention_processed_days' => (string) RetentionSettings::DEFAULT_PROCESSED_DAYS,
-            ];
+                                'ocr_daily_call_limit' => (string) OcrSettings::DEFAULT_DAILY_CALL_LIMIT,
+                            ];
 
             // The four retention checkboxes are absent on purpose. An unchecked
             // box is not submitted at all and the handler reads them with
@@ -416,8 +836,11 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             self::assertStringNotContainsString('sensitive SQL error', $GLOBALS['parser_page_logs'][0]);
         }
 
-        private function page(?AttachmentRepository $attachments = null, ?AuditWriter $audit = null): ParserPage
-        {
+        private function page(
+            ?AttachmentRepository $attachments = null,
+            ?AuditWriter $audit = null,
+            ?SecretLookupInterface $secretLookup = null
+        ): ParserPage {
             return new ParserPage(
                 new Schema(),
                 new PipelineFactory(),
@@ -446,7 +869,9 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                 $attachments,
                 '',
                 null,
-                $audit
+                $audit,
+                null,
+                $secretLookup
             );
         }
 

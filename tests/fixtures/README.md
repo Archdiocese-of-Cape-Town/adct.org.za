@@ -23,11 +23,20 @@ Test inputs for the parsing pipeline.
 | `emails/<name>.eml` + `emails/<name>.expected.json` | The golden event-parsing corpus | `tests/Unit/Parsing/EmailFixtureCorpusTest.php` |
 | `inbound-mail/<name>.eml` + `.expected.json` | Header-signal screening (bounces, no-reply, out-of-office, spoofed auth results) | `tests/Unit/Mail/RawMessageInspectorTest.php` |
 | `pdfs/*.pdf` | Re-created PDFs for text extraction and column ordering | `tests/Unit/WordPress/Pdf/PrinsFrankPdfTextExtractorTest.php` |
+| `posters/` | A re-created image-only poster PNG, the email carrying it, and a recorded OCR reply | `tests/Unit/Ocr/OcrPosterFixtureReplayTest.php` |
 | `directory.json` | Shared invented parish/venue/sender directory | many directory-resolution fixtures |
 | `change-notice-directory.json` | Directory used by cancellation/postponement fixtures | `cancellation`, `postponement` |
 | `confirmation-email/` | Local HTML/plain-text snapshots of the submitter preview | `ConfirmationEmailRendererTest` |
 | `matching/notices.json` | Repeat-matching scenarios | `EventNoticeMatcherTest` |
 | `pdfs/generate.php` | Regenerates the committed PDFs | run by hand: `php tests/fixtures/pdfs/generate.php` |
+| `posters/generate.php` | Regenerates the committed poster PNG | run by hand: `php tests/fixtures/posters/generate.php` |
+
+`posters/` deliberately has **no** `.expected.json` and is not globbed by `EmailFixtureCorpusTest`, so it
+is not part of the golden corpus and moving the fixture score. Its assertions live in
+`OcrPosterFixtureReplayTest`, which needs two things a parser expectation cannot express: that a real PNG
+attachment becomes a dated candidate once the OCR reply is replayed, and that exactly the recorded bytes
+are uploaded. The reply in `posters/recorded-ocr-response.json` is a **recording**, never re-requested at
+test time, so the suite makes no network call and does not depend on OCR.space being reachable.
 
 ## Adding a fixture
 
@@ -92,7 +101,7 @@ reduced, anonymised form — record nothing beyond the generic class of input na
 | Multi-church parish bulletin naming venues | `multi-church-bulletin` |
 | Printed Mailchimp-style archdiocesan email | `mailchimp-style-newsletter`, `printed-email-style` |
 | Event poster with a text layer | `text-poster`, `pdfs/single-column-poster.pdf` |
-| Image-only poster (no text layer) | `image-only-poster`, `pdfs/image-only.pdf` |
+| Image-only poster (no text layer) | `image-only-poster`, `pdfs/image-only.pdf`, `posters/image-only-poster-without-text-layer.eml` + `posters/example-retreat-poster.png` |
 | One-line notice | `single-event` |
 | Forwarded email | `forwarded-email` |
 | Reply with quoted text | `reply-quoted-text` |
@@ -135,8 +144,10 @@ needs — layout, column structure, header shape, wording pattern — and replac
    synthetic values, as `tests/fixtures/inbound-mail/` does.
 5. **Re-create attachments** from synthetic content rather than redacting originals. Strip document
    metadata, comments, revision history, hidden layers, image EXIF/GPS and embedded thumbnails. PDFs are
-   regenerated with `pdfs/generate.php`; `*.pdf` is marked `binary` in `.gitattributes` so Windows
-   line-ending conversion cannot corrupt the text layer.
+   regenerated with `pdfs/generate.php` and poster PNGs with `posters/generate.php`; `*.pdf` and `*.png`
+   are marked `binary` in `.gitattributes` so Windows line-ending conversion cannot corrupt the bytes.
+   An image fixture must contain no text chunk, EXIF or GPS block — the encoder writes only `IHDR`,
+   `IDAT` and `IEND`, so there is nowhere for metadata to hide.
 6. **Commit only** the fixture pair — the `.eml` and its `.expected.json`, plus any regenerated
    attachment. Never commit the source message, redaction notes, screenshots or working copies.
 

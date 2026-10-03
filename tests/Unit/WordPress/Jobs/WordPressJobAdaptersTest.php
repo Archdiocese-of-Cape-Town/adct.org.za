@@ -2,45 +2,17 @@
 
 declare(strict_types=1);
 
+namespace {
+    require_once __DIR__ . '/../../../Support/WordPressOptionsStubs.php';
+}
+
 namespace ADCT\ParishIntake\WordPress\Jobs {
-    function add_option(string $option, $value = '', string $deprecated = '', $autoload = 'yes'): bool
-    {
-        global $wpdb;
-
-        if (array_key_exists($option, $wpdb->rows)) {
-            return false;
-        }
-
-        $wpdb->rows[$option] = $value;
-        $wpdb->autoload[$option] = $autoload;
-
-        return true;
-    }
-
-    function get_option(string $option, $default = false)
-    {
-        global $wpdb;
-
-        return $wpdb->rows[$option] ?? $default;
-    }
-
-    function update_option(string $option, $value, $autoload = null): bool
-    {
-        global $wpdb;
-
-        $changed = ! array_key_exists($option, $wpdb->rows) || $wpdb->rows[$option] !== $value;
-        $wpdb->rows[$option] = $value;
-        $wpdb->autoload[$option] = $autoload;
-
-        return $changed;
-    }
-
-    function delete_option(string $option): bool
-    {
-        $present = array_key_exists($option, $GLOBALS['wpdb']->rows);
-        unset($GLOBALS['wpdb']->rows[$option]);
-        return $present;
-    }
+    // The option functions — add_option(), get_option(), update_option() and
+    // delete_option() — are NOT declared here. They live in
+    // tests/Support/WordPressOptionsStubs.php, which every test file that
+    // touches a Jobs-namespace option store requires, because a PHP function
+    // cannot be declared twice in one process and several of those test files
+    // declare their own other namespaced WordPress stubs.
 
     function is_email(string $address): bool
     {
@@ -159,7 +131,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Jobs {
     {
         protected function setUp(): void
         {
-            $GLOBALS['wpdb'] = new FakeWordPressOptionsDatabase();
+            new_options_database();
             WordPressCronFixture::reset();
         }
 
@@ -549,67 +521,4 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Jobs {
         }
     }
 
-    final class FakeWordPressOptionsDatabase
-    {
-        public string $options = 'wp_options';
-        public string $last_error = '';
-
-        /**
-         * @var array<string, mixed>
-         */
-        public array $rows = [];
-
-        /**
-         * @var array<string, mixed>
-         */
-        public array $autoload = [];
-
-        public function prepare(string $query, ...$arguments): string
-        {
-            foreach ($arguments as $argument) {
-                $position = strpos($query, '%s');
-
-                if ($position === false) {
-                    throw new \RuntimeException('The SQL fixture received too many values.');
-                }
-
-                $query = substr_replace($query, "'" . addslashes((string) $argument) . "'", $position, 2);
-            }
-
-            return $query;
-        }
-
-        public function get_var(string $query)
-        {
-            if (preg_match("/WHERE option_name = '([^']+)'/", $query, $matches) !== 1) {
-                throw new \RuntimeException('The SQL fixture received an unexpected select.');
-            }
-
-            return $this->rows[stripslashes($matches[1])] ?? null;
-        }
-
-        public function query(string $query): int
-        {
-            if (
-                preg_match(
-                    "/WHERE option_name = '([^']+)' AND option_value = '([^']+)'/",
-                    $query,
-                    $matches
-                ) !== 1
-            ) {
-                throw new \RuntimeException('The SQL fixture received an unexpected delete.');
-            }
-
-            $optionName = stripslashes($matches[1]);
-            $optionValue = stripslashes($matches[2]);
-
-            if (! isset($this->rows[$optionName]) || $this->rows[$optionName] !== $optionValue) {
-                return 0;
-            }
-
-            unset($this->rows[$optionName], $this->autoload[$optionName]);
-
-            return 1;
-        }
-    }
 }

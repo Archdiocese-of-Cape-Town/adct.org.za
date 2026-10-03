@@ -1554,6 +1554,128 @@ if (
     $fail('The Settings page did not render the read-only wp-config.php secret state.');
 }
 
+    // Issue #75: the optional poster OCR opt-in, its daily limit and its key. The unit stubs cannot see
+    // a stored option, so the "a key is saved" branch is only provable against a real wp_options table.
+    $storedTestOcrKey = 'K123456789-ocr-test-DO-NOT-ECHO-789';
+    update_option('adct_parish_intake_ocr_api_key', $storedTestOcrKey);
+
+    ob_start();
+    try {
+        do_action($settingsHook);
+    } finally {
+        $ocrSettingsHtml = (string) ob_get_clean();
+    }
+
+    if (
+        strpos($ocrSettingsHtml, $storedTestOcrKey) !== false
+        || strpos($ocrSettingsHtml, 'name="ocr_api_key" value=""') === false
+        || strpos($ocrSettingsHtml, 'A key is saved. Leave blank to keep it.') === false
+        || strpos($ocrSettingsHtml, 'name="remove_ocr_api_key"') === false
+    ) {
+        $fail('The Settings page exposed a stored OCR API key or omitted its safe saved-key controls.');
+    }
+
+    // Issue #75: a wp-config.php OCR constant shadowing a stored key, mirroring the AI case
+    // above. A constant cannot be undefined inside one PHP process, so this combination is
+    // only reachable here and not in the unit suite. It must follow the stored-key render
+    // above, because defining it flips the screen to the read-only branch.
+    $constantTestOcrKey = 'K123456789-ocr-constant-DO-NOT-ECHO-321';
+    define('ADCT_PI_OCR_API_KEY', $constantTestOcrKey);
+
+    if (
+        (new \ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver())
+            ->resolve(\ADCT\ParishIntake\Core\Security\SecretRegistry::OCR_API_KEY)
+        !== $constantTestOcrKey
+    ) {
+        $fail('The wp-config.php OCR key constant did not take precedence over the stored option.');
+    }
+
+    ob_start();
+    try {
+        do_action($settingsHook);
+    } finally {
+        $constantOcrSettingsHtml = (string) ob_get_clean();
+    }
+
+    if (
+        strpos($constantOcrSettingsHtml, 'Configured in <code>wp-config.php</code>') === false
+        || strpos($constantOcrSettingsHtml, $constantTestOcrKey) !== false
+        || strpos($constantOcrSettingsHtml, $storedTestOcrKey) !== false
+        || strpos($constantOcrSettingsHtml, 'A database key is also saved.') === false
+        || strpos($constantOcrSettingsHtml, 'name="remove_ocr_api_key"') === false
+        || strpos($constantOcrSettingsHtml, 'name="ocr_api_key" value=""') !== false
+    ) {
+        $fail('The Settings page did not render the read-only wp-config.php OCR secret state.');
+    }
+
+    if (
+        strpos($ocrSettingsHtml, 'Poster image OCR') === false
+        || strpos($ocrSettingsHtml, 'name="ocr_enabled"') === false
+        || strpos($ocrSettingsHtml, 'name="ocr_daily_call_limit"') === false
+        || strpos($ocrSettingsHtml, 'What leaves this site') === false
+        || strpos($ocrSettingsHtml, 'off by default') === false
+    ) {
+        $fail('The Settings page did not render the optional poster OCR section, its egress note or its off-by-default statement.');
+    }
+
+    $ocrEnabledAt = strpos($ocrSettingsHtml, 'name="ocr_enabled"');
+
+    if (
+        $ocrEnabledAt !== false
+        && strpos(substr($ocrSettingsHtml, max(0, $ocrEnabledAt - 200), 200), "checked='checked'") !== false
+    ) {
+        $fail('Poster OCR was not off by default; the opt-in rendered as checked without an operator saving it.');
+    }
+
+    $originalOcrScreen = $GLOBALS['current_screen'] ?? null;
+    set_current_screen('dashboard');
+    $_POST = [
+        'adct_parish_intake_settings_nonce' => wp_create_nonce('adct_parish_intake_save_settings'),
+        'adct_parish_intake_save_settings' => '1',
+        'ai_provider' => 'none',
+        'openrouter_model' => 'openrouter/auto',
+        'openrouter_api_key' => '',
+        'ai_threshold' => '0.55',
+        'ocr_enabled' => '1',
+        'ocr_daily_call_limit' => '7',
+        'ocr_api_key' => '',
+                // The real form posts every keyword field, so this block has to as well: posting an
+                // empty list would wipe the custom sick_list keyword the bulletin fixture relies on
+                // and silently un-skip its care-circle section.
+                'section_keywords' => ['sick_list' => 'Care Circle'],
+            ];
+    $_REQUEST = $_POST;
+    do_action('admin_init');
+
+    if (get_option('adct_pi_ocr_enabled') !== '1' || (int) get_option('adct_pi_ocr_daily_call_limit') !== 7) {
+        $fail('The Settings handler did not save the poster OCR opt-in and its daily limit.');
+    }
+
+    if (get_option('adct_parish_intake_ocr_api_key') !== $storedTestOcrKey) {
+        $fail('Saving a blank OCR API key unexpectedly removed the stored key.');
+    }
+
+    $_POST['remove_ocr_api_key'] = '1';
+    $_REQUEST = $_POST;
+    do_action('admin_init');
+
+    if (get_option('adct_parish_intake_ocr_api_key', false) !== false) {
+        $fail('The Settings handler did not remove the stored OCR API key when requested.');
+    }
+
+    if (get_option('adct_pi_ocr_enabled') !== '1') {
+        $fail('Removing the OCR key silently switched OCR off; the opt-in must survive a missing key so the fallback is used.');
+    }
+
+    $_POST = $originalSettingsPost;
+    $_REQUEST = $originalSettingsRequest;
+
+    if ($originalOcrScreen !== null) {
+        $GLOBALS['current_screen'] = $originalOcrScreen;
+    } else {
+        unset($GLOBALS['current_screen']);
+    }
+
 $_POST = $originalSettingsPost;
 $_REQUEST = $originalSettingsRequest;
 
@@ -1649,19 +1771,23 @@ try {
     update_option('adct_parish_intake_ai_provider', 'none');
 }
 
-if (
-    $httpAttempts !== 0
-    ||
-    strpos($submittedParserHtml, 'Latest parse outcome') === false
-    || strpos($submittedParserHtml, 'candidate_count') === false
-    || strpos($submittedParserHtml, 'Youth gathering') === false
-    || strpos($submittedParserHtml, 'Family picnic') === false
-    || strpos($submittedParserHtml, 'skipped_sections: sick_list=1') === false
-    || strpos($submittedParserHtml, 'Fictional Person Alpha') !== false
-    || strpos($submittedParserHtml, $storedTestApiKey) !== false
-    || strpos($submittedParserHtml, $constantTestApiKey) !== false
-) {
-    $fail('The Manual parser did not render candidates and text-free skip metadata for a bulletin.');
+$manualParserChecks = [
+    'no_ai_http' => $httpAttempts === 0,
+    'latest_parse_outcome' => strpos($submittedParserHtml, 'Latest parse outcome') !== false,
+    'candidate_count' => strpos($submittedParserHtml, 'candidate_count') !== false,
+    'youth_gathering' => strpos($submittedParserHtml, 'Youth gathering') !== false,
+    'family_picnic' => strpos($submittedParserHtml, 'Family picnic') !== false,
+    'skipped_sections' => strpos($submittedParserHtml, 'skipped_sections: sick_list=1') !== false,
+    'no_personal_name' => strpos($submittedParserHtml, 'Fictional Person Alpha') === false,
+    'no_stored_key' => strpos($submittedParserHtml, $storedTestApiKey) === false,
+    'no_constant_key' => strpos($submittedParserHtml, $constantTestApiKey) === false,
+];
+$failedManualParserChecks = array_keys(array_filter($manualParserChecks, static fn ($ok) => ! $ok));
+if ($failedManualParserChecks !== []) {
+    $fail(
+        'The Manual parser did not render candidates and text-free skip metadata for a bulletin.'
+        . ' Failing: ' . implode(', ', $failedManualParserChecks)
+    );
 }
 
 $aiGate = new \ADCT\ParishIntake\WordPress\Ai\WordPressAiCallGate(

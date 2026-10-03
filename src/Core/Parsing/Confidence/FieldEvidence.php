@@ -40,6 +40,18 @@ final class FieldEvidence
     /** Supplied by the AI enrichment stage. */
     public const AI = 'ai';
 
+    /**
+     * Read out of an image attachment by the OCR stage rather than typed by the parish.
+     *
+     * This is a flag rather than an origin on purpose. The origin still records *how* the value was read
+     * -- a date printed on the poster is genuinely `explicit` -- and the flag records the single extra
+     * reason to doubt it: the characters were recognised from a photograph. Keeping the two apart means
+     * an OCR field is charged for its unreadability without also being flattened to the weakest origin,
+     * so a clearly printed date on a good scan is still stronger evidence than a date guessed from a bare
+     * day and the bulletin month.
+     */
+    public const OCR = 'ocr';
+
     /** Set by a human. Never scored down. */
     public const MANUAL = 'manual';
 
@@ -67,6 +79,7 @@ final class FieldEvidence
             'end_before_start',
             'next_weekday_ambiguous',
             'recurrence_ambiguous',
+            self::OCR,
         ];
 
     /**

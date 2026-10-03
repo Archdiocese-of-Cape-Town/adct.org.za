@@ -58,6 +58,7 @@ use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
 use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
+use ADCT\ParishIntake\Core\Ocr\OcrTextEnrichmentService;
 use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
@@ -155,12 +156,17 @@ use ADCT\ParishIntake\WordPress\Directory\DeaneryApproverAssignmentService;
 use ADCT\ParishIntake\WordPress\Directory\WordPressDirectorySnapshotCache;
 use ADCT\ParishIntake\WordPress\Directory\WordPressDirectorySnapshotLoader;
 use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
+use ADCT\ParishIntake\WordPress\Ocr\LazyOcrProvider;
+use ADCT\ParishIntake\WordPress\Ocr\OcrSpaceProvider;
+use ADCT\ParishIntake\WordPress\Ocr\WordPressImageOcrExtractionStore;
+use ADCT\ParishIntake\WordPress\Ocr\WordPressOcrCallGate;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
 use ADCT\ParishIntake\WordPress\Jobs\HealthAlerts;
 use ADCT\ParishIntake\WordPress\Jobs\RetentionCleanupJob;
 use ADCT\ParishIntake\WordPress\Jobs\RetentionSettings;
+use ADCT\ParishIntake\WordPress\Jobs\OcrSettings;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailQueueImmediateDispatch;
@@ -662,8 +668,37 @@ private ?ReviewQueueRepository $reviewQueue = null;
                 ),
                 new PrinsFrankPdfTextExtractor(),
                 $protectedInboundMailStorage
-            )
-        );
+                            ),
+                            // Poster OCR is off until an archdiocese administrator opts in on the
+                            // settings screen, and an absent key leaves the provider unavailable, so
+                            // this collapses to the no-OCR path rather than failing the message. The
+                            // provider is built lazily: this constructor runs before WordPress is
+                            // loaded, so reading options or resolving secrets here would be a fatal
+                            // at install time, and it also means a settings change takes effect on the
+                            // next message rather than needing a re-activation.
+                            ocrTextEnrichment: new OcrTextEnrichmentService(
+                                new WordPressImageOcrExtractionStore($attachmentRepository, $clock),
+                                new LazyOcrProvider(
+                                    function () use ($secrets, $database, $clock): OcrSpaceProvider {
+                                        $settings = OcrSettings::current();
+
+                                        return new OcrSpaceProvider(
+                                            $secrets->resolve(SecretRegistry::OCR_API_KEY),
+                                            $this->httpClient,
+                                            new WordPressOcrCallGate(
+                                                new WordPressActionTokenRateLimitStore($database),
+                                                $clock,
+                                                $settings->isEnabled() ? $settings->dailyCallLimit() : 1
+                                            )
+                                        );
+                                    }
+                                ),
+                                $protectedInboundMailStorage,
+                                null,
+                                null,
+                                static fn (): bool => OcrSettings::current()->isEnabled()
+                            )
+                        );
         // This is the only scheduled retention path; processed mail is deleted only by exact stored move receipts.
         $retentionCleanupJob = new RetentionCleanupJob(
             $database,
@@ -860,6 +895,14 @@ private ?ReviewQueueRepository $reviewQueue = null;
         add_option('adct_parish_intake_openrouter_model', OpenAiCompatibleProvider::FREE_MODEL);
         add_option('adct_parish_intake_ai_base_url', OpenAiCompatibleProvider::DEFAULT_URL);
         add_option('adct_parish_intake_ai_threshold', '0.55');
+        // Poster OCR sends an image off-site, so it ships off: an
+        // administrator has to opt in on the settings screen before a single
+        // poster leaves this server.
+        add_option(OcrSettings::ENABLED_OPTION, '0');
+        add_option(
+            OcrSettings::DAILY_CALL_LIMIT_OPTION,
+            (string) OcrSettings::DEFAULT_DAILY_CALL_LIMIT
+        );
         add_option(
             'adct_parish_intake_confidence_threshold',
             (string) ReviewQueuePolicy::DEFAULT_CONFIDENCE_THRESHOLD

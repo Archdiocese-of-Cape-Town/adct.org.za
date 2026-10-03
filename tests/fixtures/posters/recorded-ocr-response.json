@@ -1,0 +1,40 @@
+{
+  "_comment": [
+    "A recorded reply from OCR.space's parse/image endpoint, shaped exactly as",
+    "the service sends it, for the invented poster in example-retreat-poster.png.",
+    "",
+    "This is a recording, not a live call: the test suite must never depend on a",
+    "third-party service, on a key, or on a local Tesseract install. The text is",
+    "what a human reads off the fixture image, including the OCR quirks a real",
+    "engine produces (a lowercase town, a phone number read as words), so the",
+    "replay exercises the same shape of noisy input a live call would return.",
+    "",
+    "No real parish data: Example Parish, Example Parish Hall and the",
+    "021 555 0100 number are all reserved for fixtures."
+  ],
+  "OCRExitCode": 1,
+  "IsErroredOnProcessing": false,
+  "ErrorMessage": "",
+  "ProcessingTime": "0.8123456",
+  "SearchablePDFURL": "Searchable PDF not generated as it was not requested.",
+  "SearchablePDFURL_Base64": "",
+  "ParsedResults": [
+    {
+      "TextOrientation": "0",
+      "OrientationConfidence": "9.99",
+      "FileParseExitCode": 1,
+      "ParsedText": "EXAMPLE PARISH\nPARISH RETREAT DAY\n12/10/2026\n9:00 AM - 3:00 PM\nEXAMPLE PARISH HALL\n021 555 0100\n\nAll are welcome. Please bring a packed lunch.",
+      "TextAngle": "0",
+      "OrientationConfidence": "9.99",
+      "PageNumber": 1,
+      "Words": [],
+      "Lines": [],
+      "OCREngine": "2",
+      "OCREngineConfidence": "86.41919708251953",
+      "OrientationConfidence": "9.99"
+    }
+  ],
+  "ErrorDetails": "",
+  "StatusCode": 200,
+  "Message": "All Uploaded Files Successfully Processed."
+}
