@@ -259,7 +259,7 @@ bugs does not close that gap, because the next unrecognised format will fail the
 compact form that cannot be resolved is noted rather than dropped in silence; the same note still does not
 cover the next format nobody has seen yet, which is what #167 remains for.
 
-Current `composer fixture-score` baseline: **413/428 fields correct (96%)**, with 8 tracked fixtures
+Current `composer fixture-score` baseline: **413/428 fields correct (96%)**, with 9 tracked fixtures
 above.
 
 **A falling total is expected. A falling pre-existing row is a regression.** The total percentage is the
