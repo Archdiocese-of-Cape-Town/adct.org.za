@@ -8,7 +8,7 @@ A WordPress plugin to collect parish notices and show upcoming events on the Arc
 
 - **Directory:** import and manage parishes, deaneries, venues, contacts, sources and approver assignments.
 - **Inbox:** configure/test an IMAP mailbox, poll and privately store mail, extract draft events, and inspect/retry failures. The **Manual parser** works without a mailbox. Optional AI is off by default; manual parsing stays offline.
-- **Events:** create/edit one-off or recurring WordPress events. The **Upcoming events** block or `[adct_events]` shortcode provides a date/type/parish/deanery-filtered listing; `/?adct_ics=1` provides an ICS feed. Drafts from email do **not** appear here automatically.
+- **Events:** create/edit one-off or recurring WordPress events. The **Upcoming events** block or `[adct_events]` shortcode provides a date/type/parish/deanery-filtered listing; `/?adct_ics=1` provides an ICS feed, and the listing itself carries **Subscribe** links (normal and `webcal:`) for the calendar it is currently showing. Drafts from email do **not** appear here automatically.
 - **Operations:** bounded scheduled jobs, health reporting, a capped mail queue and single-use token foundations; automated PHP and installed-ZIP WordPress tests.
 
 ## Try it on a test WordPress site

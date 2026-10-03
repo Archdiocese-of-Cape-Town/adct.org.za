@@ -43,3 +43,12 @@
     margin: .15rem 0;
 }
 .adct-events nav a { display: inline-block; padding: .5rem; }
+.adct-events__subscribe {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: .5rem;
+    margin: 0 0 1.5rem;
+}
+.adct-events__subscribe-link { font-weight: 600; }
+.adct-events__subscribe-webcal { font-size: .875em; }

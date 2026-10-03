@@ -22,6 +22,7 @@ Short records of important decisions: what was decided, why, and what follows fr
 | [0016](0016-pre-release-schema-changes.md) | Pre-release schema changes on disposable installations; migrations after first release | Accepted |
 | [0017](0017-library-first-protocol-and-format-handling.md) | Library-first protocol and format handling | Accepted |
 | [0018](0018-client-side-ocr-for-image-posters.md) | Opt-in client-side OCR for image posters; server-side OCR still out of scope | Accepted |
+| [0019](0019-handwritten-ics-feed-renderer.md) | Handwritten ICS feed renderer, validated by a test-only library (ADR 0017 exception) | Proposed |
 
 Template:
 
