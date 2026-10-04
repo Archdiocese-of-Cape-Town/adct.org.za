@@ -424,6 +424,14 @@ The same script also tokenises shipped `src/**/*.php` and rejects any name token
 
 Without a local PHP, use the Docker commands in the [development guide](development.md#local-setup-windows-no-php-install-needed). CI (`.github/workflows/ci.yml`) runs `composer validate`, a `php -l` lint and `composer test` on PHP 8.2, 8.3 and 8.4 for every PR and push to `main`, plus the same steps on PHP 8.5 as an advisory `continue-on-error` job. Because `phpunit.xml.dist` sets `failOnDeprecation`, `failOnWarning` and `failOnNotice` to `true`, the 8.2–8.4 jobs are what enforce the rule that nothing deprecated in PHP 8.3 or later is used.
 
+### Memory limits
+
+PHP's default `memory_limit` is 128M, and `phpunit.xml.dist` raises it to 256M. Without that, the suite intermittently dies part-way through with `Fatal error: Allowed memory size of 134217728 bytes exhausted`. The allocation that tips it over is `AttachmentStoragePolicyTest`, which materialises a string of `AttachmentStoragePolicy::MAX_ATTACHMENT_SIZE_BYTES` (15 MB) to check the size ceiling. That is deliberate: the policy caps attachments at 15 MB in production, and testing the boundary means building a boundary-sized value.
+
+Because `phpunit.xml.dist` sets `executionOrder="random"`, whether a run trips the limit depends on how much is still resident when that test happens to run, so the failure is intermittent and moves around the suite. It was measured rather than guessed: at the 128M default the unit suite failed 2 runs in 4 on this branch and passed 4 in 4 on `main`, with peaks of roughly 100 MB against 95 MB. Raising the limit fixed it — 4 runs in 4 at 256M, peaking at 98-103 MB.
+
+The limit is set in the configuration rather than by shrinking the fixture, because the size boundary is the thing under test. Changing the test to allocate less would make a green suite that no longer checks the limit it exists to check.
+
 ### Reading the summary line
 
 The suite prints `OK, but there were issues!` and exits **0** when the only issue is the three tracked `markTestIncomplete()` markers (#98 twice, #63). `failOnIncomplete` is deliberately not set, so incompletes are reported without failing the run; the alternative would make the suite permanently red until #98 and #63 are closed. Deprecations, warnings and notices *do* fail the run.
