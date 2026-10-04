@@ -91,13 +91,13 @@ final class SourceMaterialRole
      */
     public static function label(string $role): string
     {
-    return match ($role) {
-        self::POSTER => 'Poster',
-        self::BULLETIN => 'Parish bulletin',
-        self::DOCUMENT => 'Document',
-        default => throw new InvalidArgumentException('The source material role is not known.'),
-    };
-}
+        return match ($role) {
+            self::POSTER => 'Poster',
+            self::BULLETIN => 'Parish bulletin',
+            self::DOCUMENT => 'Document',
+            default => throw new InvalidArgumentException('The source material role is not known.'),
+        };
+    }
 
     /**
      * Normalises submitted input to a known role, or null.
