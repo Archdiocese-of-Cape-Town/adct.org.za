@@ -56,8 +56,9 @@ use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
      *
      * Every stub the class under test calls unqualified is declared below in
      * the `ADCT\ParishIntake\WordPress\Events` namespace, because that is where
-     * PHP looks first and no shared stub file declares that namespace. They are
-     * guarded so a future shared stub wins rather than fataling.
+     * PHP looks first. tests/Support/WordPressEventEditorStubs.php declares
+     * add_meta_box(), remove_meta_box() and current_user_can() in that namespace,
+     * so those three are declared there instead and are not repeated below.
      */
     final class EventSourceMaterialEditorTest extends TestCase
     {
@@ -75,11 +76,15 @@ use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
             $GLOBALS['adct_test_current_user_id'] = 9;
             $GLOBALS['adct_test_current_user'] = new \WP_User(9, 'dean@example.test');
             $GLOBALS['adct_test_wp_caps'] = [9 => [Capabilities::EDIT_PUBLISHED_EVENTS]];
+            // WordPressEventEditorStubs.php answers current_user_can() from
+            // adct_test_post_caps alone, so this is what grants 'edit_post'.
+            $GLOBALS['adct_test_post_caps'] = true;
             $GLOBALS['adct_test_nonce_checks'] = [];
             $GLOBALS['adct_test_nonce_fields'] = [];
             $GLOBALS['adct_test_redirect'] = null;
             $GLOBALS['adct_test_is_admin'] = true;
             $GLOBALS['adct_test_meta_boxes'] = [];
+            $GLOBALS['adct_test_meta_boxes_removed'] = [];
             $GLOBALS['adct_test_post_types'] = [EditorTestIds::EVENT => 'adct_event'];
             $GLOBALS['adct_test_edit_links'] = [
                 EditorTestIds::EVENT => 'https://adct.example.test/wp-admin/post.php?post=4312&action=edit',
@@ -99,6 +104,7 @@ use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
 
             unset(
             $GLOBALS['adct_test_wp_caps'],
+            $GLOBALS['adct_test_post_caps'],
             $GLOBALS['adct_test_current_user'],
             $GLOBALS['adct_test_current_user_id'],
             $GLOBALS['adct_test_nonce_checks'],
@@ -106,6 +112,7 @@ use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
             $GLOBALS['adct_test_redirect'],
             $GLOBALS['adct_test_is_admin'],
             $GLOBALS['adct_test_meta_boxes'],
+            $GLOBALS['adct_test_meta_boxes_removed'],
             $GLOBALS['adct_test_post_types'],
             $GLOBALS['adct_test_edit_links'],
             $GLOBALS['adct_test_redirects_allowed'],
@@ -151,9 +158,15 @@ use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
 
             self::assertCount(1, $GLOBALS['adct_test_meta_boxes']);
 
-            $box = $GLOBALS['adct_test_meta_boxes'][0];
+            // WordPressEventEditorStubs.php keys the recording by box id, so
+            // that the audit box and this one can be told apart.
+            self::assertArrayHasKey(
+                EventSourceMaterialEditor::META_BOX_ID,
+                $GLOBALS['adct_test_meta_boxes']
+            );
 
-            self::assertSame(EventSourceMaterialEditor::META_BOX_ID, $box['id']);
+            $box = $GLOBALS['adct_test_meta_boxes'][EventSourceMaterialEditor::META_BOX_ID];
+
             self::assertSame('adct_event', $box['screen']);
             self::assertSame('normal', $box['context']);
             self::assertSame('Poster and bulletin', $box['title']);
@@ -166,6 +179,7 @@ use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
         public function testSomeoneWhoCannotEditTheEventCannotPublishSourceMaterial(): void
         {
             $GLOBALS['adct_test_wp_caps'] = [9 => [Capabilities::MANAGE_SETTINGS]];
+            $GLOBALS['adct_test_post_caps'] = false;
             $database = new EditorQueueDatabase();
             $copier = new EditorRecordingCopier();
             $this->postAnAdd();
@@ -193,6 +207,7 @@ use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
         public function testTheCapabilityIsCheckedBeforeTheNonce(): void
         {
             $GLOBALS['adct_test_wp_caps'] = [9 => [Capabilities::MANAGE_SETTINGS]];
+            $GLOBALS['adct_test_post_caps'] = false;
             $copier = new EditorRecordingCopier();
             $this->postAnAdd();
 
@@ -800,6 +815,7 @@ use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
         public function testSomeoneWhoCannotEditTheEventCannotRemoveSourceMaterial(): void
         {
             $GLOBALS['adct_test_wp_caps'] = [9 => [Capabilities::MANAGE_SETTINGS]];
+            $GLOBALS['adct_test_post_caps'] = false;
             $store = new EditorRecordingStore();
             $store->seed(EditorTestIds::EVENT, [EditorTestIds::publishedPoster()]);
             $copier = new EditorRecordingCopier();
@@ -990,6 +1006,7 @@ use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
         public function testTheBoxRendersNothingToSomebodyWhoCannotEditTheEvent(): void
         {
             $GLOBALS['adct_test_wp_caps'] = [9 => [Capabilities::MANAGE_SETTINGS]];
+            $GLOBALS['adct_test_post_caps'] = false;
 
             ob_start();
             $this->editor()->renderMetaBox((object) ['ID' => EditorTestIds::EVENT]);
@@ -1924,40 +1941,22 @@ namespace ADCT\ParishIntake\WordPress\Events {
                  * The WordPress functions `EventSourceMaterialEditor` calls unqualified, in
                  * the namespace PHP resolves them in.
                  *
-                 * No shared stub file declares this namespace — the existing ones cover
-                 * Auth, Admin and Approval — so these are declared here. Each is guarded, so
-                 * a later shared stub in this namespace wins rather than fataling with
-                 * "Cannot redeclare", which is the failure mode PHPUnit's single process
-                 * turns a duplicate stub into.
+                 * add_meta_box(), remove_meta_box() and current_user_can() come from
+                 * tests/Support/WordPressEventEditorStubs.php, which records boxes keyed
+                 * by box id. Each stub below is guarded so a future shared stub wins
+                 * rather than fataling with "Cannot redeclare", which is the failure
+                 * mode PHPUnit's single process turns a duplicate stub into.
                  *
                  * Driven through these globals, cleared in tearDown():
                  *
-                 *     adct_test_meta_boxes          registered add_meta_box() calls
+                 *     adct_test_meta_boxes          box id => add_meta_box() arguments
+                 *     adct_test_meta_boxes_removed  remove_meta_box() box ids
                  *     adct_test_post_types          post id => post type
                  *     adct_test_edit_links          post id => edit URL
                  *     adct_test_redirects_allowed   hosts wp_validate_redirect() accepts
                  *     adct_test_transients          transient name => value
                  *     adct_test_posts               post id => post object
                  */
-    if (! function_exists('ADCT\ParishIntake\WordPress\Events\add_meta_box')) {
-        function add_meta_box(
-        string $id,
-        string $title,
-        callable $callback,
-        string $screen,
-        string $context = 'advanced',
-        string $priority = 'default'
-        ): void {
-            $GLOBALS['adct_test_meta_boxes'][] = [
-            'id' => $id,
-            'title' => $title,
-            'callback' => $callback,
-            'screen' => $screen,
-            'context' => $context,
-            'priority' => $priority,
-            ];
-        }
-    }
 
     if (! function_exists('ADCT\ParishIntake\WordPress\Events\get_post_type')) {
         function get_post_type(mixed $post = null): string|false
@@ -2091,9 +2090,6 @@ namespace ADCT\ParishIntake\WordPress\Events {
                 throw new \AdctTestNonceRefused($action);
             }
         }
-    }
-
-    if (! function_exists('ADCT\ParishIntake\WordPress\Events\current_user_can')) {
     }
 
     if (! function_exists('ADCT\ParishIntake\WordPress\Events\wp_unslash')) {

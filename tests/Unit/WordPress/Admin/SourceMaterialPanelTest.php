@@ -504,6 +504,8 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                     false,
                     false,
                     false,
+                    // $resend: this test is not about the resend-confirmation box.
+                    [],
                     $promotable,
                     $eventId
                 );
