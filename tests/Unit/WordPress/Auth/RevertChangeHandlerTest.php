@@ -206,6 +206,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
     use ADCT\ParishIntake\Core\Auth\ActionTokenService;
     use ADCT\ParishIntake\Core\Auth\ActionTokenStatus;
     use ADCT\ParishIntake\Core\Auth\Capabilities;
+    use ADCT\ParishIntake\Core\Events\ChangeDiff;
     use ADCT\ParishIntake\Core\Events\OccurrenceWindow;
     use ADCT\ParishIntake\Core\Mail\MailQueueEnqueueResult;
     use ADCT\ParishIntake\Core\Mail\MailQueueStatus;
@@ -481,6 +482,119 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
                     self::DEAN
                 )),
                 'A token for a change row that is gone must not offer an action.'
+            );
+        }
+
+        /**
+         * The confirmation page is the last thing an approver reads before a
+         * destructive button. It has to say what the button undoes, not only that
+         * there is a button.
+         */
+        public function testTheConfirmationPageShowsWhatTheButtonWouldUndo(): void
+        {
+            $preview = $this->handler()->preview($this->binding());
+
+            self::assertInstanceOf(ActionTokenPreview::class, $preview);
+            self::assertContains('Title: Parish retreat day -> Retreat day (renamed)', $preview->details);
+            self::assertContains('Venue: 7 -> 8', $preview->details);
+            self::assertContains(
+                'Event status: (none) -> Cancelled',
+                $preview->details,
+                'A cancellation is the most destructive thing a change can do, and the'
+                    . ' approver must see it on the page they confirm from.'
+            );
+        }
+
+        /**
+         * The before/after wording must match the change notice in the approver's inbox
+         * and the admin change history, or the three places describe the same change
+         * three different ways and only the newest one is trusted.
+         */
+        public function testTheConfirmationPageUsesTheSharedChangeDiffWording(): void
+        {
+            $row = $this->database()->changeRow(self::CHANGE_ID);
+            $before = ChangeDiff::decode($row['before_payload']);
+            $after = ChangeDiff::decode($row['after_payload']);
+            $expected = [];
+
+            foreach (ChangeDiff::rows($before['snapshot'], $after['snapshot']) as $field) {
+                $expected[] = $field['label'] . ': ' . $field['before'] . ' -> ' . $field['after'];
+            }
+
+            self::assertNotSame([], $expected, 'The fixture must really differ, or this proves nothing.');
+
+            $preview = $this->handler()->preview($this->binding());
+
+            self::assertInstanceOf(ActionTokenPreview::class, $preview);
+            self::assertSame(
+                $expected,
+                $this->diffLines($preview),
+                'Every diff line must come from ChangeDiff verbatim, and nothing else.'
+            );
+        }
+
+        /**
+         * A truncated payload must not read as "there is nothing here to undo", and it
+         * must not read as "every field was cleared" either. `ChangeDiff` treats a
+         * missing key as "nothing", so diffing a half-written row against a good one
+         * produces confident nonsense rather than an error.
+         */
+        public function testTheConfirmationPageSaysSoWhenTheRecordedValuesCannotBeRead(): void
+        {
+            $database = $this->database();
+            $database->corruptPayload(self::CHANGE_ID, 'after_payload', 'not json at all');
+
+            $preview = $this->handler([self::PARISH_ID], $database)->preview($this->binding());
+
+            self::assertInstanceOf(ActionTokenPreview::class, $preview);
+            self::assertContains(
+                'The recorded before and after values could not be read.',
+                $preview->details
+            );
+            self::assertSame(
+                [],
+                $this->diffLines($preview),
+                'Nothing may be diffed against an unreadable side, because a missing key'
+                    . ' reads as "nothing" and would claim every field was cleared.'
+            );
+        }
+
+        /**
+         * @return list<string>
+         */
+        private function diffLines(ActionTokenPreview $preview): array
+        {
+            return array_values(array_filter(
+                $preview->details,
+                static fn (string $line): bool => str_contains($line, ' -> ')
+            ));
+        }
+
+        /**
+         * A free-text parish description may contain newlines. Each rendered line is
+         * escaped and wrapped in its own list item by the endpoint, so a value that
+         * still carried a newline could add a line the approver never wrote.
+         */
+        public function testAMultiLineDescriptionCannotForgeAnExtraLineOnTheConfirmationPage(): void
+        {
+            $database = $this->database();
+            $row = $database->changeRow(self::CHANGE_ID);
+            $before = json_decode((string) $row['before_payload'], true);
+            $before['content'] = "Line one.\nMade up: Reverted by the archdiocese at 03:00.";
+            $database->corruptPayload(self::CHANGE_ID, 'before_payload', json_encode($before));
+
+            $preview = $this->handler([self::PARISH_ID], $database)->preview($this->binding());
+
+            self::assertInstanceOf(ActionTokenPreview::class, $preview);
+
+            foreach ($preview->details as $line) {
+                self::assertStringNotContainsString("\n", $line);
+            }
+
+            self::assertContains(
+                'Description: Line one. Made up: Reverted by the archdiocese at 03:00.'
+                    . ' -> The amended description.',
+                $preview->details
             );
         }
 
@@ -1193,6 +1307,28 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
         {
             return $this->changes[$id] ?? null;
         }
+
+                /**
+                 * The raw row, so a test can read a stored payload column exactly as the
+                 * handler will.
+                 *
+                 * @return array<string, mixed>
+                 */
+                public function changeRow(int $id): array
+                {
+                    return $this->changes[$id] ?? [];
+                }
+
+                /**
+                 * Replaces a stored payload column with something unreadable, which is
+                 * what a truncated or half-written row looks like to `ChangeDiff::decode`.
+                 */
+                public function corruptPayload(int $id, string $column, string $value): void
+                {
+                    if (isset($this->changes[$id])) {
+                        $this->changes[$id][$column] = $value;
+                    }
+                }
 
         /**
          * Mirrors WordPressPublicationStore: once ROLLBACK has run, the rows this

@@ -10,6 +10,7 @@ use ADCT\ParishIntake\Core\Auth\ActionTokenPreview;
 use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 use ADCT\ParishIntake\Core\Auth\ActionTokenService;
 use ADCT\ParishIntake\Core\Auth\ActionTokenStatus;
+use ADCT\ParishIntake\Core\Events\ChangeDiff;
 use ADCT\ParishIntake\Core\Events\OccurrenceWindow;
 use ADCT\ParishIntake\Core\Mail\MailPriority;
 use ADCT\ParishIntake\Core\Mail\OutboundEmail;
@@ -86,9 +87,19 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
             'Recorded by: ' . (string) ($row['actor'] ?? 'Unknown')
                 . ' on ' . (string) ($row['created_at'] ?? '') . ' UTC',
         ];
-        if ($reverted !== null) {
-            $details[] = $reverted;
+
+                // What the button actually undoes. A confirmation page that says only
+        // "revert this change" asks an approver to press a destructive button
+        // without showing them the field-level effect, which is the one thing
+        // they cannot judge from the mail if the mail is a week old.
+        $summary = $this->diff($row);
+        if ($summary !== []) {
+            $details = array_merge($details, $summary);
         }
+
+        if ($reverted !== null) {
+                    $details[] = $reverted;
+                }
 
         return new ActionTokenPreview(
             'Revert this change',
@@ -475,8 +486,37 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
             . ' at ' . (string) $row['reverted_at'] . ' UTC.';
     }
 
-    private function isForeign(ActionTokenBinding $binding): bool
-    {
+    /**
+     * The field-level summary of what pressing the button would undo, as the
+     * list of lines the confirmation page renders. Shares `ChangeDiff` with the
+     * change-notice mail and the admin change history so an approver sees the
+     * same wording in all three places.
+     *
+     * @return list<string>
+     */
+        private function diff(array $row): array
+        {
+            $before = ChangeDiff::decode($row['before_payload'] ?? null);
+            $after = ChangeDiff::decode($row['after_payload'] ?? null);
+
+            // An unreadable side must not be diffed against an empty snapshot. That
+            // does not fail loudly: `ChangeDiff` reads a missing field as "nothing",
+            // so the page would claim every title, time and venue was cleared, which
+            // is a worse thing to show an approver than saying nothing was readable.
+            if (! $before['ok'] || ! $after['ok']) {
+                return ['The recorded before and after values could not be read.'];
+            }
+
+            $lines = [];
+            foreach (ChangeDiff::rows($before['snapshot'], $after['snapshot']) as $field) {
+                $lines[] = $field['label'] . ': ' . $field['before'] . ' -> ' . $field['after'];
+            }
+
+            return $lines;
+        }
+
+        private function isForeign(ActionTokenBinding $binding): bool
+        {
         return $binding->purpose !== $this->purpose()
             || $binding->subjectType !== self::SUBJECT_TYPE;
     }
