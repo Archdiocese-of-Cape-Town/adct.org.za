@@ -430,6 +430,8 @@ PHP's default `memory_limit` is 128M, and `phpunit.xml.dist` raises it to 256M. 
 
 Because `phpunit.xml.dist` sets `executionOrder="random"`, whether a run trips the limit depends on how much is still resident when that test happens to run, so the failure is intermittent and moves around the suite. It was measured rather than guessed: at the 128M default the unit suite failed 2 runs in 4 on this branch and passed 4 in 4 on `main`, with peaks of roughly 100 MB against 95 MB. Raising the limit fixed it — 4 runs in 4 at 256M, peaking at 98-103 MB.
 
+The limit was confirmed to be load-bearing rather than decorative, in both directions. Set the configured value to 8M and the run dies at exactly 8,388,608 bytes even when `-d memory_limit=256M` is passed on the command line, so the configuration is applied and takes precedence over the CLI. Left at 256M, a contradictory `-d memory_limit=8M` on the command line is ignored and the run exits 0. Stripping the block again afterwards reproduced the flake 2 runs in 4, as expected.
+
 The limit is set in the configuration rather than by shrinking the fixture, because the size boundary is the thing under test. Changing the test to allocate less would make a green suite that no longer checks the limit it exists to check.
 
 ### Reading the summary line
