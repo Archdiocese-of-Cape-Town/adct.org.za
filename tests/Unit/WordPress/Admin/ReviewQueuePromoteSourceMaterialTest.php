@@ -12,15 +12,15 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
     use ADCT\ParishIntake\Core\Attachments\SourceMaterialReference;
     use ADCT\ParishIntake\Core\Attachments\SourceMaterialRole;
     use ADCT\ParishIntake\Core\Attachments\SourceMaterialPromotion;
-        use ADCT\ParishIntake\Core\Auth\Capabilities;
+    use ADCT\ParishIntake\Core\Auth\Capabilities;
     use ADCT\ParishIntake\Core\Audit\AuditAction;
-        use ADCT\ParishIntake\Core\Audit\AuditWriter;
-        use ADCT\ParishIntake\Core\Ports\ClockInterface;
-            use ADCT\ParishIntake\Core\Ports\PublicationStoreInterface;
-            use ADCT\ParishIntake\Core\Ports\SourceMaterialCopierInterface;
-            use ADCT\ParishIntake\Core\Ports\SourceMaterialStoreInterface;
-            use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
-            use ADCT\ParishIntake\Core\Events\EventValidator;
+    use ADCT\ParishIntake\Core\Audit\AuditWriter;
+    use ADCT\ParishIntake\Core\Ports\ClockInterface;
+    use ADCT\ParishIntake\Core\Ports\PublicationStoreInterface;
+    use ADCT\ParishIntake\Core\Ports\SourceMaterialCopierInterface;
+    use ADCT\ParishIntake\Core\Ports\SourceMaterialStoreInterface;
+    use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
+    use ADCT\ParishIntake\Core\Events\EventValidator;
     use ADCT\ParishIntake\WordPress\Admin\ReviewQueuePage;
     use ADCT\ParishIntake\WordPress\Attachments\SourceMaterialAuditTrail;
     use ADCT\ParishIntake\WordPress\Audit\ActorResolver;
@@ -239,45 +239,45 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
         /**
          * The candidate's id is re-resolved through the queue, so a dean cannot
          * promote by naming somebody else's candidate.
-                 *
-                 * The double answers a scoped-candidate query only for its own candidate,
-                 * which is what the real queue does for a candidate outside the reviewer's
-                 * scope. Whether that surfaces as a 404 or a 400 is a wording choice; what
-                 * matters here is that a crafted id copies nothing.
-                 */
-                public function testACraftedCandidateIdIsReResolvedRatherThanTrusted(): void
-                {
-                    $database = new PromoteQueueDatabase();
-                    $copier = new PromoteRecordingCopier();
-                    $store = new PromoteRecordingStore();
-                    $_POST = [
-                        'candidate_id' => (string) PromoteTestIds::OTHER_CANDIDATE,
-                        'selected' => [(string) PromoteTestIds::ATTACHMENT],
-                                        'roles' => [(string) PromoteTestIds::ATTACHMENT => SourceMaterialRole::BULLETIN],
-                    ];
+         *
+         * The double answers a scoped-candidate query only for its own candidate,
+         * which is what the real queue does for a candidate outside the reviewer's
+         * scope. Whether that surfaces as a 404 or a 400 is a wording choice; what
+         * matters here is that a crafted id copies nothing.
+         */
+        public function testACraftedCandidateIdIsReResolvedRatherThanTrusted(): void
+        {
+            $database = new PromoteQueueDatabase();
+            $copier = new PromoteRecordingCopier();
+            $store = new PromoteRecordingStore();
+            $_POST = [
+                'candidate_id' => (string) PromoteTestIds::OTHER_CANDIDATE,
+                'selected' => [(string) PromoteTestIds::ATTACHMENT],
+                                'roles' => [(string) PromoteTestIds::ATTACHMENT => SourceMaterialRole::BULLETIN],
+            ];
 
-                    try {
-                        $this->page($database, $copier, $store)->handlePromoteSourceMaterial();
-                    } catch (\AdctTestWpDie $refused) {
-                        self::assertContains(
-                            $refused->status,
-                            [400, 404],
-                            'A candidate the reviewer own scope does not hold is refused.'
-                        );
-                                        self::assertSame([], $copier->calls, 'Naming somebody else candidate copies nothing.');
-                                        self::assertSame([], $store->writtenEvents, 'And writes nothing.');
-                                        self::assertSame([], $database->auditRows, 'And records no promotion.');
+            try {
+                $this->page($database, $copier, $store)->handlePromoteSourceMaterial();
+            } catch (\AdctTestWpDie $refused) {
+                self::assertContains(
+                    $refused->status,
+                    [400, 404],
+                    'A candidate the reviewer own scope does not hold is refused.'
+                );
+                                self::assertSame([], $copier->calls, 'Naming somebody else candidate copies nothing.');
+                                self::assertSame([], $store->writtenEvents, 'And writes nothing.');
+                                self::assertSame([], $database->auditRows, 'And records no promotion.');
 
-                                        return;
-                                    }
+                                return;
+                            }
 
-                    self::assertSame(
-                        [],
-                        $copier->calls,
-                        'The queue is the only source of the event, so a crafted id promotes nothing.'
-                    );
-                    self::assertSame([], $store->writtenEvents);
-                }
+            self::assertSame(
+                [],
+                $copier->calls,
+                'The queue is the only source of the event, so a crafted id promotes nothing.'
+            );
+            self::assertSame([], $store->writtenEvents);
+        }
 
         /**
          * The event is derived from the candidate, so the form's own event id is
@@ -759,6 +759,60 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             }
         }
 
+        /**
+         * A page wired without the promotion collaborators must say so rather
+         * than reaching for a null. Promotion is wired lazily in `Plugin.php`,
+         * so "collaborator absent" is a reachable state, not a theoretical one;
+         * without this guard PHP would raise a TypeError and the reviewer would
+         * get a fatal error page instead of a refusal.
+         */
+        public function testAPageWithoutItsPromotionCollaboratorsRefusesRatherThanCopying(): void
+        {
+            $database = new PromoteQueueDatabase();
+            $copier = new PromoteRecordingCopier();
+            $store = new PromoteRecordingStore();
+            $_POST = [
+                'candidate_id' => (string) PromoteTestIds::CANDIDATE,
+                'selected' => [(string) PromoteTestIds::ATTACHMENT],
+                'roles' => [(string) PromoteTestIds::ATTACHMENT => SourceMaterialRole::POSTER],
+            ];
+
+            try {
+                $this->pageWithoutSourceMaterial($database, $copier, $store)
+                    ->handlePromoteSourceMaterial();
+            } catch (\AdctTestWpDie $refused) {
+                self::assertSame(400, $refused->status);
+                self::assertSame([], $copier->calls, 'A page with no promotion service must copy nothing.');
+                self::assertSame([], $store->writtenEvents, 'And it must record nothing.');
+                self::assertSame([], $database->auditRows, 'And it must leave no audit row.');
+
+                return;
+            }
+
+            self::fail('A page with no promotion collaborators must refuse, not fatal.');
+        }
+
+        /**
+         * The same form, on a page whose collaborators are wired, is accepted.
+         * Without this the refusal above would pass for any reason at all,
+         * including a fixture that is wrong about the request being refused.
+         */
+        public function testTheSameFormIsAcceptedOnceTheCollaboratorsAreWired(): void
+        {
+            $database = new PromoteQueueDatabase();
+            $copier = new PromoteRecordingCopier();
+            $store = new PromoteRecordingStore();
+            $_POST = [
+                'candidate_id' => (string) PromoteTestIds::CANDIDATE,
+                'selected' => [(string) PromoteTestIds::ATTACHMENT],
+                'roles' => [(string) PromoteTestIds::ATTACHMENT => SourceMaterialRole::POSTER],
+            ];
+
+            $this->promote($database, $copier, $store);
+
+            self::assertCount(1, $copier->calls, 'The wired page copies the chosen file.');
+        }
+
         private function promote(
             PromoteQueueDatabase $database,
             PromoteRecordingCopier $copier,
@@ -771,6 +825,25 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             }
 
             self::fail('The promote route must end in a redirect.');
+        }
+
+        /**
+         * The page exactly as `Plugin.php` builds it if the promotion service is
+         * never resolved: everything the review queue has always needed, and no
+         * source-material collaborators at all.
+         */
+        private function pageWithoutSourceMaterial(
+            PromoteQueueDatabase $database,
+            PromoteRecordingCopier $copier,
+            PromoteRecordingStore $store
+        ): ReviewQueuePage {
+            return new ReviewQueuePage(
+                new ReviewQueueRepository($database, new PromoteQueueClock()),
+                PromotePublisherRefusal::publisher(),
+                attachments: new AttachmentRepository($database),
+                sourceMaterial: null,
+                audit: null
+            );
         }
 
         private function page(
