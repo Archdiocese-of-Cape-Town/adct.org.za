@@ -7,6 +7,7 @@ namespace ADCT\ParishIntake\WordPress\Admin;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Attachments\PreviewableImage;
 use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
+use ADCT\ParishIntake\Core\Parsing\UnparsedDateTimeCandidate;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
 use ADCT\ParishIntake\Core\Review\CandidateEditResult;
@@ -77,6 +78,21 @@ final class ReviewQueuePage
      * that enqueues them so a browser only ever holds one copy.
      */
     private const ASSET_VERSION = '1.0.0';
+
+    /**
+     * The post field that carries #167's acknowledgement.
+     *
+     * An approver has to be able to say they mean it: a notice whose date was found and
+     * could not be read publishes as an event with no date, and a date nobody supplied
+     * is not a decision an approver should be able to make by accident. Ticking this says
+     * they have seen the phrase and still mean to approve. It is the only way to
+     * acknowledge a date that cannot be corrected from the form above, which is why it
+     * has a name of its own rather than riding on the save mode.
+          *
+          * Public because `FrontEndApprovalQueue` renders the same checkbox from its own form
+          * and must post the same name, or the dean's acknowledgement would be silently dropped.
+          */
+         public const UNPARSED_DATE_FIELD = 'adct_pi_unparsed_date_acknowledged';
 
     /**
      * @param string $pluginFile the plugin's main file, so assets resolve and cache-bust
@@ -467,12 +483,25 @@ final class ReviewQueuePage
         <?php
     }
 
-    /** @param array<string, mixed> $row */
+    /**
+     * Whether the row offers an approval that will not be refused.
+     *
+     * This drives the button, so it must never say no for a reason the reviewer cannot act on. An
+     * unresolved date is a reason they *can* act on -- the date field is right there above the
+     * buttons, and typing the real date is the fix -- so the button is rendered and the note is
+     * turned into an acknowledgement instead. The checks that stay here are the ones about the
+     * candidate rather than about what the reviewer types.
+     *
+     * @param array<string, mixed> $row
+     */
     private function canApproveRow(array $row): bool
     {
         if ($this->policy->canDecide($row)) {
             try {
-                return $this->policy->canBulkApprove($row);
+                return $this->policy->canBulkApprove(
+                    $row,
+                    $this->hasAcknowledgedUnparsedDate($this->readEditForm($_POST), $row)
+                );
             } catch (DomainException) {
                 return false;
             }
@@ -485,6 +514,7 @@ final class ReviewQueuePage
         // rendering path can ask it without throwing — which makes `! false` here
         // read as "unblocked". That inverts the meaning: unreadable would become
         // approvable, and the row would get a bulk-approval checkbox.
+
         //
         // `fields()` stays strict, so this `DomainException` still means "we cannot
         // know what is in this row". Blocking is the only honest answer to that, and
@@ -497,6 +527,46 @@ final class ReviewQueuePage
             return false;
         }
         return ! $this->policy->requiresMatchResolution($row);
+    }
+
+    /**
+     * Whether the reviewer has answered #167's question: they have seen that the notice's date
+     * could not be read, and they mean it.
+     *
+     * The checkbox is the acknowledgement for a notice that cannot be corrected from the form. A
+     * date the reviewer has typed is its own acknowledgement, and does not also ask them to tick a
+     * box about a problem they have just fixed. A form that posted nothing -- a GET render, or a
+     * bulk action -- acknowledges nothing.
+     *
+     * @param array<string, mixed> $form
+     * @param array<string, mixed> $row
+     */
+    private function hasAcknowledgedUnparsedDate(array $form, array $row): bool
+    {
+        try {
+            if (! $this->policy->hasUnresolvedDate($row)) {
+                return false;
+            }
+
+            $date = trim((string) ($form['event_date'] ?? ''));
+
+            return ($date !== '' && $date !== $this->storedEventDate($row))
+                || isset($_POST[self::UNPARSED_DATE_FIELD]);
+        } catch (DomainException) {
+            return false;
+        }
+    }
+
+    /**
+     * The candidate's own event date as stored, or null when it has none.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function storedEventDate(array $row): ?string
+    {
+        $date = $this->policy->fields($row)['event_date'] ?? null;
+
+        return is_string($date) && $date !== '' ? $date : null;
     }
 
     /**
@@ -914,6 +984,12 @@ final class ReviewQueuePage
         if (! $this->canEdit($row)) {
             wp_die(esc_html('This candidate has already been decided.'), '', ['response' => 409]);
         }
+        // #167: read the posted form *before* the approval gate, not after it. The gate
+        // decides on the *stored* row, but the row is only fixed by the save below, so
+        // gating first would refuse the one approval that solves the problem: the
+        // reviewer who types the real date and approves in the same submission. The
+        // read is pure, so moving it earlier changes no other ordering.
+        $form = $this->readEditForm($_POST);
         if ($mode === 'approve' && ! $this->canApproveRow($row)) {
             wp_die(
                 esc_html('This candidate needs manual resolution before it can be approved.'),
@@ -922,14 +998,13 @@ final class ReviewQueuePage
             );
         }
 
-        $form = $this->readEditForm($_POST);
         $result = $this->validator()->validate(
             $this->safeFields($row),
             $this->storedRecurrence($row),
             $form
         );
         if ($result->hasErrors()) {
-                    // Re-render rather than redirect: the point is to show the reviewer
+            // Re-render rather than redirect: the point is to show the reviewer
             // their own values with the problems attached.
             $this->renderDetail(
                 array_merge($row, $this->fieldsFrom($result)),
@@ -1428,6 +1503,12 @@ final class ReviewQueuePage
             }
             if (preg_match('/\Apossible_missed_event_after_skipped_section:\s*(\d+)\z/D', $note, $matches) === 1) {
                 $warnings[] = 'Possible missed event after ' . (int) $matches[1] . ' skipped sections.';
+            } elseif (UnparsedDateTimeCandidate::describe($note) !== null) {
+                // #167: the queue row is a summary, but it must not be a summary that
+                // hides the reason a field is empty. Say it in words here too, so a
+                // reviewer who never opens the detail screen still learns that the
+                // notice carried a date the parser could not read.
+                $warnings[] = UnparsedDateTimeCandidate::describe($note);
             } elseif (str_starts_with($note, 'skipped_sections:')) {
                 $warnings[] = 'The parser skipped sections of this message.';
             }

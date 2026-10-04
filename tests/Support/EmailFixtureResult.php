@@ -17,9 +17,21 @@ final class EmailFixtureResult
 {
     public static function actual(array $expected, ParseOutcome $outcome): array
     {
-        $actual = array_merge($outcome->getPrimaryResult()->toArray(), $outcome->toArray());
+        $candidateLevel = $outcome->getPrimaryResult()->toArray();
+        $actual = array_merge($candidateLevel, $outcome->toArray());
 
-        if (! array_key_exists('existing_event', $expected)) {
+        // `notes` stays the outcome's list, which is what it has always meant here,
+        // and what the existing fixtures pin. The candidate carries its own notes --
+        // `unparsed_date_candidate: 32 October` and its siblings -- and merging the
+        // two arrays let the outcome's key win outright. When it was empty, which it
+        // is for any clean parse, a fixture saw no notes at all and could assert
+        // nothing about them: that is how an unreadable date was invisible to this
+        // corpus when #167 asked for it to be visible. Rather than fold two lists
+        // that genuinely mean different things into one, the candidate's notes are
+        // exposed under their own key.
+        $actual['candidate_notes'] = $candidateLevel['notes'];
+
+            if (! array_key_exists('existing_event', $expected)) {
             if (array_key_exists('match_kind', $expected) || array_key_exists('event_status', $expected)) {
                 throw new RuntimeException('Match and event status assertions require existing_event context.');
             }

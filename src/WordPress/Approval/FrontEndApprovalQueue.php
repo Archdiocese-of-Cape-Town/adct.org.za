@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Approval;
 
 use ADCT\ParishIntake\Core\Auth\Capabilities;
+use ADCT\ParishIntake\Core\Parsing\UnparsedDateTimeCandidate;
 use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
 use ADCT\ParishIntake\Core\Review\CandidateEditResult;
 use ADCT\ParishIntake\Core\Review\CandidateEditValidator;
 use ADCT\ParishIntake\Core\Review\CandidateFieldSet;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
+use ADCT\ParishIntake\WordPress\Admin\ReviewQueuePage;
 use ADCT\ParishIntake\WordPress\Database\Repository\ReviewQueueRepository;
 use DomainException;
 use Throwable;
@@ -181,28 +183,35 @@ final class FrontEndApprovalQueue
         if (! $this->canEdit($row)) {
             $this->forbid('This candidate has already been decided.', 409);
         }
+
+        // Read before the approval gate: #167's gate is answered by the date the dean is
+        // submitting, and a candidate whose date could not be read has none to submit.
+        $form = $this->readEditForm($_POST);
         if ($mode === 'approve' && ! $this->canApproveRow($row)) {
             $this->forbid('This candidate needs manual resolution before it can be approved.', 409);
         }
 
-        $form = $this->readEditForm($_POST);
         $result = $this->validator()->validate(
             $this->safeFields($row),
             $this->storedRecurrence($row),
             $form
         );
 
-                if ($result->hasErrors()) {
-                    // Re-render in place so the dean sees their own values with the
-                    // problems attached, rather than a cleared form. The row is passed
-                    // through untouched: the typed values travel on the result's
-                    // `inputs`, never by rewriting the row's JSON `fields` column.
-                    $this->renderCandidateEditor($row, $result);
+        if ($result->hasErrors()) {
+            // Re-render in place so the dean sees their own values with the
+            // problems attached, rather than a cleared form. The row is passed
+            // through untouched: the typed values travel on the result's
+            // `inputs`, never by rewriting the row's JSON `fields` column.
+            $this->renderCandidateEditor($row, $result);
 
-                    return;
-                }
+            return;
+        }
 
         $reason = substr(sanitize_textarea_field($this->text($_POST['reason'] ?? '')), 0, 500);
+
+        // #167: one answer, used for the gate above and for the decision below, because
+        // `decide()` re-reads the stored row and that row still carries the note.
+        $acknowledgedUnparsedDate = $this->hasAcknowledgedUnparsedDate($form, $row);
 
         try {
             $saved = $this->queue->updateFields(
@@ -218,21 +227,29 @@ final class FrontEndApprovalQueue
                 $this->forbid('This candidate was decided while you were editing it.', 409);
             }
             // An unchanged *text edit* is not an unchanged *decision*. `unchanged`
-                        // means the form matched what was already stored — which is exactly what
-                        // happens when a dean saves a correction, comes back, and presses "Save
-                        // and approve" with nothing further to change. Gating the decision on it
-                        // turned that into a silent no-op: `saved=unchanged`, no decision, no
-                        // publication, and no way for the dean to tell anything had failed. So
-                        // the decision is taken whenever the button asked for one, and `decide()`
-                        // re-resolves the live scope itself and answers `already_decided`,
-                        // `manual_review` or `retry` for a candidate that moved underneath us.
-                        $decision = null;
-                        if ($mode !== 'save') {
-                            $decision = $this->queue->decide($id, $mode, $userId, $email, $reviewer, $reason);
-                            if ($decision === 'decided' && $mode === 'approve') {
-                                $this->publisher->publish($id);
-                            }
-                        }
+            // means the form matched what was already stored — which is exactly what
+            // happens when a dean saves a correction, comes back, and presses "Save
+            // and approve" with nothing further to change. Gating the decision on it
+            // turned that into a silent no-op: `saved=unchanged`, no decision, no
+            // publication, and no way for the dean to tell anything had failed. So
+            // the decision is taken whenever the button asked for one, and `decide()`
+            // re-resolves the live scope itself and answers `already_decided`,
+            // `manual_review` or `retry` for a candidate that moved underneath us.
+            $decision = null;
+            if ($mode !== 'save') {
+                $decision = $this->queue->decide(
+                    $id,
+                    $mode,
+                    $userId,
+                    $email,
+                    $reviewer,
+                    $reason,
+                    $acknowledgedUnparsedDate
+                );
+                if ($decision === 'decided' && $mode === 'approve') {
+                    $this->publisher->publish($id);
+                }
+            }
         } catch (DomainException $failure) {
             $this->forbid($failure->getMessage(), 409);
         } catch (Throwable $failure) {
@@ -452,6 +469,21 @@ final class FrontEndApprovalQueue
                     . esc_html__('Manual resolution required before approval', 'adct-parish-intake')
                     . '</strong>';
             }
+            // #167: what the notice actually said, and that it could not be read.
+            // The row does not ask for an acknowledgement -- there is nowhere on a
+            // list of twenty to put one -- but it says plainly that a date was found
+            // and not understood, and points at the editor, which does ask. The
+            // warning is a distinct reason so it never reads as "there is no date
+            // in the notice", which is a different failure with a different fix.
+            foreach ($this->unparsedDateSentences($row) as $sentence) {
+                $html .= '<br /><span class="description">'
+                    . esc_html($sentence) . '</span>';
+            }
+            if ($this->policy->hasUnparsedDateTime($row) && $this->canEdit($row)) {
+                $html .= '<br /><span class="description">'
+                    . esc_html__('Open the candidate to correct it, or to confirm you have read this and approve it anyway.', 'adct-parish-intake')
+                    . '</span>';
+            }
             $html .= '</td>';
             $html .= '<td>' . esc_html($this->formatWhen((string) ($row['updated_at'] ?? ''))) . '</td>';
             $html .= '</tr>';
@@ -653,6 +685,30 @@ final class FrontEndApprovalQueue
             . esc_html__('Reason (only needed when rejecting)', 'adct-parish-intake')
             . '</label><br /><textarea id="adct_pi_reason" name="reason" rows="2" maxlength="500"></textarea></p>';
 
+        // #167: the dean's copy of the reviewer's warning, on the form where the date
+        // gets corrected. Every unresolved value is named, because an unreadable time
+        // is not an obstacle but it is still something nobody has read.
+        $unparsedDate = $this->unparsedDateSentence($row);
+        $unparsedSentences = $this->unparsedDateSentences($row);
+        if ($unparsedSentences !== []) {
+            echo '<div class="notice notice-warning">';
+            foreach ($unparsedSentences as $sentence) {
+                echo '<p>' . esc_html($sentence) . '</p>';
+            }
+            // Only the date is asked about. An unreadable time is corrected by asking
+            // the parish, which no approval can stand in for, so a checkbox about it
+            // would be a box that means nothing.
+            if ($unparsedDate !== null) {
+                echo '<p><label><input type="checkbox" name="'
+                    . esc_attr(ReviewQueuePage::UNPARSED_DATE_FIELD) . '" value="1" /> '
+                    . esc_html__('I have read this and am approving the event without a date the notice stated clearly.', 'adct-parish-intake')
+                    . '</label></p><p class="description">'
+                    . esc_html__('Or enter the correct date above and press Save and approve; that answers this as well.', 'adct-parish-intake')
+                    . '</p>';
+            }
+            echo '</div>';
+        }
+
         foreach ([
             'save' => __('Save changes', 'adct-parish-intake'),
             'approve' => __('Save and approve', 'adct-parish-intake'),
@@ -760,12 +816,23 @@ final class FrontEndApprovalQueue
             && empty($row['decided_at']);
     }
 
-    /** @param array<string, mixed> $row */
+    /**
+     * Whether the row offers an approval that will not be refused.
+     *
+     * Mirrors `ReviewQueuePage::canApproveRow()`: an unresolved date is not a reason to hide the
+     * button, because the date field is the fix and is right there on the form. The note becomes
+     * an acknowledgement instead.
+     *
+     * @param array<string, mixed> $row
+     */
     private function canApproveRow(array $row): bool
     {
         if ($this->policy->canDecide($row)) {
             try {
-                return $this->policy->canBulkApprove($row);
+                return $this->policy->canBulkApprove(
+                    $row,
+                    $this->hasAcknowledgedUnparsedDate($this->readEditForm($_POST), $row)
+                );
             } catch (DomainException) {
                 return false;
             }
@@ -790,6 +857,81 @@ final class FrontEndApprovalQueue
             return false;
         }
         return ! $this->policy->requiresMatchResolution($row);
+    }
+
+    /**
+     * Every sentence this candidate's notes want put in front of a human, in note order.
+     *
+     * Both reasons, not only the date. An unreadable time does not *block* approval,
+     * but it is still something a human has not seen, and the editor is the only
+     * place a dean will ever be told about it.
+     *
+     * @param array<string, mixed> $row
+     * @return list<string>
+     */
+    private function unparsedDateSentences(array $row): array
+    {
+        $notes = json_decode((string) ($row['notes'] ?? ''), true);
+        if (! is_array($notes)) {
+            return [];
+        }
+
+        $sentences = [];
+        foreach ($notes as $note) {
+            if (! is_string($note)) {
+                continue;
+            }
+            $sentence = UnparsedDateTimeCandidate::describe($note);
+            if ($sentence !== null) {
+                $sentences[] = $sentence;
+            }
+        }
+
+        return $sentences;
+    }
+
+    /**
+     * The sentence that says the notice's date could not be read, or null when it did.
+     *
+     * Only the date is returned here, because only the date is asked about: the
+     * acknowledgement on the editor form belongs to the one value that blocks.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function unparsedDateSentence(array $row): ?string
+    {
+        $notes = json_decode((string) ($row['notes'] ?? ''), true);
+        $unparsed = UnparsedDateTimeCandidate::fromNotes(is_array($notes) ? $notes : []);
+
+        return $unparsed->hasDate()
+            ? UnparsedDateTimeCandidate::describe(
+                UnparsedDateTimeCandidate::DATE_REASON . ':' . $unparsed->phrases()[0]
+            )
+            : null;
+    }
+
+    /**
+     * #167: whether this POST answers the question an unresolved date asks. See
+     * `ReviewQueuePage::hasAcknowledgedUnparsedDate()`; this is the dean's copy of it.
+     *
+     * @param array<string, mixed> $form
+     * @param array<string, mixed> $row
+     */
+    private function hasAcknowledgedUnparsedDate(array $form, array $row): bool
+    {
+        try {
+            if (! $this->policy->hasUnresolvedDate($row)) {
+                return false;
+            }
+
+            $date = trim((string) ($form['event_date'] ?? ''));
+            $stored = $this->policy->fields($row)['event_date'] ?? null;
+
+            return ($date !== '' && $date !== (is_string($stored) && $stored !== '' ? $stored : null))
+                || isset($_POST[ReviewQueuePage::UNPARSED_DATE_FIELD]);
+        } catch (DomainException) {
+            return false;
+        }
     }
 
     /**

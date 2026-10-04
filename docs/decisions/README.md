@@ -25,6 +25,7 @@ Short records of important decisions: what was decided, why, and what follows fr
 | [0019](0019-handwritten-ics-feed-renderer.md) | Handwritten ICS feed renderer, validated by a test-only library (ADR 0017 exception) | Proposed |
 | [0020](0020-opt-in-geolocation-near-me-sort.md) | Opt-in geolocation "Near me" sort with a suburb fallback | Accepted |
 | [0021](0021-opt-in-server-side-queue-ocr.md) | Opt-in server-side queue OCR for image posters, with unconditional fallback | Proposed |
+| [0022](0022-surface-unparsed-date-time-in-the-notes-column.md) | Surface unparsed date/time in the notes column, with no schema change | Proposed |
 
 Template:
 

@@ -204,7 +204,7 @@ Browser OCR writes nothing here (ADR 0018). tesseract.js runs in the reviewer's 
 | field_confidence | JSON: per-field evidence and scoring (see below) |
 | recurrence | JSON: normalized supported RRULE, human-readable source phrase, RRULE parts, and optional `ambiguous` / `anchor_inferred` flags |
 | confidence | 0–1 |
-| parser_version, strategies, notes | provenance |
+| parser_version, strategies, notes | provenance. `notes` is a JSON list of `reason:payload` diagnostics; `unparsed_date_candidate:<phrase>` and `unparsed_time_candidate:<phrase>` record a date or time that was found but could not be read, capped at 40 characters so no raw notice text is carried ([ADR 0022](decisions/0022-surface-unparsed-date-time-in-the-notes-column.md)) |
 | ai_used, ai_provider, ai_model | provenance; `fields.ai_fields_filled` lists only the accepted keys AI actually filled, never credentials |
 | match_event_id, match_kind | `new`, `update`, `duplicate`, `cancellation`, `postponement`; an unpublished duplicate has no event ID and records `fields.matched_candidate_id` instead; `fields.match_review_required` flags uncertain matches and prevents self-approval |
 | status | see state machine |

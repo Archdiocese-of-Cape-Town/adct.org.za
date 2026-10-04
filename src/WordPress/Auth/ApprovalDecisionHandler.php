@@ -13,6 +13,7 @@ use ADCT\ParishIntake\Core\Auth\ActionTokenStatus;
 use ADCT\ParishIntake\Core\Matching\MatchReviewPolicy;
 use ADCT\ParishIntake\Core\Mail\MailPriority;
 use ADCT\ParishIntake\Core\Mail\OutboundEmail;
+use ADCT\ParishIntake\Core\Parsing\UnparsedDateTimeCandidate;
 use ADCT\ParishIntake\Core\Ports\AtomicActionTokenHandlerInterface;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\MailerInterface;
@@ -85,6 +86,20 @@ final class ApprovalDecisionHandler implements AtomicActionTokenHandlerInterface
         }
         if (is_array($notes) && in_array('dmarc_fail', $notes, true)) {
             $details[] = 'Warning: reported DMARC failure. Verify the sender before approving.';
+        }
+        // #167: the approval link is a one-press route with no form on the way, so this is the
+        // last place the approver can be told that the notice's date could not be read before
+        // their press publishes the event. Rendered, never as the reason token.
+        foreach (is_array($notes) ? $notes : [] as $note) {
+            if (! is_string($note)) {
+                continue;
+            }
+
+            $unreadable = UnparsedDateTimeCandidate::describe($note);
+
+            if ($unreadable !== null) {
+                $details[] = 'Warning: ' . $unreadable;
+            }
         }
         $decided = $this->decision($row);
         return new ActionTokenPreview(
