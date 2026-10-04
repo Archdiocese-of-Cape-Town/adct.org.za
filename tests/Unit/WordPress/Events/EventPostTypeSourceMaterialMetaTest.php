@@ -3,10 +3,54 @@
 declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Events {
-    // EventPostType calls this unqualified, so it resolves in its own namespace.
-    function current_user_can(string $capability, mixed ...$args): bool
-    {
-        return (bool) ($GLOBALS['adct_test_capabilities'][$capability] ?? false);
+    /**
+     * EventPostType and EventSourceMaterialEditor call this unqualified, so it
+     * resolves in their own namespace.
+     *
+     * Two globals, on purpose, because they answer two different questions:
+     *
+     * - `adct_test_capabilities` is capability => bool. It states a verdict for
+     *   one capability, which is what a meta callback needs: `auth_callback` is
+     *   handed `edit_post` and nothing else, and there is no acting user to key
+     *   by.
+     * - `adct_test_wp_caps` is user id => string[], keyed per user by
+     *   WordPressCapabilityStubs so an entitlement can be granted to one
+     *   reviewer and withheld from another in the same test. This is the form a
+     *   route guard needs, because `current_user_can('edit_post', $eventId)`
+     *   resolves a meta-capability against the *acting* user's role.
+     *
+     * A direct hit on either wins; otherwise `edit_post` is answered the way
+     * WordPress answers it, from the acting user's own event-editing
+     * capabilities.
+     *
+     * This declaration is guarded because PHPUnit loads every test file into one
+     * process: an unguarded copy here wins on load order and silently starves
+     * the other tests of their own stubs.
+     */
+    if (! function_exists('ADCT\ParishIntake\WordPress\Events\current_user_can')) {
+        function current_user_can(string $capability, mixed ...$args): bool
+        {
+            if (array_key_exists($capability, $GLOBALS['adct_test_capabilities'] ?? [])) {
+                return (bool) $GLOBALS['adct_test_capabilities'][$capability];
+            }
+
+            $byUser = (array) ($GLOBALS['adct_test_wp_caps'] ?? []);
+            $actorId = (int) ($GLOBALS['adct_test_current_user_id'] ?? 0);
+            $held = (array) ($byUser[$actorId] ?? []);
+
+            if ($capability === 'edit_post') {
+                return array_intersect(
+                    [
+                        \ADCT\ParishIntake\Core\Auth\Capabilities::EDIT_EVENTS,
+                        \ADCT\ParishIntake\Core\Auth\Capabilities::EDIT_OTHERS_EVENTS,
+                        \ADCT\ParishIntake\Core\Auth\Capabilities::EDIT_PUBLISHED_EVENTS,
+                    ],
+                    $held
+                ) !== [];
+            }
+
+            return in_array($capability, $held, true);
+        }
     }
 }
 
