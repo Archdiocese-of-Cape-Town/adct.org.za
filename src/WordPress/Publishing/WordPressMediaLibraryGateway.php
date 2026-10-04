@@ -40,16 +40,22 @@ final class WordPressMediaLibraryGateway implements MediaLibraryGatewayInterface
             throw new RuntimeException('The promotion cannot name the file it is copying.');
         }
 
-        $result = wp_handle_sideload(
-            [
-                'name' => $name,
-                'tmp_name' => $source,
-                'size' => (int) ($file['size'] ?? 0),
-                'type' => (string) ($overrides['test_type'] ?? ''),
-                'error' => 0,
-            ],
-            $overrides
-        );
+        // `wp_handle_sideload()` declares its first parameter by reference
+                // (`&$file`), because it writes back the stored name it settled on. An
+                // array literal cannot be passed by reference, so this is a local
+                // variable and not an inline array: passing one is a fatal `Error`, not
+                // a warning. The stub in `tests/Support/WordPressMediaStubs.php`
+                // carries the same signature on purpose, because a by-value stub
+                // accepts the literal happily and the mistake becomes invisible.
+                $upload = [
+                    'name' => $name,
+                    'tmp_name' => $source,
+                    'size' => (int) ($file['size'] ?? 0),
+                    'type' => (string) ($overrides['test_type'] ?? ''),
+                    'error' => 0,
+                ];
+
+                $result = wp_handle_sideload($upload, $overrides);
 
         if (isset($result['error'])) {
             throw new RuntimeException('The media library refused the copy: ' . (string) $result['error']);

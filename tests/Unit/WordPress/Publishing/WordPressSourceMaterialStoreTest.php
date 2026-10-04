@@ -144,6 +144,49 @@ final class WordPressSourceMaterialStoreTest extends TestCase
         self::assertSame('image/jpeg', (string) ($post['post_mime_type'] ?? ''));
         }
 
+    /**
+     * The gateway hands `wp_handle_sideload()` an upload array.
+     *
+     * WordPress declares that parameter by reference, because it writes the
+     * settled name and path back into it, so an array *literal* at the call
+     * site is a fatal `Error: cannot be passed by reference` and not a warning.
+     * The stub in `WordPressMediaStubs.php` is declared the same way on
+     * purpose: while it took the array by value it accepted the literal
+     * happily, and 61 tests of this adapter stayed green while promotion could
+     * not work in a real WordPress at all. wp-env caught it; nothing else could.
+     */
+    public function testTheCopyIsSideloadedThroughAVariableSoWordPressCanWriteBackToIt(): void
+    {
+        $store = $this->store(attachments: [7 => $this->row(7, 'parish-poster.jpg', 'image/jpeg')]);
+
+        // The assertion is that this does not fatal, and that the promotion
+        // completes. `is_callable()` on the stub would prove nothing: what
+        // matters is the reference signature, which only a real call exercises.
+        $promoted = $store->promote(42, 7, SourceAttachment::ROLE_POSTER);
+
+        self::assertSame(901, $promoted->mediaId);
+        self::assertCount(1, (array) ($GLOBALS['adct_test_sideloads'] ?? []));
+        }
+
+    /**
+     * WordPress writes the name it settled on back into the array it was given.
+     * The gateway must therefore keep passing that same array along rather than
+     * rebuilding one from the parish's filename, which is the whole of ADR 0025's
+     * sanitisation rule.
+     */
+    public function testTheArrayHandedToWordPressCarriesTheGeneratedNameNotTheParishName(): void
+    {
+        $store = $this->store(attachments: [7 => $this->row(7, 'parish-poster.jpg', 'image/jpeg')]);
+
+        $store->promote(42, 7, SourceAttachment::ROLE_POSTER);
+
+        $handed = (array) (($GLOBALS['adct_test_sideloads'][0]['file'] ?? []));
+
+        self::assertArrayHasKey('name', $handed, 'WordPress reads the stored name from this key');
+        self::assertStringStartsWith('adct-source-42-7-', (string) $handed['name']);
+        self::assertStringNotContainsString('parish-poster', (string) $handed['name']);
+        }
+
     public function testTheStoredFileNameIsGeneratedAndCarriesNoPartOfTheParishName(): void
     {
         $store = $this->store(attachments: [7 => $this->row(7, 'parish-poster.jpg', 'image/jpeg')]);

@@ -70,10 +70,20 @@ namespace {
          * and derives the stored name from it (ADR 0025). That is exactly why
          * the gateway has to be handed a plugin-generated name, and exactly
          * why this stub records the array unchanged.
-         */
-        function wp_handle_sideload(array $file, array $overrides = [], string $time = null): array
-        {
-            $GLOBALS['adct_test_sideloads'][] = ['file' => $file, 'overrides' => $overrides];
+                 *
+                 * The first parameter is declared **by reference on purpose**, because
+                 * WordPress declares it that way: `_wp_handle_upload()` writes the
+                 * sanitised name and the resolved path back into `$file`. A by-value
+                 * stub silently accepts an array literal at the call site, which real
+                 * WordPress refuses with a fatal `Error: cannot be passed by
+                 * reference`. Only the real signature catches that class of mistake, so
+                 * this stub has to carry it.
+                 *
+                 * @param array $file
+                 */
+                function wp_handle_sideload(array &$file, $overrides = false, $time = null): array
+                {
+                    $GLOBALS['adct_test_sideloads'][] = ['file' => $file, 'overrides' => $overrides];
 
             $error = (string) ($GLOBALS['adct_test_sideload_error'] ?? '');
             if ($error !== '') {
@@ -95,12 +105,20 @@ namespace {
                 }
             }
 
-            return [
-                'file' => $stored,
-                'url' => 'https://adct.org.za/wp-content/uploads/' . $name,
-                'type' => (string) ($GLOBALS['adct_test_sideload_type'] ?? 'image/jpeg'),
-            ];
-        }
+            // WordPress writes the settled name and path back into `$file`, so
+                        // the stub does too. A test can then assert on what the caller was
+                        // left holding, which is the only place a stored name is visible.
+                        $file['name'] = $name;
+                        $file['file'] = $stored;
+                        $file['url'] = 'https://adct.org.za/wp-content/uploads/' . $name;
+                        $file['type'] = (string) ($GLOBALS['adct_test_sideload_type'] ?? 'image/jpeg');
+
+                        return [
+                            'file' => $stored,
+                            'url' => 'https://adct.org.za/wp-content/uploads/' . $name,
+                            'type' => (string) ($GLOBALS['adct_test_sideload_type'] ?? 'image/jpeg'),
+                        ];
+                    }
     }
 
     if (! function_exists('wp_check_filetype_and_ext')) {
