@@ -64,8 +64,13 @@ final class NotifyModeChangeHandler implements ActionTokenActionHandlerInterface
      * The binding's subject type. There is no single row this change is about:
      * the subject id is the WordPress user id, and every live assignment that
      * user holds is what the write touches.
-     */
-    public const SUBJECT_TYPE = 'approval_preference';
+          *
+          * Kept as a literal rather than taken from `AuditSubjectType`, because it is
+          * also the value an *unbound* incoming email may claim, and resolving it from
+          * the catalogue would suggest the two are interchangeable when only one of
+          * them is catalogued.
+          */
+         public const SUBJECT_TYPE = 'approval_preference';
 
     /** The two values the stored column accepts, and the only ones this link offers. */
     public const MODES = [
