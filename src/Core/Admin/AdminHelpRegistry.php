@@ -129,14 +129,14 @@ final class AdminHelpRegistry
                 . ' last ran, what is waiting, and what needs attention.',
             'anchor' => 'check-intake-health',
         ],
-                'adct-parish-intake_page_adct-parish-intake-audit-log' => [
-                    'capability' => Capabilities::VIEW_REPORTS,
-                    'title' => 'Audit log',
-                    'body' => 'Who approved, rejected, edited, reverted, assigned or published what, and when.'
-                        . ' Read-only: the trail is kept append-only and pruned by the retention cleanup, so if'
-                        . ' a row looks wrong the answer is in the other columns, not in removing it.',
-                    'anchor' => 'read-the-audit-log',
-                ],
+        'adct-parish-intake_page_adct-parish-intake-audit-log' => [
+            'capability' => Capabilities::VIEW_REPORTS,
+            'title' => 'Audit log',
+            'body' => 'Who approved, rejected, edited, reverted, assigned or published what, and when.'
+                . ' Read-only: the trail is kept append-only and pruned by the retention cleanup, so if'
+                . ' a row looks wrong the answer is in the other columns, not in removing it.',
+            'anchor' => 'read-the-audit-log',
+        ],
         'adct-parish-intake_page_adct-parish-intake-retention' => [
             'capability' => Capabilities::MANAGE_SETTINGS,
             'title' => 'Data retention',
@@ -148,8 +148,8 @@ final class AdminHelpRegistry
             'capability' => Capabilities::MANAGE_SETTINGS,
             'title' => 'Settings',
             'body' => 'Site-wide settings: the AI provider (off by default), how confident a parse has to'
-                            . ' be, which bulletin sections to skip, poster image OCR (also off by default, and it'
-                            . ' sends the image to a third party when it is on), and data retention.',
+                . ' be, which bulletin sections to skip, poster image OCR (also off by default, and it'
+                . ' sends the image to a third party when it is on), and data retention.',
             'anchor' => 'configure-parser-safeguards',
         ],
         'adct-parish-intake_page_adct-parish-intake-manual-parser' => [

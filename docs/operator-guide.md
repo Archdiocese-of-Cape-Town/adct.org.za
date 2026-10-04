@@ -101,7 +101,9 @@ here as a draft, and stays here until somebody decides about it.
 
 **Who sees it.** Reviewers open **Parish Intake → Review queue**. A dean who
 is not an archdiocese reviewer sees **Review queue** as its own top-level
-menu. Either way it is the same screen.
+menu. Either way it is the same screen. A deanery approver sees only
+candidates for parishes in their active deaneries, and the badge beside that
+menu counts all their awaiting-approval candidates, including flagged ones.
 
 **What to do with an item.** Open it and check four things against the notice
 the parish sent: the date, the start time, the place, and whether it is
@@ -122,12 +124,11 @@ disjoint priority categories (unknown sender takes precedence). **Failed**
 includes expired items, failed previews, unusual states and approvals still
 awaiting publication; **Awaiting submitter** includes unsent drafts and is
 read-only. **Recently published** and **Recent decisions** show only the past
-30 days. **Recent changes** stays empty until #71 implements verified-contact
-instant changes; ordinary approved updates are not shown as instant changes.
+30 days. **Recent changes** is empty for now: it will list verified-contact
+instant changes once #71 ships, and ordinary approved updates are never shown
+there as instant changes.
 
-**Problems.** Assigned deanery approvers can open the **Review queue** top-level menu; they see only candidates for parishes in their active deaneries. The menu badge counts all their awaiting-approval candidates, including flagged ones. Use the sender, parish or event-title search to narrow results; counts then reflect that search. **Awaiting approval** is a scoped all-items view, while **Unknown senders** and **Low confidence** are disjoint priority categories (unknown sender takes precedence). **Failed** includes expired items, failed previews, unusual states and approvals still awaiting publication; **Awaiting submitter** includes unsent drafts and is read-only. **Recently published** and **Recent decisions** show only the past 30 days. **Recent changes** stays empty until #71 implements verified-contact instant changes; ordinary approved updates are not shown as instant changes.
-
-Select up to 25 pending items to approve or reject. The first decision wins; subsequent attempts cannot overwrite it, and the row displays the deciding address and UTC time. If publishing fails after an approval is recorded, the item stays in the queue's **Failed** category, and the same approver can select it again to retry publication without another decision or audit record. Dean retries are matched to the active deanery assignment, even when its email differs from the WordPress account email. Fix invalid event details before retrying. Ambiguous matches and pending duplicates cannot be bulk-approved: they need manual match resolution in the future candidate editor (#61); an undecided item still in awaiting approval can instead be rejected. The candidate link opens a bounded read-only preview, not an editor.
+Select up to 25 pending items to approve or reject. The first decision wins; subsequent attempts cannot overwrite it, and the row displays the deciding address and UTC time. If publishing fails after an approval is recorded, the item stays in the queue's **Failed** category, and the same approver can select it again to retry publication without another decision or audit record. Dean retries are matched to the active deanery assignment, even when its email differs from the WordPress account email. Fix invalid event details before retrying. Ambiguous matches and pending duplicates cannot be bulk-approved: open the candidate and use the **Resolve this match** panel at the top of its page to set the parish and venue yourself (#177); an undecided item still in awaiting approval can instead be rejected. The candidate link opens a bounded read-only preview, not an editor.
 
 If a future parser supplies skipped-section notes, the queue shows only a generic warning and the count of potentially missed sections, never the skipped source text. Those notes will start flowing from #98; this screen does not invent missing parser findings.
 
@@ -212,9 +213,9 @@ A signed-out visitor sees only the sign-in form. There is no password and no acc
 
 Once signed in, a dean sees only the candidates, decisions and changes belonging to the parishes in their own active deaneries. A dean of another deanery sees none of them: the list query, the item lookup and the approve, reject, save and revert actions each re-resolve that scope at the moment of use, so removing a dean from a deanery, deactivating their assignment, deactivating the deanery or suspending the account takes effect immediately, including on a page they had already left open. An archdiocese reviewer with `adct_pi_review` sees every deanery as well.
 
-The queue offers the same actions as the admin Review queue: approve, reject, and correct title, date, time and description before publishing. Selecting up to 25 items approves or rejects them together. **Recent changes** lists changes to the dean's own events, and **Ask for the revert link** emails the same single-use revert link the admin screen offers rather than reverting immediately. Every action is re-checked on submit, and every request carries a nonce that is refused if it does not match.
+The queue offers the same actions as the admin Review queue: approve, reject, and correct title, date, time and description before publishing. Selecting up to 25 items approves or rejects them together. **Recent changes** lists changes to the dean's own events, and each row has an **Ask to revert** button rather than a revert link: pressing it never changes an event, and the page says it has asked for a confirmation email before reverting. Every action is re-checked on submit, and every request carries a nonce that is refused if it does not match.
 
-Sign-in sessions for these two roles last **365 days** so a dean is not asked for a link every week. This applies to Deanery approvers and Parish contacts only; Administrators and Editors keep the WordPress default. A technical operator can change it in `wp-config.php` with `ADCT_PI_AUTH_COOKIE_LIFETIME_DAYS`, an integer from 1 to 3650; if it is absent the default stands, and an invalid or absurd value is logged and safely ignored in favour of the default:
+Sign-in sessions for these two roles last **365 days** so a dean is not asked for a link every week. This applies to Deanery approvers and Parish contacts only; Administrators and Editors keep the WordPress default. A technical operator can change it in `wp-config.php` with `ADCT_PI_AUTH_COOKIE_LIFETIME_DAYS`, a whole number of days of 1 or more; if it is absent the default stands, and a value that is not a number, or fewer than 1 day, is written to the PHP error log and ignored in favour of the default. There is no upper limit in the code, so set a sensible figure yourself — a very large one leaves a signed-in dean signed in indefinitely:
 
 ```php
 define('ADCT_PI_AUTH_COOKIE_LIFETIME_DAYS', 365);
@@ -293,7 +294,7 @@ There is no admin setting for the cap yet. A technical operator can set `ADCT_PI
 define('ADCT_PI_MAIL_HOURLY_CAP', 100);
 ```
 
-Failed deliveries retry with exponential backoff and become terminally failed after five attempts. A thrown delivery exception or interrupted send with unknown outcome conservatively holds its cap reservation for 60 minutes before retrying; in the rare case that SMTP accepted it just before the process stopped, that retry may deliver a duplicate. The status API exposes pending count, oldest pending age, successful sends in the preceding hour and terminal failure count for the planned health dashboard, but there is not yet an operator queue screen.
+Failed deliveries retry with exponential backoff and become terminally failed after five attempts. A thrown delivery exception or interrupted send with unknown outcome conservatively holds its cap reservation for 60 minutes before retrying; in the rare case that SMTP accepted it just before the process stopped, that retry may deliver a duplicate. The status API exposes pending count, oldest pending age, successful sends in the preceding hour and terminal failure count for the health screen, and **Parish Intake → Outbound email** shows Test mode settings and the suppressed-mail log. There is no screen that lists the queue itself row by row, so a delivery that fails terminally has to be diagnosed from the audit log and the error log rather than by reading the queue.
 
 `group_key` is an idempotency key for one fully composed message to one recipient. Repeating the same key and payload does not create another row; changing content under the same recipient/key is an error, not a silent merge or drop. Compose a complete approver digest before enqueueing it, then use a recipient-specific key.
 

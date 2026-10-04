@@ -71,10 +71,10 @@ the normal way to fix a mistake.
 | The parish or venue is wrong | Press **Reject** with the correct parish or hall. |
 | The event is really Mass times or a collection list | Press **Reject**. This should be rare; telling the archdiocese helps them fix the settings. |
 | Two events look like the same one | Reject the duplicate with a note, and approve the better one. |
-| You approved something by mistake | Ask the website administrator to revert it. It cannot be undone from an email. |
+| You approved something by mistake | Tell the website administrator what you approved. An approval cannot be undone from an email, and nothing is sent to you to undo it with; the archdiocese makes the correction. |
 | You approved it but it is not on the events page | Ask the website administrator to look at **Parish Intake → Health**. The decision was recorded; publishing it separately may have failed. |
 | No email arrived at all | Check the spam folder, then check **Parish Intake → Review queue** in WordPress. |
-| You want one email a day instead of one per event | Switch **daily digest** to **each event**, or the other way round, on your WordPress profile page. |
+| You want one email a day instead of one per event | Press **Change how often we email you** at the top of an approver email. A reviewer can also switch between **As events arrive** and **Daily digest** on their WordPress profile page, and an administrator can set it for a dean on **Parish Intake → Deaneries**. |
 
 ## Digests instead of one email per event
 
@@ -83,8 +83,11 @@ waiting, not one email per event. Digests are sent in the morning, so an
 event that arrives at 14:00 is usually in that evening's digest rather than
 being mailed straight away.
 
-The choice is on your WordPress profile page. A deanery assignment can set the
-preference for the dean.
+An archdiocese reviewer sets this on their WordPress profile page, under **Event
+approval emails**. A dean changes it with **Change how often we email you** at the
+top of an approver email; the link is only offered when the address the mail went
+to belongs to exactly one active approver. An administrator can set it per deanery
+assignment on **Parish Intake → Deaneries**.
 
 ## How this is kept safe
 
