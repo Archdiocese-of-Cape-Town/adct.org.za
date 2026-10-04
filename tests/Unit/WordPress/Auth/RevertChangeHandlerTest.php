@@ -251,6 +251,14 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
         private const DEAN = 'dean@example.test';
         private const REVIEWER = 'reviewer@example.test';
 
+                /**
+                 * The parish contact who made the change being reverted. Deliberately a
+                 * third address, distinct from both the approvers and the published
+                 * event's own contact meta, so a test cannot pass by notifying the wrong
+                 * one of the three.
+                 */
+                private const CONTACT = 'office@example.test';
+
         private const DEAN_USER_ID = 101;
         private const REVIEWER_USER_ID = 202;
 
@@ -741,15 +749,109 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
             );
             self::assertContains(self::EVENT_ID, $GLOBALS['revert_cache_cleared']);
 
-            self::assertCount(1, $mailer->sent, 'A successful revert confirms what it did.');
+            $recipients = array_map(static fn ($email) => $email->recipient, $mailer->sent);
+
+                        self::assertCount(
+                            2,
+                            $mailer->sent,
+                            'A successful revert confirms to the presser and tells the contact.'
+                        );
+                        self::assertSame(
+                            [self::DEAN, self::CONTACT],
+                            $recipients,
+                            'Both messages are confirmation: nothing here re-mints an undo link.'
+                        );
+                        self::assertSame(self::DEAN, $mailer->sent[0]->recipient);
+                        self::assertSame(MailPriority::APPROVER_OR_CHANGE, $mailer->sent[0]->priority);
+                    }
+
+        /**
+         * The contact whose change was undone is the person who needs to know.
+         *
+         * They made the edit in good faith and the event is no longer what they
+         * wrote. ChangeNoticeJob deliberately does not mail `revert` rows — the
+         * approvers who press the button already hold that authority, so a link
+         * mailed back to them would be a second live credential for an undo that
+         * already happened. That leaves `afterCommit()` as the only place the
+         * pressed button is known, and therefore the only place the contact can
+         * be reached. If this mail is dropped, a parish silently loses its change
+         * and never finds out.
+         */
+        public function testTheContactWhoseChangeWasUndoneIsToldToo(): void
+        {
+            $database = $this->database();
+            $tokens = new ActionTokenService(new RevertTokenStore(), new RevertClock());
+            $binding = $this->binding();
+            $token = $tokens->issue($binding)->token();
+
+            $mailer = new RecordingMailer();
+
+            $this->handler([self::PARISH_ID], $database, null, $mailer)
+                ->performAtomic($binding, $token, $tokens, '');
+
+            $recipients = array_map(static fn ($email) => $email->recipient, $mailer->sent);
+
+            self::assertContains(
+                self::CONTACT,
+                $recipients,
+                'The contact who made the reverted change must learn that it was undone.'
+            );
+
+            $toContact = null;
+            foreach ($mailer->sent as $email) {
+                if ($email->recipient === self::CONTACT) {
+                    $toContact = $email;
+                }
+            }
+
+            self::assertNotNull($toContact);
+            self::assertStringContainsString(
+                'undone',
+                $toContact->textBody,
+                'The mail must say the outcome in words, not just that something happened.'
+            );
+            self::assertSame(
+                MailPriority::APPROVER_OR_CHANGE,
+                $toContact->priority,
+                'A change notice shares the approver/change queue, not the reminder one.'
+            );
+        }
+
+        /**
+         * A contact who is also the approver who pressed the button gets one
+         * message, not two. The two mails would say the same thing twice and
+         * cost two of the account's 500 emails an hour (ADR 0011).
+         */
+        public function testAContactWhoAlsoRevertedItIsToldOnceNotTwice(): void
+        {
+            $database = $this->database();
+                        // The change is recorded as made by the same address that reverts it.
+                        $database->setActor(self::CHANGE_ID, self::DEAN);
+            $tokens = new ActionTokenService(new RevertTokenStore(), new RevertClock());
+            $binding = $this->binding();
+            $token = $tokens->issue($binding)->token();
+
+            $mailer = new RecordingMailer();
+
+            $this->handler([self::PARISH_ID], $database, null, $mailer)
+                ->performAtomic($binding, $token, $tokens, '');
+
+            self::assertCount(
+                1,
+                $mailer->sent,
+                'One person, one message: the presser and the contact are the same address here.'
+            );
             self::assertSame(self::DEAN, $mailer->sent[0]->recipient);
-            self::assertSame(MailPriority::APPROVER_OR_CHANGE, $mailer->sent[0]->priority);
         }
 
         /**
          * A restore that half-applies would leave a published event in a state that
          * never existed, so it has to be one transaction with the token consumed
          * inside it.
+         *
+         * A failure mid-revert rolls back everything, so nothing may be mailed
+         * either: a message about a revert that did not happen is worse than
+         * silence, because the contact would re-send a change that is still live.
          */
         public function testAFailureMidRevertRollsBackEverything(): void
         {
@@ -761,16 +863,22 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
 
             $occurrences = new RecordingOccurrenceMaintenance();
             $occurrences->failOnRebuild = true;
+                        $mailer = new RecordingMailer();
 
-            try {
-                $this->handler([self::PARISH_ID], $database, $occurrences)
-                    ->performAtomic($binding, $token, $tokens, '');
-                self::fail('A failed occurrence rebuild must abort the revert.');
-            } catch (RuntimeException) {
-                // Expected: the rebuild blew up.
-            }
+                        try {
+                            $this->handler([self::PARISH_ID], $database, $occurrences, $mailer)
+                                ->performAtomic($binding, $token, $tokens, '');
+                            self::fail('A failed occurrence rebuild must abort the revert.');
+                        } catch (RuntimeException) {
+                            // Expected: the rebuild blew up.
+                        }
 
-            self::assertContains('ROLLBACK', $database->transactions);
+                        self::assertSame(
+                            [],
+                            $mailer->sent,
+                            'A revert that rolled back must mail nobody: the change is still live.'
+                        );
+                        self::assertContains('ROLLBACK', $database->transactions);
             self::assertNotContains('COMMIT', $database->transactions);
             // A rolled-back revert must not burn the token, so a retry stays
             // possible. commit() runs even though the revert failed: the
@@ -913,7 +1021,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
                 self::CHANGE_ID,
                 self::EVENT_ID,
                 300,
-                self::DEAN,
+                            self::CONTACT,
                 'update',
                 $before,
                 $after
@@ -1044,6 +1152,17 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
                 $this->changes[$id]['reverted_at'] = $at;
             }
         }
+
+                /**
+                 * Re-attributes the seeded change, so a test can make the contact and the
+                 * presser the same address without restating the snapshots.
+                 */
+                public function setActor(int $id, string $actor): void
+                {
+                    if (isset($this->changes[$id])) {
+                        $this->changes[$id]['actor'] = $actor;
+                    }
+                }
 
         /**
          * A change published after the one under revert, so the event's live state

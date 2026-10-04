@@ -386,9 +386,10 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
             );
         }
 
-        // Only the person who pressed the button is told, and only once: the
-        // contact that made the change is reached through the change notice job.
-        $this->mailer->enqueue(new OutboundEmail(
+        // The person who pressed the button is told what they just did. They hold the
+                // authority, so nobody else needs an audit message about it; the contact
+                // whose change was undone is told separately, below.
+                $this->mailer->enqueue(new OutboundEmail(
             $binding->email,
             'Your change was reverted',
             '<p>The change you reverted on event ' . $eventId . ' has been undone.</p>',
@@ -396,7 +397,54 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
             MailPriority::APPROVER_OR_CHANGE,
             'change-reverted:' . $binding->subjectId
         ));
-    }
+
+                $this->tellTheContact($eventId, $binding, $row);
+            }
+
+            /**
+             * The contact who wrote the change, told that it has been undone.
+             *
+             * They made the edit in good faith and the event is no longer what they
+             * wrote, so they are the person who most needs to hear it. They are not the
+             * one pressing the button, and ChangeNoticeJob will not reach them either:
+             * it skips `revert` rows on purpose, because a notice that mails a live
+             * one-click revert link is a second live credential for an undo that has
+             * already happened. So this is the only point at which a revert is known to
+             * have happened and the contact's address is known.
+             *
+             * Suppressed when the contact is the presser — the mail above already says
+             * it, and the account is limited to 500 emails an hour for the whole site
+             * (ADR 0011). Also skipped when the change has no recorded actor, which a
+             * contact-published change always has, but which a hand-written row need
+             * not.
+             *
+             * @param array<string, mixed> $row
+             */
+            private function tellTheContact(int $eventId, ActionTokenBinding $binding, array $row): void
+            {
+                $actor = $row['actor'] ?? null;
+
+                if (! is_string($actor)) {
+                    return;
+                }
+
+                $actor = trim($actor);
+
+                if ($actor === '' || strcasecmp($actor, $binding->email) === 0) {
+                    return;
+                }
+
+                $this->mailer->enqueue(new OutboundEmail(
+                    $actor,
+                    'Your change to an event was undone',
+                    '<p>A change you made to event ' . $eventId . ' on the Archdiocese website has been'
+                        . ' undone. The event now shows the details it had before your change.</p>',
+                    "A change you made to event {$eventId} on the Archdiocese website has been undone.\n"
+                        . "The event now shows the details it had before your change.",
+                    MailPriority::APPROVER_OR_CHANGE,
+                    'change-undone-for-contact:' . $binding->subjectId
+                ));
+            }
 
     /**
      * The live relationship, uncached. Returns the role this recipient holds now
