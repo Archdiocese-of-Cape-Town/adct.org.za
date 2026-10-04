@@ -54,6 +54,87 @@ final class ReviewQueuePolicyTest extends TestCase
     }
 
     /**
+     * Issue #177: the detail screen re-renders a candidate whose `fields` are corrupt
+     * when a save is rejected, and that re-render used to fatal, taking the whole page
+     * down with it.
+     *
+     * So `requiresMatchResolution()` answers rather than throwing, unlike `fields()`
+     * and unlike `canBulkApprove()` -- which still throws, and must: an approver has no
+     * business proceeding on a row it cannot read, whereas a screen that is only
+     * displaying the row has no licence to die on it.
+     *
+     * The two answers are therefore deliberately not interchangeable. A `false` here is
+     * not a clean bill of health;
+     * {@see testRequiresMatchResolutionStillReportsAFlaggedRowWithUnreadableDetails()}
+     * pins the half of that which could plausibly go wrong.
+     *
+     * @param mixed $fields
+     * @dataProvider corruptFieldRows
+     */
+    public function testRequiresMatchResolutionAnswersInsteadOfThrowingOnUnreadableDetails($fields): void
+    {
+        $policy = new ReviewQueuePolicy();
+
+        self::assertFalse($policy->requiresMatchResolution([
+            'status' => 'awaiting_approval', 'match_kind' => 'new', 'fields' => $fields,
+        ]));
+    }
+
+    /**
+     * @return array<string, array{0: mixed}>
+     */
+    public static function corruptFieldRows(): array
+    {
+        return [
+            'not json at all' => ['{bad'],
+            'json but not an object' => ['[1,2,3]'],
+            'a bare scalar' => ['"a string"'],
+            'absent' => [null],
+            'not a string' => [42],
+        ];
+    }
+
+    /**
+     * The other half of "unreadable is not clean": the flag columns are ordinary
+     * columns, so they still speak even when `fields` cannot be decoded.
+     *
+     * Refusing to answer here would be the worse lie -- it would tell a reviewer the
+     * row is unambiguous when its own columns say otherwise. And the resolve route
+     * cannot help this row anyway: resolving rewrites `fields`, which would destroy the
+     * event we just failed to read. So the screen withholds the control and says why;
+     * it does not pretend the ambiguity is not there.
+     */
+    public function testRequiresMatchResolutionStillReportsAFlaggedRowWithUnreadableDetails(): void
+    {
+        $policy = new ReviewQueuePolicy();
+
+        self::assertTrue(
+            $policy->requiresMatchResolution([
+                'status' => 'awaiting_approval', 'match_kind' => 'new', 'fields' => '{bad',
+                'match_review_required' => 1,
+            ]),
+            'A row whose column says it is flagged is still flagged, even when its details cannot be read.'
+        );
+
+        self::assertTrue(
+            $policy->requiresMatchResolution([
+                'status' => 'duplicate', 'match_kind' => 'new', 'fields' => '{bad',
+                'matched_candidate_id' => 4,
+            ]),
+            'The same holds for a matched id recorded in the column.'
+        );
+
+        // And the fix must not disable the panel for genuinely readable rows.
+        self::assertTrue(
+            $policy->requiresMatchResolution([
+                'status' => 'awaiting_approval', 'match_kind' => 'new',
+                'fields' => '{"title":"Fictional event","match_review_required":true}',
+            ]),
+            'A valid but ambiguous candidate must still report that it needs resolving.'
+        );
+    }
+
+    /**
      * Issue #177: resolving a match from the detail screen is only worth
      * anything if the candidate can be approved afterwards.
      *

@@ -488,6 +488,36 @@ final class ReviewQueuePage
     }
 
     /**
+     * Whether this candidate's stored `fields` can no longer be decoded.
+     *
+     * A rendering path must not throw on data it merely displays, so this screen
+     * never lets the policy's strict `fields()` decide anything. But swallowing
+     * the throw and calling the row "fine" would be its own lie, so the condition
+     * is detected here, once, and named.
+     *
+     * What an unreadable row then gets is decided, not accidental:
+     *
+     * - No resolve control. A correct resolve *rewrites* `fields`, so offering the
+     *   form would overwrite the very event we failed to parse.
+     * - No approval. {@see canApproveRow()} already refuses it, on its own
+     *   `fields()`, and the reviewer is told why.
+     * - A visible notice, because a row that silently offers nothing looks like a
+     *   row that simply has no match problem.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function detailsAreUnreadable(array $row): bool
+    {
+        try {
+            $this->policy->fields($row);
+
+            return false;
+        } catch (DomainException) {
+            return true;
+        }
+    }
+
+    /**
      * The per-field evidence behind the event score, as a read-only table.
      *
      * This is what a reviewer needs in order to judge the notice: not just "72%" but *which*
@@ -656,7 +686,15 @@ final class ReviewQueuePage
         // to also offer the control that clears it. Deliberately driven by the
         // same policy the publisher and the decide path trust, so a candidate is
         // never shown a resolve button that would then be refused.
-        $needsResolution = $editable && $this->policy->requiresMatchResolution($row);
+        //
+        // `requiresMatchResolution()` reads `fields` and used to throw on JSON that
+        // is not an object. That is right for the decide and publish routes, which
+        // must refuse a candidate they cannot understand; it is fatal here, because
+        // a screen that only displays a row has no licence to die on it — the
+        // re-render path after a rejected save reaches exactly such a candidate.
+        // The policy now answers either way, and this screen names the difference.
+        $unreadable = $this->detailsAreUnreadable($row);
+        $needsResolution = ! $unreadable && $editable && $this->policy->requiresMatchResolution($row);
 
         $view = new CandidateDetailView();
         $view->render(
@@ -673,7 +711,8 @@ final class ReviewQueuePage
             $this->renderFieldConfidence(...),
             $this->posterPanel($poster),
             $editable && $messageId > 0,
-            $needsResolution
+            $needsResolution,
+            $unreadable
         );
         $view->renderAuditTrail($this->queue->history($id));
     }

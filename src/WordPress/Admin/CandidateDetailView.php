@@ -38,6 +38,11 @@ final class CandidateDetailView
      *        match as ambiguous, so the reviewer is offered the control that clears
      *        it (issue #177). Decided by the page from the same policy the publisher
      *        trusts, never from the rendered markup.
+     * @param bool $detailsUnreadable whether this candidate's stored `fields` cannot be
+     *        decoded. The screen still renders — it must, or a row nobody can parse becomes
+     *        a row nobody can reach — but it is told plainly, because a screen that quietly
+     *        offers no match control and no approval looks exactly like a screen with
+     *        nothing wrong (issue #177).
      */
     public function render(
         array $row,
@@ -53,7 +58,8 @@ final class CandidateDetailView
         ?callable $renderFieldConfidence = null,
         string $posterPanel = '',
         bool $canStartManual = false,
-        bool $needsMatchResolution = false
+        bool $needsMatchResolution = false,
+        bool $detailsUnreadable = false
     ): void {
         $id = (int) $row['id'];
         $fields = CandidateFieldSet::decodeFields($row['fields'] ?? null);
@@ -70,6 +76,7 @@ final class CandidateDetailView
                 <a href="<?php echo esc_url(ReviewQueuePage::queueUrl($tab, $search)); ?>">Back to review queue</a>
             </p>
             <?php $this->renderAttemptNotice($attempt, $id); ?>
+            <?php $this->renderUnreadableNotice($id, $detailsUnreadable); ?>
             <?php $this->renderMatchResolution($row, $fields, $parishes, $id, $tab, $search, $needsMatchResolution); ?>
             <div class="adct-pi-detail-columns">
                 <div class="adct-pi-detail-main">
@@ -317,6 +324,33 @@ final class CandidateDetailView
             </tbody>
         </table>
         <?php
+    }
+
+    /**
+     * Says plainly that this row's stored details cannot be read, and what that costs
+     * the reviewer (issue #177).
+     *
+     * A resolve writes fresh details over the ones we just failed to read, so this row
+     * is offered no resolve control — but saying nothing about that would read as
+     * "nothing to fix here", which is the opposite of the truth.
+     */
+    private function renderUnreadableNotice(int $id, bool $detailsUnreadable): void
+    {
+        if (! $detailsUnreadable) {
+            return;
+        }
+
+        printf(
+            '<div class="notice notice-error inline"><p>%s</p></div>',
+            esc_html(
+                sprintf(
+                    'The stored event details for candidate #%d could not be read, so this notice cannot be matched,'
+                    . ' edited or approved here. The source email below is intact — an archdiocese reviewer needs'
+                    . ' to repair the stored details by hand.',
+                    $id
+                )
+            )
+        );
     }
 
     private function renderAttemptNotice(?CandidateEditResult $attempt, int $id): void

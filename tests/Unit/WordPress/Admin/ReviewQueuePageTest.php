@@ -964,6 +964,82 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
         }
 
         /**
+         * Issue #177 follow-up: a candidate whose `fields` JSON cannot be parsed must
+         * still *render*. The detail screen only displays what it is given, so it has
+         * no business throwing on bad stored data -- and once the resolve control was
+         * added there was a path from `renderDetail()` into
+         * `ReviewQueuePolicy::fields()`, which throws on anything that is not a JSON
+         * object. That fatal took out the whole screen on the re-render after a
+         * rejected save.
+         *
+         * `canApproveRow()` already caught `DomainException` for exactly this reason.
+         * The panel has to follow the same rule rather than invent a second one.
+         */
+        public function testACandidateWhoseDetailsCannotBeParsedStillRendersItsScreen(): void
+        {
+            $database = new ManualEntryDatabase();
+            $database->sourceFields = '{bad';
+            $_GET = ['candidate' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE];
+
+            ob_start();
+            try {
+                $this->page($database)->renderPage();
+            } finally {
+                $rendered = (string) ob_get_clean();
+            }
+
+            self::assertNotSame(
+                '',
+                trim($rendered),
+                'The screen rendered something rather than dying before output.'
+            );
+            self::assertStringNotContainsString(
+                ReviewQueuePage::RESOLVE_MATCH_ACTION,
+                $rendered,
+                'A candidate whose details cannot be parsed is not offered the resolve control. '
+                . 'The route would rewrite fields we cannot read, so offering it would be a lie.'
+            );
+            self::assertStringContainsString(
+                'could not be read',
+                $rendered,
+                'And the screen says why it is offering neither control. A page that silently withholds '
+                . 'them looks exactly like a page where there was nothing to resolve.'
+            );
+        }
+
+        /**
+         * The decision that follows from the one above: details we cannot read cannot
+         * be shown, saved or published either. `canApproveRow()` already refused it, and
+         * this pins that the widening of `canDecide()` to `duplicate` did not quietly
+         * undo that.
+         */
+        public function testACandidateWhoseDetailsCannotBeParsedIsNotOfferedForApproval(): void
+        {
+            $database = new ManualEntryDatabase();
+            $database->sourceFields = '{bad';
+            $_GET = ['candidate' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE];
+
+            ob_start();
+            try {
+                $this->page($database)->renderPage();
+            } finally {
+                $rendered = (string) ob_get_clean();
+            }
+
+            self::assertStringContainsString(
+                'Save changes',
+                $rendered,
+                'This is an editable, undecided candidate, so the editor is on screen.'
+            );
+            self::assertStringNotContainsString(
+                'Save and approve',
+                $rendered,
+                'A candidate whose details cannot be parsed is not approvable. `canApproveRow()` '
+                . 'refuses it, and widening `canDecide()` to `duplicate` must not have undone that.'
+            );
+        }
+
+        /**
          * A candidate served as a valid, ambiguous one, with the chosen parish
          * existing so the resolution reaches its update rather than a validation.
          */
@@ -1316,6 +1392,21 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                 'fields' => $this->sourceFields,
                 'notes' => '[]',
                 'block_index' => '0',
+
+                // Every column the queue's own `SELECT` returns. The provenance card
+                // reads these without a `??` default, and a real query hands it all of
+                // them, so a partial row here would manufacture warnings that production
+                // never has.
+                'parser_version' => '1.0.0',
+                'confidence' => '0.82',
+                'ai_used' => '0',
+                'ai_model' => null,
+                'match_kind' => 'new',
+                'match_event_id' => null,
+                'sender_email' => '',
+                'parish_name' => '',
+                'updated_at' => '2026-03-01 08:00:00',
+                'decided_by' => null,
             ];
         }
 
