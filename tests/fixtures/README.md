@@ -69,6 +69,13 @@ a fixture asserts the fields that matter to the behaviour it protects. List leng
 | `directory_snapshot` | Path to a directory JSON in `tests/fixtures/` |
 | `existing_event` | Fictional published event (`id`, `parish_id`, `fields`) that enables `match_kind` / `event_status` |
 | `known_failures` | Maps an output path (or its parent) to an open issue, e.g. `"event_date": "#132"` |
+| `notes` | The **outcome's** notes: what the pipeline decided as a whole ("Skipped 1 obvious non-event block(s).") |
+| `candidate_notes` | The **primary candidate's** notes: what the extractor found (`unparsed_date_candidate:32 October`, confidence scoring, normalisation) |
+
+`notes` and `candidate_notes` are separate because the two lists mean different things and the
+outcome's is empty for any clean parse. They used to be collapsed into the single key `notes`, where the
+outcome's list won the merge — so a fixture could never assert a note about the candidate at all, and an
+unreadable date was invisible to this corpus (#167).
 
 `known_failures` is the reason a known parser bug can be *reported* rather than hidden. A mismatch
 covered by it marks the test **incomplete** and links the tracking issue; an untracked mismatch
@@ -113,6 +120,7 @@ reduced, anonymised form — record nothing beyond the generic class of input na
 | Relative and unusual date phrases | `relative-date`, `relative-date-coming-weekday`, `relative-date-end-of-month`, `relative-date-first-of-month` |
 | Dotted and hyphenated time ranges | `time-range-dotted-am`, `time-range-dotted-bare`, `time-range-bare-hyphen` |
 | Date/time formats parishes actually write | `real-format-dotted-date`, `real-format-ordinal-and-bare-time`, `real-format-after-mass-time` |
+| Date or time written but not readable | `unreadable-date-and-no-time`, `unreadable-time-worded-clock` |
 | Administrative / non-event mail | `admin-notice` |
 
 A real example whose layout the synthetic route cannot reproduce faithfully — a specific column quirk, a

@@ -6,6 +6,7 @@ namespace ADCT\ParishIntake\Core\Mail;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use ADCT\ParishIntake\Core\Parsing\UnparsedDateTimeCandidate;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use InvalidArgumentException;
 
@@ -198,8 +199,8 @@ final class ConfirmationEmailRenderer
     private function candidateCard(ConfirmationEmailCandidate $candidate): array
     {
         $fields = $candidate->fields;
-                $fieldScores = $candidate->fieldScores();
-                $notes = implode(' ', $candidate->notes);
+        $fieldScores = $candidate->fieldScores();
+        $notes = implode(' ', $candidate->notes);
         $lowConfidence = $candidate->confidence < $this->lowConfidenceThreshold();
         $title = $this->displayValue($fields['title'] ?? null, 512);
         $allDay = ($fields['all_day'] ?? false) === true
@@ -225,17 +226,23 @@ final class ConfirmationEmailRenderer
         $eventType = $this->displayValue($fields['event_type'] ?? null, 512);
         $contact = $this->displayValue($fields['contact'] ?? null, 1000);
         $recurrence = $this->recurrenceLabel($candidate->recurrence);
+        // #167: the submitter is the only person who can fix the source text, so an unreadable date
+        // or time is put in front of them as a sentence about the notice rather than as a reason
+        // string, and it marks the row it belongs to as unsure so they know which value is missing.
+        $unparsed = UnparsedDateTimeCandidate::fromNotes($candidate->notes);
         $reviewNotes = $candidate->notes === []
             ? 'No extraction notes.'
-            : $this->displayValue(implode(' ', $candidate->notes), 2000);
+            : $this->displayValue($this->readableNotes($candidate->notes), 2000);
         $dateUncertain = $date === 'Not identified'
-                    || $this->fieldWeak($fieldScores, 'event_date')
-                    || $this->containsAny($notes, ['weekday does not match', 'ambiguous', 'verify the date'])
-                    || (bool) ($candidate->recurrence['anchor_inferred'] ?? false);
-                $timeUncertain = (! $allDay && $time === 'Not identified')
-                    || $this->fieldWeak($fieldScores, 'event_time')
-                    || $this->containsAny($notes, ['end time', 'verify the time']);
-                $locationUncertain = $locationParts === [] || $this->fieldWeak($fieldScores, 'venue');
+            || $this->fieldWeak($fieldScores, 'event_date')
+            || $unparsed->hasDate()
+            || $this->containsAny($notes, ['weekday does not match', 'ambiguous', 'verify the date'])
+            || (bool) ($candidate->recurrence['anchor_inferred'] ?? false);
+        $timeUncertain = (! $allDay && $time === 'Not identified')
+            || $this->fieldWeak($fieldScores, 'event_time')
+            || $unparsed->hasTime()
+            || $this->containsAny($notes, ['end time', 'verify the time']);
+        $locationUncertain = $locationParts === [] || $this->fieldWeak($fieldScores, 'venue');
                 $parishUncertain = $parish === 'Not identified' || $this->fieldWeak($fieldScores, 'parish_name');
                 $descriptionUncertain = $description === 'Not identified'
                     || $this->fieldWeak($fieldScores, 'description');
@@ -260,18 +267,18 @@ final class ConfirmationEmailRenderer
         $recurrenceFabricated = $this->fieldFabricated($fieldScores, 'recurrence');
 
         if ($lowConfidence && $fieldScores === []) {
-                    // Only when no per-field evidence exists. Once the parser reports a score per field,
-                    // a weak overall score should not blank out fields the parser did support, or the
-                    // submitter is asked to re-check detail that is in fact the best-evidenced part.
-                    $dateUncertain = true;
-                    $timeUncertain = true;
-                    $locationUncertain = true;
-                    $parishUncertain = true;
-                    $descriptionUncertain = true;
-                    $eventTypeUncertain = true;
-                    $contactUncertain = true;
-                    $recurrenceUncertain = $recurrenceUncertain || $candidate->recurrence !== [];
-                }
+            // Only when no per-field evidence exists. Once the parser reports a score per field,
+            // a weak overall score should not blank out fields the parser did support, or the
+            // submitter is asked to re-check detail that is in fact the best-evidenced part.
+            $dateUncertain = true;
+            $timeUncertain = true;
+            $locationUncertain = true;
+            $parishUncertain = true;
+            $descriptionUncertain = true;
+            $eventTypeUncertain = true;
+            $contactUncertain = true;
+            $recurrenceUncertain = $recurrenceUncertain || $candidate->recurrence !== [];
+        }
 
         return [
             'title' => $title === 'Not identified' ? 'Title not identified — please check' : $title,
@@ -479,6 +486,31 @@ final class ConfirmationEmailRenderer
         }
 
         return false;
+    }
+
+    /**
+     * The notes as sentences a parish secretary will act on.
+     *
+     * #167: a reason token like `unparsed_date_candidate:32 October` is written for code, not for the
+     * person who sent the notice, and it is the only thing standing between them and a notice that
+     * reaches the events page with no date. Notes this renderer has no sentence for are left exactly
+     * as they were, so nothing else about this mail changes.
+     *
+     * @param list<mixed> $notes
+     */
+    private function readableNotes(array $notes): string
+    {
+        $parts = [];
+
+        foreach ($notes as $note) {
+            if (! is_string($note)) {
+                continue;
+            }
+
+            $parts[] = UnparsedDateTimeCandidate::describe($note) ?? $note;
+        }
+
+        return implode(' ', $parts);
     }
 
     /**

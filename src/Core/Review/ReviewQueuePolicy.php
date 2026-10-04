@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Core\Review;
 
+use ADCT\ParishIntake\Core\Parsing\UnparsedDateTimeCandidate;
 use DomainException;
 
 final class ReviewQueuePolicy
@@ -24,8 +25,25 @@ final class ReviewQueuePolicy
             && empty($candidate['decided_at']);
     }
 
-    /** @param array<string, mixed> $candidate */
-    public function canBulkApprove(array $candidate): bool
+    /**
+     * Whether a candidate may be approved in one action with no further thought.
+     *
+     * An unresolved date is a blocker, and a different one from the match checks above. A
+     * candidate whose date was found and could not be read has no date at all, and approving it
+     * publishes an event with no date -- the outcome #167 exists to stop. But it is not a dead
+     * end: $acknowledgedUnparsedDate is set when the approver is looking at the warning and
+     * confirming they have seen it, so a notice that cannot be read is approved deliberately
+     * rather than published by oversight. An unreadable time does not block, because the publisher
+     * makes the event all-day instead, which is recoverable and may be what the parish meant.
+     *
+     * The acknowledgement covers the attempt, not the candidate. The note outlives an edit,
+     * because saving a corrected date updates `fields` and leaves `notes` alone, so it is raised
+     * again on every later approval rather than being cleared once.
+     *
+     * @param array<string, mixed> $candidate
+     * @param bool $acknowledgedUnparsedDate
+     */
+    public function canBulkApprove(array $candidate, bool $acknowledgedUnparsedDate = false): bool
     {
         if (! $this->canDecide($candidate)) {
             return false;
@@ -37,6 +55,10 @@ final class ReviewQueuePolicy
             return false;
         }
 
+        if (! $acknowledgedUnparsedDate && $this->hasUnresolvedDate($candidate)) {
+            return false;
+        }
+
         $kind = $candidate['match_kind'] ?? null;
         $eventId = (int) ($candidate['match_event_id'] ?? 0);
         return $kind === 'new'
@@ -45,6 +67,38 @@ final class ReviewQueuePolicy
     }
 
     /**
+     * Whether the notice carried a date that could not be read.
+     *
+     * Read from the note rather than from a column, so the check always describes the parse that
+     * actually happened and cannot drift away from it. The stored notes column is JSON, but a row
+     * that has never been through the parser can hold anything at all, so malformed JSON is
+     * treated as "nothing recorded" rather than as an error: an unreadable notes blob must not
+     * make a candidate unapprovable.
+     *
+     * @param array<string, mixed> $candidate
+     */
+    public function hasUnresolvedDate(array $candidate): bool
+    {
+        $notes = json_decode((string) ($candidate['notes'] ?? '[]'), true);
+
+        return is_array($notes) && UnparsedDateTimeCandidate::fromNotes($notes)->isUnresolved();
+    }
+
+    /**
+     * Whether the notice carried a date or time that could not be read: the condition the review
+     * screens put in front of an approver, as distinct from the one that blocks.
+     *
+     * @param array<string, mixed> $candidate
+     */
+    public function hasUnparsedDateTime(array $candidate): bool
+    {
+        $notes = json_decode((string) ($candidate['notes'] ?? '[]'), true);
+        $unparsed = UnparsedDateTimeCandidate::fromNotes(is_array($notes) ? $notes : []);
+
+        return $unparsed->hasDate() || $unparsed->hasTime();
+    }
+
+        /**
      * Whether this candidate is blocked until somebody resolves its match.
      *
      * Answers without throwing, which is the whole point of it being a separate

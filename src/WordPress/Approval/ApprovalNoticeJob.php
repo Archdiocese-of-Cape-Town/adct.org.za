@@ -17,6 +17,7 @@ use ADCT\ParishIntake\Core\Matching\MatchReviewPolicy;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\MailerInterface;
 use ADCT\ParishIntake\Core\Ports\MailQueueRepositoryInterface;
+use ADCT\ParishIntake\Core\Parsing\UnparsedDateTimeCandidate;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
 use ADCT\ParishIntake\WordPress\Auth\NotifyModeChangeHandler;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
@@ -191,6 +192,21 @@ final class ApprovalNoticeJob extends AbstractJob implements JobRunLifecycleInte
                     ? 'WARNING: Unknown sender. Verify the parish before approving.' : '';
                 if (is_array($notes) && in_array('dmarc_fail', $notes, true)) {
                     $warning .= ' WARNING: Reported DMARC failure.';
+                }
+                // #167: the notice email carries the one-press approve link, so a date that could
+                // not be read has to be said here rather than discovered on the events page.
+                // Rendered as a sentence, never as the reason token. It warns rather than blocks:
+                // the approver pressed one button and cannot be asked for a second one.
+                foreach (is_array($notes) ? $notes : [] as $note) {
+                    if (! is_string($note)) {
+                        continue;
+                    }
+
+                    $unreadable = UnparsedDateTimeCandidate::describe($note);
+
+                    if ($unreadable !== null) {
+                        $warning .= ' WARNING: ' . $unreadable;
+                    }
                 }
                 $preview = [];
                 if (is_string($notice['parish_name'] ?? null) && $notice['parish_name'] !== '') {

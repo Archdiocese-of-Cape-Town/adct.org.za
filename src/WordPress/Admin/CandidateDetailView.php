@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Admin;
 
+use ADCT\ParishIntake\Core\Parsing\UnparsedDateTimeCandidate;
 use ADCT\ParishIntake\Core\Review\CandidateEditResult;
 use ADCT\ParishIntake\Core\Review\CandidateFieldSet;
 use ADCT\ParishIntake\WordPress\Database\Repository\ReviewQueueRepository;
@@ -81,16 +82,20 @@ final class CandidateDetailView
             <div class="adct-pi-detail-columns">
                 <div class="adct-pi-detail-main">
                     <?php $this->form->render(
-                        $inputs,
-                        $errors,
-                        $parishes,
-                        $id,
-                        $tab,
-                        $search,
-                        $editable,
-                        $canApprove
-                    ); ?>
-                </div>
+                                            $inputs,
+                                            $errors,
+                                            $parishes,
+                                            $id,
+                                            $tab,
+                                            $search,
+                                            $editable,
+                                            $canApprove,
+                                            // #167: only when the notice's date could not be read, and only where
+                                            // approving is on offer -- there is nothing to acknowledge on a row that
+                                            // is already decided or held for review.
+                                            $this->unparsedDateSentence($row)
+                                        ); ?>
+                                    </div>
                 <div class="adct-pi-detail-side">
                     <?php if ($posterPanel !== '') {
                         echo $posterPanel; // already-escaped markup built by the page
@@ -220,11 +225,46 @@ final class CandidateDetailView
         <?php
     }
 
+    /**
+     * The sentence that says the notice's date could not be read, or null when it did.
+     *
+     * Only the date: a notice with an unreadable time but a good date publishes as an all-day
+     * event, which the provenance panel already reports and which is not the failure an approver
+     * has to sign off on.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function unparsedDateSentence(array $row): ?string
+    {
+        $unparsed = UnparsedDateTimeCandidate::fromNotes($this->notes($row));
+
+        return $unparsed->hasDate()
+            ? UnparsedDateTimeCandidate::describe(
+                UnparsedDateTimeCandidate::DATE_REASON . ':' . $unparsed->phrases()[0]
+            )
+            : null;
+    }
+
+    /**
+     * The candidate's parser notes as a list, decoded from the stored JSON.
+     *
+     * A row that has never been through the parser can hold anything at all in this column, so an
+     * unreadable blob yields no notes rather than failing the page.
+     *
+     * @param array<string, mixed> $row
+     * @return list<mixed>
+     */
+    private function notes(array $row): array
+    {
+        $notes = json_decode((string) ($row['notes'] ?? ''), true);
+
+        return is_array($notes) ? $notes : [];
+    }
+
     /** @param array<string, mixed> $row */
     private function renderProvenance(array $row): void
     {
-        $notes = json_decode((string) ($row['notes'] ?? ''), true);
-        $notes = is_array($notes) ? $notes : [];
+        $notes = $this->notes($row);
         $strategies = json_decode((string) ($row['strategies'] ?? ''), true);
         $strategies = is_array($strategies) ? $strategies : [];
         ?>
@@ -399,6 +439,15 @@ final class CandidateDetailView
                 $warnings[] = 'The parser skipped sections of this message.';
                 continue;
             }
+            // #167: a date or time the parser found and could not read. The sentence has to
+            // replace the token -- a reason string on its own tells a reviewer nothing about what
+            // to do, and it is the whole of what they have to go on here.
+            $unreadable = UnparsedDateTimeCandidate::describe($note);
+            if ($unreadable !== null) {
+                $warnings[] = $unreadable;
+                continue;
+            }
+
             $warnings[] = $note;
         }
 

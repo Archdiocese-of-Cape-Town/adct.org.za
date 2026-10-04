@@ -429,10 +429,22 @@ final class ReviewQueueRepository
     }
 
     /**
+     * @param bool $acknowledgedUnparsedDate #167. The approver has seen that the notice's date
+     *        could not be read and is approving anyway. Carried here rather than re-read from the
+     *        request because this re-reads the stored row inside the transaction, and a date the
+     *        approver just corrected is only in the write that ran a moment ago -- the note itself
+     *        outlives that write.
      * @return 'decided'|'already_decided'|'manual_review'|'retry'
      */
-    public function decide(int $id, string $action, int $userId, string $email, bool $reviewer, string $reason = ''): string
-    {
+    public function decide(
+        int $id,
+        string $action,
+        int $userId,
+        string $email,
+        bool $reviewer,
+        string $reason = '',
+        bool $acknowledgedUnparsedDate = false
+    ): string {
         if ($id < 1 || ! in_array($action, ['approve', 'reject'], true)) {
             throw new InvalidArgumentException('Invalid review decision.');
         }
@@ -453,7 +465,7 @@ final class ReviewQueueRepository
                 return $action === 'approve' && ! empty($candidate['can_retry'])
                     ? 'retry' : 'already_decided';
             }
-            if ($action === 'approve' && ! $this->policy->canBulkApprove($candidate)) {
+            if ($action === 'approve' && ! $this->policy->canBulkApprove($candidate, $acknowledgedUnparsedDate)) {
                 $this->execute('COMMIT');
                 return 'manual_review';
             }

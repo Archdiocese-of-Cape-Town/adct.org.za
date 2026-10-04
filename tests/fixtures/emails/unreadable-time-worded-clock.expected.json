@@ -1,0 +1,15 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Carols service",
+    "parish_name": "Example Parish",
+    "event_date": "2026-12-12"
+  },
+  "notes": [],
+  "candidate_notes": [
+    "unparsed_time_candidate:12:60am",
+    "Normalized and cleaned source text for deterministic parsing.",
+    "Deterministic confidence score assigned: 0.78",
+    "Deterministic confidence score assigned: 0.77"
+  ]
+}

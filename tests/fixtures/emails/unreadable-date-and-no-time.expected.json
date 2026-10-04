@@ -1,0 +1,14 @@
+{
+  "classification": "event",
+  "fields": {
+    "title": "Parish retreat day",
+    "parish_name": "Example Parish"
+  },
+  "notes": [],
+  "candidate_notes": [
+    "unparsed_date_candidate:32 October",
+    "Normalized and cleaned source text for deterministic parsing.",
+    "Deterministic confidence score assigned: 0.69",
+    "Deterministic confidence score assigned: 0.70"
+  ]
+}

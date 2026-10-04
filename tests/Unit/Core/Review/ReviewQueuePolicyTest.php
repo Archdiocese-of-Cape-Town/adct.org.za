@@ -7,6 +7,7 @@ namespace ADCT\ParishIntake\Tests\Unit\Core\Review;
 use ADCT\ParishIntake\Core\Matching\MatchReviewPolicy;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use DomainException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class ReviewQueuePolicyTest extends TestCase
@@ -215,5 +216,114 @@ final class ReviewQueuePolicyTest extends TestCase
             ])),
             'Resolution has to keep the parish column and fields["parish_id"] in step.'
         );
+    }
+
+        /**
+         * #167: a candidate whose date was found and could not be read has no date at all,
+     * so approving it publishes an event that never happens. The gate is keyed on the
+     * note the parser wrote, so it cannot drift from the parse that actually happened.
+     */
+    public function testACandidateWithAnUnreadableDateCannotBeApprovedUntilItIsAcknowledged(): void
+    {
+        $policy = new ReviewQueuePolicy();
+        $candidate = $this->approvable(['notes' => '["unparsed_date_candidate:32 October 2026"]']);
+
+        self::assertTrue($policy->hasUnresolvedDate($candidate));
+        self::assertFalse($policy->canBulkApprove($candidate));
+        self::assertTrue($policy->canBulkApprove($candidate, true));
+    }
+
+    /**
+     * An unreadable time is surfaced but does not block. The publisher makes the event
+     * all-day, which is recoverable, and the notice may have been an all-day one.
+     */
+    public function testAnUnreadableTimeIsSurfacedButDoesNotBlockApproval(): void
+    {
+        $policy = new ReviewQueuePolicy();
+        $candidate = $this->approvable(['notes' => '["unparsed_time_candidate:2575am"]']);
+
+        self::assertTrue($policy->hasUnparsedDateTime($candidate));
+        self::assertFalse($policy->hasUnresolvedDate($candidate));
+        self::assertTrue($policy->canBulkApprove($candidate));
+    }
+
+    public function testBothShapesTogetherBlock(): void
+    {
+        $policy = new ReviewQueuePolicy();
+        $candidate = $this->approvable([
+            'notes' => '["unparsed_time_candidate:2575am","unparsed_date_candidate:12/13/2026"]',
+        ]);
+
+        self::assertTrue($policy->hasUnparsedDateTime($candidate));
+        self::assertTrue($policy->hasUnresolvedDate($candidate));
+        self::assertFalse($policy->canBulkApprove($candidate));
+        self::assertTrue($policy->canBulkApprove($candidate, true));
+    }
+
+    /**
+     * The note outlives a correction -- saving a date updates `fields` and leaves `notes`
+     * alone -- so the gate raises again on every later approval. That is the intended
+     * behaviour, and this is the test that says so.
+     */
+    public function testACorrectedDateStillRaisesTheGateBecauseTheNoteSurvivesTheEdit(): void
+    {
+        $candidate = $this->approvable([
+            'notes' => '["unparsed_date_candidate:32 October 2026"]',
+            'fields' => '{"title":"Fictional event","parish_id":3,"event_date":"2026-10-30"}',
+        ]);
+
+        self::assertFalse((new ReviewQueuePolicy())->canBulkApprove($candidate));
+    }
+
+    /**
+     * A row that never went through the parser can hold anything at all in `notes`. An
+     * unreadable blob must not make a candidate unapprovable: that would be a gate nobody
+     * can open, because nothing on the screen would explain it.
+     *
+     * @return iterable<string, array{string}>
+     */
+    public static function unusableNotesColumn(): iterable
+    {
+        yield 'absent' => [''];
+        yield 'not json' => ['not json at all'];
+        yield 'a json object' => ['{"a":1}'];
+        yield 'a json string' => ['"unparsed_date_candidate:12/10/2026"'];
+        yield 'null' => ['null'];
+    }
+
+    #[DataProvider('unusableNotesColumn')]
+    public function testANotesColumnThatIsNotAListBlocksNothing(string $notes): void
+    {
+        $candidate = $this->approvable(['notes' => $notes]);
+        $policy = new ReviewQueuePolicy();
+
+        self::assertFalse($policy->hasUnresolvedDate($candidate));
+        self::assertFalse($policy->hasUnparsedDateTime($candidate));
+        self::assertTrue($policy->canBulkApprove($candidate));
+    }
+
+    public function testACandidateWithNoNotesKeyAtAllIsUnaffected(): void
+    {
+        $candidate = $this->approvable();
+
+        self::assertFalse((new ReviewQueuePolicy())->hasUnresolvedDate($candidate));
+    }
+
+    /**
+     * @param array<string, mixed> $changes
+     * @return array<string, mixed>
+     */
+    private function approvable(array $changes = []): array
+    {
+        return array_replace([
+            'status' => 'awaiting_approval',
+            'approved_by' => null,
+            'decided_at' => null,
+            'match_kind' => 'new',
+            'match_event_id' => null,
+            'parish_id' => 3,
+            'fields' => '{"title":"Fictional event","parish_id":3}',
+            'notes' => '[]',
+        ], $changes);
     }
 }

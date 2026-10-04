@@ -8,6 +8,7 @@ use ADCT\ParishIntake\Core\Parsing\Contracts\StageInterface;
 use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Parsing\ParseContext;
 use ADCT\ParishIntake\Core\Parsing\ParseResult;
+use ADCT\ParishIntake\Core\Parsing\UnparsedDateTimeCandidate;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\Core\Support\Text;
@@ -117,7 +118,9 @@ final class RuleBasedExtractionStage implements StageInterface
             ? null
             : $this->extractDate($replacementText, $referenceDate);
         $replacementTimes = $replacementText === null ? null : $this->extractTimes($replacementText);
-        $date = $replacementDate ?? $this->extractDate($dateText, $referenceDate, $monthContext, $yearContext);
+        $bodyDate = null;
+        $date = $replacementDate
+            ?? $this->extractDate($dateText, $referenceDate, $monthContext, $yearContext, $bodyDate);
         $times = $replacementTimes ?? ($replacementDate === null ? $this->extractTimes($text) : null);
 
         // A time that reads as a clock but cannot be resolved used to vanish with nothing
@@ -126,6 +129,18 @@ final class RuleBasedExtractionStage implements StageInterface
         // supplies its own date, the body is deliberately not read for a time.
         if ($times === null && $replacementDate === null) {
             $this->noteUnreadableTime($result, $text);
+        }
+
+        // The same hole existed on the date side and was never reported at all: a phrase that
+        // reads as a date but names no day on the calendar was dropped, and the notice then
+        // arrived looking successfully parsed with the date simply absent. Which phrase was
+        // found is carried out of extractDate() rather than guessed afterwards, because a
+        // second pass over the text would claim dates that this one legitimately ignored.
+        if ($date === null && $bodyDate !== null) {
+            $result->addNote(UnparsedDateTimeCandidate::note(
+                UnparsedDateTimeCandidate::DATE_REASON,
+                $bodyDate
+            ));
         }
 
         $classification = $this->classify($lower, $date !== null, $times !== null);
@@ -604,13 +619,22 @@ final class RuleBasedExtractionStage implements StageInterface
     }
 
      /**
-     * @return array{date: string, end_date: ?string, weekday_mismatch: bool, end_before_start: bool, next_weekday_ambiguous: ?string}|null
-     */
+      * #167 adds $unreadable. A phrase that matched the shape of a date but named no day on
+          * the calendar is written to it, so that a caller can report the failure instead of
+          * returning null and losing the reason. Only the first such phrase is kept: a notice
+          * that needs several dates rewritten is reported once rather than three times, and the
+          * reviewer is pointed at the notice itself for the rest.
+          *
+          * @param ?string $unreadable Set to the phrase that looked like a date and did not resolve.
+          *
+          * @return array{date: string, end_date: ?string, weekday_mismatch: bool, end_before_start: bool, next_weekday_ambiguous: ?string}|null
+          */
     private function extractDate(
         string $text,
         DateTimeImmutable $referenceDate,
         ?string $monthContext = null,
-        ?int $yearContext = null
+        ?int $yearContext = null,
+        ?string &$unreadable = null
     ): ?array
     {
         $weekdayPrefix = '(?:(?<weekday>' . self::WEEKDAY_PATTERN . ')\.?\s+)?';
@@ -726,6 +750,7 @@ final class RuleBasedExtractionStage implements StageInterface
                     : $this->monthNumber($monthText ?? '');
 
                 if ($month === null) {
+                    $unreadable ??= $this->unreadablePhrase($match);
                     continue;
                 }
 
@@ -736,6 +761,10 @@ final class RuleBasedExtractionStage implements StageInterface
                     : $this->makeDate($this->normalizeYear($yearText), $month, $day);
 
                 if ($date === null) {
+                    // A day that names no date on the calendar -- 32 October, 29 February in a common
+                    // year, 12/13/2026. The match itself is the phrase the parish wrote, so it is
+                    // what a reviewer has to correct.
+                    $unreadable ??= $this->unreadablePhrase($match);
                     continue;
                 }
 
@@ -752,6 +781,7 @@ final class RuleBasedExtractionStage implements StageInterface
             }
 
             if ($date === null) {
+                $unreadable ??= $this->unreadablePhrase($match);
                 continue;
             }
 
@@ -1141,6 +1171,10 @@ final class RuleBasedExtractionStage implements StageInterface
                  * the phrase so a reviewer can look the notice up and correct it. A digit run that
                  * is not a time at all -- a seat count, a reference number -- is not a time that
                  * went unread, so it is left alone.
+                 *
+                 * #167 replaces the sentence this used to add with a reason token, so that a screen
+                 * can branch on why the field is empty without matching on prose. The wording a
+                 * human reads now lives with the screen that shows it.
                  */
                 private function noteUnreadableTime(ParseResult $result, string $text): void
                 {
@@ -1155,8 +1189,8 @@ final class RuleBasedExtractionStage implements StageInterface
                             continue;
                         }
 
-                        $result->addNote(sprintf(
-                            'The time "%s" could not be read as a clock time; verify or correct it.',
+                        $result->addNote(UnparsedDateTimeCandidate::note(
+                            UnparsedDateTimeCandidate::TIME_REASON,
                             $match
                         ));
 
@@ -1511,6 +1545,23 @@ final class RuleBasedExtractionStage implements StageInterface
         }
 
         return $match[$name][0];
+    }
+
+    /**
+     * The phrase a date-shaped match claimed, for reporting when it did not resolve.
+     *
+     * Only the matched run is taken, never the line around it: the phrase ends up in a stored
+     * note that a submitter and a reviewer both read, so nothing of the notice it was pulled out
+     * of -- an address, a phone number, a parish name -- may travel with it.
+     * UnparsedDateTimeCandidate::note() bounds the length.
+     *
+     * @param array<int, array{0: string, 1: int}> $match
+     */
+    private function unreadablePhrase(array $match): ?string
+    {
+        $phrase = $this->capturedValue($match, 0);
+
+        return $phrase === null || trim($phrase) === '' ? null : $phrase;
     }
 
     private function extractVenue(string $text): ?string

@@ -55,17 +55,20 @@ final class CandidateEditForm
      * @param array<string, mixed> $inputs current values, from `CandidateFieldSet::toInputs()`
      * @param array<string, string> $errors field name to reviewer-facing message
      * @param list<array<string, mixed>> $parishes
-     */
-    public function render(
-        array $inputs,
-        array $errors,
-        array $parishes,
-        int $candidateId,
-        string $tab,
-        string $search,
-        bool $editable,
-        bool $canApprove
-    ): void {
+          * @param string|null $unparsedDateSentence #167: the warning that the notice's date could not
+          *        be read, rendered as an acknowledgement on any approval that has not answered it
+          */
+         public function render(
+             array $inputs,
+             array $errors,
+             array $parishes,
+             int $candidateId,
+             string $tab,
+             string $search,
+             bool $editable,
+             bool $canApprove,
+             ?string $unparsedDateSentence = null
+         ): void {
         $contact = $this->contact($inputs);
         ?>
         <h2>Event details</h2>
@@ -187,9 +190,13 @@ final class CandidateEditForm
                     <p class="description">Recorded on the candidate and in the audit log when you reject.</p>
                 </td></tr>
             </tbody></table>
-            <?php if ($editable) : ?>
-                <p class="submit">
-                    <button type="submit" class="button button-primary" name="save_mode" value="save">Save changes</button>
+                        <?php // #167: inside the form, because the box only counts once it submits with it. ?>
+                        <?php if ($editable && $canApprove) : ?>
+                            <?php $this->renderUnparsedDateAcknowledgement($unparsedDateSentence); ?>
+                        <?php endif; ?>
+                        <?php if ($editable) : ?>
+                            <p class="submit">
+                                <button type="submit" class="button button-primary" name="save_mode" value="save">Save changes</button>
                     <?php if ($canApprove) : ?>
                         <button type="submit" class="button button-primary" name="save_mode" value="approve">Save and approve</button>
                     <?php endif; ?>
@@ -197,6 +204,37 @@ final class CandidateEditForm
                 </p>
             <?php endif; ?>
         </form>
+        <?php
+    }
+
+    /**
+     * #167: the reviewer's acknowledgement, rendered only when there is something to answer.
+     *
+     * A candidate whose date could not be read carries this forward on every approval, so the box
+     * asks again each time rather than being remembered against the row. It sits outside the table
+     * and below the buttons so it reads as a question about approving, not as another field of the
+     * event.
+     */
+    public function renderUnparsedDateAcknowledgement(?string $sentence): void
+    {
+        if ($sentence === null || $sentence === '') {
+            return;
+        }
+        ?>
+        <div class="notice notice-warning inline">
+            <p><?php echo esc_html($sentence); ?></p>
+            <p>
+                <label>
+                    <input type="checkbox"
+                        name="<?php echo esc_attr(ReviewQueuePage::UNPARSED_DATE_FIELD); ?>"
+                        value="1" />
+                    I have read this and am approving the event without a date the notice stated clearly.
+                </label>
+            </p>
+            <p class="description">
+                Or enter the correct date above and press Save and approve; that answers this as well.
+            </p>
+        </div>
         <?php
     }
 
