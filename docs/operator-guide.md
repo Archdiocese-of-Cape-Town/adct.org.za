@@ -198,6 +198,8 @@ An Administrator or Intake manager with the `adct_pi_manage_directory` capabilit
 
 Edit a deanery to assign several approvers. Select an existing WordPress user or create a new account, then set the approval email, label, per-item or daily-digest notifications, reminders and active status. The approval email is separate from the WordPress account email. A newly created account receives a random password and **no WordPress new-user notification or other email**. Existing users keep their other WordPress roles when `deanery_approver` is added. Deactivating an assignment preserves its row; the role is removed only when that user has no other active deanery assignments.
 
+The per-item/daily-digest field here is a **starting value, not the only way it can be set**. A deanery approver can now change it themselves, from a **Change how often we email you** link in their own per-item approval email &mdash; see [Approvers choose their own email frequency](#approvers-choose-their-own-email-frequency). Leave this field alone when you have no reason to; setting it here is still how you set a digest for a dean who will never open the mail, and the only way to set different modes for different deaneries. Setting it here for someone who will use the link themselves is harmless: whichever they choose last wins.
+
 A parish in an inactive deanery, a parish with no deanery, or a parish whose deanery has no active approver is clearly marked **Reviewers only**. Its events remain reviewable by archdiocese reviewers; they never wait for a dean to be set up.
 
 After a submitter confirms, run **Parish Intake → Scheduled jobs → Queue approver decisions and digests** if you need to send notices before the next scheduled run. Each eligible deanery approver and reviewer receives at most one grouped email of up to 20 events per run; a reviewer can switch between grouped notices and a daily digest on their WordPress profile, while deanery assignments set that preference for deans. A digest is sent at most once per local day; new items after it was queued wait for the next day. Links show the preview on GET, and only pressing the POST button records a decision. The first approver wins; later visitors see who decided and when. The Edit link lets an approver correct title, date, time and description without publishing; parish or venue corrections and ambiguous matches need manual attention. Rejection may include a short reason for the submitter. The submitter gets a queued live link after successful publication. All mail passes through the same capped outbound queue without attachments.
@@ -326,6 +328,20 @@ define('ADCT_PI_APPROVAL_DIGEST_HOUR', 7);
 ```
 
 Choosing **each event** instead of **daily digest** is unaffected by this hour — those approvers are emailed as soon as the job runs.
+
+### Approvers choose their own email frequency
+
+A **deanery approver** can change between per-item notices and the daily digest without an administrator doing it for them. Every per-item approval email carries a **Change how often we email you** link at the top. Following it shows a page with the two choices and their current setting; only pressing **Save my choice** changes anything. The link works once and expires after **7 days**, so a dean who never saw it is unaffected — set the field for them on **Parish Intake → Deaneries** as before.
+
+Archdiocese **reviewers** keep their existing route: they sign in to `wp-admin` and choose on their own WordPress profile, so no link appears in their mail. Nothing about a reviewer's preference changed.
+
+A few things worth knowing as an operator:
+
+- **A GET never changes the setting.** Opening the link shows the page; the save happens only when the button is posted. A mail link scanner cannot switch anyone's notifications.
+- **A dean approves for several deaneries changes all of them.** The page says so, and says when their deaneries are currently set differently. If someone genuinely needs different frequencies per deanery, set them on **Parish Intake → Deaneries** and treat the self-service link as a last resort — it will make them all the same again.
+- **Entitlement is checked at the moment they save, not when the mail went out.** A dean who has since been moved to no active deanery, had their assignment or account deactivated, had the `deanery_approver` role removed, or had their account email address changed sees a refusal instead of the form, and nothing is written. This is the same rule as every other emailed approval link: holding the link is not authority.
+- **The change applies from the next event that needs them.** An event already waiting does not move mail queues around, and nothing already queued is re-sent or withdrawn.
+- **Every save is audited.** It writes one `approver_notify_mode_changed` row to the audit log under the **Reports** screen, naming the person, the mode before and after, every deanery affected and how many rows actually changed.
 
 ## Configure parser safeguards
 

@@ -18,8 +18,10 @@ use ADCT\ParishIntake\WordPress\Auth\ApprovalDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalEditHandler;
 use ADCT\ParishIntake\WordPress\Auth\ConfirmationDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\LoginHandler;
+use ADCT\ParishIntake\WordPress\Auth\NotifyModeChangeHandler;
 use ADCT\ParishIntake\WordPress\Auth\RevertChangeHandler;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
+use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use DateTimeZone;
 use PHPUnit\Framework\TestCase;
@@ -183,11 +185,12 @@ final class ActionTokenPurposeReservationTest extends TestCase
             $registered[] = constant(ActionTokenPurpose::class . '::' . $case)->value;
         }
 
-        // ApprovalEditHandler and RevertChangeHandler are registered for their
-        // own fixed purposes, so those purposes never appear as a name in the
-        // registration block.
+        // ApprovalEditHandler, RevertChangeHandler and NotifyModeChangeHandler
+        // are registered for their own fixed purposes, so those purposes never
+        // appear as a name in the registration block.
         $registered[] = self::editHandler()->purpose()->value;
         $registered[] = self::revertHandler()->purpose()->value;
+        $registered[] = self::notifyModeHandler()->purpose()->value;
 
         $registered = array_values(array_unique($registered));
         $expected = array_keys(self::handledPurposes());
@@ -274,6 +277,8 @@ final class ActionTokenPurposeReservationTest extends TestCase
         $handlers[$revert->purpose()->value] = $revert->purpose()->defaultLifetimeSeconds();
         $login = self::loginHandler();
         $handlers[$login->purpose()->value] = $login->purpose()->defaultLifetimeSeconds();
+        $notifyMode = self::notifyModeHandler();
+        $handlers[$notifyMode->purpose()->value] = $notifyMode->purpose()->defaultLifetimeSeconds();
 
         return $handlers;
     }
@@ -311,6 +316,23 @@ final class ActionTokenPurposeReservationTest extends TestCase
             new ApprovalRecipients(
                 new ApprovalRouteResolver(self::createStub(ApprovalRouteRepositoryInterface::class))
             ),
+            self::createStub(ClockInterface::class)
+        );
+    }
+
+    /**
+     * #169: the handler behind the digest-choice link in the approval email.
+     *
+     * Built the way Plugin builds it, so a change to its constructor or to the
+     * purpose it declares fails here as well as in NotifyModeChangeHandlerTest.
+     */
+    private static function notifyModeHandler(): NotifyModeChangeHandler
+    {
+        $database = self::createStub(DatabaseConnectionInterface::class);
+
+        return new NotifyModeChangeHandler(
+            $database,
+            new DeaneryApproverRepository($database),
             self::createStub(ClockInterface::class)
         );
     }

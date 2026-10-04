@@ -18,6 +18,7 @@ use ADCT\ParishIntake\WordPress\Auth\ApprovalDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalEditHandler;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRenewalDelivery;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenRateLimitStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
@@ -38,7 +39,8 @@ final class ApprovalDecisionCheck
         $tokens = new ActionTokenService(new WordPressActionTokenStore($db), $clock);
         $recipients = new ApprovalRecipients(new ApprovalRouteResolver(new ApprovalRouteRepository($db)));
         $queue = new WordPressMailQueueRepository($db);
-        $job = new ApprovalNoticeJob($db, $recipients, $tokens, Plugin::mailer(), $queue, $clock);
+        $job = new ApprovalNoticeJob($db, $recipients, $tokens, Plugin::mailer(), $queue, $clock,
+            new DeaneryApproverRepository($db));
         $approveHandler = new ApprovalDecisionHandler(ActionTokenPurpose::APPROVE_EVENT, $db, $recipients,
             Plugin::candidatePublisher(), Plugin::mailer(), $clock);
         $registry = new ActionTokenHandlerRegistry([

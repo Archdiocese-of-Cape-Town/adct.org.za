@@ -54,6 +54,15 @@ The 8 official deaneries are seeded from [`data/seed/deaneries.csv`](../data/see
 
 Archdiocese reviewers aren't listed here. They are WordPress users with the `adct_pi_review` capability and approve anything.
 
+**The two places a notification preference lives (#169), and why there are two.** The choice is one concept with two different actors, and the two actors authenticate in different worlds:
+
+- **Deanery approvers** are stored per assignment in this column. They authenticate by emailed link and have no wp-admin account ([ADR 0007](decisions/0007-auth-with-wordpress-users-and-magic-links.md)), so until #169 an administrator on the Deaneries screen was the only party who could set it.
+- **Archdiocese reviewers** store the same choice as user meta (`adct_pi_approval_notify_mode`, with `adct_pi_approval_reminders`) because they already sign in to wp-admin for the review queue and set it on their own profile screen.
+
+The split is deliberate and is not being merged. The two roles are resolved by different tables and different routes, they can hold both roles at once, and collapsing them would mean either giving deans a wp-admin account (contradicting ADR 0007) or making the per-item notice job read user meta for a user who may never sign in. What #169 adds is not a third store: it is a **write path** to the existing column, reached from the link in the approver's own email, which changes only the row belonging to the person who clicked it. #169 needed **no schema migration and no `db_version` bump** — the column it writes was already in the canonical CREATE TABLE set.
+
+A person who approves for more than one deanery has more than one row here. The self-service link therefore applies the chosen mode to **every assignment that is live at the moment the button is pressed** — assignment `active = 1` and its deanery still `status = 'active'` — read inside the transaction rather than taken from the token. A dean moved to a single deanery between receiving the mail and pressing the button changes only the one assignment they still hold. Per-deanery modes remain available to an administrator on the Deaneries screen for anyone who needs them to differ, and the confirmation page says so when it detects that the current rows disagree.
+
 The approval-route resolver reads a parish, its deanery status and all of its approver assignments in one repository call. It routes only active assignments in an active deanery; a missing deanery, inactive deanery or deanery with no active approver returns an empty approver list and sends the item to archdiocese reviewers only. Deactivating an approver preserves its row for later reactivation.
 
 Approver WordPress accounts are created with a random password and no notification email. Assigning an existing user adds the `deanery_approver` role without replacing other roles. The role is removed only after the user has no active approver assignments in any deanery.
@@ -271,6 +280,7 @@ token_hash, purpose, subject_type/subject_id, normalized email, expires_at, used
 `purpose` is a `varchar(32)`, and a value only becomes usable when a handler is registered for it in `Plugin`. A value with no handler still mints a token, but opening the link reports that the action is not available and does nothing, and the endpoint writes one `error_log` line naming the purpose. The values are therefore not a flat set of interchangeable options:
 
 - **Handled.** `confirm`, `deny`, `edit`, `approve_event` and `reject_event` are registered in `Plugin` and act on a candidate from an emailed link. `revert_change` is registered too, and acts on one row of `adct_pi_event_changes` by restoring the `before_payload` the change recorded and appending a `revert` row, so the history reads forwards rather than losing the amended state. Default expiry is 14 days.
+- **`change_notify_mode` is a preference link, not a decision (#169).** It is registered to `NotifyModeChangeHandler` and its lifetime is **7 days**, not the 14-day event default: it arrives with the next notice the recipient reads and only ever has to be walked from the inbox once. Its `subject_type` is `approval_preference` and its `subject_id` is a **WordPress user ID**, not a plugin row — a dean may hold assignments in several deaneries, so there is no single row to name. The link goes only into the per-item mail, never the digest: someone already on the digest has nothing to switch away from. It grants no authority at all. `perform()` throws unconditionally, so a GET renders a radio form and writes nothing, and only a nonce-checked, transactional POST can save; the POST re-resolves the live account (still existing, not deactivated, still holding `APPROVE_DEANERY`, account email still the one the token was minted for) and the live assignments inside the transaction, then consumes the token and writes one `approver_notify_mode_changed` audit row per save.
 - **A token is scoped to a recipient who may stop being entitled to it.** The row binds `normalized_email`, but binding identity is not authority: a revert link goes out to whoever held authority over the parish when the change was published, and a dean moved between deaneries, a reviewer de-roled or a deactivated account is not entitled to it afterwards. Every handler therefore re-resolves the live relationship at act time rather than trusting the row, and `RevertChangeHandler` re-resolves it inside its transaction, so a reassignment landing between the preview and the POST refuses the action and leaves the token `valid` for a recipient who is still entitled.
 - **`login` is the magic link, and it is handled.** #72 reserved it with no handler; `LoginHandler` now consumes it. Its lifetime is the 30-minute one specified in [ADR 0007](decisions/0007-auth-with-wordpress-users-and-magic-links.md), not the 14-day event default, and the two lifetimes are separate constants rather than one number with exceptions. It is not a candidate decision: the handler resolves the address to a live WordPress user who may still sign in, marks the token used and issues that user's auth cookie, and a GET shows a confirmation page while only the POST signs anybody in. A suspended account, or one with no portal role, is refused on the same live lookup the GET made, so a dean removed from their deanery loses the session as well as the queue.
 - **Reserved, no handler yet.** Nothing is. Every case on the enum is registered in `Plugin`; a new one fails `ActionTokenPurposeReservationTest` until it is either wired to a handler or added to that test's `$RESERVATIONS` with the issue that owns it.
@@ -309,8 +319,11 @@ path and a screen over rows that were already being written.
 
 `actor` holds the acting person's **email address** (or `system`), not a user ID.
 `subject_type` is one of `event_candidate`, `event_change`, `parish_contact`,
-`parish`, `event` or `settings`; `subject_id` is the row ID in that table, or `0`
-for `settings`. `details` is a JSON object written by the caller and is never
+`parish`, `event`, `settings` or `approval_preference`; `subject_id` is the row
+ID in that table, or `0` for `settings`. `approval_preference` is the exception
+the name has to carry: its `subject_id` is a **WordPress user ID**, because #169
+gives an approver's own preference change a subject and the change is not about
+one assignment row. `details` is a JSON object written by the caller and is never
 interpreted by storage — the log records what happened, it does not drive
 behaviour.
 
@@ -327,6 +340,7 @@ filter dropdown and the tests cannot drift apart:
 | `candidate_edited` | event candidate | candidate detail save |
 | `candidate_created_by_hand` | event candidate | `ReviewQueueRepository::createManualCandidate()` |
 | `change_reverted` | event change | `RevertChangeHandler` |
+| `approver_notify_mode_changed` | approval preference | `NotifyModeChangeHandler`, in the save transaction |
 | `event_published` | event | `WordPressPublicationStore`, in the publish transaction |
 | `contact_verified`, `contact_blocked`, `contact_unblocked`, `contact_linked`, `contact_confirmed`, `contact_edited`, `contact_removed` | parish contact | `ContactAuditRecorder` on the senders screen |
 | `settings_updated` | settings | `SettingsAuditRecorder` |

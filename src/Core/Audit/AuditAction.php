@@ -87,6 +87,22 @@ enum AuditAction: string
     case CANDIDATE_MATCH_RESOLVED = 'candidate_match_resolved';
 
     /**
+     * An approver changed their own per-item/daily notification mode from the
+     * link in their own approval email, without an administrator doing it for
+     * them (issue #169). The details diff carries the before and after modes.
+     *
+     * Deliberately its own verb rather than another `settings_updated`: that
+     * action is an administrator changing site-wide plugin settings, with the
+     * settings screen as its subject. This is a dean changing one field of
+     * their own approver record, and it is the act that proves a link in their
+     * mail was honoured, so a trail that filed it under `settings_updated`
+     * would both misattribute who changed what and hide every self-service
+     * change behind a generic settings row. The two sets coexist: reusing a
+     * value for a second meaning would read historical rows back wrongly.
+     */
+    case APPROVER_NOTIFY_MODE_CHANGED = 'approver_notify_mode_changed';
+
+    /**
      * Human labels for the filter dropdown, keyed by action value.
      *
      * @return array<string, string>
@@ -132,6 +148,7 @@ enum AuditAction: string
             self::SETTINGS_UPDATED => 'Settings updated',
             self::CANDIDATE_CREATED_BY_HAND => 'Event started by hand',
             self::CANDIDATE_MATCH_RESOLVED => 'Ambiguous match resolved',
+            self::APPROVER_NOTIFY_MODE_CHANGED => 'Approver email mode changed',
         };
     }
 }

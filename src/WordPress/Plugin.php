@@ -93,6 +93,7 @@ use ADCT\ParishIntake\WordPress\Auth\ApprovalDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalEditHandler;
 use ADCT\ParishIntake\WordPress\Auth\LoginHandler;
 use ADCT\ParishIntake\WordPress\Auth\MagicLinkLoginRequestPage;
+use ADCT\ParishIntake\WordPress\Auth\NotifyModeChangeHandler;
 use ADCT\ParishIntake\WordPress\Auth\RevertChangeHandler;
 use ADCT\ParishIntake\Core\Approval\ApprovalReminderSettings;
 use ADCT\ParishIntake\WordPress\Auth\WordPressLoginSubjectResolver;
@@ -572,6 +573,13 @@ private ?ReviewQueueRepository $reviewQueue = null;
         // approval queue. Registered against LOGIN here so the reservation test
         // can see the purpose and its handler from one place.
         $this->actionTokenHandlers->register(new LoginHandler(ActionTokenPurpose::LOGIN));
+        // Issue #169: the link a deanery approver follows to choose between
+        // per-item notices and a daily digest. A dean authenticates by emailed
+        // link (ADR 0007) and has no profile page of their own to change it on,
+        // so without this the Deaneries screen was the only way to set it.
+        $this->actionTokenHandlers->register(new NotifyModeChangeHandler(
+            $database, $approvers, $clock
+        ));
         $this->magicLinkLoginRequestPage = new MagicLinkLoginRequestPage(
             new MagicLinkLoginService(
                 $this->actionTokenService,
@@ -746,6 +754,7 @@ private ?ReviewQueueRepository $reviewQueue = null;
                 new ApprovalNoticeJob(
                     $database, $approvalRecipients, $this->actionTokenService,
                     $this->mailQueue, $mailQueueRepository, $clock,
+                    $approvers,
                     self::approvalDigestHour()
                 ),
                 // The settings reader is resolved on first use, not here: this block
