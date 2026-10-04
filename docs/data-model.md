@@ -171,7 +171,7 @@ source_id, `mailbox_identity` (SHA-256 of the mailbox endpoint, account and proc
 | source_id | FK |
 | external_id | Normalised `Message-ID` header, or an IMAP UID/UIDVALIDITY fallback when no header exists; unique with source_id |
 | content_hash | SHA-256 of version-1 canonical JSON (`version`, `body`, `attachments`): decoded body text with CRLF/CR converted to LF, horizontal whitespace collapsed, line-edge spaces trimmed, runs of 3+ newlines reduced to 2 and outer whitespace trimmed; plus the sorted SHA-256 hashes of all attachment contents. This catches re-sends with a new Message-ID. |
-| sender_email, sender_name, subject | |
+| sender_email, sender_name, subject | `sender_name` is the `From` display name, nullable and often empty: most parish mail carries none, and `RawMessageInspector::sender()` falls back to the address when the header's name part is blank, so a non-empty value means a display name really was present. Both are identity only and are never trust evidence (see `auth_results`); they are rendered to approvers beside each other, with the address as the stable identifier — see [architecture.md](architecture.md#e45-sender-identity-beside-sender-trust-170) |
 | received_at | |
 | raw_path | Relative path to the protected, unguessably named raw `.eml` under the private uploads directory |
 | body_text | Extracted plain text; the poller leaves this `NULL`, and the bounded processing job fills it after parsing the stored raw message. The retention job clears it together with `raw_path` for terminal, no-review-needed rows once raw data is eligible for deletion; rows still awaiting review or retry keep it. |

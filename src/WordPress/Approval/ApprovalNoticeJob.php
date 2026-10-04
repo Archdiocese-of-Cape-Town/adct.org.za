@@ -18,6 +18,7 @@ use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\MailerInterface;
 use ADCT\ParishIntake\Core\Ports\MailQueueRepositoryInterface;
 use ADCT\ParishIntake\Core\Parsing\UnparsedDateTimeCandidate;
+use ADCT\ParishIntake\Core\Support\Text;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
 use ADCT\ParishIntake\WordPress\Auth\NotifyModeChangeHandler;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
@@ -160,6 +161,56 @@ final class ApprovalNoticeJob extends AbstractJob implements JobRunLifecycleInte
         return $deferred ? JobStepResult::completeAt(null) : JobStepResult::continueAt((string) $after);
     }
 
+    /**
+     * The display name, as a single line the approver can read.
+     *
+     * The value arrives from a message header we did not write, so it is
+     * bounded like any other hostile header (ApprovalPreviewText::shorten)
+     * and flattened to one line: a newline would otherwise break the text
+     * body's line structure and let the rest of the name read as the sender.
+     *
+     * sender_name is nullable and most real notices have none, so the absent
+     * case is stated rather than left as a gap. "Unknown" is deliberately not
+     * used for it: that word already means "we could not learn who this is",
+     * which is a trust statement, and this is not one.
+     */
+    private function displayName(mixed $name): string
+    {
+        if (! is_string($name) || trim($name) === '') {
+            return 'no name supplied';
+        }
+
+        $lines = Text::lines(ApprovalPreviewText::shorten($name));
+        $first = $lines[0] ?? '';
+
+        return $first === '' ? 'no name supplied' : ApprovalPreviewText::shorten($first);
+    }
+
+    /**
+     * The address, normalised for display.
+     *
+     * An approver matches this against the parish's known contact, so casing
+     * and stray padding are noise; reviewer addresses are lowercased for the
+     * same reason in ApprovalRecipients. This is display only -- nothing
+     * downstream keys off it, and the trust signal lives in the warnings,
+     * not in the casing, so there is no machine decision riding on it.
+     *
+     * An address that does not validate is shown as parsed rather than
+     * dropped. It is evidence of what actually arrived, and an approver who
+     * cannot see it cannot decide anything; the unknown_sender warning, if
+     * the parser flagged it, is what says so.
+     */
+    private function displayAddress(mixed $address): string
+    {
+        $parsed = is_string($address) ? trim($address) : '';
+
+        if ($parsed === '' || filter_var($parsed, FILTER_VALIDATE_EMAIL) === false) {
+            return $parsed === '' ? 'Unknown' : $parsed;
+        }
+
+        return strtolower($parsed);
+    }
+
     private function deliver(string $key, string $email): void
     {
         $notices = $this->rows($this->database->prepare(
@@ -186,7 +237,7 @@ final class ApprovalNoticeJob extends AbstractJob implements JobRunLifecycleInte
                 }
                 $id = (int) $notice['candidate_id'];
                 $title = is_string($fields['title'] ?? null) ? $fields['title'] : 'Untitled event';
-                $sender = (string) ($notice['sender_email'] ?? 'Unknown');
+                $sender = $this->displayAddress($notice['sender_email'] ?? null);
                 $notes = json_decode((string) ($notice['notes'] ?? '[]'), true);
                 $warning = is_array($notes) && in_array('unknown_sender', $notes, true)
                     ? 'WARNING: Unknown sender. Verify the parish before approving.' : '';
@@ -223,7 +274,17 @@ final class ApprovalNoticeJob extends AbstractJob implements JobRunLifecycleInte
                         );
                     }
                 }
-                $preview[] = 'Submitted by: ' . $sender;
+                // #170: who sent it and how far to trust them are two different facts,
+                // so they are never the same line. The name is free text off a
+                // message header: it can be misspelled, generic or spoofed, and
+                // showing it beside the address (which stays the stable
+                // identifier) gives the warnings above something for the approver
+                // to check against the parish's known contact. It is identity
+                // only -- the warnings are the whole trust signal, and a name must
+                // never be read as evidence of authenticity.
+                $preview[] = 'Submitted by: ' . $sender . ' (' . $this->displayName(
+                    $notice['sender_name'] ?? null
+                ) . ')';
                 if ($warning !== '') {
                     $preview[] = $warning;
                 }
