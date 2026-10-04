@@ -520,6 +520,12 @@ final class ReviewQueueRepository
      *        {@see \ADCT\ParishIntake\Core\Matching\MatchReviewPolicy::requiresManualReview()}
      *        decides on key presence, so a falsified key would still ask for
      *        manual review forever.
+     *
+     *        It also widens the status this route accepts from `awaiting_approval`
+     *        alone to `awaiting_approval` or `duplicate` (issue #218), and writes
+     *        `awaiting_approval` when the row was a duplicate. One flag, because
+     *        the status is only ever widened where a person is naming the match:
+     *        the bulk form, which passes `false`, still refuses a duplicate.
      */
     public function assignParish(
         int $id,
@@ -542,7 +548,21 @@ final class ReviewQueueRepository
         $this->execute('START TRANSACTION');
         try {
             $candidate = $this->lockedCandidate($id, $userId, $email, $reviewer);
-            if ($candidate === null || $candidate['status'] !== 'awaiting_approval'
+            // Issue #218. The resolution route accepts a `duplicate` as well as an
+            // `awaiting_approval`, because those are the only two statuses
+            // {@see \ADCT\ParishIntake\Core\Review\ReviewQueuePolicy::canDecide()}
+            // lets a reviewer act on (#217), and #177 gave each of them a panel
+            // that then refused the write. Resolving one writes it back to
+            // `awaiting_approval`: a duplicate a person has just shown is
+            // unresolvable has stopped being a duplicate, and a row that kept
+            // the status would drop out of {@see where()} — that listing keys off
+            // the `fields` keys the resolution removes — and never be seen again.
+            //
+            // The bulk form is a different act and keeps its narrower rule: it has
+            // no panel, so it cannot say which match was wrong, and letting it
+            // clear a duplicate's block would strand the row.
+            $resolvable = $resolveMatch ? ['awaiting_approval', 'duplicate'] : ['awaiting_approval'];
+            if ($candidate === null || ! in_array($candidate['status'], $resolvable, true)
                 || ! empty($candidate['approved_by']) || ! empty($candidate['decided_at'])) {
                 throw new DomainException('Only an undecided candidate can be assigned a parish.');
             }
@@ -599,30 +619,44 @@ final class ReviewQueueRepository
                 unset($fields['match_review_required'], $fields['matched_candidate_id']);
             }
             $now = $this->timestamp();
-            // The parish that was there when the row was locked goes into the
-            // WHERE clause: two people opening the same candidate and resolving it
-            // to different parishes must not both succeed, and the second write
-            // must not claim the first one's parish as its own "from".
+            // The status the row was locked under goes into the WHERE clause, as
+            // the parish does: two reviewers opening the same candidate and
+            // resolving it differently must not both succeed. It is a parameter,
+            // not a literal, so the statement still names the status it was read
+            // under and cannot write a row its own guard would never match.
+            $lockedStatus = (string) $candidate['status'];
             $previousGuard = $candidate['parish_id'] === null ? 'parish_id IS NULL' : 'parish_id = %d';
             // A cleared parish is written as a real SQL NULL, not 0: the column
             // is `bigint unsigned`, so 0 would name a parish that does not
             // exist. Same reason as {@see updateFields()}.
-            $updated = $this->execute($this->database->prepare(
-                "UPDATE {$this->candidates} SET parish_id = NULLIF(%s, ''), fields = %s, updated_at = %s "
-                . 'WHERE id = %d AND status = %s AND approved_by IS NULL AND decided_at IS NULL'
-                . " AND {$previousGuard}",
+            //
+            // `status` is written only when it can actually change. A resolution of
+            // an ordinary ambiguous candidate leaves `awaiting_approval` alone, so
+            // the column is not touched and `updated_at` still means what it says.
+            $sets = "SET parish_id = NULLIF(%s, ''), fields = %s";
+            $setValues = [
                 $parishId > 0 ? (string) $parishId : '',
                 json_encode($fields, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE),
-                $now,
-                $id,
-                'awaiting_approval',
-                ...($candidate['parish_id'] === null ? [] : [(int) $candidate['parish_id']])
+            ];
+            if ($resolveMatch && $lockedStatus !== 'awaiting_approval') {
+                $sets .= ', status = %s';
+                $setValues[] = 'awaiting_approval';
+            }
+            $setValues[] = $now;
+            $setValues[] = $id;
+            $setValues[] = $lockedStatus;
+            $setValues = [...$setValues, ...($candidate['parish_id'] === null ? [] : [(int) $candidate['parish_id']])];
+            $updated = $this->execute($this->database->prepare(
+                "UPDATE {$this->candidates} {$sets}, updated_at = %s "
+                . 'WHERE id = %d AND status = %s AND approved_by IS NULL AND decided_at IS NULL'
+                . " AND {$previousGuard}",
+                ...$setValues
             ));
             if ($updated !== 1) {
                 $this->execute('ROLLBACK');
                 return false;
             }
-            $this->audit($email, $resolveMatch ? 'candidate_match_resolved' : 'candidate_parish_assigned', $id, [
+            $details = [
                 'role' => $reviewer ? 'reviewer' : 'dean',
                 'from_parish_id' => $previous ?: null,
                 'to_parish_id' => $parishId > 0 ? $parishId : null,
@@ -630,7 +664,17 @@ final class ReviewQueueRepository
                 'left_unassigned' => $parishId < 1,
                 'sender_trust_changed' => false,
                 'match_review_cleared' => $resolveMatch ? $previousReview : null,
-            ], $now);
+            ];
+            if ($resolveMatch && $lockedStatus !== 'awaiting_approval') {
+                // A reader of the trail has to be able to tell a duplicate coming
+                // back into the approval queue from an ordinary unblock: the
+                // second is invisible in the history, the first is the reason the
+                // row is there at all. The plain assignment moves no status, so it
+                // records none.
+                $details['from_status'] = $lockedStatus;
+                $details['to_status'] = 'awaiting_approval';
+            }
+            $this->audit($email, $resolveMatch ? 'candidate_match_resolved' : 'candidate_parish_assigned', $id, $details, $now);
             $this->execute('COMMIT');
             return true;
         } catch (Throwable $failure) {

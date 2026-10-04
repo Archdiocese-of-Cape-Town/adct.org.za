@@ -976,6 +976,125 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
          * `canApproveRow()` already caught `DomainException` for exactly this reason.
          * The panel has to follow the same rule rather than invent a second one.
          */
+        /**
+         * Issue #218 at the screen: a `duplicate` candidate reaches the detail screen
+         * because the queue links to it, and it now reaches it *with* the control,
+         * because the status it carries is one a reviewer can still resolve.
+         *
+         * The panel is the only way to say which match was the wrong one; without it
+         * the reviewer can only reject the whole notice.
+         */
+        public function testADuplicateIsOfferedTheResolutionControlOnItsDetailScreen(): void
+        {
+            $database = $this->ambiguousDatabase();
+            $database->sourceStatus = 'duplicate';
+
+            self::assertTrue(
+                $database->canDecideRow($database->rowForSourceCandidate()),
+                'Precondition: #217 lets a reviewer decide a duplicate, so the screen must let them resolve it.'
+            );
+            $_GET = ['candidate' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE];
+
+            $rendered = $this->renderListing($database);
+
+            self::assertStringContainsString(ReviewQueuePage::RESOLVE_MATCH_ACTION, $rendered);
+            self::assertStringContainsString('Leave unassigned', $rendered);
+        }
+
+        /**
+         * ...but the control is the only thing that changes. A duplicate is not
+         * editable: widening `canEdit()` to reach the resolution would also hand the
+         * editor form — and `handleSave()` behind it — to a row whose status the save
+         * route still refuses. The screen must therefore offer a resolution and
+         * nothing else.
+         */
+        public function testADuplicateIsOfferedAResolutionButNoEditor(): void
+        {
+            $database = $this->ambiguousDatabase();
+            $database->sourceStatus = 'duplicate';
+            $_GET = ['candidate' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE];
+
+            $rendered = $this->renderListing($database);
+
+            self::assertStringContainsString(ReviewQueuePage::RESOLVE_MATCH_ACTION, $rendered);
+            self::assertStringNotContainsString(
+                            'name="save_mode"',
+                $rendered,
+                'A duplicate stays read-only apart from its resolution. The editor is gated on '
+                . 'canEdit(), which still refuses its status, and widening that would also hand the '
+                . 'screen — and handleSave() behind it — a row updateFields() rejects.'
+            );
+                        self::assertStringContainsString('its details are read-only', $rendered);
+        }
+
+        /**
+         * The route itself: a duplicate posted to the resolve action reaches the
+         * candidate write and redirects with the notice. Before #218 this died with
+         * "This candidate has already been decided." (#409), which is the exact
+         * failure the issue reports — a dead end in a screen that offered a button.
+         */
+        public function testResolvingADuplicateReachesTheWriteInsteadOfBeingRefused(): void
+        {
+            $database = $this->ambiguousDatabase();
+            $database->sourceStatus = 'duplicate';
+            $_POST = [
+                'candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                'parish_id' => (string) ReviewQueuePageTestIds::CHOSEN_PARISH,
+            ];
+
+            try {
+                $this->page($database)->handleResolveMatch();
+            } catch (\AdctTestRedirect) {
+                // Expected; the request would end here in a browser.
+            }
+
+            $update = $this->candidateUpdate($database->executedQueries);
+            self::assertNotNull(
+                $update,
+                'A resolution of a duplicate must reach the candidate write, not be refused as already decided.'
+            );
+
+            $fields = $this->fieldsFrom($update);
+            self::assertArrayNotHasKey(
+                'match_review_required',
+                $fields,
+                'The block is cleared exactly as it is for any other ambiguous candidate.'
+            );
+            self::assertStringContainsString(
+                            'status = awaiting_approval',
+                $update,
+                'A duplicate a person resolved is no longer a duplicate: it goes back to the approval queue, '
+                . 'because a resolved row that kept its status drops out of the listing that keys off these '
+                . 'very fields and would never be seen again.'
+            );
+
+            $redirect = $GLOBALS['adct_test_redirect'];
+            self::assertIsString($redirect);
+            self::assertStringContainsString('resolved=1', $redirect, 'So the screen can say what happened.');
+        }
+
+        /**
+         * The listing half. `where()` surfaces `duplicate` rows precisely when the
+         * ambiguity keys are present, and `canBulkApprove()` refuses them — so the row
+         * is listed, decidable and not approvable, and has to say so. The notice was
+         * gated on `status === 'awaiting_approval'`, which hid the explanation on
+         * exactly the rows #217 made decidable.
+         */
+        public function testTheListingSaysADuplicateStillNeedsAResolution(): void
+        {
+            $database = $this->ambiguousDatabase();
+            $database->sourceStatus = 'duplicate';
+
+            $rendered = $this->renderListing($database);
+
+            self::assertStringContainsString(
+                'Manual resolution required before approval',
+                $rendered,
+                'A duplicate is decidable and not approvable, so the listing owes the reviewer the same '
+                . 'explanation every other ambiguous row gets, in the same words.'
+            );
+        }
+
         public function testACandidateWhoseDetailsCannotBeParsedStillRendersItsScreen(): void
         {
             $database = new ManualEntryDatabase();
@@ -1132,8 +1251,10 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                     try {
                         $this->page($database)->renderPage();
                     } finally {
-                        return (string) ob_get_clean();
+                        $rendered = (string) ob_get_clean();
                     }
+
+                    return $rendered;
                 }
 
         /**
@@ -1178,20 +1299,22 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                  * The `fields` JSON the candidate `UPDATE` carried.
                  *
                  * `$wpdb->prepare()` substitutes into the SQL and so does this double, so
-                 * the value is in the query itself. The trailing anchor (`updated_at =`)
-                 * matters: stopping at the JSON alone would truncate at the first comma
-                 * inside it, and these fields are a whole event.
-                 *
-                 * @return array<string, mixed>
-                 */
-                private function fieldsFrom(?string $update): array
-                {
-                    self::assertNotNull($update, 'The statement under test was never issued.');
-                    self::assertSame(
-                        1,
-                        preg_match('/fields = (.*), updated_at = /sU', $update, $match),
-                        'The candidate update carries no single readable fields value: ' . $update
-                    );
+                         * the value is in the query itself. The braces matter: stopping at the
+                         * JSON alone would truncate at the first comma inside it, and these
+                         * fields are a whole event. The `status =` clause is optional because a
+                         * resolution only rewrites the status when the status actually has to
+                         * move (#218), so the anchor has to tolerate it.
+                         *
+                         * @return array<string, mixed>
+                         */
+                        private function fieldsFrom(?string $update): array
+                        {
+                            self::assertNotNull($update, 'The statement under test was never issued.');
+                            self::assertSame(
+                                1,
+                                preg_match('/fields = (\{.*\}), (?:status = [^,]+, )?updated_at = /s', $update, $match),
+                                'The candidate update carries no single readable fields value: ' . $update
+                            );
 
                     $fields = json_decode($match[1], true, 32, JSON_THROW_ON_ERROR);
                     self::assertIsArray($fields);

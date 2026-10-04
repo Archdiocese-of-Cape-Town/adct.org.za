@@ -143,8 +143,9 @@ final class ReviewQueuePolicyTest extends TestCase
      * keys are gone — not set to false, because
      * {@see \ADCT\ParishIntake\Core\Matching\MatchReviewPolicy::requiresManualReview()}
      * decides on key *presence* — and the parish column agrees with
-     * `fields['parish_id']`. A duplicate the reviewer resolved deliberately keeps
-     * its `duplicate` status; it is no longer ambiguous, so nothing blocks it.
+          * `fields['parish_id']`. A duplicate the reviewer resolved deliberately
+          * returns to `awaiting_approval` (#218), so it is approvable on that status
+          * rather than on `duplicate` with the keys gone.
      *
      * And a deliberate "leave it unassigned" answer is a real resolution too: the
      * keys are gone, there is no `fields['parish_id']` to disagree with the NULL

@@ -1011,6 +1011,144 @@ final class ReviewQueueRepositoryTest extends TestCase
             $this->repository($database)->assignParish(4, 12, 7, 'reviewer@example.test', true, null, true);
         }
 
+                /**
+                 * Issue #218, the whole defect in one statement: a `duplicate` row is a
+                 * candidate a reviewer still has to decide about, `canDecide()` says so
+                 * (#217), and the queue lists it — yet the write path refused exactly the
+                 * status the policy allows, so the detail screen offered a control that
+                 * always failed with "Only an undecided candidate can be assigned a
+                 * parish."
+                 *
+                 * Resolving one therefore returns it to `awaiting_approval` in the same
+                 * statement that clears the block, and the `WHERE` names the status the
+                 * row was actually locked under. Both halves matter: a row that stayed
+                 * `duplicate` with the ambiguity keys removed drops out of
+                 * {@see where()} — that listing keys off `fields` — and would be
+                 * permanently invisible and unapprovable, which is the dead end #177
+                 * exists to remove.
+                 */
+                public function testResolvingADuplicateReturnsItToAwaitingApproval(): void
+                {
+                    $update = $this->resolveMatch(['status' => 'duplicate', 'parish_id' => 12], ['parish_id' => 12]);
+
+                    self::assertNotNull($update, 'A duplicate is an undecided candidate and must be resolvable.');
+                    self::assertStringContainsString(
+                        "status = 'awaiting_approval'",
+                        $update,
+                        'A human who resolved the duplicate proved it was not one, so it goes back to the '
+                        . 'ordinary approval queue rather than vanishing from it.'
+                    );
+                    self::assertStringContainsString(
+                        "status = 'duplicate'",
+                        $update,
+                        'The WHERE still names the status the row was locked under, so the write stays atomic '
+                        . 'against a second reviewer racing this one.'
+                    );
+                    self::assertSame(
+                        2,
+                        substr_count($update, 'status = '),
+                        "Exactly one status in SET and one in WHERE: naming 'awaiting_approval' in the guard as "
+                        . 'well would write a row the WHERE could never match.'
+                    );
+                }
+
+                /**
+                 * The bulk assignment form is a different act and keeps its narrower rule.
+                 *
+                 * It has no resolution panel, so widening it would let a bulk assignment
+                 * clear a duplicate's block without anybody naming a match — and would
+                 * leave the row `duplicate` with the keys gone, i.e. invisible. The two
+                 * routes disagree on purpose now, which is exactly the disagreement #218
+                 * is about, resolved deliberately rather than inherited.
+                 */
+                public function testBulkAssignmentStillRefusesADuplicateCandidate(): void
+                {
+                    $database = new ReviewQueueRecordingDatabase();
+                    $database->resultRows = [[
+                        'id' => '4', 'status' => 'duplicate', 'approved_by' => null, 'decided_at' => null,
+                        'parish_id' => null, 'fields' => '{"title":"Fictional event","match_review_required":true}',
+                    ]];
+                    $database->lookupRows = [12 => ['id' => '12']];
+
+                    $message = null;
+                    try {
+                        $this->repository($database)->assignParish(4, 12, 7, 'reviewer@example.test');
+                    } catch (DomainException $failure) {
+                        $message = $failure->getMessage();
+                    }
+
+                    self::assertSame('Only an undecided candidate can be assigned a parish.', $message);
+                    self::assertNull(
+                        $this->updateOfParishAndFields($database->queries),
+                        'The bulk route must write nothing for a duplicate.'
+                    );
+                }
+
+                /**
+                 * The widened guard must not become a wider door: `duplicate` is only as
+                 * resolvable as it is undecided. A duplicate somebody already decided is
+                 * still refused, which is the same `approved_by`/`decided_at` guard as
+                 * before, not a new one.
+                 */
+                public function testResolvingADuplicateThatWasAlreadyDecidedIsRefused(): void
+                {
+                    $database = new ReviewQueueRecordingDatabase();
+                    $database->resultRows = [[
+                        'id' => '4', 'status' => 'duplicate', 'approved_by' => 'dean@example.test',
+                        'decided_at' => '2026-03-01 08:00:00', 'parish_id' => null,
+                        'fields' => '{"title":"Fictional event","match_review_required":true}',
+                    ]];
+
+                    $this->expectException(DomainException::class);
+                    $this->repository($database)->assignParish(4, 12, 7, 'reviewer@example.test', true, null, true);
+                }
+
+                /**
+                 * The trail has to name the status move, or an auditor reading
+                 * `candidate_match_resolved` cannot tell a routine unblock from a
+                 * duplicate being returned to the approval queue — which is the only
+                 * thing that makes it visible there again.
+                 */
+                public function testResolvingADuplicateAuditsTheStatusItMovedFromAndTo(): void
+                {
+                    $database = new ReviewQueueRecordingDatabase();
+                    $database->writesSucceed = true;
+                    $database->resultRows = [[
+                        'id' => '4', 'status' => 'duplicate', 'approved_by' => null, 'decided_at' => null,
+                        'parish_id' => '12', 'fields' => '{"title":"Fictional event","match_review_required":true}',
+                    ]];
+                    $database->lookupRows = [12 => ['id' => '12']];
+
+                    $this->repository($database)->assignParish(4, 12, 7, 'reviewer@example.test', true, null, true);
+
+                    $resolved = $this->auditRow($database->queries, 'candidate_match_resolved');
+                    self::assertNotNull($resolved);
+                    self::assertStringContainsString('"from_status":"duplicate"', $resolved);
+                    self::assertStringContainsString('"to_status":"awaiting_approval"', $resolved);
+                }
+
+                /**
+                 * The plain assignment keeps its own details shape: it moves no status, so
+                 * naming one it did not move would be a lie in the audit trail.
+                 */
+                public function testAPlainAssignmentAuditsNoStatusChange(): void
+                {
+                    $database = new ReviewQueueRecordingDatabase();
+                    $database->writesSucceed = true;
+                    $database->resultRows = [[
+                        'id' => '4', 'status' => 'awaiting_approval', 'approved_by' => null, 'decided_at' => null,
+                        'parish_id' => '3', 'fields' => '{"title":"Fictional event"}',
+                    ]];
+                    $database->lookupRows = [12 => ['id' => '12']];
+
+                    $this->repository($database)->assignParish(4, 12, 7, 'reviewer@example.test');
+
+                    $assigned = $this->auditRow($database->queries, 'candidate_parish_assigned');
+                    self::assertNotNull($assigned);
+                    self::assertStringNotContainsString('"from_status"', $assigned);
+                    self::assertStringNotContainsString('"to_status"', $assigned);
+                }
+
         /**
          * A venue from another parish is refused on both routes, but the two say
          * different things: the bulk form's reviewer must go and resolve the venue,
@@ -1055,20 +1193,26 @@ final class ReviewQueueRepositoryTest extends TestCase
         /**
          * Resolves an ambiguous candidate and returns the `UPDATE` it issued.
          *
-         * @param array<string, mixed> $storedRow  the locked candidate, as stored
-         * @param array<string, mixed> $expectFields keys that must survive into `fields`
-         */
-        private function resolveMatch(
-            array $storedRow,
-            array $expectFields,
-            ?int $venueId = null,
-            int $parishId = 12
-        ): ?string {
-            $database = new ReviewQueueRecordingDatabase();
-            $database->resultRows = [[
-                'id' => '4', 'status' => 'awaiting_approval', 'approved_by' => null, 'decided_at' => null,
-                'fields' => '{"title":"Fictional event","match_review_required":true,"matched_candidate_id":9}',
-            ] + $storedRow];
+                 * `$storedRow` is merged *over* the defaults with `array_merge()`, not with
+                 * `+`: the union operator keeps the left-hand value for a key both sides
+                 * have, so `['status' => 'awaiting_approval'] + ['status' => 'duplicate']`
+                 * is still `awaiting_approval`, and issue #218's whole subject would have
+                 * been silently unreachable from this helper.
+                 *
+                 * @param array<string, mixed> $storedRow  the locked candidate, as stored
+                 * @param array<string, mixed> $expectFields keys that must survive into `fields`
+                 */
+                private function resolveMatch(
+                    array $storedRow,
+                    array $expectFields,
+                    ?int $venueId = null,
+                    int $parishId = 12
+                ): ?string {
+                    $database = new ReviewQueueRecordingDatabase();
+                    $database->resultRows = [array_merge([
+                        'id' => '4', 'status' => 'awaiting_approval', 'approved_by' => null, 'decided_at' => null,
+                        'fields' => '{"title":"Fictional event","match_review_required":true,"matched_candidate_id":9}',
+                    ], $storedRow)];
             $database->lookupRows = [12 => ['id' => '12'], 77 => ['id' => '77']];
 
             $this->repository($database)->assignParish(4, $parishId, 7, 'reviewer@example.test', true, $venueId, true);
