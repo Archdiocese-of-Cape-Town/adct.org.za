@@ -129,11 +129,15 @@ use ADCT\ParishIntake\WordPress\Database\SenderSuggestionMigration;
 use ADCT\ParishIntake\WordPress\Attachments\ActionTokenImageEndpoint;
 use ADCT\ParishIntake\WordPress\Attachments\AttachmentImageEndpoint;
 use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
+use ADCT\ParishIntake\WordPress\Attachments\SourceMaterialAuditTrail;
+use ADCT\ParishIntake\WordPress\Attachments\WordPressSourceMaterialCopier;
+use ADCT\ParishIntake\WordPress\Attachments\WordPressSourceMaterialStore;
 use ADCT\ParishIntake\WordPress\Attachments\WordPressCandidateSourceMessage;
 use ADCT\ParishIntake\WordPress\Attachments\WordPressPreviewableImageRepository;
 use ADCT\ParishIntake\WordPress\Audit\AuditLogRepository;
 use ADCT\ParishIntake\WordPress\Audit\ContactAuditRecorder;
 use ADCT\ParishIntake\Core\Attachments\CandidateSourceImageResolver;
+use ADCT\ParishIntake\Core\Attachments\SourceMaterialPromotion;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
@@ -188,6 +192,7 @@ use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
+use ADCT\ParishIntake\WordPress\Events\EventSourceMaterialEditor;
 use ADCT\ParishIntake\WordPress\Events\PublicEventPage;
 use ADCT\ParishIntake\WordPress\Events\EventTypeKeywords;
 use ADCT\ParishIntake\WordPress\Events\PublicEventListing;
@@ -356,6 +361,16 @@ private ?ReviewQueueRepository $reviewQueue = null;
     private ?MagicLinkLoginRequestPage $magicLinkLoginRequestPage = null;
     private ReviewerNotificationPreference $reviewerNotificationPreference;
     private ?OcrControl $ocrControl = null;
+
+    /**
+     * The event editor's poster and bulletin box, built on first use.
+     *
+     * Lazy for the same reason {@see ocrControl()} is: `Plugin` is constructed
+     * by the release bootstrap check with no WordPress loaded, so nothing here
+     * may touch a global. The box is optional ? when its collaborators cannot be
+     * built the property stays null and the meta box is simply not registered.
+     */
+    private ?EventSourceMaterialEditor $eventSourceMaterial = null;
     private AttachmentImageEndpoint $attachmentImageEndpoint;
 
     /**
@@ -376,6 +391,27 @@ private ?ReviewQueueRepository $reviewQueue = null;
         }
 
         return $this->ocrControl;
+    }
+
+    /**
+     * The promotion rules shared by the review queue's promote control and the
+     * event editor's box (issue #172).
+     *
+     * Both surfaces get the *same* instance so the rules ? at most one poster,
+     * a copy taken at the moment of the decision, removal never deletes ? cannot
+     * drift apart between them.
+     */
+    private function sourceMaterialPromotion(): SourceMaterialPromotion
+    {
+        return new SourceMaterialPromotion(
+            new WordPressSourceMaterialCopier(new ProtectedInboundMailStorage()),
+            new WordPressSourceMaterialStore()
+        );
+    }
+
+    private function sourceMaterialAuditTrail(): SourceMaterialAuditTrail
+    {
+        return new SourceMaterialAuditTrail($this->auditLog, $this->auditLog->actorResolver());
     }
 
     private function __construct(string $pluginFile)
@@ -590,7 +626,17 @@ private ?ReviewQueueRepository $reviewQueue = null;
                 $this->ocrControl(),
                 $this->attachmentImageEndpoint,
                 $this->confirmationResendService(),
-                $subjectAuditPanel
+                $subjectAuditPanel,
+                $this->sourceMaterialPromotion(),
+                $this->sourceMaterialAuditTrail()
+            );
+            // #172: the event editor's poster and bulletin box, sharing this
+            // repository so a file it offers is a file the queue would offer.
+            $this->eventSourceMaterial = new EventSourceMaterialEditor(
+                $this->sourceMaterialPromotion(),
+                $this->reviewQueue,
+                $attachmentRepository,
+                $this->sourceMaterialAuditTrail()
             );
         // #72: the same repository and policy behind a front-end page, so a
         // dean is scoped by exactly the same predicate as a reviewer in
@@ -602,6 +648,9 @@ private ?ReviewQueueRepository $reviewQueue = null;
             new CandidateEditValidator()
         );
         }
+        // Attached rather than passed to the constructor: EventEditor's own
+        // constructor runs before the review queue repository exists.
+        $this->eventEditor->attachSourceMaterial($this->eventSourceMaterial);
         $this->eventOccurrenceHooks = new EventOccurrenceHooks(
             $occurrenceMaintenance,
             $clock,
@@ -1192,6 +1241,18 @@ private ?ReviewQueueRepository $reviewQueue = null;
             'add_meta_boxes_' . EventPostType::POST_TYPE,
             [$this->changeHistoryBox, 'register']
         );
+        // #172: two separate routes rather than one with a mode, because a remove
+        // takes a file off the public site and must never be reachable by pressing
+        // Enter in a filename field. Both ask the box to check the capability
+        // before the nonce.
+        add_action(
+            'admin_post_' . EventSourceMaterialEditor::ADD_ACTION,
+            [$this->eventSourceMaterial, 'handleAdd']
+        );
+        add_action(
+            'admin_post_' . EventSourceMaterialEditor::REMOVE_ACTION,
+            [$this->eventSourceMaterial, 'handleRemove']
+        );
         add_action('save_post_adct_event', [$this->eventEditor, 'handleSavePost'], 10, 3);
         add_action('save_post_adct_event', [$this->eventOccurrenceHooks, 'handleSavePost'], 20, 3);
         add_action(
@@ -1302,6 +1363,10 @@ private ?ReviewQueueRepository $reviewQueue = null;
         );
         add_action('admin_post_adct_pi_review_bulk', [$this->reviewQueuePage, 'handleBulk']);
         add_action('admin_post_adct_pi_candidate_save', [$this->reviewQueuePage, 'handleSave']);
+        add_action(
+            'admin_post_' . ReviewQueuePage::PROMOTE_SOURCE_ACTION,
+            [$this->reviewQueuePage, 'handlePromoteSourceMaterial']
+        );
         add_action(
             'admin_post_adct_pi_candidate_raw_message',
             [$this->reviewQueuePage, 'handleRawMessage']

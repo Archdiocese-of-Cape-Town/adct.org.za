@@ -64,6 +64,22 @@ final class EventEditor
     ) {
     }
 
+    /**
+     * Attach the poster and bulletin box after construction (issue #172).
+     *
+     * The box needs the review queue repository, which is only built once
+     * WordPress has loaded and has read a setting from the options table, so it
+     * cannot be built at the same time as this editor. Passing it to the
+     * constructor would force either a null box or a second repository
+     * configured differently from the one the review queue uses, and two
+     * repositories configured differently is how a file ends up offered on one
+     * screen and not the other.
+     */
+    public function attachSourceMaterial(?EventSourceMaterialEditor $sourceMaterial): void
+    {
+        $this->sourceMaterial = $sourceMaterial;
+    }
+
     public function registerMetaBox(): void
     {
         add_meta_box(
