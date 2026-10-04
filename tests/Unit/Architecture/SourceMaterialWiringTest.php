@@ -144,14 +144,14 @@ final class SourceMaterialWiringTest extends TestCase
 
         $last = $parameters[count($parameters) - 1];
 
-                self::assertInstanceOf(ReflectionNamedType::class, $last->getType());
-                self::assertSame(
-                    'ADCT\\ParishIntake\\WordPress\\Events\\EventSourceMaterialEditor',
-                    $last->getType()->getName(),
-                    'The last constructor parameter is the box.'
-                );
-                self::assertTrue($last->isDefaultValueAvailable(), 'And it stays optional.');
-                self::assertTrue($last->getType()->allowsNull(), 'And nullable, so a site without it still boots.');
+        self::assertInstanceOf(ReflectionNamedType::class, $last->getType());
+        self::assertSame(
+            'ADCT\\ParishIntake\\WordPress\\Events\\EventSourceMaterialEditor',
+            $last->getType()->getName(),
+            'The last constructor parameter is the box.'
+        );
+        self::assertTrue($last->isDefaultValueAvailable(), 'And it stays optional.');
+        self::assertTrue($last->getType()->allowsNull(), 'And nullable, so a site without it still boots.');
     }
 
     public function testAttachSourceMaterialIsTheOnlyWayToSetTheBox(): void
@@ -170,10 +170,10 @@ final class SourceMaterialWiringTest extends TestCase
         self::assertInstanceOf(ReflectionNamedType::class, $type);
         self::assertSame(
             'ADCT\\ParishIntake\\WordPress\\Events\\EventSourceMaterialEditor',
-                    $type->getName(),
-                    'Nullable, so a site without the collaborators can still boot.'
-                );
-                self::assertTrue($type->allowsNull(), 'And nullable, for the same reason.');
+            $type->getName(),
+        'Nullable, so a site without the collaborators can still boot.'
+        );
+        self::assertTrue($type->allowsNull(), 'And nullable, for the same reason.');
     }
 
     /**
