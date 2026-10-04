@@ -308,7 +308,7 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
         );
 
         return $this->snapshot($eventId);
-            }
+    }
 
     /**
      * Whether anything was recorded against this event after the change under

@@ -230,14 +230,14 @@ final class ChangeDiff
                 ? self::localDateTime((string) $value)
                 : '(none)';
         }
-                if ($label === 'All day' || $label === 'Featured') {
-                            // WordPress stores these flags as the strings '0' and '1', so a
-                            // raw render prints "Featured: 0 -> 1" and leaves the approver to
-                            // work out which way round it went.
-                            return is_scalar($value) && (string) $value !== ''
-                                ? (self::isTruthy((string) $value) ? 'Yes' : 'No')
-                                : '(none)';
-                        }
+        if ($label === 'All day' || $label === 'Featured') {
+            // WordPress stores these flags as the strings '0' and '1', so a
+            // raw render prints "Featured: 0 -> 1" and leaves the approver to
+            // work out which way round it went.
+            return is_scalar($value) && (string) $value !== ''
+                ? (self::isTruthy((string) $value) ? 'Yes' : 'No')
+                : '(none)';
+        }
         if ($label === 'Repeats') {
             return is_scalar($value) && (string) $value !== ''
                 ? RecurrenceSummary::describe((string) $value) . ' (' . (string) $value . ')'
@@ -248,16 +248,16 @@ final class ChangeDiff
     }
 
     /**
-         * How WordPress writes a stored flag meta value: '1' and 'true' are set,
-         * '0', 'false' and '' are not.
-         */
-        private static function isTruthy(string $value): bool
-        {
-            return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
-        }
+     * How WordPress writes a stored flag meta value: '1' and 'true' are set,
+     * '0', 'false' and '' are not.
+     */
+    private static function isTruthy(string $value): bool
+    {
+        return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
+    }
 
-        /**
-         * Anything that is not a string, a number or a list reads as "nothing"
+    /**
+     * Anything that is not a string, a number or a list reads as "nothing"
      * rather than as the word "Array", so a malformed payload cannot put a PHP
      * notice into the body of a mail an approver is reading.
      */
