@@ -50,25 +50,6 @@ namespace ADCT\ParishIntake\WordPress\Auth {
 
 namespace {
 
-    if (! class_exists('WP_User', false)) {
-        /**
-         * Stand-in for the WordPress user class ApprovalRecipients type-checks.
-         */
-        class WP_User
-        {
-            public int $ID = 0;
-            public string $user_email = '';
-            public int $user_status = 0;
-
-            public function __construct(int $id, string $email, int $userStatus = 0)
-            {
-                $this->ID = $id;
-                $this->user_email = $email;
-                $this->user_status = $userStatus;
-            }
-        }
-    }
-
     if (! class_exists('WP_Screen', false)) {
         /**
          * Stand-in for the WordPress screen object, in the global namespace
@@ -247,13 +228,6 @@ namespace {
             throw new \AdctTestRedirect($location);
         }
     }
-
-    if (! function_exists('wp_get_current_user')) {
-        function wp_get_current_user(): \WP_User
-        {
-            return $GLOBALS['adct_test_current_user'] ?? new \WP_User(0, '');
-        }
-    }
 }
 
 namespace ADCT\ParishIntake\WordPress\Admin {
@@ -262,20 +236,6 @@ namespace ADCT\ParishIntake\WordPress\Admin {
         function get_current_screen(): ?\WP_Screen
         {
             return $GLOBALS['adct_test_wp_screen'] ?? null;
-        }
-    }
-
-    if (! function_exists('ADCT\ParishIntake\WordPress\Admin\current_user_can')) {
-        /**
-         * Driven through a global, so a test can decide exactly what the user
-         * holds. ParserPageTest declares its own copy that always returned true;
-         * whichever file PHPUnit happened to include first won, which made any
-         * capability gate in this namespace untestable. This one is declared
-         * once, here, and every test in the namespace drives it.
-         */
-        function current_user_can(string $capability): bool
-        {
-            return in_array($capability, $GLOBALS['adct_test_wp_caps'] ?? [], true);
         }
     }
 
@@ -405,29 +365,6 @@ namespace ADCT\ParishIntake\WordPress\Approval {
      * Each test drives these through the globals named below and clears them
      * again in tearDown().
      */
-    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\current_user_can')) {
-        /**
-         * The *acting* user's own capability, as WordPress decides it from the
-         * current user rather than from a target. Distinct from user_can()
-         * below, which answers about a named user, and from the
-         * Admin-namespace copy, which answers about capabilities in wp-admin.
-         *
-         * The variadic second argument exists because production calls this
-         * with a user ID for the 'edit_user' meta-capability. This stub has no
-         * request context to resolve that ID against — resolving it properly
-         * needs the roles WordPress loaded for the current user, which is a
-         * WordPress service rather than plugin logic — so it answers from the
-         * acting user's own capability list, and each test that relies on the
-         * target having to say so explicitly. See
-         * ReviewerNotificationPreferenceTest::testTheTargetIsGuardedSeparatelyFromTheActor().
-         */
-        function current_user_can(string $capability, int|string ...$arguments): bool
-        {
-            $actorId = (int) ($GLOBALS['adct_test_current_user_id'] ?? 0);
-
-            return in_array($capability, $GLOBALS['adct_test_wp_caps'][$actorId] ?? [], true);
-        }
-    }
 
     if (! function_exists('ADCT\ParishIntake\WordPress\Approval\wp_die')) {
         /**
@@ -441,93 +378,6 @@ namespace ADCT\ParishIntake\WordPress\Approval {
         function wp_die(string $message = '', $title = '', array $arguments = []): never
         {
             throw new \AdctTestWpDie($message, (int) ($arguments['response'] ?? 500));
-        }
-    }
-
-    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\get_users')) {
-        /**
-         * Answers the 'capability' => REVIEW query ApprovalRecipients filters
-         * reviewers with. A user whose capability list no longer holds REVIEW
-         * drops out of the result, which is how the revocation tests withdraw
-         * an entitlement without touching production code.
-         */
-        function get_users(array $args = []): array
-        {
-            $users = $GLOBALS['adct_test_wp_users'] ?? [];
-            $capability = $args['capability'] ?? null;
-
-            if (! is_string($capability)) {
-                return $users;
-            }
-
-            return array_filter(
-                $users,
-                static fn (mixed $user): bool => in_array(
-                    $capability,
-                    $GLOBALS['adct_test_wp_caps'][$user instanceof \WP_User ? (int) $user->ID : (int) $user] ?? [],
-                    true
-                )
-            );
-        }
-    }
-
-    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\get_userdata')) {
-        function get_userdata(int $userId): ?\WP_User
-        {
-            return ($GLOBALS['adct_test_wp_users'] ?? [])[$userId] ?? null;
-        }
-    }
-
-    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\user_can')) {
-        /**
-         * Accepts a user object or a bare ID, because production does both:
-         * ApprovalRecipients and ConfirmationDecisionHandler pass the object
-         * they already hold, while ReviewerNotificationPreference::save() has
-         * only the ID WordPress hands the profile-update hook. The real
-         * WordPress function takes either, so the stub must too.
-         *
-         * Capabilities are read per user from $GLOBALS['adct_test_wp_caps'],
-         * keyed by user ID, not as one flat list, so a test can hold a
-         * reviewer's entitlement while denying the same capability to someone
-         * else — which is how the "who may this belong to" guards are tested.
-         */
-        function user_can(\WP_User|int $user, string $capability): bool
-        {
-            $userId = $user instanceof \WP_User ? $user->ID : $user;
-
-            return in_array($capability, $GLOBALS['adct_test_wp_caps'][$userId] ?? [], true);
-        }
-    }
-
-    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\get_user_meta')) {
-        function get_user_meta(int $userId, string $key, bool $single = false): string
-        {
-            return (string) ($GLOBALS['adct_test_wp_meta'][$userId][$key] ?? '');
-        }
-    }
-
-    if (! function_exists('ADCT\ParishIntake\WordPress\Approval\update_user_meta')) {
-        /**
-         * Writes to the same global get_user_meta() reads, so a test can assert
-         * what persisted without a database.
-         *
-         * Listing a key in $GLOBALS['adct_test_wp_meta_fails'] makes the write
-         * report success while storing nothing, which is the only way to reach
-         * the read-back branches in save(). On real WordPress a write can be
-         * accepted and then not stick — a full object cache, a database that is
-         * read-only — and that is precisely the case where telling the user
-         * "saved" would be a lie.
-         *
-         * @param mixed $value
-         */
-        function update_user_meta(int $userId, string $key, $value): bool
-        {
-            if (in_array($key, (array) ($GLOBALS['adct_test_wp_meta_fails'] ?? []), true)) {
-                return true;
-            }
-            $GLOBALS['adct_test_wp_meta'][$userId][$key] = $value;
-
-            return true;
         }
     }
 

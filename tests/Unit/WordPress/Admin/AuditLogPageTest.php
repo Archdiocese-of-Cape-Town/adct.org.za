@@ -29,6 +29,7 @@ namespace {
           * because the screens under test call them unqualified.
           */
          require_once dirname(__DIR__, 3) . '/Support/WordPressStubs.php';
+         require_once dirname(__DIR__, 3) . '/Support/WordPressCapabilityStubs.php';
          require_once dirname(__DIR__, 3) . '/Support/AdminWordPressStubs.php';
 }
 

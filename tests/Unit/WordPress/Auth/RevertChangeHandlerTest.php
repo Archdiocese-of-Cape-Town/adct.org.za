@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace {
     require_once __DIR__ . '/../../../Support/WordPressStubs.php';
+require_once __DIR__ . '/../../../Support/WordPressCapabilityStubs.php';
 
     if (! class_exists('WP_Post', false)) {
         class WP_Post

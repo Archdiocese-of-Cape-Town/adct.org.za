@@ -233,6 +233,7 @@ namespace ADCT\ParishIntake\WordPress\Approval {
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
 
     require_once __DIR__ . '/../../../Support/WordPressAuthDoubles.php';
+    require_once __DIR__ . '/../../../Support/WordPressCapabilityStubs.php';
 
     /**
      * Stands in for the request ending, so a redirect can be asserted on.

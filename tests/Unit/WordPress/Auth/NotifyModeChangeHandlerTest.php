@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace {
     require_once __DIR__ . '/../../../Support/WordPressStubs.php';
+    require_once __DIR__ . '/../../../Support/WordPressCapabilityStubs.php';
     require_once __DIR__ . '/../../../Support/WordPressAuthDoubles.php';
     require_once __DIR__ . '/../../../Support/NotifyModeFakes.php';
 }
