@@ -65,6 +65,7 @@ use ADCT\ParishIntake\WordPress\Database\WordPressEventCandidateStore;
 use ADCT\ParishIntake\WordPress\Directory\DirectoryImportService;
 use ADCT\ParishIntake\WordPress\Directory\DeaneryApproverAssignmentService;
 use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
+use ADCT\ParishIntake\WordPress\Change\ChangeHistoryBox;
 use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
@@ -2399,6 +2400,15 @@ $eventMetaBox = $eventMetaBoxes['adct_event_details'] ?? null;
 
 if (! is_array($eventMetaBox) || ! is_callable($eventMetaBox['callback'] ?? null)) {
     $fail('The event details meta box was not registered.');
+}
+
+// The change history box (issue #71). Registered by the plugin on the same
+// hook, so the wiring itself is what is under test here: a box that renders
+// correctly in a unit test but is never registered is invisible in the admin.
+$changeHistoryMetaBox = $eventMetaBoxes[ChangeHistoryBox::BOX_ID] ?? null;
+
+if (! is_array($changeHistoryMetaBox) || ! is_callable($changeHistoryMetaBox['callback'] ?? null)) {
+    $fail('The change history meta box was not registered.');
 }
 
 if (($GLOBALS['wp_meta_boxes'][EventPostType::POST_TYPE]['normal']['core']['postcustom'] ?? false) !== false) {

@@ -177,6 +177,8 @@ use ADCT\ParishIntake\WordPress\Jobs\RetentionCleanupJob;
 use ADCT\ParishIntake\WordPress\Jobs\RetentionSettings;
 use ADCT\ParishIntake\WordPress\Jobs\OcrSettings;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
+use ADCT\ParishIntake\WordPress\Change\ChangeHistoryBox;
+use ADCT\ParishIntake\WordPress\Change\ChangeHistoryRepository;
 use ADCT\ParishIntake\WordPress\Change\ChangeNoticeJob;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailQueueImmediateDispatch;
@@ -331,6 +333,7 @@ final class Plugin
     private SourcesPage $sourcesPage;
     private EventPostType $eventPostType;
     private EventEditor $eventEditor;
+    private ChangeHistoryBox $changeHistoryBox;
     private EventOccurrenceHooks $eventOccurrenceHooks;
     private CandidatePublisher $candidatePublisher;
     private PublicEventListing $publicEventListing;
@@ -525,6 +528,13 @@ private ?ReviewQueueRepository $reviewQueue = null;
             $clock,
             $subjectAuditPanel
         );
+        // ADR 0008 point 4 promises approvers a before/after summary; the change
+        // notice mail carries it, and this box is the second place it has to be
+        // readable -- a dean answering "what did this event look like before you
+        // changed it?" weeks later is reading the event, not an old mail.
+        // Read-only, because both state transitions run over the mailed token
+        // flow (see ChangeHistoryBox).
+        $this->changeHistoryBox = new ChangeHistoryBox(new ChangeHistoryRepository($database));
         $occurrenceMaintenance = new WordPressEventOccurrenceMaintenance(
             $occurrences,
             new OccurrenceExpander($timezone, $rruleValidator),
@@ -1178,6 +1188,10 @@ private ?ReviewQueueRepository $reviewQueue = null;
         add_action('deleted_post_meta', [$this->publicEventListing, 'invalidateMeta'], 10, 2);
         add_action('set_object_terms', [$this->publicEventListing, 'invalidateTerms'], 10, 1);
         add_action('add_meta_boxes_adct_event', [$this->eventEditor, 'registerMetaBox']);
+        add_action(
+            'add_meta_boxes_' . EventPostType::POST_TYPE,
+            [$this->changeHistoryBox, 'register']
+        );
         add_action('save_post_adct_event', [$this->eventEditor, 'handleSavePost'], 10, 3);
         add_action('save_post_adct_event', [$this->eventOccurrenceHooks, 'handleSavePost'], 20, 3);
         add_action(

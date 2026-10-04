@@ -124,9 +124,9 @@ disjoint priority categories (unknown sender takes precedence). **Failed**
 includes expired items, failed previews, unusual states and approvals still
 awaiting publication; **Awaiting submitter** includes unsent drafts and is
 read-only. **Recently published** and **Recent decisions** show only the past
-30 days. **Recent changes** is empty for now: it will list verified-contact
-instant changes once #71 ships, and ordinary approved updates are never shown
-there as instant changes.
+30 days. **Recent changes** is a reserved tab with nothing in it yet; the
+change trail lives on each event&rsquo;s own edit screen (see
+[Change history on an event](#change-history-on-an-event)).
 
 Select up to 25 pending items to approve or reject. The first decision wins; subsequent attempts cannot overwrite it, and the row displays the deciding address and UTC time. If publishing fails after an approval is recorded, the item stays in the queue's **Failed** category, and the same approver can select it again to retry publication without another decision or audit record. Dean retries are matched to the active deanery assignment, even when its email differs from the WordPress account email. Fix invalid event details before retrying. Ambiguous matches and pending duplicates cannot be bulk-approved: open the candidate and use the **Resolve this match** panel at the top of its page to set the parish and venue yourself (#177); an undecided item still in awaiting approval can instead be rejected. The candidate link opens a bounded read-only preview, not an editor.
 
@@ -186,7 +186,52 @@ Occurrences use the inclusive site-local date window from today through the same
 
 The status flag is separate from WordPress's Draft/Published post status: it records Scheduled, Cancelled or Postponed. Publishing an event makes the post public; changing it away from Published or deleting it removes its occurrence rows. Cancelled occurrences remain stored and are marked cancelled; postponed occurrences remain stored and are not marked cancelled, while the event's Postponed status remains available for display. If occurrence rebuilding fails, the previous rows are preserved; the REST save reports an error, or the event editor shows an admin notice with a retry/contact instruction. A failed REST create has still saved the event and its error includes the event ID; update that saved event instead of repeating the create request. Contact name, email and phone are private event metadata, available only to users who can edit the event and never exposed by the public REST API. The starter event types (Social, Spiritual, Formation, Liturgy/Mass, Youth, Outreach, Fundraising, Meeting, Pilgrimage and Other) are **provisional**. Administrators and Editors can manage terms under **Events → Event Types**; event editors can assign existing terms. Edit a type's **Classification keywords** there, one word or phrase per line (up to 25 phrases, at most 100 bytes each and 3 KB total). A blank list disables automatic matching for that type; new custom types can have keywords too. The next parsed message uses the edited list without a deployment. The parser compares whole words/phrases in each event's cleaned title and body, weights title matches twice, and chooses a unique highest-scoring type. Ties and no match use Other with low *type* confidence (0.2); general parser confidence remains independent. Keyword matches are not copied into public event descriptions or diagnostic notes. Review the proposed type before approval: automatic types are assigned to new events, but subsequent automatically typed updates do not replace a type already chosen on the event. If several types are assigned, the occurrence row stores the lowest term ID for index compatibility; public listing filters match any assigned type.
 
+### Undoing a change
+
+Whoever is notified about a change to an event is emailed a **change notice**
+showing the field-by-field before and after, so they can see exactly what
+changed without opening anything. The same notice offers two ways to put it
+back.
+
+**Revert** undoes one change and restores the details the event had
+immediately before it: title, description, dates and times, venue, parish,
+recurrence, featured image and event type. Occurrences are rebuilt and the
+public listing is refreshed before the revert is recorded. The link works once
+and expires like the other mailed links, and the recipient's approval rights
+are checked again at the moment they press it, not when the mail was sent —
+someone moved to another deanery keeps the right to act on their old parish
+only if they still hold it, and not otherwise. Nothing is restored if a later
+change has already amended the event, because a link minted against one change
+must not act on an event that has since moved on; the notice then says the
+change is no longer the current one. If the event has been unpublished in the
+meantime, revert is refused as well.
+
+**Unpublish** takes a published event off the public events page and out of
+the calendar feed without deleting it. The stored occurrences stay, marked
+cancelled, so the history stays readable. The parish contact is told, because
+an event disappearing from the calendar is something they will notice.
+
+Both actions add their own row to the trail, so the history reads forwards and
+nothing is erased. To undo an unpublish, edit the event back to Published in
+the ordinary way and rebuild its occurrences; unpublish itself has no mailed
+undo link.
+
+Every revert and unpublish appears in the **Audit log** with the acting
+address, whether it succeeded or was refused, and which event it concerned.
+
+### Change history on an event
+
+An event's edit screen carries an **Event change history** box listing the 25
+most recent changes to that event, newest first, with who made each one, when,
+and what changed. It is there to answer "how did this event get like this?";
+it is deliberately read-only, because undoing a change is done through the
+permissioned emailed links above rather than from a screen where anyone with
+edit access could undo anyone's work without a token or an audit trail. If you
+can see the box, you can also see the changes themselves; the box appears only
+for someone allowed to edit that event.
+
 ### Public event listing
+
 Visitors can subscribe to the public calendar at `https://<site>/?adct_ics=1`, or to one parish with `&parish=<parish ID>` or one event type with `&type=<event type ID or slug>` (both may be combined). The feed uses Africa/Johannesburg time, a rolling year of published events, recurrence rules and cancellations. To keep shared hosting safe, a feed with more than 500 distinct events returns a temporary error rather than an incomplete calendar; use a parish or type feed. The public events listing now shows a **Subscribe** block directly under the result count, so visitors do not have to know the URL. It offers each feed twice: a normal link you can copy or bookmark, and an **Add to calendar app** link that uses the `webcal:` scheme. On an unfiltered or parish-filtered listing the block links to the whole matching calendar; when the visitor has ticked event types it links to one calendar per selected type instead of the full feed, so a subscription always matches what is on screen. The filter, sort and pagination links deliberately drop the subscribe parameter, so using them never cancels or disturbs a subscription you set up in another tab.
 
 Insert the **Upcoming events** block in the block editor, or put `[adct_events]` in a page. The optional shortcode attribute `period="week"` or `period="month"` selects a preset; the default lists the next year. Visitors can choose This week, This month or a custom **From / Through** date range, select several types (Ctrl/Command-click), and select a parish and/or deanery. Submit **Apply filters**; this works without JavaScript. With JavaScript, the same public listing refreshes without reloading via the read-only `GET /wp-json/adct-parish-intake/v1/events` endpoint. Dates are ISO `YYYY-MM-DD` in the URL; ranges must intersect today through one year from today, and requests are limited to 20 events per page and 100 pages (2,000 entries). At the cap, a notice asks visitors to narrow their dates if more events remain. The URL uses `adct_types[]`, `adct_parish`, `adct_deanery` and date/page parameters, so bookmarked filters and next/previous page links keep the selection, including sites using plain `?page_id=` or `?p=` permalinks. All chosen types match any assigned event type; parish and deanery together require both to match. The listing and its REST response only display published event posts and public title/date/location/type/recurrence/featured/status fields; they never include contact details or source emails. Place the block or shortcode on a page with an appropriate permalink and link to that page from the site's navigation when ready; the existing Google Calendar embed remains unchanged until separately replaced.

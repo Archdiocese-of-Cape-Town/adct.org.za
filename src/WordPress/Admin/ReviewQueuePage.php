@@ -339,7 +339,7 @@ final class ReviewQueuePage
                 <?php endforeach; ?>
             </nav>
             <?php if ($tab === 'recent_changes') : ?>
-                <p>Instant changes and Revert are not available until the verified-contact change workflow (#71) exists. Ordinary approval updates are not instant changes. Deans see the changes to their own deaneries&rsquo; events on the front-end queue (<code>[adct_pi_approval_queue]</code>, issue #72) and can ask for the emailed revert link from there.</p>
+                <p>The change trail lives on each event&rsquo;s own edit screen, in the <strong>Event change history</strong> box (#71). Ordinary approval updates are not listed as instant changes. Deans see the changes to their own deaneries&rsquo; events on the front-end queue (<code>[adct_pi_approval_queue]</code>, issue #72) and can ask for the emailed revert link from there.</p>
             <?php else : ?>
                 <form method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>">
                     <input type="hidden" name="page" value="<?php echo esc_attr(self::PAGE_SLUG); ?>" />
