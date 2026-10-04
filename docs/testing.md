@@ -203,7 +203,11 @@ a real bulletin into a test site.
 4. Expect the success page *"Thank you, your dean or the archdiocese will approve it shortly."*
 5. Expect **two separate approval emails**: one to the dean and one to each Intake reviewer. Each must
    contain `Parish:`, the event title, date, time, venue and `Submitted by:`, followed by **Approve**,
-   **Reject** and **Edit** links. Note the order.
+   **Reject** and **Edit** links. Note the order. The `Submitted by:` line reads the submitter's address
+   with their display name in parentheses; when the source email carries no name it reads
+   `(no name supplied)`. The name is there so the approver can check it against the parish's known
+   contact — it is **not** a sign the sender is verified, and the `Unknown sender`/DMARC warning line
+   is the trust signal (see [architecture.md](architecture.md#sender-identity-beside-sender-trust-170)).
 6. Dean opens their **Approve** link. Record the preview page (title *Review event*, `Parish:`, the event
    fields, `Submitted by:`), then press the button. Expect the success page and a **View published event**
    link that resolves.

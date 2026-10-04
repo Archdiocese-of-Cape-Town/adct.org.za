@@ -23,6 +23,7 @@ use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 use ADCT\ParishIntake\Core\Auth\ActionTokenRecord;
 use ADCT\ParishIntake\Core\Mail\MailQueueStatus;
 use ADCT\ParishIntake\Core\Mail\OutboundEmail;
+use ADCT\ParishIntake\Core\Parsing\UnparsedDateTimeCandidate;
 use ADCT\ParishIntake\Core\Ports\ApprovalRouteRepositoryInterface;
 use ADCT\ParishIntake\Core\Ports\ActionTokenStoreInterface;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
@@ -73,7 +74,7 @@ final class ApprovalNoticeJobTest extends TestCase
         parent::tearDown();
     }
 
-            public function testCorruptCandidateFieldsFailTheJobInsteadOfBeingSilentlySkipped(): void
+    public function testCorruptCandidateFieldsFailTheJobInsteadOfBeingSilentlySkipped(): void
     {
         $database = $this->createMock(DatabaseConnectionInterface::class);
         $database->method('prefix')->willReturn('wp_');
@@ -189,50 +190,50 @@ final class ApprovalNoticeJobTest extends TestCase
         yield 'manual review flag in fields' => [['match_review_required' => true]];
     }
 
-        /**
-         * A parish row can disappear between intake and the notice run - an operator
-         * merges or deletes it, or a partially restored backup brings back the
-         * candidate without its parish. Every other candidate in the batch still
-         * needs its notice, so the orphan must be stepped over rather than thrown.
-         */
-        public function testACandidateWhoseParishNoLongerExistsIsSkippedWithoutStoppingTheRun(): void
-        {
-            $database = $this->createMock(DatabaseConnectionInterface::class);
-            $database->method('prefix')->willReturn('wp_');
-            $database->method('lastError')->willReturn('');
-            $database->method('prepare')->willReturnCallback(static fn (string $sql, mixed ...$args): string => $sql);
-            $database->method('getResults')->willReturnOnConsecutiveCalls(
-                [],
-                [
-                    ['id' => 12, 'fields' => '{"title":"Orphaned"}', 'match_kind' => 'new',
-                        'status' => 'awaiting_approval', 'parish_id' => 5, 'notes' => '[]'],
-                    ['id' => 13, 'fields' => '{"title":"Still here"}', 'match_kind' => 'new',
-                        'status' => 'awaiting_approval', 'parish_id' => 6, 'notes' => '[]'],
-                ]
-            );
+    /**
+     * A parish row can disappear between intake and the notice run - an operator
+     * merges or deletes it, or a partially restored backup brings back the
+     * candidate without its parish. Every other candidate in the batch still
+     * needs its notice, so the orphan must be stepped over rather than thrown.
+     */
+    public function testACandidateWhoseParishNoLongerExistsIsSkippedWithoutStoppingTheRun(): void
+    {
+        $database = $this->createMock(DatabaseConnectionInterface::class);
+        $database->method('prefix')->willReturn('wp_');
+        $database->method('lastError')->willReturn('');
+        $database->method('prepare')->willReturnCallback(static fn (string $sql, mixed ...$args): string => $sql);
+        $database->method('getResults')->willReturnOnConsecutiveCalls(
+            [],
+            [
+                ['id' => 12, 'fields' => '{"title":"Orphaned"}', 'match_kind' => 'new',
+                    'status' => 'awaiting_approval', 'parish_id' => 5, 'notes' => '[]'],
+                ['id' => 13, 'fields' => '{"title":"Still here"}', 'match_kind' => 'new',
+                    'status' => 'awaiting_approval', 'parish_id' => 6, 'notes' => '[]'],
+            ]
+        );
 
-            $routes = $this->createMock(ApprovalRouteRepositoryInterface::class);
-            $routes->method('findForParish')->willReturnCallback(
-                static fn (int $parishId): ?ApprovalRouteSnapshot => $parishId === 5
-                    ? null
-                    : new ApprovalRouteSnapshot(1, true, [])
-            );
+        $routes = $this->createMock(ApprovalRouteRepositoryInterface::class);
+        $routes->method('findForParish')->willReturnCallback(
+            static fn (int $parishId): ?ApprovalRouteSnapshot => $parishId === 5
+                ? null
+                : new ApprovalRouteSnapshot(1, true, [])
+        );
 
-            $job = new ApprovalNoticeJob(
-                $database,
-                new ApprovalRecipients(new ApprovalRouteResolver($routes)),
-                new ActionTokenService($this->createMock(ActionTokenStoreInterface::class), $this->createMock(ClockInterface::class)),
-                $this->createMock(MailerInterface::class),
-                $this->createMock(MailQueueRepositoryInterface::class),
-                $this->createMock(ClockInterface::class),
-                new DeaneryApproverRepository($database)
-            );
+        $job = new ApprovalNoticeJob(
+            $database,
+            new ApprovalRecipients(new ApprovalRouteResolver($routes)),
+            new ActionTokenService($this->createMock(ActionTokenStoreInterface::class), $this->createMock(ClockInterface::class)),
+            $this->createMock(MailerInterface::class),
+            $this->createMock(MailQueueRepositoryInterface::class),
+            $this->createMock(ClockInterface::class),
+            new DeaneryApproverRepository($database)
+        );
 
-            $result = $job->processNext(null);
+        $result = $job->processNext(null);
 
-            self::assertNotNull($result);
-            self::assertSame('13', $result->checkpoint());
-        }
+        self::assertNotNull($result);
+        self::assertSame('13', $result->checkpoint());
+    }
 
     #[DataProvider('digestHours')]
     public function testDigestGateOpensAtTheConfiguredLocalHour(int $hour, int $digestHour, bool $open): void
@@ -457,15 +458,303 @@ final class ApprovalNoticeJobTest extends TestCase
         );
     }
 
+/**
+     * #170: the approver is asked to judge one submission from an email, so
+     * the mail has to say who it came from and, separately, how much that
+     * name is worth. These tests pin the two apart: a name is identity only,
+     * and the warnings stay the sole trust signal.
+     */
+    public function testTheMailShowsTheSubmitterNameWithTheAddress(): void
+    {
+        $job = $this->runJobForApprover(
+            Approver::NOTIFY_EACH,
+            'dean-office@example.test',
+            new DateTimeImmutable('2026-09-24 03:15:00', new DateTimeZone('Africa/Johannesburg')),
+            null,
+            ['sender_name' => 'St Anne Parish Office']
+        );
+
+        self::assertCount(1, $job['enqueued']);
+        // Both bodies carry the name, and the address stays the stable
+        // identifier beside it: the name is free text from a header and can be
+        // misspelled, generic or spoofed, so it is never the only identifier.
+        self::assertStringContainsString('St Anne Parish Office', $job['enqueued'][0]->textBody);
+        self::assertStringContainsString('St Anne Parish Office', $job['enqueued'][0]->htmlBody);
+        self::assertStringContainsString('parish-office@example.test', $job['enqueued'][0]->textBody);
+        self::assertStringContainsString('parish-office@example.test', $job['enqueued'][0]->htmlBody);
+    }
+
     /**
-     * @param array<int, array{account: string, email: string}> $approvers
-     *        The WordPress accounts and the live deanery assignments behind the
-     *        notice addresses. Real parishes use three shapes: the approval
-     *        address is the account address; it is deliberately a different
-     *        address (the operator guide allows it); or it belongs to nobody
-     *        live. An empty list models the third: the mail still goes out,
-     *        because it is driven by the route, but there is nobody to bind a
-     *        preference token to.
+     * A name is not a trust signal. A sender the parser could not learn has to
+     * still be flagged, and the flag has to stand on a line of its own so the
+     * warning cannot be read as part of the name.
+     */
+    public function testANameNeverReadsAsEvidenceThatTheSenderIsTrusted(): void
+    {
+        $job = $this->runJobForApprover(
+            Approver::NOTIFY_EACH,
+            'dean-office@example.test',
+            new DateTimeImmutable('2026-09-24 03:15:00', new DateTimeZone('Africa/Johannesburg')),
+            null,
+            [
+                'sender_name' => 'St Anne Parish Office',
+                'notes' => json_encode(['unknown_sender', 'dmarc_fail'], JSON_THROW_ON_ERROR),
+            ]
+        );
+
+        self::assertCount(1, $job['enqueued']);
+        $lines = self::previewLines($job['enqueued'][0]);
+
+        $nameLine = self::lineContaining($lines, 'St Anne Parish Office');
+        self::assertNotNull($nameLine, 'The name must be shown on a line the approver can read.');
+        self::assertStringNotContainsStringIgnoringCase('verified', $nameLine);
+        self::assertStringNotContainsStringIgnoringCase('trusted', $nameLine);
+        self::assertStringNotContainsStringIgnoringCase('confirmed', $nameLine);
+        self::assertStringNotContainsStringIgnoringCase('authentic', $nameLine);
+
+        // The warnings survive alongside the name, on their own line. This is
+        // the whole of the trust signal: a name never adds to it.
+                    $warningLine = self::lineContaining($lines, 'Unknown sender');
+                    self::assertNotNull($warningLine, 'The sender-trust warning must still reach the approver.');
+                    self::assertStringContainsString('DMARC', $warningLine);
+                    self::assertStringContainsString('WARNING', $warningLine);
+                    self::assertNotSame($nameLine, $warningLine);
+    }
+
+    /**
+     * The unreadable date/time warning added by #167 is part of the same
+     * trust signal, and a name must not push it out of the mail.
+     */
+    public function testANameDoesNotDisplaceTheUnreadableDateWarning(): void
+    {
+        $job = $this->runJobForApprover(
+            Approver::NOTIFY_EACH,
+            'dean-office@example.test',
+            new DateTimeImmutable('2026-09-24 03:15:00', new DateTimeZone('Africa/Johannesburg')),
+            null,
+            [
+                'sender_name' => 'St Anne Parish Office',
+                'notes' => json_encode(
+                    [UnparsedDateTimeCandidate::DATE_REASON . ':32 October 2026'],
+                    JSON_THROW_ON_ERROR
+                ),
+            ]
+        );
+
+        self::assertCount(1, $job['enqueued']);
+        $body = $job['enqueued'][0]->textBody;
+
+        self::assertStringContainsString('St Anne Parish Office', $body);
+        self::assertStringContainsString('could not be read', $body);
+        self::assertStringContainsString('32 October 2026', $body);
+    }
+
+    /**
+     * sender_name is nullable, so most real notices have none. A blank line
+     * would read as a rendering bug; the approver is told the name is absent.
+     * "Unknown" is not an acceptable substitute for either value: it is
+     * already the word the trust warning uses for a sender we could not learn.
+     */
+    public function testAMissingNameSaysSoRatherThanLeavingAGap(): void
+    {
+        foreach (['', '   ', "\r\n\t"] as $absent) {
+            $job = $this->runJobForApprover(
+                Approver::NOTIFY_EACH,
+                'dean-office@example.test',
+                new DateTimeImmutable('2026-09-24 03:15:00', new DateTimeZone('Africa/Johannesburg')),
+                null,
+                ['sender_name' => $absent]
+            );
+
+            self::assertCount(1, $job['enqueued']);
+            $body = $job['enqueued'][0]->textBody;
+
+            self::assertStringContainsString('(no name supplied)', $body);
+            self::assertStringNotContainsString('Submitted by: Unknown', $body);
+            // The address is still there, and is still the identifier.
+            self::assertStringContainsString('parish-office@example.test', $body);
+            self::assertStringNotContainsString('(no name supplied)@', $body);
+        }
+    }
+
+    /**
+     * #170 asked for escaping in BOTH the text and the HTML body. This test
+     * deliberately does not escape the text part: it is checked for verbatim
+     * fidelity instead. That is a conscious departure from the stated
+     * criterion, not an oversight.
+     *
+     * The reason is the delivery path, not MIME semantics. In
+     * src/WordPress/Mail/WordPressMailDeliveryAdapter.php:18 the body sent is
+     * `$hasHtml ? $email->htmlBody : $email->textBody`, and textBody is only
+     * ever installed as `$mailer->AltBody` (:35). The text part is therefore
+     * never the rendered part, so escaping it would make the approver read
+     * "&lt;script&gt;" instead of the header that was actually sent.
+     * tests/fixtures/confirmation-email/preview.txt sets the precedent.
+     *
+     * This rests on that one line. If a future surface ever renders the text
+     * part as markup, the verbatim assertions below stop being safe and the
+     * decision has to be revisited.
+     *
+     * The HTML side is the escaping regression. sender_name is free text read
+     * off a message header, so it arrives from the internet and must never
+     * reach the HTML body as markup. Both assertions matter: dropping the
+     * escaping entirely trips the first, escaping somewhere other than the
+     * render path trips the second. This is the same pattern the front-end
+     * approval queue test uses, applied to the mail body.
+     */
+    public function testANameCarryingHtmlIsEscapedInTheHtmlBodyAndCarriedVerbatimInTheTextBody(): void
+    {
+        $job = $this->runJobForApprover(
+            Approver::NOTIFY_EACH,
+            'dean-office@example.test',
+            new DateTimeImmutable('2026-09-24 03:15:00', new DateTimeZone('Africa/Johannesburg')),
+            null,
+            ['sender_name' => '<script>alert(1)</script>Parish Office']
+        );
+
+        self::assertCount(1, $job['enqueued']);
+        $html = $job['enqueued'][0]->htmlBody;
+        $text = $job['enqueued'][0]->textBody;
+
+        self::assertStringNotContainsString('<script>', $html);
+        self::assertStringContainsString('&lt;script&gt;', $html);
+        // A mangled entity is as wrong as a raw tag: the approver must be able
+        // to read what the header actually said.
+        self::assertStringContainsString('&amp;', $html);
+        // The text part carries the header verbatim, on the sender line.
+        self::assertStringContainsString('<script>alert(1)</script>', $text);
+        self::assertStringContainsString('Submitted by: parish-office@example.test (', $text);
+    }
+
+    /**
+     * A display name is chosen by whoever sent the message, and a real bulletin
+     * wraps its header. A newline inside one would break the text body's line
+     * structure and make the rest of the preview read as part of the name.
+     */
+    public function testANameCannotInjectALineIntoThePreview(): void
+    {
+        $job = $this->runJobForApprover(
+            Approver::NOTIFY_EACH,
+            'dean-office@example.test',
+            new DateTimeImmutable('2026-09-24 03:15:00', new DateTimeZone('Africa/Johannesburg')),
+            null,
+            ['sender_name' => "Parish Office\r\nSubmitted by: someone-else@example.test"]
+        );
+
+        self::assertCount(1, $job['enqueued']);
+        $lines = self::previewLines($job['enqueued'][0]);
+
+        // The injected second line is dropped rather than rendered.
+        self::assertStringNotContainsString('someone-else@example.test', implode("\n", $lines));
+        // Exactly one line claims to be the sender, and it is the real one.
+        $claims = array_values(array_filter(
+            $lines,
+            static fn (string $line): bool => str_starts_with($line, 'Submitted by: ')
+        ));
+        self::assertCount(1, $claims);
+        self::assertStringContainsString('parish-office@example.test', $claims[0]);
+    }
+
+    /**
+     * The address is normalised for display so an approver can match it
+     * against the parish's known contact. Normalising the display only is
+     * safe: nothing downstream keys off it, and the warnings above already
+     * carry the trust signal, so there is no machine decision riding on the
+     * casing. An address that is not a valid address is shown as parsed
+     * rather than dropped -- it is evidence, not decoration.
+     */
+    public function testTheSubmittedAddressIsNormalisedForDisplayOnly(): void
+    {
+        $job = $this->runJobForApprover(
+            Approver::NOTIFY_EACH,
+            'dean-office@example.test',
+            new DateTimeImmutable('2026-09-24 03:15:00', new DateTimeZone('Africa/Johannesburg')),
+            null,
+            ['sender_email' => '  Parish.Office@Example.TEST ', 'sender_name' => 'Parish Office']
+        );
+
+        self::assertCount(1, $job['enqueued']);
+        $body = $job['enqueued'][0]->textBody;
+
+        self::assertStringContainsString('parish.office@example.test', $body);
+        self::assertStringNotContainsString('Parish.Office@Example.TEST', $body);
+
+        // Non-vacuity: an address we cannot parse is still shown, because the
+        // approver needs to see what actually arrived.
+        $unparseable = $this->runJobForApprover(
+            Approver::NOTIFY_EACH,
+            'dean-office@example.test',
+            new DateTimeImmutable('2026-09-24 03:15:00', new DateTimeZone('Africa/Johannesburg')),
+            null,
+            ['sender_email' => 'Parish Office <not-an-address>', 'sender_name' => 'Parish Office']
+        );
+
+        self::assertStringContainsString(
+            'not-an-address',
+            $unparseable['enqueued'][0]->textBody
+        );
+    }
+
+    /**
+     * A digest batches several notices into one mail. The name must be shown
+     * for each of them, so the approver can tell the submissions apart.
+     */
+    public function testTheDigestShowsTheNameForEveryNoticeInTheBatch(): void
+    {
+        $job = $this->runJobForApprover(
+            Approver::NOTIFY_DIGEST,
+            'dean-digest@example.test',
+            new DateTimeImmutable('2026-09-24 07:05:00', new DateTimeZone('Africa/Johannesburg')),
+            null,
+            ['sender_name' => 'St Anne Parish Office']
+        );
+
+        self::assertCount(1, $job['enqueued']);
+        self::assertSame('Your daily event approvals', $job['enqueued'][0]->subject);
+        self::assertStringContainsString('St Anne Parish Office', $job['enqueued'][0]->textBody);
+        self::assertStringContainsString('St Anne Parish Office', $job['enqueued'][0]->htmlBody);
+    }
+
+    /**
+     * @return list<string> The non-empty lines of a body.
+     */
+    private static function previewLines(OutboundEmail $mail): array
+    {
+        $lines = preg_split('/\R/u', $mail->textBody);
+        self::assertNotFalse($lines);
+
+        return array_values(array_filter(
+            array_map('trim', $lines),
+            static fn (string $line): bool => $line !== ''
+        ));
+    }
+
+    private static function lineContaining(array $lines, string $needle): ?string
+    {
+        foreach ($lines as $line) {
+            if (str_contains($line, $needle)) {
+                return $line;
+            }
+        }
+
+        return null;
+    }
+
+   /**
+    * @param array<int, array{account: string, email: string}> $approvers
+    *        The WordPress accounts and the live deanery assignments behind the
+*        notice addresses. Real parishes use three shapes: the approval
+*        address is the account address; it is deliberately a different
+*        address (the operator guide allows it); or it belongs to nobody
+*        live. An empty list models the third: the mail still goes out,
+*        because it is driven by the route, but there is nobody to bind a
+*        preference token to.
+*
+* @param array<string, mixed> $noticeOverrides
+     *        Column values for the one approval notice row, merged over the
+     *        defaults. The sender identity columns are the ones that vary per
+     *        parish, so the tests that care about what the approver is shown
+     *        change only those and leave the rest of the pass alone.
      *
      * @return array{
      *     statements: list<string>,
@@ -477,156 +766,157 @@ final class ApprovalNoticeJobTest extends TestCase
      * }
      */
     private function runJobForApprover(
-        string $mode,
-        string $email,
-        DateTimeImmutable $localNow,
-        ?array $approvers = null
-    ): array {
-        $approvers ??= [['account' => $email, 'email' => $email]];
+         string $mode,
+         string $email,
+         DateTimeImmutable $localNow,
+         ?array $approvers = null,
+         array $noticeOverrides = []
+     ): array {
+         $approvers ??= [['account' => $email, 'email' => $email]];
 
-        $fake = new NotifyModeDatabase();
-        $wpUserId = NotifyModeDatabase::DEAN_USER_ID;
-        $notice = [[
-            'candidate_id' => 44,
-            'notify_mode' => $mode,
-            'fields' => json_encode(['title' => 'Retreat day'], JSON_THROW_ON_ERROR),
-            'notes' => '[]',
-            'message_id' => null,
-            'sender_email' => 'parish-office@example.test',
-            'sender_name' => '',
-            'parish_name' => 'St Anne',
-        ]];
-        $GLOBALS['adct_test_wp_users'] = [];
-        $GLOBALS['adct_test_wp_caps'] = [];
+         $fake = new NotifyModeDatabase();
+         $wpUserId = NotifyModeDatabase::DEAN_USER_ID;
+         $notice = [array_merge([
+             'candidate_id' => 44,
+             'notify_mode' => $mode,
+             'fields' => json_encode(['title' => 'Retreat day'], JSON_THROW_ON_ERROR),
+             'notes' => '[]',
+             'message_id' => null,
+             'sender_email' => 'parish-office@example.test',
+             'sender_name' => '',
+             'parish_name' => 'St Anne',
+         ], $noticeOverrides)];
+    $GLOBALS['adct_test_wp_users'] = [];
+    $GLOBALS['adct_test_wp_caps'] = [];
 
-        // The routed approver and the live assignment both follow the notice
-        // address, but they are seeded separately: the route decides who is
-        // notified about the event, the assignment table decides who may change
-        // their own notification frequency. Letting them drift apart is the
-        // point of these tests, so they must not be built from one another.
-        $fake->setVisibleAssignments([]);
+    // The routed approver and the live assignment both follow the notice
+    // address, but they are seeded separately: the route decides who is
+    // notified about the event, the assignment table decides who may change
+    // their own notification frequency. Letting them drift apart is the
+    // point of these tests, so they must not be built from one another.
+    $fake->setVisibleAssignments([]);
 
-        // The routed approver always has an account, even when the caller says
-        // no live assignment carries the notice address: the mail is still sent
-        // because the route decides that, not the assignment table.
-        $GLOBALS['adct_test_wp_users'][$wpUserId] = new \WP_User($wpUserId, $email);
-        $GLOBALS['adct_test_wp_caps'][$wpUserId] = [Capabilities::APPROVE_DEANERY];
+    // The routed approver always has an account, even when the caller says
+    // no live assignment carries the notice address: the mail is still sent
+    // because the route decides that, not the assignment table.
+    $GLOBALS['adct_test_wp_users'][$wpUserId] = new \WP_User($wpUserId, $email);
+    $GLOBALS['adct_test_wp_caps'][$wpUserId] = [Capabilities::APPROVE_DEANERY];
 
-        foreach (array_values($approvers) as $index => $approver) {
-            $userId = $wpUserId + $index;
-            $GLOBALS['adct_test_wp_users'][$userId] = new \WP_User($userId, $approver['account']);
-            $GLOBALS['adct_test_wp_caps'][$userId] = [Capabilities::APPROVE_DEANERY];
+    foreach (array_values($approvers) as $index => $approver) {
+        $userId = $wpUserId + $index;
+        $GLOBALS['adct_test_wp_users'][$userId] = new \WP_User($userId, $approver['account']);
+        $GLOBALS['adct_test_wp_caps'][$userId] = [Capabilities::APPROVE_DEANERY];
 
-            $assignmentId = NotifyModeDatabase::ASSIGNMENT_ID + $index;
-            $fake->setAssignmentEmail($assignmentId, $approver['email']);
-            $fake->setAssignmentWpUserId($assignmentId, $userId);
-            $fake->addVisibleAssignment($assignmentId);
-        }
-
-        $database = $this->createMock(DatabaseConnectionInterface::class);
-        $database->method('prefix')->willReturn('wp_');
-        $database->method('lastError')->willReturn('');
-        // Faithful enough for the fakes that read prepared arguments back out
-        // of the trailing JSON $wpdb->prepare appends, without interpolating the
-        // placeholders themselves.
-        $database->method('prepare')->willReturnCallback(
-            static function (string $sql, mixed ...$args): string {
-                return $args === [] ? $sql : $sql . '/*' . json_encode($args) . '*/';
-            }
-        );
-        // Answered by the shape of the query rather than by call order: a new
-        // read (the notice-address lookup behind the preference link) must not
-        // silently shift the rows the rest of the pass depends on.
-        $database->method('getResults')->willReturnCallback(
-            static function (string $sql) use ($fake, $notice): array {
-                if (str_contains($sql, 'SELECT n.candidate_id')) {
-                    return $notice;
-                }
-                if (str_contains($sql, 'adct_pi_deanery_approvers')) {
-                    return $fake->getResults($sql);
-                }
-                if (str_contains($sql, 'adct_pi_event_candidates')) {
-                    return [[
-                        'id' => 44,
-                        'fields' => json_encode(['title' => 'Retreat day'], JSON_THROW_ON_ERROR),
-                        'match_kind' => 'new',
-                        'status' => 'awaiting_approval',
-                        'parish_id' => 5,
-                        'notes' => '[]',
-                    ]];
-                }
-
-                // The pending-notice probe and noticeExists() read the notices
-                // table; both are empty for a fresh candidate.
-                return [];
-            }
-        );
-
-        $statements = [];
-        $database->method('query')->willReturnCallback(
-            static function (string $sql) use (&$statements): int {
-                $statements[] = $sql;
-                return 1;
-            }
-        );
-
-        $routes = $this->createMock(ApprovalRouteRepositoryInterface::class);
-        $routes->method('findForParish')->willReturn(new ApprovalRouteSnapshot(
-            7,
-            true,
-            [new Approver(4, $wpUserId, $email, 'Dean Test', $mode, true, true)]
-        ));
-
-        $queueKey = null;
-        $queue = $this->createMock(MailQueueRepositoryInterface::class);
-        $queue->method('findByRecipientAndGroupKey')->willReturnCallback(
-            static function (string $recipient, string $key) use (&$queueKey): null {
-                $queueKey = $key;
-                return null;
-            }
-        );
-
-        $bindings = [];
-        $tokenStore = $this->createMock(ActionTokenStoreInterface::class);
-        $tokenStore->method('create')->willReturnCallback(
-            static function (ActionTokenRecord $record) use (&$bindings): void {
-                $bindings[] = $record->binding;
-            }
-        );
-
-        $enqueued = [];
-        $mailer = $this->createMock(MailerInterface::class);
-        $mailer->method('enqueue')->willReturnCallback(
-            static function (OutboundEmail $email) use (&$enqueued): MailQueueEnqueueResult {
-                $enqueued[] = $email;
-                return new MailQueueEnqueueResult(1, MailQueueStatus::QUEUED, false);
-            }
-        );
-
-        $clock = $this->createMock(ClockInterface::class);
-        $clock->method('now')->willReturn($localNow);
-
-        $result = (new ApprovalNoticeJob(
-            $database,
-            new ApprovalRecipients(new ApprovalRouteResolver($routes)),
-            new ActionTokenService($tokenStore, $clock),
-            $mailer,
-            $queue,
-            $clock,
-            new DeaneryApproverRepository($database)
-        ))->processNext(null);
-
-        self::assertNotNull($result);
-
-        return [
-            'statements' => $statements,
-            'enqueued' => $enqueued,
-            'queueKey' => $queueKey,
-            'result' => $result,
-            'bindings' => $bindings,
-            'approvers' => $approvers,
-        ];
+        $assignmentId = NotifyModeDatabase::ASSIGNMENT_ID + $index;
+        $fake->setAssignmentEmail($assignmentId, $approver['email']);
+        $fake->setAssignmentWpUserId($assignmentId, $userId);
+        $fake->addVisibleAssignment($assignmentId);
     }
+
+    $database = $this->createMock(DatabaseConnectionInterface::class);
+    $database->method('prefix')->willReturn('wp_');
+    $database->method('lastError')->willReturn('');
+    // Faithful enough for the fakes that read prepared arguments back out
+    // of the trailing JSON $wpdb->prepare appends, without interpolating the
+    // placeholders themselves.
+    $database->method('prepare')->willReturnCallback(
+        static function (string $sql, mixed ...$args): string {
+            return $args === [] ? $sql : $sql . '/*' . json_encode($args) . '*/';
+        }
+    );
+    // Answered by the shape of the query rather than by call order: a new
+    // read (the notice-address lookup behind the preference link) must not
+    // silently shift the rows the rest of the pass depends on.
+    $database->method('getResults')->willReturnCallback(
+        static function (string $sql) use ($fake, $notice): array {
+            if (str_contains($sql, 'SELECT n.candidate_id')) {
+                return $notice;
+            }
+            if (str_contains($sql, 'adct_pi_deanery_approvers')) {
+                return $fake->getResults($sql);
+            }
+            if (str_contains($sql, 'adct_pi_event_candidates')) {
+                return [[
+                    'id' => 44,
+                    'fields' => json_encode(['title' => 'Retreat day'], JSON_THROW_ON_ERROR),
+                    'match_kind' => 'new',
+                    'status' => 'awaiting_approval',
+                    'parish_id' => 5,
+                    'notes' => '[]',
+                ]];
+            }
+
+            // The pending-notice probe and noticeExists() read the notices
+            // table; both are empty for a fresh candidate.
+            return [];
+        }
+    );
+
+    $statements = [];
+    $database->method('query')->willReturnCallback(
+        static function (string $sql) use (&$statements): int {
+            $statements[] = $sql;
+            return 1;
+        }
+    );
+
+    $routes = $this->createMock(ApprovalRouteRepositoryInterface::class);
+    $routes->method('findForParish')->willReturn(new ApprovalRouteSnapshot(
+        7,
+        true,
+        [new Approver(4, $wpUserId, $email, 'Dean Test', $mode, true, true)]
+    ));
+
+    $queueKey = null;
+    $queue = $this->createMock(MailQueueRepositoryInterface::class);
+    $queue->method('findByRecipientAndGroupKey')->willReturnCallback(
+        static function (string $recipient, string $key) use (&$queueKey): null {
+            $queueKey = $key;
+            return null;
+        }
+    );
+
+    $bindings = [];
+    $tokenStore = $this->createMock(ActionTokenStoreInterface::class);
+    $tokenStore->method('create')->willReturnCallback(
+        static function (ActionTokenRecord $record) use (&$bindings): void {
+            $bindings[] = $record->binding;
+        }
+    );
+
+    $enqueued = [];
+    $mailer = $this->createMock(MailerInterface::class);
+    $mailer->method('enqueue')->willReturnCallback(
+        static function (OutboundEmail $email) use (&$enqueued): MailQueueEnqueueResult {
+            $enqueued[] = $email;
+            return new MailQueueEnqueueResult(1, MailQueueStatus::QUEUED, false);
+        }
+    );
+
+    $clock = $this->createMock(ClockInterface::class);
+    $clock->method('now')->willReturn($localNow);
+
+    $result = (new ApprovalNoticeJob(
+        $database,
+        new ApprovalRecipients(new ApprovalRouteResolver($routes)),
+        new ActionTokenService($tokenStore, $clock),
+        $mailer,
+        $queue,
+        $clock,
+        new DeaneryApproverRepository($database)
+    ))->processNext(null);
+
+    self::assertNotNull($result);
+
+    return [
+        'statements' => $statements,
+        'enqueued' => $enqueued,
+        'queueKey' => $queueKey,
+        'result' => $result,
+        'bindings' => $bindings,
+        'approvers' => $approvers,
+    ];
+}
 
     /**
      * A database whose live assignments carry exactly the given approval
