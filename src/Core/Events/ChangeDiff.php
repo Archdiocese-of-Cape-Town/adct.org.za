@@ -16,7 +16,7 @@ use DateTimeZone;
  * all three write the same shape:
  *
   *     ['title' => string, 'content' => string, 'excerpt' => string,
-  *      'status' => string, 'event_type_term_ids' => int[], 'featured_image_id' => int,
+   *      'status' => string, 'event_type_term_ids' => int[], 'featured_image_id' => int,
  *      'meta' => ['parish_id' => mixed, 'venue_id' => mixed, 'start_local' => string,
  *                 'end_local' => string, 'all_day' => mixed, 'rrule' => string,
  *                 'exdates' => mixed, 'rdates' => mixed, 'featured' => mixed,
@@ -28,7 +28,7 @@ use DateTimeZone;
  * - **The unpublish row is a diff too.** `UnpublishEventHandler` writes a trail
  *   row holding the state that was live, exactly so that this class can say what
   *   an approver would lose by clicking the link. The `status` and
- *   `status_flag` rows carry that.
+  *   `status_flag` rows carry that.
  * - **A missing side is not a change.** WordPress returns `''` for absent
  *   metadata, so an absent value and an empty string must read as the same
  *   "nothing", or every field gains a spurious "set" line the first time it is
@@ -231,13 +231,13 @@ final class ChangeDiff
                 : '(none)';
         }
                 if ($label === 'All day' || $label === 'Featured') {
-                    // WordPress stores these flags as the strings '0' and '1', so a
-                    // raw render prints "Featured: 0 -> 1" and leaves the approver to
-                    // work out which way round it went.
-                    return is_scalar($value) && (string) $value !== ''
-                        ? (self::isTruthy((string) $value) ? 'Yes' : 'No')
-                        : '(none)';
-                }
+                            // WordPress stores these flags as the strings '0' and '1', so a
+                            // raw render prints "Featured: 0 -> 1" and leaves the approver to
+                            // work out which way round it went.
+                            return is_scalar($value) && (string) $value !== ''
+                                ? (self::isTruthy((string) $value) ? 'Yes' : 'No')
+                                : '(none)';
+                        }
         if ($label === 'Repeats') {
             return is_scalar($value) && (string) $value !== ''
                 ? RecurrenceSummary::describe((string) $value) . ' (' . (string) $value . ')'
