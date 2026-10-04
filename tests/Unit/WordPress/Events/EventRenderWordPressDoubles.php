@@ -31,7 +31,7 @@ namespace ADCT\ParishIntake\WordPress\Events {
      *   present globally: get_post_thumbnail_id, get_post_meta, esc_url, esc_html,
      *                     sanitize_text_field
      *   absent:           add_query_arg, home_url, wp_kses_post, wp_strip_all_tags,
-          *                     sanitize_email, get_permalink, has_post_thumbnail,
+     *                     sanitize_email, get_permalink, wp_get_attachment_image,
      *                     wp_get_attachment_image_src, wp_get_attachment_url
      *
      * Declaring an absent one *globally* here would collide with the shared
@@ -98,20 +98,47 @@ namespace ADCT\ParishIntake\WordPress\Events {
          * Backed by a global rather than hard-coded false, because AC5 turns on
          * this answer: a promoted poster calls `set_post_thumbnail()` elsewhere
          * and the figure must follow that, not this test's convenience.
+         *
+         * Reads `$GLOBALS['adct_test_has_thumbnail']` when that global names
+         * the post, and otherwise falls back to "a thumbnail id is registered".
+         * The indirection exists so a test can make the two WordPress functions
+         * disagree: `has_post_thumbnail()` false while a thumbnail id is set is
+         * a real state, and deriving one answer from the other would make that
+         * state inexpressible, and so untested.
          */
         function has_post_thumbnail(mixed $post = null): bool
         {
-            return false;
+            $id = is_object($post) ? (int) ($post->ID ?? 0) : (int) $post;
+            if ($id < 1) {
+                return false;
+            }
+
+            if (array_key_exists($id, $GLOBALS['adct_test_has_thumbnail'] ?? [])) {
+                return (bool) $GLOBALS['adct_test_has_thumbnail'][$id];
+            }
+
+            return (int) ($GLOBALS['adct_test_media_thumbnails'][$id] ?? 0) > 0;
         }
     }
 
     if (! function_exists('ADCT\ParishIntake\WordPress\Events\wp_get_attachment_image_src')) {
         /**
+         * Backed by the same `adct_test_attachment_urls` global as
+         * `wp_get_attachment_url()`, because one attachment has one file: a
+         * promoted poster the URL stub can resolve is one the image stub can
+         * resolve too. Deriving both from one global keeps a test from
+         * asserting "the poster renders" against a stub holding no file.
+         *
          * @return array<int, mixed>|false
          */
         function wp_get_attachment_image_src(int $attachmentId, string $size = 'thumbnail'): array|false
         {
-            return false;
+            $url = $GLOBALS['adct_test_attachment_urls'][(int) $attachmentId] ?? false;
+            if (! is_string($url) || $url === '') {
+                return false;
+            }
+
+            return [$url, 640, 480, false];
         }
     }
 

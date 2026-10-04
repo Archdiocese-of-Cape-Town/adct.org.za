@@ -544,7 +544,8 @@ final class Plugin
             new DateTimeZone('Africa/Johannesburg'),
             $pluginFile,
             $listingGeneration,
-            new SuburbResolver(new PlaceCoordinateLookup($database))
+            new SuburbResolver(new PlaceCoordinateLookup($database)),
+            new WordPressSourceMaterialStore()
         );
         $this->publicIcsFeed = new PublicIcsFeed($clock, $listingGeneration, new IcsCalendar());
         $this->publicEventPage = new PublicEventPage(
