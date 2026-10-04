@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Database\Repository;
 
+use ADCT\ParishIntake\Core\Audit\AuditAction;
 use ADCT\ParishIntake\Core\Matching\MatchReviewPolicy;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendCooldownException;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
+use DateTimeImmutable;
 use DateTimeZone;
 use DomainException;
 use InvalidArgumentException;
@@ -681,6 +684,169 @@ final class ReviewQueueRepository
             $this->rollback($failure);
             throw $failure;
         }
+    }
+
+    /**
+     * When this candidate's confirmation preview was last resent, or null if never.
+     *
+     * Read from the audit trail rather than from a dedicated column, so there is
+     * one record of the resend instead of two that could disagree. It is the same
+     * query {@see history()} runs, narrowed to the one action, because the detail
+     * screen asks this on every render and a cooldown that queried the whole trail
+     * would grow without bound.
+     */
+    public function lastConfirmationResentAt(int $id): ?DateTimeImmutable
+    {
+        if ($id < 1) {
+            throw new InvalidArgumentException('The candidate ID must be positive.');
+        }
+
+        $row = $this->row($this->database->prepare(
+            "SELECT created_at FROM {$this->audit} WHERE subject_type = %s AND subject_id = %d AND action = %s "
+            . 'ORDER BY created_at DESC, id DESC LIMIT 1',
+            'event_candidate',
+            $id,
+            AuditAction::CANDIDATE_CONFIRMATION_RESENT->value
+        ));
+
+        if ($row === null || ! is_string($row['created_at'] ?? null)) {
+            return null;
+        }
+
+        // `created_at` is stored in UTC by {@see timestamp()}; the plugin works in
+        // Africa/Johannesburg, and the cooldown has to be compared in absolute
+        // terms, so it is returned as an instant rather than a local wall time.
+        $resentAt = DateTimeImmutable::createFromFormat(
+            'Y-m-d H:i:s',
+            $row['created_at'],
+            new DateTimeZone('UTC')
+        );
+
+        return $resentAt === false ? null : $resentAt;
+    }
+
+    /**
+     * Claim the right to resend this candidate's confirmation preview, or refuse.
+     *
+     * The cooldown is enforced here rather than in the admin page, and it is the
+     * same transaction that writes the audit row. Two consequences, both the
+     * point of the exercise:
+     *
+     * - A hand-crafted POST cannot bypass it. The page's own check is only
+     *   presentation; this one runs on every accepted request, inside a lock.
+     * - Two presses arriving at once cannot both win. The candidate row is locked
+     *   first, so the second reader sees the first one's audit row and is refused.
+     *
+     * The audit row is written even if rendering or queuing afterwards fails. A
+     * reviewer pressing "Resend" is an outbound message to a parish the moment they
+     * ask for it, and a failed send is exactly the case somebody will later want to
+     * explain. Rolling the row back to keep the trail tidy would erase the only
+     * evidence that the request was made.
+     *
+     * @param string $actor the reviewer's email, for the audit trail
+     * @return int the id of the inbound message to render from
+     * @throws \DomainException when the candidate is outside the reviewer's scope,
+     *         or has no saved fields to render
+     * @throws ConfirmationEmailResendCooldownException when the previous resend was
+     *         inside $cooldownSeconds
+     */
+    public function bookConfirmationResend(
+        int $id,
+        int $userId,
+        string $email,
+        bool $reviewer,
+        DateTimeImmutable $requestedAt,
+        int $cooldownSeconds
+    ): int {
+        if ($id < 1) {
+            throw new InvalidArgumentException('The candidate ID must be positive.');
+        }
+        if ($cooldownSeconds < 0) {
+            throw new InvalidArgumentException('The resend cooldown cannot be negative.');
+        }
+
+        $this->execute('START TRANSACTION');
+        try {
+            $candidate = $this->lockedCandidate($id, $userId, $email, $reviewer);
+
+            if ($candidate === null) {
+                throw new DomainException('That event is no longer available to you.');
+            }
+
+            $lastResentAt = $this->lastConfirmationResentAtLocked($id);
+
+            if ($lastResentAt !== null) {
+                $retryAfter = $lastResentAt->modify('+' . $cooldownSeconds . ' seconds');
+
+                if ($requestedAt < $retryAfter) {
+                    throw new ConfirmationEmailResendCooldownException($lastResentAt, $retryAfter, $id);
+                }
+            }
+
+            $messageId = (int) ($candidate['message_id'] ?? 0);
+
+            if ($messageId < 1) {
+                throw new DomainException('This event has no message to resend a confirmation for.');
+            }
+
+            $this->audit(
+                $email,
+                AuditAction::CANDIDATE_CONFIRMATION_RESENT->value,
+                $id,
+                [
+                                    'role' => $reviewer ? 'reviewer' : 'dean',
+                                    'message_id' => $messageId,
+                                    'cooldown_seconds' => $cooldownSeconds,
+                                    'next_allowed_at' => $requestedAt
+                                        ->modify('+' . $cooldownSeconds . ' seconds')
+                                        ->setTimezone(new DateTimeZone('UTC'))
+                                        ->format('Y-m-d H:i:s'),
+                                ],
+                $requestedAt->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s')
+            );
+            $this->execute('COMMIT');
+
+            return $messageId;
+        } catch (Throwable $failure) {
+            $this->rollback($failure);
+            throw $failure;
+        }
+    }
+
+    /**
+     * The last resend, read inside the booking transaction.
+     *
+     * Separate from {@see lastConfirmationResentAt()} because that one clears the
+     * last error and throws a read failure, which inside the transaction would turn
+     * a routine empty result into a rollback. Here a lookup failure must leave the
+     * claim unproven and the transaction closed.
+     */
+    private function lastConfirmationResentAtLocked(int $id): ?DateTimeImmutable
+    {
+        $this->database->clearLastError();
+        $row = $this->database->getRow($this->database->prepare(
+            "SELECT created_at FROM {$this->audit} WHERE subject_type = %s AND subject_id = %d AND action = %s "
+            . 'ORDER BY created_at DESC, id DESC LIMIT 1',
+            'event_candidate',
+            $id,
+            AuditAction::CANDIDATE_CONFIRMATION_RESENT->value
+        ));
+
+        if ($this->database->lastError() !== '') {
+            throw new RuntimeException('The confirmation resend history could not be read.');
+        }
+
+        if ($row === null || ! is_string($row['created_at'] ?? null)) {
+            return null;
+        }
+
+        $resentAt = DateTimeImmutable::createFromFormat(
+            'Y-m-d H:i:s',
+            $row['created_at'],
+            new DateTimeZone('UTC')
+        );
+
+        return $resentAt === false ? null : $resentAt;
     }
 
     /**

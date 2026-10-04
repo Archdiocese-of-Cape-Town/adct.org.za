@@ -68,6 +68,17 @@ namespace ADCT\ParishIntake\WordPress\Admin {
         }
     }
 
+    // `esc_textarea()` differs from `esc_html()` only in that it is meant for
+    // textarea content, which is the same escaping. WordPress escapes
+    // single quotes here too, which matters because the admin screens write
+    // attributes and textarea bodies through both.
+    if (! function_exists('ADCT\ParishIntake\WordPress\Admin\esc_textarea')) {
+        function esc_textarea(mixed $text): string
+        {
+            return htmlspecialchars(is_string($text) ? $text : '', ENT_QUOTES, 'UTF-8');
+        }
+    }
+
     if (! function_exists('ADCT\ParishIntake\WordPress\Admin\esc_url')) {
         function esc_url(mixed $url): string
         {
@@ -127,6 +138,16 @@ namespace ADCT\ParishIntake\WordPress\Admin {
         function sanitize_text_field(mixed $value): string
         {
             return is_string($value) ? trim(strip_tags($value)) : '';
+        }
+    }
+
+    // Near enough to WordPress for these purposes: it drops anything that is
+    // not part of a single address, which is exactly the filter a query
+    // argument carrying a recipient has to survive before it is echoed back.
+    if (! function_exists('ADCT\ParishIntake\WordPress\Admin\sanitize_email')) {
+        function sanitize_email(mixed $value): string
+        {
+            return is_string($value) ? (string) filter_var($value, FILTER_SANITIZE_EMAIL) : '';
         }
     }
 

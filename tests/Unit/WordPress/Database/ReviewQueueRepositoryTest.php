@@ -792,6 +792,260 @@ final class ReviewQueueRepositoryTest extends TestCase
     }
 
         /**
+         * Issue #176: booking a confirmation resend.
+         *
+         * These live here rather than beside the admin page because the cooldown is
+         * the point of the issue and the cooldown is enforced here, inside the same
+         * transaction that writes the audit row. A test that only checked the page
+         * would pass whether or not this guard existed.
+         */
+        public function testBookingAResendWritesTheAuditRowAndCommits(): void
+        {
+            $database = $this->resendDatabase();
+            $database->writesSucceed = true;
+
+            $messageId = $this->repository($database)->bookConfirmationResend(
+                4,
+                9,
+                'reviewer@example.test',
+                true,
+                new DateTimeImmutable('2026-10-12 09:15:00', new DateTimeZone('Africa/Johannesburg')),
+                3600
+            );
+
+            self::assertSame(55, $messageId, 'The booking returns the message to render from.');
+            self::assertContains('START TRANSACTION', $database->queries);
+            self::assertContains('COMMIT', $database->queries);
+
+            $insert = $this->resendAuditInsert($database->queries);
+            self::assertNotNull($insert, 'A resend is an outbound message to a parish and must be recorded.');
+            self::assertStringContainsString('candidate_confirmation_resent', $insert);
+            self::assertStringContainsString('reviewer@example.test', $insert);
+            self::assertStringContainsString('"cooldown_seconds":3600', $insert);
+            // 09:15 SAST is 07:15 UTC; the audit trail is written in UTC.
+            self::assertStringContainsString('2026-10-12 07:15:00', $insert);
+            self::assertStringContainsString('"next_allowed_at":"2026-10-12 08:15:00"', $insert);
+        }
+
+        public function testTheAuditDetailsDoNotClaimToCarryTheRecipient(): void
+        {
+            $database = $this->resendDatabase();
+            $database->writesSucceed = true;
+
+            $this->repository($database)->bookConfirmationResend(
+                4,
+                9,
+                'reviewer@example.test',
+                true,
+                new DateTimeImmutable('2026-10-12 09:15:00', new DateTimeZone('Africa/Johannesburg')),
+                3600
+            );
+
+            // The audit row is written before the recipient is resolved, so it cannot
+            // honestly name one. The queued mail row is the record of who was written to.
+            $insert = (string) $this->resendAuditInsert($database->queries);
+            self::assertStringNotContainsString('recipient', $insert);
+            self::assertStringNotContainsString('parish@example.test', $insert);
+        }
+
+        public function testASecondResendInsideTheHourIsRefusedAndRolledBack(): void
+        {
+            $database = $this->resendDatabase();
+            $database->writesSucceed = true;
+            $database->lastResendAuditRow = ['created_at' => '2026-10-12 07:00:00'];
+
+            try {
+                $this->repository($database)->bookConfirmationResend(
+                    4,
+                    9,
+                    'reviewer@example.test',
+                    true,
+                    new DateTimeImmutable('2026-10-12 09:15:00', new DateTimeZone('Africa/Johannesburg')),
+                    3600
+                );
+                self::fail('The cooldown should have refused the resend.');
+            } catch (\ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendCooldownException $refusal) {
+                // 07:00 UTC is 09:00 SAST, so the retry lands at 10:00 SAST.
+                self::assertSame(
+                    '2026-10-12 07:00:00',
+                    $refusal->lastResentAt->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s')
+                );
+                self::assertSame(
+                    '2026-10-12 08:00:00',
+                    $refusal->retryAfter->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s')
+                );
+            }
+
+            self::assertContains('ROLLBACK', $database->queries);
+            self::assertNotContains('COMMIT', $database->queries);
+            self::assertNull(
+                $this->resendAuditInsert($database->queries),
+                'A refused resend must not be recorded as having happened.'
+            );
+        }
+
+        public function testTheCooldownIsAllowedOnceTheHourHasPassed(): void
+        {
+            $database = $this->resendDatabase();
+            $database->writesSucceed = true;
+            $database->lastResendAuditRow = ['created_at' => '2026-10-12 07:00:00'];
+
+            $messageId = $this->repository($database)->bookConfirmationResend(
+                4,
+                9,
+                'reviewer@example.test',
+                true,
+                new DateTimeImmutable('2026-10-12 10:00:00', new DateTimeZone('Africa/Johannesburg')),
+                3600
+            );
+
+            self::assertSame(55, $messageId);
+            self::assertContains('COMMIT', $database->queries);
+        }
+
+        public function testTheCooldownComparesInstantsNotWallTimes(): void
+        {
+            // A reviewer in another timezone pressing "resend" must not get an extra
+            // hour, and a stored UTC row must not be read as SAST and so extend the wait
+            // by two hours. Both fall out of comparing absolute times.
+            $database = $this->resendDatabase();
+            $database->writesSucceed = true;
+            $database->lastResendAuditRow = ['created_at' => '2026-10-12 07:00:00'];
+
+            $messageId = $this->repository($database)->bookConfirmationResend(
+                4,
+                9,
+                'reviewer@example.test',
+                true,
+                new DateTimeImmutable('2026-10-12 11:00:00', new DateTimeZone('America/New_York')),
+                3600
+            );
+
+            self::assertSame(55, $messageId, '15:00 UTC is well clear of an hour after 07:00 UTC.');
+        }
+
+        public function testACandidateOutsideTheReviewersScopeCannotBeResent(): void
+        {
+            $database = $this->resendDatabase();
+            $database->writesSucceed = true;
+            $database->resultRows = [];
+
+            try {
+                $this->repository($database)->bookConfirmationResend(
+                    4,
+                    9,
+                    'reviewer@example.test',
+                    true,
+                    new DateTimeImmutable('2026-10-12 09:15:00', new DateTimeZone('Africa/Johannesburg')),
+                    3600
+                );
+                self::fail('An out-of-scope candidate must be refused.');
+            } catch (DomainException $refusal) {
+                self::assertSame('That event is no longer available to you.', $refusal->getMessage());
+            }
+
+            self::assertContains('ROLLBACK', $database->queries);
+            self::assertNull($this->resendAuditInsert($database->queries));
+        }
+
+        public function testASavedCandidateIsRequiredToResend(): void
+        {
+            $database = $this->resendDatabase();
+            $database->writesSucceed = true;
+            $database->resultRows = [['id' => '4', 'message_id' => '0', 'fields' => 'null']];
+
+            try {
+                $this->repository($database)->bookConfirmationResend(
+                    4,
+                    9,
+                    'reviewer@example.test',
+                    true,
+                    new DateTimeImmutable('2026-10-12 09:15:00', new DateTimeZone('Africa/Johannesburg')),
+                    3600
+                );
+                self::fail('A candidate with no message must be refused.');
+            } catch (DomainException $refusal) {
+                self::assertSame(
+                    'This event has no message to resend a confirmation for.',
+                    $refusal->getMessage()
+                );
+            }
+        }
+
+        public function testABookingIsValidatedBeforeItTouchesTheDatabase(): void
+        {
+            $database = $this->resendDatabase();
+            $repository = $this->repository($database);
+            $at = new DateTimeImmutable('2026-10-12 09:15:00', new DateTimeZone('Africa/Johannesburg'));
+
+            try {
+                $repository->bookConfirmationResend(0, 9, 'reviewer@example.test', true, $at, 3600);
+                self::fail('A non-positive candidate ID must be refused.');
+            } catch (InvalidArgumentException) {
+                self::assertSame([], $database->queries, 'A rejected argument must not open a transaction.');
+            }
+
+            try {
+                $repository->bookConfirmationResend(4, 9, 'reviewer@example.test', true, $at, -1);
+                self::fail('A negative cooldown must be refused.');
+            } catch (InvalidArgumentException) {
+                self::assertSame([], $database->queries);
+            }
+        }
+
+        public function testTheLastResendIsReadBackAsAnInstant(): void
+        {
+            $database = $this->resendDatabase();
+            $database->lastResendAuditRow = ['created_at' => '2026-10-12 07:00:00'];
+
+            $last = $this->repository($database)->lastConfirmationResentAt(4);
+
+            self::assertNotNull($last);
+            // Read as UTC, so the admin screen can format it in Africa/Johannesburg.
+            self::assertSame('2026-10-12 09:00:00', $last->setTimezone(new DateTimeZone('Africa/Johannesburg'))->format('Y-m-d H:i:s'));
+        }
+
+        public function testACandidateNeverResentHasNoLastResend(): void
+        {
+            $database = $this->resendDatabase();
+
+            self::assertNull($this->repository($database)->lastConfirmationResentAt(4));
+        }
+
+        /**
+         * A candidate row the booking's `FOR UPDATE` read returns.
+         */
+        private function resendDatabase(): ReviewQueueRecordingDatabase
+        {
+            $database = new ReviewQueueRecordingDatabase();
+            $database->resultRows = [[
+                'id' => '4',
+                'status' => 'awaiting_approval',
+                'message_id' => '55',
+                'fields' => '{"title":"Fictional event"}',
+                'parish_id' => null,
+            ]];
+
+            return $database;
+        }
+
+        /**
+         * The `INSERT INTO ... adct_pi_audit_log` a booking issued, or null.
+         *
+         * @param list<string> $queries
+         */
+        private function resendAuditInsert(array $queries): ?string
+        {
+            foreach ($queries as $query) {
+                if (str_starts_with($query, 'INSERT INTO `wp_adct_pi_audit_log`')) {
+                    return $query;
+                }
+            }
+
+            return null;
+        }
+
+        /**
          * Issue #177: resolving an ambiguous match from the candidate detail screen.
      *
          * The two ambiguity keys are *removed*, not falsified —
@@ -1761,12 +2015,28 @@ final class ReviewQueueRecordingDatabase implements DatabaseConnectionInterface
     /** @var list<string> */
     public array $lookups = [];
 
-    public function getResults(string $query): array
-    {
-        $this->queries[] = $query;
+        /**
+         * The most recent `candidate_confirmation_resent` audit row, keyed for issue #176.
+         *
+         * The booking transaction reads two different things inside one transaction --
+         * the candidate `FOR UPDATE`, then the audit history -- so the resend tests
+         * need to answer both. `resultRows` serves the candidate; this serves the
+         * history lookup. Null means "never resent".
+         *
+         * @var array{created_at: string}|null
+         */
+        public ?array $lastResendAuditRow = null;
 
-        if (preg_match('/WHERE id = (\d+)/', $query, $parts) === 1
-                    && preg_match('/adct_pi_(parishes|venues)/', $query, $table) === 1) {
+        public function getResults(string $query): array
+        {
+            $this->queries[] = $query;
+
+            if (str_contains($query, 'adct_pi_audit_log')) {
+                return $this->lastResendAuditRow === null ? [] : [$this->lastResendAuditRow];
+            }
+
+            if (preg_match('/WHERE id = (\d+)/', $query, $parts) === 1
+                        && preg_match('/adct_pi_(parishes|venues)/', $query, $table) === 1) {
             $this->lookups[] = $table[1] . '#' . $parts[1];
                     $row = $this->lookupRows[(int) $parts[1]] ?? null;
 

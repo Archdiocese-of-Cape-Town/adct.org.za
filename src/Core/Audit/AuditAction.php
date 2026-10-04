@@ -103,6 +103,23 @@ enum AuditAction: string
     case APPROVER_NOTIFY_MODE_CHANGED = 'approver_notify_mode_changed';
 
     /**
+     * A reviewer re-sent the confirmation preview to the submitter from the
+     * candidate detail screen (issue #176).
+     *
+     * Its own verb because it is not a field change and not a decision: it puts a
+     * message in front of a real person outside the archdiocese, which is worth a
+     * row in the trail under POPIA even though nothing about the candidate
+     * changed.
+     *
+     * The details identify the candidate and its inbound message, not the
+     * recipient. The recipient is deliberately not duplicated here: the claim is
+     * made before the address is resolved, and the queued mail row already records
+     * exactly who was written to. Read the two together — this row says who asked
+     * and when, the queue row says who received it.
+     */
+    case CANDIDATE_CONFIRMATION_RESENT = 'candidate_confirmation_resent';
+
+    /**
      * Human labels for the filter dropdown, keyed by action value.
      *
      * @return array<string, string>
@@ -149,6 +166,7 @@ enum AuditAction: string
             self::CANDIDATE_CREATED_BY_HAND => 'Event started by hand',
             self::CANDIDATE_MATCH_RESOLVED => 'Ambiguous match resolved',
             self::APPROVER_NOTIFY_MODE_CHANGED => 'Approver email mode changed',
+            self::CANDIDATE_CONFIRMATION_RESENT => 'Confirmation preview resent',
         };
     }
 }
