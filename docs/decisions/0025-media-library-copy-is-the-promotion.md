@@ -8,7 +8,7 @@
 
 Parish bulletins arrive as email attachments and are stored in a private intake folder. Issue #172 asks for a publisher to be able to make an event's original source material — the poster image, or the bulletin PDF it arrived as — viewable alongside the published event, so a visitor does not have to take the event's word for its own details.
 
-The obstacle is not the display. It is that publishing the file is a disclosure, and the disclosure is not obviously covered by the consent a parish gave when it mailed a notice. A parish bulletin routinely carries a sick list, a deceased list, collection figures and a parish phone number. A poster carries the faces and the names of people who did not agree to appear on the archdiocese's website. The file arrived addressed to `events@adct.org.za`; making it world-readable is a different act from receiving it.
+The obstacle is not the display. It is that copying a file into the media library makes it public at that moment, and no later step can revoke it. The issue states the reason plainly: a parish posting a bulletin by email has not thereby consented to that bulletin becoming world-readable, which is why promotion is a separate deliberate step rather than a side effect of publishing.
 
 So the design question is not "how do we render a PDF link". It is "what is the smallest act that makes a file public, and who may perform it".
 
@@ -36,7 +36,7 @@ The issue also records that promotion must be offered in two places — the revi
 
 7. **Removal is a visibility change, not a deletion.** Removing a source item drops it from the meta and releases its featured-image role. It does **not** delete the stored original: the raw file is evidence and the existing retention settings govern it. Removal is reversible by re-promoting. Media-library copies are exempt from intake retention, because once promoted they are a site asset rather than inbox ephemera — deleting the private original after the retention window must not unpublish anything.
 
-8. **Every promotion and every removal writes an `adct_pi_audit_log` row** naming the acting user, the event and the affected attachment, so "who made this bulletin public" is answerable. That is the question a POPIA enquiry would ask, and it is not answerable from `source_attachment_ids` alone.
+8. **Every promotion and every removal writes an `adct_pi_audit_log` row** naming the acting user, the event and the affected attachment, so "who made this bulletin public" is answerable after the fact. The meta records *what* was promoted, not *who* promoted it, so the audit table is the only place that answer lives.
 
 9. **The event editor's add/remove control checks a capability and verifies a nonce.** Unauthorised or forged requests are refused with 403 and write no audit row. `source_attachment_ids` is refused over REST, so the block editor's meta endpoint cannot be used to bypass the checked screen.
 

@@ -281,7 +281,7 @@ Promotion is recorded as an ordered list in the `source_attachment_ids` post met
 - The front end reads **this meta and nothing else**. It never queries the event's media with `get_children()`, so an attachment that sits in the media library but was never promoted cannot become reachable through any public page, feed or REST response.
 - Promoting an image with role `poster` also calls `set_post_thumbnail()`, which fills the existing `<figure class="adct-event__poster">` and the JSON-LD `image` field. The listing card reads the featured image rather than a role lookup, so clearing the featured-image role empties the card and the single-event figure together.
 - **Removal is a visibility change, not a deletion.** Removing an item drops it from this meta and releases its featured-image role. The stored original stays on disk; retention owns it, and re-promoting restores the item. Because media-library copies are a published site asset rather than inbox ephemera, retention cleanup of the private intake originals does not touch them.
-- Every promotion and every removal writes an `adct_pi_audit_log` row naming the acting user, the event and the affected attachment, so "who made this bulletin public" is answerable — the question a POPIA enquiry would ask.
+- Every promotion and every removal writes an `adct_pi_audit_log` row naming the acting user, the event and the affected attachment. The meta records what was promoted and in what role; the audit table records who did it.
 
 This needs **no table and no migration**: promotion state is post meta, and attribution reuses the existing audit table. The schema version is unchanged at 11.
 
