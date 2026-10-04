@@ -360,10 +360,37 @@ attempt would read as an answer again. `assignParish()` then writes exactly one
 whose `details` JSON is
 `{"role":"reviewer","from_parish_id":3,"to_parish_id":21,"venue_id":null,"left_unassigned":false,"sender_trust_changed":false,"match_review_cleared":true}`.
 `left_unassigned` is what distinguishes a deliberate "leave it for the archdiocese"
-from a routing change. One consequence is documented rather than hidden: a
-`duplicate`-status candidate that is resolved drops out of the queue listing,
-because that listing's `status != 'duplicate'` clause is what keeps resolved
-duplicates from being decided twice.
+from a routing change. When a `duplicate` candidate is resolved the details also
+carry `"from_status":"duplicate","to_status":"awaiting_approval"` — see the #218
+note below. #177's claim that a resolved duplicate "drops out of the queue
+listing" described the defect this issue fixes, not a design: the resolution
+panel could be shown for a duplicate and its write refused.
+
+#218 adds no columns and no migration, and reuses the existing `status` column. A
+`duplicate` candidate is now resolvable rather than terminal: `assignParish()` with
+`$resolveMatch = true` accepts `duplicate` as well as `awaiting_approval`, and
+writes the row back to `awaiting_approval` in the same transaction that clears the
+ambiguity keys. The status change is written **only** when the status can actually
+move, so resolving an ordinary ambiguous candidate leaves the column — and
+`updated_at`'s meaning — untouched. The bulk form passes `$resolveMatch = false`
+and keeps its narrower rule: it has no panel, so it cannot say which match was
+wrong, and it still refuses a duplicate with "Only an undecided candidate can be
+assigned a parish."
+
+The status transition is not cosmetic. `where()` surfaces a `duplicate` row **only**
+while `fields` carries `matched_candidate_id > 0` or `match_review_required = true`,
+and resolution `unset()`s both keys — so a resolved duplicate that kept its status
+would leave the listing entirely and never be seen or approved again. Returning it
+to `awaiting_approval` keeps it visible, routable and approvable, which is also the
+honest reading: a notice a person has just shown is unresolvable has stopped being a
+duplicate. One consequence is documented rather than hidden: a resolved duplicate
+becomes an ordinary `awaiting_approval` candidate and starts counting toward
+`countOverdueApprovals()`.
+
+The `candidate_match_resolved` audit row gains `from_status` and `to_status`, but
+**only** on a resolution that moved the status. An ordinary unblock — and every
+plain parish assignment — records neither, because naming a status that did not
+change would be a lie in the trail.
 
 ## State machines
 
@@ -402,7 +429,8 @@ stateDiagram-v2
     awaiting_approval --> published: dean or reviewer approves (first to act wins)
     awaiting_approval --> rejected: dean or reviewer rejects
     draft --> duplicate: matches existing or pending event, no changes (silent, no emails)
-    published --> superseded: a newer candidate updated the event
+        duplicate --> awaiting_approval: a reviewer resolves the match by hand (#218)
+        published --> superseded: a newer candidate updated the event
 ```
 
 `awaiting_approval` items appear in the queue of every active approver of the parish's deanery **and** in the archdiocese reviewers' queue. The move out of `awaiting_approval` is a single conditional update (`… SET status = 'published' WHERE id = ? AND status = 'awaiting_approval'`), so only the first approver's action takes effect. Later clicks show "already decided by …".

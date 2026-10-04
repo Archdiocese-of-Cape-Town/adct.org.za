@@ -462,10 +462,15 @@ final class ReviewQueuePage
                 <?php foreach ($this->sectionWarnings($row) as $warning) : ?>
                     <br /><strong><?php echo esc_html($warning); ?></strong>
                 <?php endforeach; ?>
-                <?php if (($row['status'] ?? null) === 'awaiting_approval'
-                    && ! $canApprove && $this->policy->canDecide($row)) : ?>
-                    <br /><strong>Manual resolution required before approval</strong>
-                <?php endif; ?>
+                <?php if (in_array($row['status'] ?? null, ['awaiting_approval', 'duplicate'], true)
+                                    && ! $canApprove && $this->policy->canDecide($row)) : ?>
+                                    <br /><strong><?php echo esc_html(
+                                        // Same words for both statuses, because it is the same problem:
+                                        // #217 made a duplicate decidable and #218 made it resolvable, but
+                                        // until a person resolves it there is nothing to approve.
+                                        'Manual resolution required before approval'
+                                    ); ?></strong>
+                                <?php endif; ?>
             </td>
             <td><?php echo esc_html(number_format((float) $row['confidence'] * 100, 0) . '%');
                 $uncertain = $this->uncertainFieldCount($fields);
@@ -776,7 +781,11 @@ final class ReviewQueuePage
         // re-render path after a rejected save reaches exactly such a candidate.
         // The policy now answers either way, and this screen names the difference.
         $unreadable = $this->detailsAreUnreadable($row);
-        $needsResolution = ! $unreadable && $editable && $this->policy->requiresMatchResolution($row);
+        // `canResolveMatch()`, not `$editable`: a duplicate can be resolved and
+        // cannot be edited (#218).
+        $needsResolution = ! $unreadable
+            && $this->canResolveMatch($row)
+            && $this->policy->requiresMatchResolution($row);
 
         $view = new CandidateDetailView();
         $view->render(
@@ -912,6 +921,31 @@ final class ReviewQueuePage
     private function canEdit(array $row): bool
     {
         return ($row['status'] ?? '') === 'awaiting_approval'
+            && empty($row['approved_by'])
+            && empty($row['decided_at']);
+    }
+
+    /**
+     * Whether the match-resolution panel may be shown and its action accepted.
+     *
+     * Wider than {@see canEdit()} on purpose, and by exactly one status. A
+     * `duplicate` candidate is an unchanged notice that still needs a person to
+     * say which match was wrong, and #217 already widened `canDecide()` to accept
+     * it — so the queue links to the row and offers rejection, while `canEdit()`
+     * refused it and the panel that #177 built for exactly these rows could never
+     * act. That is the dead end issue #218 reports.
+     *
+     * The two must not be merged. `canEdit()` also gates the editor form and
+     * `handleSave()` behind it, and `updateFields()` still refuses a duplicate's
+     * status, so widening it would offer a form whose POST is rejected. The panel
+     * is the only route a duplicate needs, and {@see assignParish()} is the only
+     * write that accepts its status.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function canResolveMatch(array $row): bool
+    {
+        return in_array($row['status'] ?? '', ['awaiting_approval', 'duplicate'], true)
             && empty($row['approved_by'])
             && empty($row['decided_at']);
     }
@@ -1273,7 +1307,7 @@ final class ReviewQueuePage
         if ($row === null) {
             wp_die(esc_html('This candidate is not in your review queue.'), '', ['response' => 404]);
         }
-        if (! $this->canEdit($row)) {
+        if (! $this->canResolveMatch($row)) {
             wp_die(esc_html('This candidate has already been decided.'), '', ['response' => 409]);
         }
 

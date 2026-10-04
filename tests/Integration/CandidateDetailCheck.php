@@ -1303,6 +1303,109 @@ final class CandidateDetailCheck
                 && ($unassignedDetails['left_unassigned'] ?? null) === true,
                 'the audit row must record that the reviewer deliberately left it unassigned.');
 
+            // --- Resolving a `duplicate` candidate (issue #218) ------------------
+            // `EventCandidateRepository` files an unchanged notice as
+            // `status = duplicate`, and the queue lists it because `where()` looks
+            // for the same two `fields` keys the resolution panel looks for. So the
+            // screen links to it, offers the panel, and — until #218 — refused the
+            // write with "Only an undecided candidate can be assigned a parish."
+            // The panel is the only way to say *which* match was wrong.
+            $duplicateAmbiguous = $makeCandidate('duplicate-ambiguous', 'duplicate', $parish, $contact, $rawPath, $ambiguity);
+            $duplicateDetail = $openDetail($duplicateAmbiguous['candidate']);
+            $check(str_contains($duplicateDetail, ReviewQueuePage::RESOLVE_MATCH_ACTION),
+                'a duplicate candidate must offer the resolution control: #217 already lets a reviewer '
+                . 'decide one, so a panel that refused it was a dead end.');
+            // The editor form still *renders* for a duplicate: `CandidateDetailView`
+                        // emits it unconditionally and only adds `readonly` to its inputs, so the
+                        // absence of markup is not the invariant to assert. The invariant lives at
+                        // the write path -- `canEdit()` accepts `awaiting_approval` only, so a save
+                        // POST for a duplicate is refused. #218 widens the resolution route by one
+                        // status and deliberately does not widen this one.
+                        $duplicateEdit = $validPost;
+                        $duplicateEdit['candidate_id'] = (string) $duplicateAmbiguous['candidate'];
+                        $duplicateEdit['title'] = 'Should Not Persist ' . $suffix;
+                        $_POST = $duplicateEdit;
+                        $_REQUEST = $_POST;
+                        add_filter('wp_die_handler', $dieHandler);
+                        try {
+                            $page->handleSave();
+                            $fail('Candidate detail: a duplicate candidate was edited.');
+                        } catch (RuntimeException $error) {
+                            $check(str_contains($error->getMessage(), 'already been decided'),
+                                'editing a duplicate must still be refused: ' . $error->getMessage());
+                        } finally {
+                            remove_filter('wp_die_handler', $dieHandler);
+                        }
+                        $check(self::storedTitle($wpdb, $prefix, $duplicateAmbiguous['candidate'])
+                            === 'Fictional Harvest Tea ' . $suffix,
+                            'a refused duplicate save must leave the title alone.');
+                        $check(array_values(array_filter(
+                            $queue->history($duplicateAmbiguous['candidate']),
+                            static function (array $row): bool {
+                                return $row['action'] === 'update_fields';
+                            }
+                        )) === [],
+                            'and must write no audit row.');
+
+            $duplicatePost = $resolvePost;
+            $duplicatePost['candidate_id'] = (string) $duplicateAmbiguous['candidate'];
+            $redirect = $redirectFor($page, 'handleResolveMatch', $duplicatePost);
+            $check($redirect !== null && str_contains($redirect, 'resolved=1'),
+                'resolving a duplicate must be accepted, not refused as already decided.');
+            $duplicate = $wpdb->get_row($wpdb->prepare(
+                "SELECT parish_id, status, fields FROM {$prefix}event_candidates WHERE id = %d",
+                $duplicateAmbiguous['candidate']
+            ), ARRAY_A);
+            $duplicateFields = json_decode((string) ($duplicate['fields'] ?? '{}'), true);
+            $duplicateFields = is_array($duplicateFields) ? $duplicateFields : [];
+            $check($duplicate !== null && (int) $duplicate['parish_id'] === $parish,
+                'a resolved duplicate must take the parish the reviewer chose.');
+            $check($duplicate !== null && $duplicate['status'] === 'awaiting_approval',
+                'a duplicate a person resolved has stopped being one, so it returns to the ordinary '
+                . 'approval queue. A row that kept the status would drop out of the listing — that '
+                . 'listing keys off these same fields — and never be seen again.');
+            $check(! array_key_exists('match_review_required', $duplicateFields)
+                && ! array_key_exists('matched_candidate_id', $duplicateFields),
+                'the block is cleared the same way it is for any other ambiguous candidate.');
+            $duplicateHistory = array_values(array_filter(
+                $queue->history($duplicateAmbiguous['candidate']),
+                static function (array $row): bool {
+                    return $row['action'] === 'candidate_match_resolved';
+                }
+            ));
+            $duplicateDetails = json_decode((string) ($duplicateHistory[0]['details'] ?? ''), true);
+            $check(count($duplicateHistory) === 1 && is_array($duplicateDetails)
+                && ($duplicateDetails['from_status'] ?? null) === 'duplicate'
+                && ($duplicateDetails['to_status'] ?? null) === 'awaiting_approval',
+                'the audit row must name the status it moved, or a reader cannot tell a duplicate '
+                . 'returning to the queue from an ordinary unblock.');
+
+            // And it is approvable straight afterwards, through the ordinary save
+            // route, which is the whole point of putting it back.
+            $duplicateApproval = $validPost;
+            $duplicateApproval['candidate_id'] = (string) $duplicateAmbiguous['candidate'];
+            $duplicateApproval['save_mode'] = 'approve';
+            $duplicateApproval['title'] = 'Resolved Fictional Duplicate ' . $suffix;
+            $duplicateApproval['event_date'] = '12/11/2026';
+            $duplicateApproval['recurrence_preset'] = 'none';
+            $duplicateApproval['parish_id'] = (string) $parish;
+            $redirect = $redirectFor($page, 'handleSave', $duplicateApproval);
+            $check($redirect !== null && str_contains($redirect, 'decision='),
+                'a resolved duplicate must be approvable through the ordinary save route.');
+            $duplicateDecided = $wpdb->get_row($wpdb->prepare(
+                "SELECT status FROM {$prefix}event_candidates WHERE id = %d",
+                $duplicateAmbiguous['candidate']
+            ), ARRAY_A);
+            $check($duplicateDecided !== null && $duplicateDecided['status'] !== 'awaiting_approval',
+                'and it must actually be decided.');
+            $duplicatePublished = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT match_event_id FROM {$prefix}event_candidates WHERE id = %d",
+                $duplicateAmbiguous['candidate']
+            ));
+            if ($duplicatePublished > 0) {
+                $published[] = $duplicatePublished;
+            }
+
             // --- Reject ------------------------------------------------------------
             $rejectCandidate = $makeCandidate('reject', 'awaiting_approval', $parish, $contact, $rawPath);
             $reject = $validPost;
