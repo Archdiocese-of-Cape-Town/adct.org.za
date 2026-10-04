@@ -30,6 +30,7 @@ if (! is_dir($outputDirectory) || ! is_writable($outputDirectory)) {
  * @param float $x    left edge, in PostScript points from the left of the page
  * @param float $y    baseline, in PostScript points from the bottom of the page
  * @param float $size font size in points
+ * @param float $degrees how far the baseline is turned, counter-clockwise
  */
 final class TextLine
 {
@@ -38,7 +39,28 @@ final class TextLine
         public readonly float $x,
         public readonly float $y,
         public readonly float $size = 10.0,
+        public readonly float $degrees = 0.0,
     ) {
+    }
+
+    /**
+     * The four values the `Tm` operator takes before the translation, for a
+     * baseline turned by `$degrees` counter-clockwise. With the rotation about
+     * the origin, the run's anchor stays at the supplied position and the text
+     * runs away from it along the turned baseline, which is how a publisher
+     * places a vertical caption.
+     *
+     * @return array{0: float, 1: float, 2: float, 3: float}
+     */
+    public function textMatrix(): array
+    {
+        if ($this->degrees === 0.0) {
+            return [1.0, 0.0, 0.0, 1.0];
+        }
+
+        $radians = deg2rad($this->degrees);
+
+        return [cos($radians), sin($radians), -sin($radians), cos($radians)];
     }
 }
 
@@ -138,9 +160,15 @@ function contentStream(array $lines): string
             continue;
         }
 
+        [$a, $b, $c, $d] = $line->textMatrix();
+
         $parts[] = sprintf(
-            'BT /F1 %s Tf 1 0 0 1 %s %s Tm (%s) Tj ET',
+            'BT /F1 %s Tf %s %s %s %s %s %s Tm (%s) Tj ET',
             pdfNumber($line->size),
+            pdfNumber($a),
+            pdfNumber($b),
+            pdfNumber($c),
+            pdfNumber($d),
             pdfNumber($line->x),
             pdfNumber($line->y),
             pdfLiteralString($line->text)
@@ -297,5 +325,66 @@ for ($page = 1; $page <= 11; ++$page) {
 }
 
 writeFixture('over-page-limit.pdf', $overPageLimit);
+
+// ---------------------------------------------------------------------------
+// 6. A bulletin that switches from one column to two partway down the page.
+//    Reading a single column count for the whole page interleaves the top of
+//    the page, and reading the x axis alone loses the full-width heading.
+// ---------------------------------------------------------------------------
+writeFixture('column-switch-bulletin.pdf', [[
+    new TextLine('Parish Newsletter for November 2026', 60, 760, 12),
+    new TextLine('The annual Mass intention list is on the table.', 200, 742, 10),
+    new TextLine('Confirmation Day', 60, 700, 11),
+    new TextLine('Sunday 8 November 2026', 320, 700, 11),
+    new TextLine('at 10am in the hall.', 60, 688, 11),
+    new TextLine('at 6pm in the church.', 320, 688, 11),
+]]);
+
+// ---------------------------------------------------------------------------
+// 7. Two columns of diary notices with a Mass times table running across the
+//    gutter between them. The table rows cross the column boundary, so they
+//    have to be read whole rather than split at the gutter. The columns matter:
+//    a table on its own is a four-column layout, not a table.
+// ---------------------------------------------------------------------------
+writeFixture('cross-column-table.pdf', [[
+    new TextLine('Diary', 60, 700, 11),
+    new TextLine('Choir Rehearsal', 320, 700, 11),
+    new TextLine('Confirmation Day', 60, 688, 11),
+    new TextLine('Thursday 12 November', 320, 688, 11),
+    new TextLine('Mass times', 60, 650, 12),
+    new TextLine('Monday', 60, 638, 11),
+    new TextLine('5:45am', 200, 638, 11),
+    new TextLine('Wednesday', 330, 638, 11),
+    new TextLine('9:00am', 470, 638, 11),
+    new TextLine('Tuesday', 60, 626, 11),
+    new TextLine('6:30am', 200, 626, 11),
+    new TextLine('Thursday', 330, 626, 11),
+    new TextLine('6:00pm', 470, 626, 11),
+]]);
+
+// ---------------------------------------------------------------------------
+// 8. A vertical caption in the margin, turned a quarter turn counter-clockwise.
+//    Its runs share one x position and step through y, so a naive read shreds
+//    the caption into one word per line and reverses it.
+// ---------------------------------------------------------------------------
+writeFixture('rotated-caption.pdf', [[
+    new TextLine('Confirmation Day', 60, 700, 11),
+    new TextLine('Sunday 8 November 2026', 60, 688, 11),
+    new TextLine('Retreat', 520, 700, 11, 90),
+    new TextLine('programme', 520, 740, 11, 90),
+]]);
+
+// ---------------------------------------------------------------------------
+// 9. A boxed sidebar whose list is indented under its heading. The indent is a
+//    nested list, not a second column.
+// ---------------------------------------------------------------------------
+writeFixture('boxed-sidebar.pdf', [[
+    new TextLine('Confirmation Day', 60, 760, 11),
+    new TextLine('Prayer group', 380, 760, 11),
+    new TextLine('Sunday 8 November 2026', 60, 748, 11),
+    new TextLine('* Youth group', 440, 748, 11),
+    new TextLine('at 10am in the hall.', 60, 736, 11),
+    new TextLine('* Marriage preparation', 440, 736, 11),
+]]);
 
 echo "Done.\n";
