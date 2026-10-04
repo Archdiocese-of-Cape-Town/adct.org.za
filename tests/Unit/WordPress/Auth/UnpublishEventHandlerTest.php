@@ -18,6 +18,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
     use ADCT\ParishIntake\Core\Auth\ActionTokenService;
     use ADCT\ParishIntake\Core\Auth\ActionTokenStatus;
     use ADCT\ParishIntake\Core\Auth\Capabilities;
+    use ADCT\ParishIntake\Core\Mail\MailPriority;
     use ADCT\ParishIntake\Core\Ports\OccurrenceMaintenanceInterface;
     use ADCT\ParishIntake\Core\Ports\MailerInterface;
     use ADCT\ParishIntake\WordPress\Approval\ApprovalRecipients;
@@ -58,6 +59,13 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
     final class UnpublishEventHandlerTest extends TestCase
     {
         private const DEAN = 'dean@example.test';
+
+        /**
+         * The parish contact who wrote the change being unpublished. A third
+         * address, distinct from both the approvers and the event's own contact
+         * meta, so a test cannot pass by mailing the wrong one of the three.
+         */
+        private const CONTACT = 'office@example.test';
         private const REVIEWER = 'reviewer@example.test';
 
         private const DEAN_USER_ID = 101;
@@ -351,11 +359,84 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
         }
 
         /**
-        * Terminal, so the guard cannot be the change row's own reverted_at
-        * column: a revert can follow an unpublish and an unpublish can follow a
-        * revert, and in both directions reverted_at is the wrong thing to test.
-        * The post's status is the authority, and only the locked row knows it.
-        */
+                * Unpublishing is the harshest thing the plugin can do to a parish's
+                * event: it vanishes from the page and the feed. The contact who asked
+                * for it is the person who most needs to hear that it happened.
+                *
+                * ChangeNoticeJob will not tell them. It skips `revert` rows on purpose --
+                * a notice carrying a one-click revert link is a live credential for an
+                * undo, and these rows record undos already performed -- and `unpublish`
+                * rows are silent for the same reason. So the handler is the only place
+                * the outcome and the contact's address are both in hand.
+                */
+                public function testTheContactWhoseEventWasUnpublishedIsToldToo(): void
+                {
+                    $database = $this->database();
+                    $tokens = new ActionTokenService(new RevertTokenStore(), new RevertClock());
+                    $binding = $this->binding();
+                    $token = $tokens->issue($binding)->token();
+
+                    $mailer = new RecordingMailer();
+
+                    $this->handler([self::PARISH_ID], $database, null, $mailer)
+                        ->performAtomic($binding, $token, $tokens, '');
+
+                    $toContact = null;
+                    foreach ($mailer->sent as $email) {
+                        if ($email->recipient === self::CONTACT) {
+                            $toContact = $email;
+                        }
+                    }
+
+                    self::assertNotNull(
+                        $toContact,
+                        'The contact who wrote the change must learn their event is off the page.'
+                    );
+                    self::assertStringContainsString(
+                        'taken off',
+                        $toContact->textBody,
+                        'The mail must state the outcome plainly, not just that something happened.'
+                    );
+                    self::assertStringContainsString(
+                        'not deleted',
+                        $toContact->textBody,
+                        'A parish whose event vanished needs to know it can be restored.'
+                    );
+                    self::assertSame(MailPriority::APPROVER_OR_CHANGE, $toContact->priority);
+                }
+
+                /**
+                * One person, one message. When the contact is also the approver who
+                * pressed the button the first mail already said it, and the account is
+                * capped at 500 emails an hour for the whole site (ADR 0011).
+                */
+                public function testAContactWhoAlsoUnpublishedItIsToldOnceNotTwice(): void
+                {
+                    $database = $this->database();
+                    $database->setActor(self::CHANGE_ID, self::DEAN);
+                    $tokens = new ActionTokenService(new RevertTokenStore(), new RevertClock());
+                    $binding = $this->binding();
+                    $token = $tokens->issue($binding)->token();
+
+                    $mailer = new RecordingMailer();
+
+                    $this->handler([self::PARISH_ID], $database, null, $mailer)
+                        ->performAtomic($binding, $token, $tokens, '');
+
+                    self::assertCount(
+                        1,
+                        $mailer->sent,
+                        'The presser and the contact are the same address here.'
+                    );
+                    self::assertSame(self::DEAN, $mailer->sent[0]->recipient);
+                }
+
+                /**
+                * Terminal, so the guard cannot be the change row's own reverted_at
+                * column: a revert can follow an unpublish and an unpublish can follow a
+                * revert, and in both directions reverted_at is the wrong thing to test.
+                * The post's status is the authority, and only the locked row knows it.
+                */
         public function testAnEventThatIsAlreadyUnpublishedIsRefusedAndAppendsNothing(): void
         {
             $database = $this->database();
@@ -719,7 +800,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
                 self::CHANGE_ID,
                 self::EVENT_ID,
                 300,
-                self::DEAN,
+                            self::CONTACT,
                 'update',
                 $before,
                 $after

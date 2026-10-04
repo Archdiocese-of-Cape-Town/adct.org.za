@@ -254,7 +254,7 @@ final class UnpublishEventHandler implements AtomicActionTokenHandlerInterface
             throw $failure;
         }
 
-        $this->afterCommit($eventId, $binding);
+        $this->afterCommit($eventId, $binding, $row);
 
         return new ActionTokenOutcome(
             'The event was taken off the events page and its calendar feed.',
@@ -375,7 +375,7 @@ final class UnpublishEventHandler implements AtomicActionTokenHandlerInterface
     /**
      * @param array<string, mixed> $row
      */
-    private function afterCommit(int $eventId, ActionTokenBinding $binding): void
+    private function afterCommit(int $eventId, ActionTokenBinding $binding, array $row): void
     {
         try {
             clean_post_cache($eventId);
@@ -389,18 +389,68 @@ final class UnpublishEventHandler implements AtomicActionTokenHandlerInterface
             );
         }
 
-        // Only the person who pressed the button is told. The contact that made
-        // the change is reached through the change notice job reading this row,
-        // which is the same route that tells them about a rejection.
-        $this->mailer->enqueue(new OutboundEmail(
-            $binding->email,
-            'Your unpublish took effect',
-            '<p>The event you took off the events page is no longer listed.</p>',
-            "The event you took off the events page is no longer listed.",
-            MailPriority::APPROVER_OR_CHANGE,
-            'event-unpublished:' . $eventId . ':' . $binding->subjectId
-        ));
-    }
+        // The person who pressed the button is told what they just did. The contact
+                // whose event went off the page is told separately, below.
+                $this->mailer->enqueue(new OutboundEmail(
+                    $binding->email,
+                    'Your unpublish took effect',
+                    '<p>The event you took off the events page is no longer listed.</p>',
+                    "The event you took off the events page is no longer listed.",
+                    MailPriority::APPROVER_OR_CHANGE,
+                    'event-unpublished:' . $eventId . ':' . $binding->subjectId
+                ));
+
+                $this->tellTheContact($eventId, $binding, $row);
+            }
+
+            /**
+             * The contact who wrote the change, told that their event is off the page.
+             *
+             * ChangeNoticeJob will not reach them. It skips `revert` rows on purpose --
+             * a notice carrying a one-click revert link is a live credential for an undo
+             * -- and `unpublish` rows are silent for the same reason: this row records
+             * an undo already performed, and the remedies were all taken. So the
+             * handler is the only place both the outcome and the contact's address are
+             * in hand.
+             *
+             * The actor column is that address: CandidatePublisher builds the
+             * Publication from approved_by, so it is a deliverable address and not a
+             * login name.
+             *
+             * Suppressed when the actor is the presser, so one person gets one message
+             * on an account capped at 500 emails an hour for the whole site (ADR
+             * 0011), and when the column is blank, which a contact-published change
+             * never has but a hand-written row need not.
+             *
+             * @param array<string, mixed> $row
+             */
+            private function tellTheContact(int $eventId, ActionTokenBinding $binding, array $row): void
+            {
+                $actor = $row['actor'] ?? null;
+
+                if (! is_string($actor)) {
+                    return;
+                }
+
+                $actor = trim($actor);
+
+                if ($actor === '' || strcasecmp($actor, $binding->email) === 0) {
+                    return;
+                }
+
+                $this->mailer->enqueue(new OutboundEmail(
+                    $actor,
+                    'An event you asked for is no longer listed',
+                    '<p>An event you asked to have changed on the Archdiocese website has been'
+                        . ' taken off the events page and its calendar feed. It is not deleted, and'
+                        . ' an archdiocesan reviewer can put it back.</p>',
+                    "An event you asked to have changed on the Archdiocese website has been taken off"
+                        . " the events page and its calendar feed.\n"
+                        . "It is not deleted, and an archdiocesan reviewer can put it back.",
+                    MailPriority::APPROVER_OR_CHANGE,
+                    'event-unpublished-for-contact:' . $eventId . ':' . $binding->subjectId
+                ));
+            }
 
     /**
      * The live relationship, uncached. Returns the role this recipient holds now
