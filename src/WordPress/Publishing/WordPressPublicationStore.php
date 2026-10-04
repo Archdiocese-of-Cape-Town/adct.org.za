@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Publishing;
 
 use ADCT\ParishIntake\Core\Audit\AuditAction;
+use ADCT\ParishIntake\WordPress\Attachments\PublishedSourceMaterialPromoter;
 use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
 use ADCT\ParishIntake\Core\Audit\AuditWriter;
 use ADCT\ParishIntake\Core\Events\OccurrenceWindow;
@@ -32,9 +33,10 @@ final class WordPressPublicationStore implements PublicationStoreInterface
         private EventListingGeneration $listingGeneration,
         private ClockInterface $clock,
         private DateTimeZone $timezone,
-        private ?AuditWriter $audit = null
-    ) {
-    }
+        private ?AuditWriter $audit = null,
+                private ?PublishedSourceMaterialPromoter $sourceMaterial = null
+            ) {
+            }
 
     public function publish(int $candidateId, callable $prepare): int
     {
@@ -73,8 +75,12 @@ final class WordPressPublicationStore implements PublicationStoreInterface
                 if ($eventId !== null && (int) get_post_meta($eventId, 'source_candidate_id', true) === $candidateId) {
                     $this->execute('COMMIT');
                     $committed = true;
-                    return $this->afterCommit($eventId);
-                }
+                                    // No promotion here. This candidate was already published,
+                                    // and the message below tells an operator that re-publishing
+                                    // repairs a cache generation -- so promoting again would
+                                    // re-copy every file and demote the first poster.
+                                    return $this->afterCommit($eventId, false);
+                                }
                 throw new DomainException('The candidate was already published to another event.');
             }
 
@@ -226,7 +232,7 @@ final class WordPressPublicationStore implements PublicationStoreInterface
             }
             $this->execute('COMMIT');
             $committed = true;
-            return $this->afterCommit($eventId);
+                        return $this->afterCommit($eventId, true, $row);
         } catch (Throwable $failure) {
             if ($committed) {
                 throw new RuntimeException(
@@ -254,12 +260,56 @@ final class WordPressPublicationStore implements PublicationStoreInterface
         }
     }
 
-    private function afterCommit(int $eventId): int
-    {
-        clean_post_cache($eventId);
-        $this->listingGeneration->bump();
-        return $eventId;
-    }
+    /**
+         * Work that happens once the publication transaction has committed.
+         *
+         * Publication is the disclosure switch for issue #172: the owner settled
+         * that a parish which emails a notice has already decided its source
+         * material is public, so there is no separate promotion gate and no
+         * selection to make. The copy therefore runs here rather than inside
+         * publish(), because by here the transaction is committed and there is
+         * nothing left to roll back.
+         *
+         * @param array<string, mixed>|null $candidateRow the freshly published row
+         */
+        private function afterCommit(int $eventId, bool $freshlyPublished, ?array $candidateRow = null): int
+        {
+            if ($freshlyPublished) {
+                $this->publishSourceMaterial($eventId, $candidateRow);
+            }
+
+            clean_post_cache($eventId);
+            $this->listingGeneration->bump();
+            return $eventId;
+        }
+
+        /**
+         * Copies the event's source material into the media library.
+         *
+         * Every fault is caught here. The catch block in publish() reports
+         * anything escaping post-commit work as "the listing cache could not be
+         * refreshed" and tells the operator to re-publish a candidate that is
+         * already live, so a promotion fault escaping would invite a retry that
+         * re-copies every file and demotes the first poster to a document.
+         *
+         * @param array<string, mixed>|null $candidateRow
+         */
+        private function publishSourceMaterial(int $eventId, ?array $candidateRow): void
+        {
+            $messageId = (int) ($candidateRow['message_id'] ?? 0);
+
+            try {
+                if ($messageId > 0) {
+                    $this->sourceMaterial?->promoteForPublishedEvent($eventId, $messageId);
+                }
+            } catch (Throwable $failure) {
+                error_log(sprintf(
+                    '[ADCT Parish Intake] Event %d was published but its source material was not: %s',
+                    $eventId,
+                    $failure->getMessage()
+                ));
+            }
+        }
 
     /**
      * @return array<string, mixed>

@@ -129,6 +129,7 @@ use ADCT\ParishIntake\WordPress\Database\SenderSuggestionMigration;
 use ADCT\ParishIntake\WordPress\Attachments\ActionTokenImageEndpoint;
 use ADCT\ParishIntake\WordPress\Attachments\AttachmentImageEndpoint;
 use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
+use ADCT\ParishIntake\WordPress\Attachments\PublishedSourceMaterialPromoter;
 use ADCT\ParishIntake\WordPress\Attachments\SourceMaterialAuditTrail;
 use ADCT\ParishIntake\WordPress\Attachments\WordPressSourceMaterialCopier;
 use ADCT\ParishIntake\WordPress\Attachments\WordPressSourceMaterialStore;
@@ -414,6 +415,19 @@ final class Plugin
         return new SourceMaterialAuditTrail($this->auditLog, $this->auditLog->actorResolver());
     }
 
+        /**
+         * The promoter the publication store calls once a publication has
+         * committed, so the source material goes out with the event it came with.
+         */
+        private function publishedSourceMaterialPromoter(): PublishedSourceMaterialPromoter
+        {
+            return new PublishedSourceMaterialPromoter(
+                new AttachmentRepository($this->database),
+                $this->sourceMaterialPromotion(),
+                $this->sourceMaterialAuditTrail()
+            );
+        }
+
     private function __construct(string $pluginFile)
     {
         $this->pluginFile = $pluginFile;
@@ -593,8 +607,9 @@ final class Plugin
                 $listingGeneration,
                 $clock,
                 $timezone,
-                $auditLog
-            ),
+                                $auditLog,
+                                $this->publishedSourceMaterialPromoter()
+                            ),
             new EventValidator($timezone, $rruleValidator),
             // Issue #200 asks whether a verified contact may publish a change or whether
             // it must still be reviewed. It is still open, so the conservative answer is
