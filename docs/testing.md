@@ -408,6 +408,20 @@ Both of the script's branches are exercised, and they are asserted in opposite d
 
 **If you change the guard message, reword it to name the step, not the file.** Fixing this guard by moving it after the bootstrap assertions, or by dropping it and letting them fail naturally, is not available: the unconditional require on `vendor-prefixed/autoload.php` fatals first in both cases. And do not relax the unprefixed-class assertions to make the guard reachable — a test that passes because the assertion it should carry was weakened is worse than no test.
 
+### Proving the check exercises behaviour, not just class loading
+
+Issue [#239](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/239) is the reason the check now extracts text rather than only asserting that classes load. A PDF adapter shipped with hard `use` statements naming classes the prefixing step had renamed; every class-loading assertion passed anyway, and only calling the adapter revealed that *every* PDF failed. So the check extracts text from a packaged fixture (`assets/release-check/two-column-bulletin.pdf`, which is required to be present in the zip) and fails unless the result is non-empty. It distinguishes the two failures rather than collapsing them, because `The file could not be read as a PDF.` and "extracted no text" have different causes.
+
+Three tests pin that, and all three assert the failure *message*, not merely a non-zero exit — an exit code alone would also be satisfied by the script dying for an unrelated reason:
+
+- **`testItSucceedsOnAPackageBuiltByThePrefixingStep`** now extracts real text as part of the success path, so the green case cannot survive if extraction stops being checked.
+- **`testItFailsWhenThePdfAdapterCannotReachThePrefixedParser`** rewrites the packaged adapter into its pre-fix shape and requires the check to report `status=failed reason=The file could not be read as a PDF.` — the exact string #239 shipped.
+- **`testItFailsWhenThePdfAdapterReturnsNoText`** replaces the whole `extract()` body with one returning empty text, anchored on the **method signature** rather than on any line inside it. Anchoring on the signature keeps the mutation meaningful whether or not the adapter resolves its parser by name.
+
+The same script also tokenises shipped `src/**/*.php` and rejects any name token starting with a dependency namespace (`PrinsFrank\`, `ZBateson\`), which is the guard against shipping the #239 defect in a file that no other assertion happens to load. `testItFailsOnAHardUseStatementForAVendorNamespace` plants an unused file with a hard `use` to prove the scan is not dead code, and `testItAcceptsARuntimeResolvedVendorClassNameInAString` pins the other direction: the packaged tree already contains the supported runtime-resolution strings in `MimeMessageParser.php` and `RawMessageInspector.php`, and the guard must tolerate them. Tokenising rather than grepping is what makes that second test possible — a namespace-qualified string is a string literal, never a name token.
+
+**When you add a dependency**, add its namespace to `$vendorNamespaces` in the check, or its imports ship unguarded.
+
 Without a local PHP, use the Docker commands in the [development guide](development.md#local-setup-windows-no-php-install-needed). CI (`.github/workflows/ci.yml`) runs `composer validate`, a `php -l` lint and `composer test` on PHP 8.2, 8.3 and 8.4 for every PR and push to `main`, plus the same steps on PHP 8.5 as an advisory `continue-on-error` job. Because `phpunit.xml.dist` sets `failOnDeprecation`, `failOnWarning` and `failOnNotice` to `true`, the 8.2–8.4 jobs are what enforce the rule that nothing deprecated in PHP 8.3 or later is used.
 
 ### Reading the summary line

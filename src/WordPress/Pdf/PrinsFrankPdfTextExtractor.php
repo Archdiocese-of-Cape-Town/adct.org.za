@@ -11,8 +11,6 @@ use ADCT\ParishIntake\Core\Pdf\PositionedTextFragment;
 use ADCT\ParishIntake\Core\Ports\PdfTextExtractorInterface;
 use ADCT\ParishIntake\Core\Ports\StopwatchInterface;
 use ADCT\ParishIntake\Core\Support\SystemStopwatch;
-use PrinsFrank\PdfParser\Exception\PdfParserException;
-use PrinsFrank\PdfParser\PdfParser;
 use Throwable;
 
 /**
@@ -26,9 +24,54 @@ use Throwable;
  * rejected on its page count before a single page is read for text. Nothing
  * here throws: a PDF is untrusted input, and a bad file must not be able to
  * fail the message that carried it.
+ *
+ * The library is resolved by name at runtime rather than imported, because the
+ * release build prefixes vendor namespaces but does not rewrite `use` statements
+ * in this tree. A hard import would name a class that no longer exists in a
+ * released package, and the resulting `Error` would surface as "could not be read
+ * as a PDF" for every file. See issue #239.
  */
 final class PrinsFrankPdfTextExtractor implements PdfTextExtractorInterface
 {
+    /**
+     * Candidate names for the parser, unprefixed first so a development
+     * checkout and an un-prefixed vendor tree work, then the name the release
+     * build gives the same class.
+     *
+     * @var list<string>
+     */
+    private const PDF_PARSER_CLASSES = [
+        'PrinsFrank\\PdfParser\\PdfParser',
+        'ADCT\\ParishIntake\\Dependencies\\PrinsFrank\\PdfParser\\PdfParser',
+    ];
+
+    /**
+     * Candidate names for the library's own exception type, which decides
+     * whether a failure is reported as an unparseable file or a read error.
+     *
+     * @var list<string>
+     */
+    private const PDF_PARSER_EXCEPTION_CLASSES = [
+        'PrinsFrank\\PdfParser\\Exception\\PdfParserException',
+        'ADCT\\ParishIntake\\Dependencies\\PrinsFrank\\PdfParser\\Exception\\PdfParserException',
+    ];
+
+    /**
+     * @param list<string> $candidates
+     *
+     * @return class-string|null
+     */
+    private function resolveClass(array $candidates): ?string
+    {
+        foreach ($candidates as $candidate) {
+            if (class_exists($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
     public function __construct(
         private readonly ColumnAwareTextAssembler $assembler = new ColumnAwareTextAssembler(),
         private readonly ?StopwatchInterface $stopwatch = null,
@@ -49,10 +92,16 @@ final class PrinsFrankPdfTextExtractor implements PdfTextExtractorInterface
 
         $stopwatch = $this->stopwatch ?? new SystemStopwatch();
 
+        $parserClass = $this->resolveClass(self::PDF_PARSER_CLASSES);
+
+        if ($parserClass === null) {
+            return PdfExtractionResult::failed('The PDF parser is not available in this installation.');
+        }
+
         try {
             // `false` streams the file from disk instead of loading it whole,
             // which keeps peak memory inside the host's 256M limit.
-            $document = (new PdfParser())->parseFile($absolutePath, false);
+            $document = (new $parserClass())->parseFile($absolutePath, false);
         } catch (Throwable $throwable) {
             return $this->failure($throwable);
         }
@@ -119,7 +168,7 @@ final class PrinsFrankPdfTextExtractor implements PdfTextExtractorInterface
     }
 
     /**
-     * @param \PrinsFrank\PdfParser\Document\Object\Decorator\Page $page
+     * @param object $page  A page decorator from the library.
      */
     private function pageText(object $page): string
     {
@@ -159,8 +208,8 @@ final class PrinsFrankPdfTextExtractor implements PdfTextExtractorInterface
      * their own baseline instead, so zero is passed through and let stand for
      * "unknown".
      *
-     * @param \PrinsFrank\PdfParser\Document\ContentStream\PositionedText\PositionedTextElement $element
-     * @param \PrinsFrank\PdfParser\Document\Object\Decorator\Page                         $page
+     * @param object $element  A positioned text element from the library.
+     * @param object $page  The page the run belongs to.
      */
     private function widthOf(object $element, object $page): float
     {
@@ -195,7 +244,7 @@ final class PrinsFrankPdfTextExtractor implements PdfTextExtractorInterface
      * `atan2` already reports (-180, 180], which is the range the assembler
      * expects, so no normalisation is needed.
      *
-     * @param \PrinsFrank\PdfParser\Document\ContentStream\PositionedText\TransformationMatrix $matrix
+     * @param object $matrix  A text matrix from the library.
      */
     private function angleOf(object $matrix): float
     {
@@ -204,7 +253,9 @@ final class PrinsFrankPdfTextExtractor implements PdfTextExtractorInterface
 
     private function failure(Throwable $throwable, int $pageCount = 0): PdfExtractionResult
     {
-        $reason = $throwable instanceof PdfParserException
+        $exceptionClass = $this->resolveClass(self::PDF_PARSER_EXCEPTION_CLASSES);
+
+        $reason = $exceptionClass !== null && $throwable instanceof $exceptionClass
             ? 'The file could not be parsed as a PDF.'
             : 'The file could not be read as a PDF.';
 

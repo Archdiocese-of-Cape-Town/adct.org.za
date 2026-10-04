@@ -263,8 +263,234 @@ final class ReleaseBootstrapCheckTest extends TestCase
     }
 
     // ------------------------------------------------------------------
+    /**
+     * The regression this pins, at the release gate rather than in a unit test.
+     *
+     * Issue #239 shipped a PDF extractor whose hard `use` statements named
+     * classes the prefixing step had renamed. Every assertion in this file
+     * passed anyway, because a classmap that loads is a classmap that loads
+     * whether or not the adapter can reach it. Only extracting text exercises
+     * the adapter the way the site will.
+     *
+     * The fixture below rewrites the packaged adapter into its pre-fix shape, so
+     * the check has to notice an adapter it cannot call.
+     */
+    public function testItFailsWhenThePdfAdapterCannotReachThePrefixedParser(): void
+    {
+        $fixture = $this->createPrefixedFixture();
+        $this->revertPdfAdapterToHardUseStatements($fixture);
+
+        $result = $this->runCheck($fixture);
+
+        self::assertSame(
+            1,
+            $result['exit'],
+            "A PDF adapter that cannot reach the prefixed parser must fail the release check.\n"
+            . 'stdout: ' . $result['stdout'] . "\nstderr: " . $result['stderr']
+        );
+        self::assertStringContainsString(
+            'Release PDF adapter did not extract text: status=failed reason=The file could not be read as a PDF.',
+            $result['stderr'],
+            'The check must report the adapter failing, which is the defect #239 shipped.'
+        );
+    }
+
+    /**
+     * A green check that silently extracted nothing would hide the next
+     * extraction regression just as well as one that skipped the PDF.
+     */
+    public function testItFailsWhenThePdfAdapterReturnsNoText(): void
+    {
+        $fixture = $this->createPrefixedFixture();
+        $adapter = $fixture . '/src/WordPress/Pdf/PrinsFrankPdfTextExtractor.php';
+        $contents = (string) file_get_contents($adapter);
+
+        // Anchored on the method signature so the mutation means "returns no text"
+        // whether or not the adapter resolves its parser by name. Asserting the
+        // text is non-empty is the part that would otherwise stay vacuous.
+        $anchor = '    public function extract(string $absolutePath, PdfExtractionLimits $limits): PdfExtractionResult';
+        self::assertStringContainsString($anchor, $contents, 'The adapter must still declare extract().');
+
+        $mutated = str_replace(
+            $anchor,
+            $anchor . "\n    {\n        return PdfExtractionResult::extracted('', 1);\n    }\n\n    private function extractUnused(string \$absolutePath, PdfExtractionLimits \$limits): PdfExtractionResult",
+            $contents
+        );
+
+        self::assertNotSame($contents, $mutated, 'The empty-text mutation must change the adapter.');
+
+        self::assertNotFalse(file_put_contents($adapter, $mutated));
+
+        $result = $this->runCheck($fixture);
+
+        self::assertSame(
+            1,
+            $result['exit'],
+            "An adapter that reports success with no text must fail the release check.\nstderr: " . $result['stderr']
+        );
+        self::assertStringContainsString(
+            'extracted no text',
+            $result['stderr'],
+            'The check must distinguish "extracted nothing" from "extraction failed".'
+        );
+    }
+
+    public function testItFailsWhenTheReleaseCheckPdfIsNotShipped(): void
+    {
+        $fixture = $this->createPrefixedFixture();
+        $pdf = $fixture . '/assets/release-check/two-column-bulletin.pdf';
+
+        self::assertFileExists($pdf, 'The fixture must ship the PDF, or the success assertion proves nothing.');
+        self::assertTrue(unlink($pdf), 'Could not remove the PDF fixture.');
+
+        $result = $this->runCheck($fixture);
+
+        self::assertSame(
+            1,
+            $result['exit'],
+            "A package without the check PDF must fail rather than skip the extraction assertion.\n"
+            . 'stdout: ' . $result['stdout'] . "\nstderr: " . $result['stderr']
+        );
+        self::assertStringContainsString(
+            'Release check PDF fixture is missing from the package: assets/release-check/two-column-bulletin.pdf',
+            $result['stderr'],
+            'The check must name the file whose absence would otherwise disable itself.'
+        );
+    }
+
+    /**
+     * The success assertion must be load-bearing, so the packaged adapter has to
+     * have text to extract. Without this the PDF assertions could pass vacuously.
+     */
+    public function testThePrefixedFixtureShipsThePdfTheCheckReads(): void
+    {
+        $fixture = $this->createPrefixedFixture();
+
+        self::assertFileExists($fixture . '/assets/release-check/two-column-bulletin.pdf');
+        self::assertGreaterThan(
+            0,
+            filesize($fixture . '/assets/release-check/two-column-bulletin.pdf'),
+            'The check PDF must have content to extract.'
+        );
+    }
+
+    /**
+     * The textual shape of the #239 defect, isolated from its behaviour: even a
+     * file that is never loaded must be rejected, so the guard does not depend on
+     * some other assertion happening to exercise the file first.
+     */
+    public function testItFailsOnAHardUseStatementForAVendorNamespace(): void
+    {
+        $fixture = $this->createPrefixedFixture();
+        $unused = $fixture . '/src/WordPress/Pdf/UnusedAdapter.php';
+
+        self::assertNotFalse(file_put_contents(
+            $unused,
+            "<?php\n\ndeclare(strict_types=1);\n\nnamespace ADCT\\ParishIntake\\WordPress\\Pdf;\n\n"
+            . "use PrinsFrank\\PdfParser\\PdfParser;\n\nfinal class UnusedAdapter\n{\n}\n"
+        ));
+
+        $result = $this->runCheck($fixture);
+
+        self::assertSame(
+            1,
+            $result['exit'],
+            "A hard import of an unprefixed vendor namespace must fail the release check.\n"
+            . 'stdout: ' . $result['stdout'] . "\nstderr: " . $result['stderr']
+        );
+        self::assertStringContainsString(
+            'src/WordPress/Pdf/UnusedAdapter.php',
+            $result['stderr'],
+            'The check must name the file so the failure is actionable.'
+        );
+        self::assertStringContainsString(
+            'PrinsFrank\\',
+            $result['stderr'],
+            'The check must name the namespace that would not resolve at runtime.'
+        );
+    }
+
+    /**
+     * The guard must not fire on the pattern the codebase documents as the fix.
+     * A namespace-qualified string is how a class is resolved by name at runtime,
+     * and the whole plugin depends on that being legal -- otherwise the guard
+     * would report the fix for #239 as a violation of itself.
+     */
+    public function testItAcceptsARuntimeResolvedVendorClassNameInAString(): void
+    {
+        $fixture = $this->createPrefixedFixture();
+
+        // The packaged tree already contains exactly this shape in
+        // src/Core/Ingestion/MimeMessageParser.php and RawMessageInspector.php,
+        // so reaching this assertion at all proves the guard tolerated them.
+        $result = $this->runCheck($fixture);
+
+        self::assertSame(
+            0,
+            $result['exit'],
+            "Runtime-resolved class names are the supported escape hatch and must not trip the guard.\n"
+            . 'stdout: ' . $result['stdout'] . "\nstderr: " . $result['stderr']
+        );
+        self::assertStringContainsString(
+            'No shipped source file references an unprefixed dependency namespace.',
+            $result['stdout'],
+            'The check must report that it ran the scan, so a silent pass is distinguishable from a missing assertion.'
+        );
+    }
+
+    // ------------------------------------------------------------------
     // Fixture construction
     // ------------------------------------------------------------------
+
+    // Fixture construction
+    // ------------------------------------------------------------------
+
+    /**
+     * Rewrites the packaged adapter into the shape #239 shipped: hard `use`
+     * statements for the unprefixed vendor namespace, which the prefixing step
+     * never rewrites inside src/.
+     *
+     * The rewrite is done on the fixture copy rather than by checking out an old
+     * file, so it fails loudly if the adapter's shape drifts out from under it.
+     */
+    private function revertPdfAdapterToHardUseStatements(string $fixture): void
+    {
+        $adapter = $fixture . '/src/WordPress/Pdf/PrinsFrankPdfTextExtractor.php';
+        $contents = (string) file_get_contents($adapter);
+
+        $anchor = '        $parserClass = $this->resolveClass(self::PDF_PARSER_CLASSES);';
+        self::assertStringContainsString(
+            $anchor,
+            $contents,
+            'The fixture adapter must still resolve the parser by name, or this test is measuring nothing.'
+        );
+
+        // Names the classes under their unprefixed names only, which is exactly
+        // what a hard `use` would do.
+        $hardUse = '        $parserClass = \'PrinsFrank\\PdfParser\\PdfParser\';';
+
+        $mutated = str_replace($anchor, $hardUse, $contents);
+
+        // The exception has to move too, or `failure()` would still resolve it and
+        // report a parse failure rather than the unreachable-class failure.
+        $exceptionAnchor = '        $exceptionClass = $this->resolveClass(self::PDF_PARSER_EXCEPTION_CLASSES);';
+
+        self::assertStringContainsString(
+            $exceptionAnchor,
+            $mutated,
+            'The fixture adapter must still resolve the exception by name.'
+        );
+
+        $mutated = str_replace(
+            $exceptionAnchor,
+            '        $exceptionClass = \'PrinsFrank\\PdfParser\\Exception\\PdfParserException\';',
+            $mutated
+        );
+
+        self::assertNotSame($contents, $mutated, 'The pre-fix mutation must change the adapter.');
+
+        self::assertNotFalse(file_put_contents($adapter, $mutated));
+    }
 
     private function createFixtureDirectory(string $label = 'package'): string
     {
@@ -298,6 +524,8 @@ final class ReleaseBootstrapCheckTest extends TestCase
             $this->copyTree($repositoryRoot . '/src', $packageDirectory . '/src', null),
             'The plugin source must be copied into the fixture.'
         );
+
+        $this->copyTree($repositoryRoot . '/assets', $packageDirectory . '/assets', null);
 
         foreach ($this->packages as $package => $roots) {
                     $this->copyTree(

@@ -45,6 +45,7 @@ for required_file in \
     assets/ocr.js \
     assets/ocr-settings.js \
     assets/ocr.css \
+    assets/release-check/two-column-bulletin.pdf \
     templates/single-adct_event.php \
     vendor-prefixed/autoload.php
 do
