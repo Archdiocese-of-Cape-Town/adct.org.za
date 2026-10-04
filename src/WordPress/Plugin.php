@@ -20,6 +20,7 @@ use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
 use ADCT\ParishIntake\Core\Events\EventValidator;
 use ADCT\ParishIntake\Core\Events\IcsCalendar;
 use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
+use ADCT\ParishIntake\Core\Publishing\ReviewRequiredPublicationAuthority;
 use ADCT\ParishIntake\Core\Events\OccurrenceExpander;
 use ADCT\ParishIntake\Core\Events\RRulePresetMapper;
 use ADCT\ParishIntake\Core\Events\RRuleValidator;
@@ -101,6 +102,7 @@ use ADCT\ParishIntake\WordPress\Auth\LoginHandler;
 use ADCT\ParishIntake\WordPress\Auth\MagicLinkLoginRequestPage;
 use ADCT\ParishIntake\WordPress\Auth\NotifyModeChangeHandler;
 use ADCT\ParishIntake\WordPress\Auth\RevertChangeHandler;
+use ADCT\ParishIntake\WordPress\Auth\UnpublishEventHandler;
 use ADCT\ParishIntake\Core\Approval\ApprovalReminderSettings;
 use ADCT\ParishIntake\WordPress\Auth\WordPressLoginSubjectResolver;
 use ADCT\ParishIntake\WordPress\Auth\WordPressMagicLinkDelivery;
@@ -175,6 +177,9 @@ use ADCT\ParishIntake\WordPress\Jobs\RetentionCleanupJob;
 use ADCT\ParishIntake\WordPress\Jobs\RetentionSettings;
 use ADCT\ParishIntake\WordPress\Jobs\OcrSettings;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
+use ADCT\ParishIntake\WordPress\Change\ChangeHistoryBox;
+use ADCT\ParishIntake\WordPress\Change\ChangeHistoryRepository;
+use ADCT\ParishIntake\WordPress\Change\ChangeNoticeJob;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailQueueImmediateDispatch;
 use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeRecipientPolicy;
@@ -328,6 +333,7 @@ final class Plugin
     private SourcesPage $sourcesPage;
     private EventPostType $eventPostType;
     private EventEditor $eventEditor;
+    private ChangeHistoryBox $changeHistoryBox;
     private EventOccurrenceHooks $eventOccurrenceHooks;
     private CandidatePublisher $candidatePublisher;
     private PublicEventListing $publicEventListing;
@@ -492,7 +498,7 @@ private ?ReviewQueueRepository $reviewQueue = null;
             $this->sourcesPage,
             $contactAudit,
             $subjectAuditPanel
-                    );
+        );
         $this->sendersPage = new SendersPage($contacts, $contactService, $parishes, $contactAudit);
         $this->eventPostType = new EventPostType();
         $listingGeneration = new EventListingGeneration();
@@ -522,6 +528,13 @@ private ?ReviewQueueRepository $reviewQueue = null;
             $clock,
             $subjectAuditPanel
         );
+        // ADR 0008 point 4 promises approvers a before/after summary; the change
+        // notice mail carries it, and this box is the second place it has to be
+        // readable -- a dean answering "what did this event look like before you
+        // changed it?" weeks later is reading the event, not an old mail.
+        // Read-only, because both state transitions run over the mailed token
+        // flow (see ChangeHistoryBox).
+        $this->changeHistoryBox = new ChangeHistoryBox(new ChangeHistoryRepository($database));
         $occurrenceMaintenance = new WordPressEventOccurrenceMaintenance(
             $occurrences,
             new OccurrenceExpander($timezone, $rruleValidator),
@@ -540,7 +553,15 @@ private ?ReviewQueueRepository $reviewQueue = null;
                 $timezone,
                 $auditLog
             ),
-            new EventValidator($timezone, $rruleValidator)
+            new EventValidator($timezone, $rruleValidator),
+            // Issue #200 asks whether a verified contact may publish a change or whether
+            // it must still be reviewed. It is still open, so the conservative answer is
+            // the one that ships: a contact change waits for a dean or a reviewer like
+            // anything else, and ReviewRequiredPublicationAuthority says so without ever
+            // looking at the directory. When the owner answers, this argument becomes
+            // new VerifiedContactPublicationAuthority($contacts) and nothing else changes.
+            new ReviewRequiredPublicationAuthority(),
+            $contacts
         );
         if (function_exists('add_action')) {
             // The review threshold is deliberately its own setting (#43). It used to be read from
@@ -655,6 +676,21 @@ private ?ReviewQueueRepository $reviewQueue = null;
             $database, $approvalRecipients, $clock
         ));
         $this->actionTokenHandlers->register(new RevertChangeHandler(
+            $database,
+            $approvalRecipients,
+            $this->mailQueue,
+            $clock,
+            $occurrenceMaintenance,
+            $listingGeneration,
+            $timezone
+        ));
+        // ADR 0008 point 4 pairs Revert with Unpublish in the same notice.
+        // Reverting puts back the fields a change overwrote; it cannot answer
+        // "this event was never ours to publish", which needs the event itself
+        // to come down. Registered as a separate handler rather than a flag on
+        // RevertChangeHandler so the two tokens cannot be confused for one
+        // another: only one of them can be walked back from the trail.
+        $this->actionTokenHandlers->register(new UnpublishEventHandler(
             $database,
             $approvalRecipients,
             $this->mailQueue,
@@ -857,6 +893,15 @@ private ?ReviewQueueRepository $reviewQueue = null;
                     new FollowUpRepository($database, $clock),
                     $clock,
                     static fn (): ApprovalReminderSettings => (new ApprovalReminderOptionReader())->read()
+                ),
+                // Same digest hour as the approval notice, deliberately: two jobs
+                // reading one setting would let them disagree about when "daily"
+                // starts, and a change notice is an approval notice about an event
+                // that is already live.
+                new ChangeNoticeJob(
+                    $database, $approvalRecipients, $this->actionTokenService,
+                    $this->mailQueue, $mailQueueRepository, $clock,
+                    self::approvalDigestHour()
                 ),
                 $inboundMessageProcessingJob,
                 $retentionCleanupJob,
@@ -1143,6 +1188,10 @@ private ?ReviewQueueRepository $reviewQueue = null;
         add_action('deleted_post_meta', [$this->publicEventListing, 'invalidateMeta'], 10, 2);
         add_action('set_object_terms', [$this->publicEventListing, 'invalidateTerms'], 10, 1);
         add_action('add_meta_boxes_adct_event', [$this->eventEditor, 'registerMetaBox']);
+        add_action(
+            'add_meta_boxes_' . EventPostType::POST_TYPE,
+            [$this->changeHistoryBox, 'register']
+        );
         add_action('save_post_adct_event', [$this->eventEditor, 'handleSavePost'], 10, 3);
         add_action('save_post_adct_event', [$this->eventOccurrenceHooks, 'handleSavePost'], 20, 3);
         add_action(

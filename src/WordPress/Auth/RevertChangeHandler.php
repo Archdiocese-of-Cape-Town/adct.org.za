@@ -10,6 +10,7 @@ use ADCT\ParishIntake\Core\Auth\ActionTokenPreview;
 use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 use ADCT\ParishIntake\Core\Auth\ActionTokenService;
 use ADCT\ParishIntake\Core\Auth\ActionTokenStatus;
+use ADCT\ParishIntake\Core\Events\ChangeDiff;
 use ADCT\ParishIntake\Core\Events\OccurrenceWindow;
 use ADCT\ParishIntake\Core\Mail\MailPriority;
 use ADCT\ParishIntake\Core\Mail\OutboundEmail;
@@ -86,9 +87,19 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
             'Recorded by: ' . (string) ($row['actor'] ?? 'Unknown')
                 . ' on ' . (string) ($row['created_at'] ?? '') . ' UTC',
         ];
-        if ($reverted !== null) {
-            $details[] = $reverted;
+
+                // What the button actually undoes. A confirmation page that says only
+        // "revert this change" asks an approver to press a destructive button
+        // without showing them the field-level effect, which is the one thing
+        // they cannot judge from the mail if the mail is a week old.
+        $summary = $this->diff($row);
+        if ($summary !== []) {
+            $details = array_merge($details, $summary);
         }
+
+        if ($reverted !== null) {
+                    $details[] = $reverted;
+                }
 
         return new ActionTokenPreview(
             'Revert this change',
@@ -145,13 +156,24 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
                 throw new DomainException('That change did not record a state to restore.');
             }
 
-            if ($tokens->consume($token, $binding)->status !== ActionTokenStatus::CONSUMED) {
-                throw new DomainException('The revert link was already used or expired.');
-            }
-
             $eventId = (int) ($row['event_id'] ?? 0);
             if ($eventId < 1 || ! $this->lockEvent($eventId)) {
                 throw new DomainException('The event that was changed no longer exists.');
+            }
+
+            // Checked inside the transaction, after the change row and the post are
+            // both locked, so a later publication cannot slip in between the read
+            // and the restore.
+            //
+            // Deliberately before the token is consumed. Every other refusal in
+            // this handler leaves the link usable, and this one is about the state
+            // of the event rather than the link: burning a link that was correctly
+            // issued to a real approver would cost them the only copy of a notice
+            // they are still entitled to act on.
+            $this->assertStillCurrent($row);
+
+            if ($tokens->consume($token, $binding)->status !== ActionTokenStatus::CONSUMED) {
+                throw new DomainException('The revert link was already used or expired.');
             }
 
             // The state being replaced is read before the restore, not after:
@@ -297,7 +319,66 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
         );
 
         return $this->snapshot($eventId);
-            }
+    }
+
+    /**
+     * Whether anything was recorded against this event after the change under
+     * revert. The trail is the authority here, not the post: a later publication
+     * appends a row whether or not it happened to change the fields this revert
+     * would touch, and re-reading the post cannot tell the difference between
+     * "a later change rewrote these fields" and "somebody edited them by hand".
+     *
+     * @param array<string, mixed> $row
+     */
+    private function supersededBy(array $row): ?int
+    {
+        $changeId = (int) ($row['id'] ?? 0);
+        $eventId = (int) ($row['event_id'] ?? 0);
+        if ($changeId < 1 || $eventId < 1) {
+            return null;
+        }
+
+        $newer = $this->read($this->database->prepare(
+            'SELECT id FROM ' . $this->table('adct_pi_event_changes')
+            . ' WHERE event_id = %d AND id > %d ORDER BY id ASC LIMIT 1',
+            $eventId, $changeId
+        ));
+
+        if ($newer === null) {
+            return null;
+        }
+
+        $newerId = (int) ($newer['id'] ?? 0);
+
+        return $newerId > 0 ? $newerId : null;
+    }
+
+    /**
+     * A revert restores a snapshot of the past. Once a later change has been
+     * published on the same event, that snapshot predates the later change too,
+     * so applying it would silently discard the later change and its approver
+     * would never learn their edit was thrown away by a link they did not press.
+     *
+     * This is the same hazard WordPressPublicationStore::publish() refuses in the
+     * other direction ("A newer candidate has already updated this event."), and
+     * without it a one-click link in an email is the most likely way to lose a
+     * later edit.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function assertStillCurrent(array $row): void
+    {
+        $newer = $this->supersededBy($row);
+        if ($newer === null) {
+            return;
+        }
+
+        throw new DomainException(
+            'A newer change (change ' . $newer . ') has been published on this event since'
+                . ' this one, so reverting would discard it. Unpublish or revert the newer'
+                . ' change first.'
+        );
+    }
 
     /**
      * @param array<string, mixed> $row
@@ -316,9 +397,10 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
             );
         }
 
-        // Only the person who pressed the button is told, and only once: the
-        // contact that made the change is reached through the change notice job.
-        $this->mailer->enqueue(new OutboundEmail(
+        // The person who pressed the button is told what they just did. They hold the
+                // authority, so nobody else needs an audit message about it; the contact
+                // whose change was undone is told separately, below.
+                $this->mailer->enqueue(new OutboundEmail(
             $binding->email,
             'Your change was reverted',
             '<p>The change you reverted on event ' . $eventId . ' has been undone.</p>',
@@ -326,7 +408,54 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
             MailPriority::APPROVER_OR_CHANGE,
             'change-reverted:' . $binding->subjectId
         ));
-    }
+
+                $this->tellTheContact($eventId, $binding, $row);
+            }
+
+            /**
+             * The contact who wrote the change, told that it has been undone.
+             *
+             * They made the edit in good faith and the event is no longer what they
+             * wrote, so they are the person who most needs to hear it. They are not the
+             * one pressing the button, and ChangeNoticeJob will not reach them either:
+             * it skips `revert` rows on purpose, because a notice that mails a live
+             * one-click revert link is a second live credential for an undo that has
+             * already happened. So this is the only point at which a revert is known to
+             * have happened and the contact's address is known.
+             *
+             * Suppressed when the contact is the presser — the mail above already says
+             * it, and the account is limited to 500 emails an hour for the whole site
+             * (ADR 0011). Also skipped when the change has no recorded actor, which a
+             * contact-published change always has, but which a hand-written row need
+             * not.
+             *
+             * @param array<string, mixed> $row
+             */
+            private function tellTheContact(int $eventId, ActionTokenBinding $binding, array $row): void
+            {
+                $actor = $row['actor'] ?? null;
+
+                if (! is_string($actor)) {
+                    return;
+                }
+
+                $actor = trim($actor);
+
+                if ($actor === '' || strcasecmp($actor, $binding->email) === 0) {
+                    return;
+                }
+
+                $this->mailer->enqueue(new OutboundEmail(
+                    $actor,
+                    'Your change to an event was undone',
+                    '<p>A change you made to event ' . $eventId . ' on the Archdiocese website has been'
+                        . ' undone. The event now shows the details it had before your change.</p>',
+                    "A change you made to event {$eventId} on the Archdiocese website has been undone.\n"
+                        . "The event now shows the details it had before your change.",
+                    MailPriority::APPROVER_OR_CHANGE,
+                    'change-undone-for-contact:' . $binding->subjectId
+                ));
+            }
 
     /**
      * The live relationship, uncached. Returns the role this recipient holds now
@@ -357,8 +486,37 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
             . ' at ' . (string) $row['reverted_at'] . ' UTC.';
     }
 
-    private function isForeign(ActionTokenBinding $binding): bool
-    {
+    /**
+     * The field-level summary of what pressing the button would undo, as the
+     * list of lines the confirmation page renders. Shares `ChangeDiff` with the
+     * change-notice mail and the admin change history so an approver sees the
+     * same wording in all three places.
+     *
+     * @return list<string>
+     */
+        private function diff(array $row): array
+        {
+            $before = ChangeDiff::decode($row['before_payload'] ?? null);
+            $after = ChangeDiff::decode($row['after_payload'] ?? null);
+
+            // An unreadable side must not be diffed against an empty snapshot. That
+            // does not fail loudly: `ChangeDiff` reads a missing field as "nothing",
+            // so the page would claim every title, time and venue was cleared, which
+            // is a worse thing to show an approver than saying nothing was readable.
+            if (! $before['ok'] || ! $after['ok']) {
+                return ['The recorded before and after values could not be read.'];
+            }
+
+            $lines = [];
+            foreach (ChangeDiff::rows($before['snapshot'], $after['snapshot']) as $field) {
+                $lines[] = $field['label'] . ': ' . $field['before'] . ' -> ' . $field['after'];
+            }
+
+            return $lines;
+        }
+
+        private function isForeign(ActionTokenBinding $binding): bool
+        {
         return $binding->purpose !== $this->purpose()
             || $binding->subjectType !== self::SUBJECT_TYPE;
     }
@@ -403,13 +561,13 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
         )) !== null;
     }
 
-        /**
-         * The same shape WordPressPublicationStore::snapshot() records, so the
-         * reversal's after_payload is comparable with the change it reverses.
-         *
-         * @return array<string, mixed>
-         */
-        private function snapshot(int $eventId): array
+    /**
+     * The same shape WordPressPublicationStore::snapshot() records, so the
+     * reversal's after_payload is comparable with the change it reverses.
+     *
+     * @return array<string, mixed>
+     */
+    private function snapshot(int $eventId): array
     {
         $post = get_post($eventId);
         if (! $post instanceof \WP_Post) {

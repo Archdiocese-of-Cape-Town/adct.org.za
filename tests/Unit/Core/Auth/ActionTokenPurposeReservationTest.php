@@ -20,6 +20,7 @@ use ADCT\ParishIntake\WordPress\Auth\ConfirmationDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\LoginHandler;
 use ADCT\ParishIntake\WordPress\Auth\NotifyModeChangeHandler;
 use ADCT\ParishIntake\WordPress\Auth\RevertChangeHandler;
+use ADCT\ParishIntake\WordPress\Auth\UnpublishEventHandler;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
@@ -185,12 +186,13 @@ final class ActionTokenPurposeReservationTest extends TestCase
             $registered[] = constant(ActionTokenPurpose::class . '::' . $case)->value;
         }
 
-        // ApprovalEditHandler, RevertChangeHandler and NotifyModeChangeHandler
-        // are registered for their own fixed purposes, so those purposes never
-        // appear as a name in the registration block.
+        // ApprovalEditHandler, RevertChangeHandler, UnpublishEventHandler and
+                // NotifyModeChangeHandler are registered for their own fixed purposes, so
+                // those purposes never appear as a name in the registration block.
         $registered[] = self::editHandler()->purpose()->value;
         $registered[] = self::revertHandler()->purpose()->value;
-        $registered[] = self::notifyModeHandler()->purpose()->value;
+                $registered[] = self::unpublishHandler()->purpose()->value;
+                $registered[] = self::notifyModeHandler()->purpose()->value;
 
         $registered = array_values(array_unique($registered));
         $expected = array_keys(self::handledPurposes());
@@ -275,6 +277,8 @@ final class ActionTokenPurposeReservationTest extends TestCase
         $handlers[$edit->purpose()->value] = $edit->purpose()->defaultLifetimeSeconds();
         $revert = self::revertHandler();
         $handlers[$revert->purpose()->value] = $revert->purpose()->defaultLifetimeSeconds();
+                $unpublish = self::unpublishHandler();
+                $handlers[$unpublish->purpose()->value] = $unpublish->purpose()->defaultLifetimeSeconds();
         $login = self::loginHandler();
         $handlers[$login->purpose()->value] = $login->purpose()->defaultLifetimeSeconds();
         $notifyMode = self::notifyModeHandler();
@@ -308,6 +312,28 @@ final class ActionTokenPurposeReservationTest extends TestCase
             new DateTimeZone('Africa/Johannesburg')
         );
     }
+
+        /**
+         * #71: the other link ADR 0008 point 4 puts in the change notice. Built the
+         * way Plugin builds it, so a change to its constructor or to the purpose it
+         * declares fails here as well as in UnpublishEventHandlerTest.
+         */
+        private static function unpublishHandler(): UnpublishEventHandler
+        {
+            $clock = self::createStub(ClockInterface::class);
+
+            return new UnpublishEventHandler(
+                self::createStub(DatabaseConnectionInterface::class),
+                new ApprovalRecipients(
+                    new ApprovalRouteResolver(self::createStub(ApprovalRouteRepositoryInterface::class))
+                ),
+                self::createStub(MailerInterface::class),
+                $clock,
+                self::createStub(OccurrenceMaintenanceInterface::class),
+                new EventListingGeneration(),
+                new DateTimeZone('Africa/Johannesburg')
+            );
+        }
 
     private static function editHandler(): ApprovalEditHandler
     {

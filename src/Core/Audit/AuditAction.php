@@ -44,6 +44,20 @@ enum AuditAction: string
     /** A recorded change to a published event was undone. */
     case CHANGE_REVERTED = 'change_reverted';
 
+        /**
+         * A published event was taken off the events page by an approver.
+         *
+         * A new verb rather than a flag on `change_reverted`, because the two
+         * records answer different questions and the difference is the whole reason
+         * to keep them apart. `change_reverted` says the amendment was undone and
+         * the event that was live is live again; `event_unpublished` says the event
+         * itself was wrong and is now gone from the public list. Reusing
+         * `event_published` for the removal would make the audit log claim the
+         * opposite of what happened, and reusing `change_reverted` would hide a
+         * terminal action behind a word that promises the old state comes back.
+         */
+        case EVENT_UNPUBLISHED = 'event_unpublished';
+
     /** An approved candidate became a published event. */
     case EVENT_PUBLISHED = 'event_published';
 
@@ -154,6 +168,7 @@ enum AuditAction: string
             self::CANDIDATE_PARISH_ASSIGNED => 'Parish assigned',
             self::CANDIDATE_EDITED => 'Candidate edited',
             self::CHANGE_REVERTED => 'Change reverted',
+            self::EVENT_UNPUBLISHED => 'Event taken off the events page',
             self::EVENT_PUBLISHED => 'Event published',
             self::CONTACT_VERIFIED => 'Contact verified',
             self::CONTACT_BLOCKED => 'Contact blocked',

@@ -7,15 +7,28 @@ namespace ADCT\ParishIntake\Core\Publishing;
 use ADCT\ParishIntake\Core\Events\EventDetails;
 use ADCT\ParishIntake\Core\Events\EventValidator;
 use ADCT\ParishIntake\Core\Matching\MatchReviewPolicy;
+use ADCT\ParishIntake\Core\Ports\ParishContactStoreInterface;
+use ADCT\ParishIntake\Core\Ports\PublicationAuthorityInterface;
 use ADCT\ParishIntake\Core\Ports\PublicationStoreInterface;
 use DomainException;
 use RuntimeException;
 
 final class CandidatePublisher
 {
+    /**
+     * @param PublicationAuthorityInterface|null $authority the answer to open owner
+     *        decision #200. Null is the conservative one: a contact change waits for
+     *        review like any other. WordPress passes the real policy so the owner can
+     *        flip the decision without touching this class.
+     * @param ParishContactStoreInterface|null $contacts the live parish directory,
+     *        used to re-check the sender's trust at publication time. Only needed when
+     *        the authority is willing to allow a contact change.
+     */
     public function __construct(
         private PublicationStoreInterface $store,
-        private EventValidator $validator
+        private EventValidator $validator,
+        private ?PublicationAuthorityInterface $authority = null,
+        private ?ParishContactStoreInterface $contacts = null
     ) {
     }
 
@@ -38,14 +51,9 @@ final class CandidatePublisher
         }
 
         $status = $row['status'] ?? null;
-        $via = $row['approved_via'] ?? null;
         if (
             ! in_array($status, ['awaiting_approval', 'approved', 'published'], true)
-            || ! in_array($via, ['dean', 'reviewer', 'self'], true)
-            || ! is_string($row['approved_by'] ?? null)
-            || trim($row['approved_by']) === ''
-            || ! is_string($row['approved_at'] ?? null)
-            || trim($row['approved_at']) === ''
+            || ! $this->hasAuthorityToPublish($row)
         ) {
             throw new DomainException('Publication requires a recorded dean, reviewer or self approval.');
         }
@@ -137,6 +145,66 @@ final class CandidatePublisher
             ),
             $eventType === '' ? null : $eventType
         );
+    }
+
+    /**
+     * Whether this row carries an approval the plugin may act on.
+     *
+     * The ordinary answer is the recorded decision: someone named, a time, and a via
+     * that says who decided. A contact change has no such decision, so it asks the
+     * injected authority instead (issue #200) — and only for an event that already
+     * exists. The trust behind that answer is looked up live, because the label on the
+     * row is a claim made when the row was written and a verification can be
+     * withdrawn afterwards.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function hasAuthorityToPublish(array $row): bool
+    {
+        $via = $row['approved_via'] ?? null;
+
+        if (in_array($via, ['dean', 'reviewer', 'self'], true)) {
+            return is_string($row['approved_by'] ?? null)
+                && trim($row['approved_by']) !== ''
+                && is_string($row['approved_at'] ?? null)
+                && trim($row['approved_at']) !== '';
+        }
+
+        if ($via !== 'contact_change' || $this->authority === null || $this->contacts === null) {
+            return false;
+        }
+
+        if (! $this->isChangeToAPublishedEvent($row)) {
+            return false;
+        }
+
+        return $this->authority->allowsContactChange(
+            $row,
+            $this->authority->resolveSender($row, $this->contacts)
+        );
+    }
+
+    /**
+     * The contact route alters an event that is already public. It never creates one.
+     *
+     * A new candidate reaching this point with a contact_change label is a new event
+     * asking to be published by somebody whose only qualification is that they are a
+     * verified contact — so however the authority is configured, this has to go to a
+     * first reading by a dean or a reviewer.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function isChangeToAPublishedEvent(array $row): bool
+    {
+        if (($row['match_kind'] ?? null) === 'new') {
+            return false;
+        }
+
+        $eventId = $row['match_event_id'] ?? null;
+
+        return is_int($eventId)
+            ? $eventId > 0
+            : (is_string($eventId) && preg_match('/^[1-9]\d*$/D', $eventId) === 1);
     }
 
     /**

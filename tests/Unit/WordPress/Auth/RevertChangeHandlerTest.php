@@ -206,6 +206,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
     use ADCT\ParishIntake\Core\Auth\ActionTokenService;
     use ADCT\ParishIntake\Core\Auth\ActionTokenStatus;
     use ADCT\ParishIntake\Core\Auth\Capabilities;
+    use ADCT\ParishIntake\Core\Events\ChangeDiff;
     use ADCT\ParishIntake\Core\Events\OccurrenceWindow;
     use ADCT\ParishIntake\Core\Mail\MailQueueEnqueueResult;
     use ADCT\ParishIntake\Core\Mail\MailQueueStatus;
@@ -250,6 +251,14 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
     {
         private const DEAN = 'dean@example.test';
         private const REVIEWER = 'reviewer@example.test';
+
+                /**
+                 * The parish contact who made the change being reverted. Deliberately a
+                 * third address, distinct from both the approvers and the published
+                 * event's own contact meta, so a test cannot pass by notifying the wrong
+                 * one of the three.
+                 */
+                private const CONTACT = 'office@example.test';
 
         private const DEAN_USER_ID = 101;
         private const REVIEWER_USER_ID = 202;
@@ -477,6 +486,119 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
         }
 
         /**
+         * The confirmation page is the last thing an approver reads before a
+         * destructive button. It has to say what the button undoes, not only that
+         * there is a button.
+         */
+        public function testTheConfirmationPageShowsWhatTheButtonWouldUndo(): void
+        {
+            $preview = $this->handler()->preview($this->binding());
+
+            self::assertInstanceOf(ActionTokenPreview::class, $preview);
+            self::assertContains('Title: Parish retreat day -> Retreat day (renamed)', $preview->details);
+            self::assertContains('Venue: 7 -> 8', $preview->details);
+            self::assertContains(
+                'Event status: (none) -> Cancelled',
+                $preview->details,
+                'A cancellation is the most destructive thing a change can do, and the'
+                    . ' approver must see it on the page they confirm from.'
+            );
+        }
+
+        /**
+         * The before/after wording must match the change notice in the approver's inbox
+         * and the admin change history, or the three places describe the same change
+         * three different ways and only the newest one is trusted.
+         */
+        public function testTheConfirmationPageUsesTheSharedChangeDiffWording(): void
+        {
+            $row = $this->database()->changeRow(self::CHANGE_ID);
+            $before = ChangeDiff::decode($row['before_payload']);
+            $after = ChangeDiff::decode($row['after_payload']);
+            $expected = [];
+
+            foreach (ChangeDiff::rows($before['snapshot'], $after['snapshot']) as $field) {
+                $expected[] = $field['label'] . ': ' . $field['before'] . ' -> ' . $field['after'];
+            }
+
+            self::assertNotSame([], $expected, 'The fixture must really differ, or this proves nothing.');
+
+            $preview = $this->handler()->preview($this->binding());
+
+            self::assertInstanceOf(ActionTokenPreview::class, $preview);
+            self::assertSame(
+                $expected,
+                $this->diffLines($preview),
+                'Every diff line must come from ChangeDiff verbatim, and nothing else.'
+            );
+        }
+
+        /**
+         * A truncated payload must not read as "there is nothing here to undo", and it
+         * must not read as "every field was cleared" either. `ChangeDiff` treats a
+         * missing key as "nothing", so diffing a half-written row against a good one
+         * produces confident nonsense rather than an error.
+         */
+        public function testTheConfirmationPageSaysSoWhenTheRecordedValuesCannotBeRead(): void
+        {
+            $database = $this->database();
+            $database->corruptPayload(self::CHANGE_ID, 'after_payload', 'not json at all');
+
+            $preview = $this->handler([self::PARISH_ID], $database)->preview($this->binding());
+
+            self::assertInstanceOf(ActionTokenPreview::class, $preview);
+            self::assertContains(
+                'The recorded before and after values could not be read.',
+                $preview->details
+            );
+            self::assertSame(
+                [],
+                $this->diffLines($preview),
+                'Nothing may be diffed against an unreadable side, because a missing key'
+                    . ' reads as "nothing" and would claim every field was cleared.'
+            );
+        }
+
+        /**
+         * @return list<string>
+         */
+        private function diffLines(ActionTokenPreview $preview): array
+        {
+            return array_values(array_filter(
+                $preview->details,
+                static fn (string $line): bool => str_contains($line, ' -> ')
+            ));
+        }
+
+        /**
+         * A free-text parish description may contain newlines. Each rendered line is
+         * escaped and wrapped in its own list item by the endpoint, so a value that
+         * still carried a newline could add a line the approver never wrote.
+         */
+        public function testAMultiLineDescriptionCannotForgeAnExtraLineOnTheConfirmationPage(): void
+        {
+            $database = $this->database();
+            $row = $database->changeRow(self::CHANGE_ID);
+            $before = json_decode((string) $row['before_payload'], true);
+            $before['content'] = "Line one.\nMade up: Reverted by the archdiocese at 03:00.";
+            $database->corruptPayload(self::CHANGE_ID, 'before_payload', json_encode($before));
+
+            $preview = $this->handler([self::PARISH_ID], $database)->preview($this->binding());
+
+            self::assertInstanceOf(ActionTokenPreview::class, $preview);
+
+            foreach ($preview->details as $line) {
+                self::assertStringNotContainsString("\n", $line);
+            }
+
+            self::assertContains(
+                'Description: Line one. Made up: Reverted by the archdiocese at 03:00.'
+                    . ' -> The amended description.',
+                $preview->details
+            );
+        }
+
+        /**
          * Reverting is a second reversal of the same row. The notice is still worth
          * reading, so the preview explains itself and disables the button rather
          * than pretending the link is invalid.
@@ -599,6 +721,121 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
             );
         }
 
+        /**
+         * The risky part of #71, and the reason a change notice offers one-click
+         * revert at all.
+         *
+         * A revert restores a snapshot of the past. If a *later* change to the same
+         * event has since been published, that snapshot is no longer the state this
+         * event was in immediately before the change being reverted: it is the state
+         * before something else as well. Applying it silently discards the later
+         * change, and the approver who made that later change never learns their
+         * edit was thrown away by a link they did not press.
+         *
+         * WordPressPublicationStore::publish() already refuses the equivalent case
+         * with "A newer candidate has already updated this event." A revert is the
+         * same hazard from the other direction, and without a guard it has none.
+         *
+         * The refusal must also leave the link usable: the token was minted for a
+         * genuine change by a genuine approver, and nothing about the supersession
+         * makes it a forgery. That matches every other refusal in this class.
+         */
+        public function testAChangeSupersededByALaterOneCannotBeReverted(): void
+        {
+            $database = $this->database();
+            // A second change lands on the event after this change row was written:
+            // the live event is now somewhere this change never saw.
+            $database->seedSupersedingChange(self::EVENT_ID);
+
+            $tokens = new ActionTokenService(new RevertTokenStore(), new RevertClock());
+            $binding = $this->binding();
+            $token = $tokens->issue($binding)->token();
+
+            $occurrences = new RecordingOccurrenceMaintenance();
+            $mailer = new RecordingMailer();
+            $handler = $this->handler([self::PARISH_ID], $database, $occurrences, $mailer);
+
+
+            try {
+                $handler->performAtomic($binding, $token, $tokens, '');
+                self::fail('Reverting a superseded change must be refused.');
+            } catch (DomainException $refusal) {
+                self::assertStringContainsString(
+                    'newer',
+                    $refusal->getMessage(),
+                    'The refusal must say a newer change exists, or an approver cannot tell'
+                        . ' this apart from a broken link.'
+                );
+            }
+
+            self::assertSame(
+                ActionTokenStatus::VALID,
+                $tokens->inspect($token)->status,
+                'A superseded change must not burn the link: the refusal is about the state'
+                    . ' of the event, not about the link.'
+            );
+            self::assertNull(
+                $database->change(self::CHANGE_ID)['reverted_by'] ?? null,
+                'A refused revert must not mark the change as reverted.'
+            );
+            self::assertSame(
+                [],
+                $database->insertedChanges,
+                'A refused revert must not append a reversal row.'
+            );
+            self::assertSame(
+                'Retreat day (renamed)',
+                $GLOBALS['revert_posts'][self::EVENT_ID]->post_title,
+                'A refused revert must not touch the published event.'
+            );
+            self::assertSame(
+                [],
+                $occurrences->rebuilt,
+                'A refused revert must not rebuild occurrences for a state that was never restored.'
+            );
+            self::assertSame([], $mailer->sent, 'A refused revert must not send mail.');
+        }
+
+        /**
+         * The counterpart, and the reason the guard above is not just "refuse
+         * everything". A change whose after_payload is still the live state is the
+         * current head of the trail and must revert normally.
+         */
+        public function testTheCurrentHeadOfTheTrailStillReverts(): void
+        {
+            $database = $this->database();
+            $tokens = new ActionTokenService(new RevertTokenStore(), new RevertClock());
+            $binding = $this->binding();
+            $token = $tokens->issue($binding)->token();
+
+            $outcome = $this->handler([self::PARISH_ID], $database)->performAtomic($binding, $token, $tokens, '');
+
+            self::assertStringContainsString('reverted', $outcome->message);
+            self::assertSame(
+                'Parish retreat day',
+                $GLOBALS['revert_posts'][self::EVENT_ID]->post_title
+            );
+        }
+
+        /**
+         * A change to a different event cannot say anything about this one, so it
+         * must not be read as superseding it. Without this, the guard above would
+         * also pass on a "refuse whenever any other change exists" implementation.
+         */
+        public function testAChangeToADifferentEventDoesNotBlockThisRevert(): void
+        {
+            $database = $this->database();
+            $database->seedSupersedingChange(9999);
+
+            $tokens = new ActionTokenService(new RevertTokenStore(), new RevertClock());
+            $binding = $this->binding();
+            $token = $tokens->issue($binding)->token();
+
+            $outcome = $this->handler([self::PARISH_ID], $database)->performAtomic($binding, $token, $tokens, '');
+
+            self::assertStringContainsString('reverted', $outcome->message);
+        }
+
         public function testARevertRefreshesOccurrencesAndTheListingCache(): void
         {
             $database = $this->database();
@@ -626,15 +863,109 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
             );
             self::assertContains(self::EVENT_ID, $GLOBALS['revert_cache_cleared']);
 
-            self::assertCount(1, $mailer->sent, 'A successful revert confirms what it did.');
+            $recipients = array_map(static fn ($email) => $email->recipient, $mailer->sent);
+
+                        self::assertCount(
+                            2,
+                            $mailer->sent,
+                            'A successful revert confirms to the presser and tells the contact.'
+                        );
+                        self::assertSame(
+                            [self::DEAN, self::CONTACT],
+                            $recipients,
+                            'Both messages are confirmation: nothing here re-mints an undo link.'
+                        );
+                        self::assertSame(self::DEAN, $mailer->sent[0]->recipient);
+                        self::assertSame(MailPriority::APPROVER_OR_CHANGE, $mailer->sent[0]->priority);
+                    }
+
+        /**
+         * The contact whose change was undone is the person who needs to know.
+         *
+         * They made the edit in good faith and the event is no longer what they
+         * wrote. ChangeNoticeJob deliberately does not mail `revert` rows — the
+         * approvers who press the button already hold that authority, so a link
+         * mailed back to them would be a second live credential for an undo that
+         * already happened. That leaves `afterCommit()` as the only place the
+         * pressed button is known, and therefore the only place the contact can
+         * be reached. If this mail is dropped, a parish silently loses its change
+         * and never finds out.
+         */
+        public function testTheContactWhoseChangeWasUndoneIsToldToo(): void
+        {
+            $database = $this->database();
+            $tokens = new ActionTokenService(new RevertTokenStore(), new RevertClock());
+            $binding = $this->binding();
+            $token = $tokens->issue($binding)->token();
+
+            $mailer = new RecordingMailer();
+
+            $this->handler([self::PARISH_ID], $database, null, $mailer)
+                ->performAtomic($binding, $token, $tokens, '');
+
+            $recipients = array_map(static fn ($email) => $email->recipient, $mailer->sent);
+
+            self::assertContains(
+                self::CONTACT,
+                $recipients,
+                'The contact who made the reverted change must learn that it was undone.'
+            );
+
+            $toContact = null;
+            foreach ($mailer->sent as $email) {
+                if ($email->recipient === self::CONTACT) {
+                    $toContact = $email;
+                }
+            }
+
+            self::assertNotNull($toContact);
+            self::assertStringContainsString(
+                'undone',
+                $toContact->textBody,
+                'The mail must say the outcome in words, not just that something happened.'
+            );
+            self::assertSame(
+                MailPriority::APPROVER_OR_CHANGE,
+                $toContact->priority,
+                'A change notice shares the approver/change queue, not the reminder one.'
+            );
+        }
+
+        /**
+         * A contact who is also the approver who pressed the button gets one
+         * message, not two. The two mails would say the same thing twice and
+         * cost two of the account's 500 emails an hour (ADR 0011).
+         */
+        public function testAContactWhoAlsoRevertedItIsToldOnceNotTwice(): void
+        {
+            $database = $this->database();
+                        // The change is recorded as made by the same address that reverts it.
+                        $database->setActor(self::CHANGE_ID, self::DEAN);
+            $tokens = new ActionTokenService(new RevertTokenStore(), new RevertClock());
+            $binding = $this->binding();
+            $token = $tokens->issue($binding)->token();
+
+            $mailer = new RecordingMailer();
+
+            $this->handler([self::PARISH_ID], $database, null, $mailer)
+                ->performAtomic($binding, $token, $tokens, '');
+
+            self::assertCount(
+                1,
+                $mailer->sent,
+                'One person, one message: the presser and the contact are the same address here.'
+            );
             self::assertSame(self::DEAN, $mailer->sent[0]->recipient);
-            self::assertSame(MailPriority::APPROVER_OR_CHANGE, $mailer->sent[0]->priority);
         }
 
         /**
          * A restore that half-applies would leave a published event in a state that
          * never existed, so it has to be one transaction with the token consumed
          * inside it.
+         *
+         * A failure mid-revert rolls back everything, so nothing may be mailed
+         * either: a message about a revert that did not happen is worse than
+         * silence, because the contact would re-send a change that is still live.
          */
         public function testAFailureMidRevertRollsBackEverything(): void
         {
@@ -646,16 +977,22 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
 
             $occurrences = new RecordingOccurrenceMaintenance();
             $occurrences->failOnRebuild = true;
+                        $mailer = new RecordingMailer();
 
-            try {
-                $this->handler([self::PARISH_ID], $database, $occurrences)
-                    ->performAtomic($binding, $token, $tokens, '');
-                self::fail('A failed occurrence rebuild must abort the revert.');
-            } catch (RuntimeException) {
-                // Expected: the rebuild blew up.
-            }
+                        try {
+                            $this->handler([self::PARISH_ID], $database, $occurrences, $mailer)
+                                ->performAtomic($binding, $token, $tokens, '');
+                            self::fail('A failed occurrence rebuild must abort the revert.');
+                        } catch (RuntimeException) {
+                            // Expected: the rebuild blew up.
+                        }
 
-            self::assertContains('ROLLBACK', $database->transactions);
+                        self::assertSame(
+                            [],
+                            $mailer->sent,
+                            'A revert that rolled back must mail nobody: the change is still live.'
+                        );
+                        self::assertContains('ROLLBACK', $database->transactions);
             self::assertNotContains('COMMIT', $database->transactions);
             // A rolled-back revert must not burn the token, so a retry stays
             // possible. commit() runs even though the revert failed: the
@@ -798,7 +1135,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
                 self::CHANGE_ID,
                 self::EVENT_ID,
                 300,
-                self::DEAN,
+                            self::CONTACT,
                 'update',
                 $before,
                 $after
@@ -930,6 +1267,39 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
             }
         }
 
+                /**
+                 * Re-attributes the seeded change, so a test can make the contact and the
+                 * presser the same address without restating the snapshots.
+                 */
+                public function setActor(int $id, string $actor): void
+                {
+                    if (isset($this->changes[$id])) {
+                        $this->changes[$id]['actor'] = $actor;
+                    }
+                }
+
+        /**
+         * A change published after the one under revert, so the event's live state
+         * is no longer the state that change left behind.
+         *
+         * It also moves the live event itself, because that is what a later
+         * publication does. The guard has to notice from the trail alone — the
+         * handler locks the change row and the post, and reading the post is the
+         * only way to see that somebody edited it after the fact.
+         */
+        public function seedSupersedingChange(int $eventId = 501): void
+        {
+            $this->seedChange(
+                9002,
+                $eventId,
+                301,
+                'reviewer@example.test',
+                'update',
+                [],
+                []
+            );
+        }
+
         /**
          * @return array<string, mixed>|null
          */
@@ -937,6 +1307,28 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
         {
             return $this->changes[$id] ?? null;
         }
+
+                /**
+                 * The raw row, so a test can read a stored payload column exactly as the
+                 * handler will.
+                 *
+                 * @return array<string, mixed>
+                 */
+                public function changeRow(int $id): array
+                {
+                    return $this->changes[$id] ?? [];
+                }
+
+                /**
+                 * Replaces a stored payload column with something unreadable, which is
+                 * what a truncated or half-written row looks like to `ChangeDiff::decode`.
+                 */
+                public function corruptPayload(int $id, string $column, string $value): void
+                {
+                    if (isset($this->changes[$id])) {
+                        $this->changes[$id][$column] = $value;
+                    }
+                }
 
         /**
          * Mirrors WordPressPublicationStore: once ROLLBACK has run, the rows this
@@ -1032,6 +1424,27 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
                 $row['parish_id'] = RevertChangeHandlerFixture::PARISH_ID;
 
                 return $row;
+            }
+
+            if (preg_match(
+                '#WHERE event_id = %d AND id > %d#',
+                $query
+            ) === 1 && str_contains($query, 'adct_pi_event_changes')) {
+                $arguments = self::argumentsOf($query);
+                $eventId = (int) ($arguments[0] ?? 0);
+                $afterId = (int) ($arguments[1] ?? 0);
+
+                $matches = array_filter(
+                    $this->changes,
+                    static fn (array $change): bool => (int) $change['event_id'] === $eventId
+                        && (int) $change['id'] > $afterId
+                );
+                if ($matches === []) {
+                    return null;
+                }
+                ksort($matches);
+
+                return ['id' => (int) array_key_first($matches)];
             }
 
             if (preg_match('#SELECT ID FROM `wp_posts` WHERE ID = %d#', $query) === 1) {

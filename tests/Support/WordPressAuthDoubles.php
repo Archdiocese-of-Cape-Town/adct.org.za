@@ -88,6 +88,19 @@ namespace ADCT\ParishIntake\WordPress\Auth {
         }
     }
 
+    if (! function_exists(__NAMESPACE__ . '\\esc_textarea')) {
+        /**
+         * Used only by the description field on the correction page. Guarded
+         * because ParserPageTest and UnparsedDateTimeWarningTest each declare
+         * their own copy in their own namespaces, and this one is the copy the
+         * Auth namespace resolves to.
+         */
+        function esc_textarea(mixed $value): string
+        {
+            return htmlspecialchars(is_string($value) ? $value : '', ENT_QUOTES, 'UTF-8');
+        }
+    }
+
     if (! function_exists(__NAMESPACE__ . '\\esc_attr')) {
         function esc_attr(mixed $value): string
         {

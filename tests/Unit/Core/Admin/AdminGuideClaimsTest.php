@@ -939,18 +939,24 @@ final class AdminGuideClaimsTest extends TestCase
     }
 
     /**
-    * Nothing in src mints a revert token, so no guide may promise one.
+    * Exactly one place mints a revert token: the change notice (#71).
     *
-    * `RevertChangeHandler` is excluded because it performs the revert rather
-    * than minting anything: it is complete and registered, and simply never
-    * handed a token yet.
+    * This replaced a guard that asserted nothing in `src` minted one, which
+    * was true only while revert had no way in. Now the notice job mints one
+    * per entitled recipient, so the question worth pinning is narrower and
+    * more useful: no *other* file may mint one, because a token is the only
+    * way to act and a second minting route is a second, unaudited one.
     */
-    public function testNothingMintsARevertTokenOutsideTheHandlerThatActsOnOne(): void
+    public function testOnlyTheChangeNoticeMintsARevertToken(): void
     {
     $offenders = [];
 
     foreach (self::phpFilesIn('src') as $file) {
     if (basename($file) === 'RevertChangeHandler.php') {
+    continue;
+    }
+
+    if (basename($file) === 'ChangeNoticeJob.php') {
     continue;
     }
 
@@ -962,17 +968,27 @@ final class AdminGuideClaimsTest extends TestCase
     self::assertSame(
     [],
     $offenders,
-    "Something now mints a revert token, so the guides' claim that reverting is not wired up is stale:\n- "
+    "A second file now mints a revert token, so only the change notice"
+    . " offers the undo route and anything else is a second, unaudited one:\n- "
     . implode("\n- ", $offenders)
+    );
+
+    self::assertStringContainsString(
+    'ActionTokenPurpose::REVERT_CHANGE',
+    self::source('src/WordPress/Change/ChangeNoticeJob.php'),
+    'The change notice no longer offers a revert link, so the operator guide'
+    . " describing one is stale, and the 'Ask to revert' path leads nowhere."
     );
     }
 
     /**
-    * The handler that performs a revert is still reachable-by-registration
-    * but has no way in. This asserts both halves, so the guide's claim is
-    * pinned to the real state rather than to one file's contents.
+    * The handler that performs a revert is registered, and since #71 it has a
+    * way in: the change notice mints it a token. Both halves are asserted so
+    * a registration that went missing and a minting route that went missing
+    * each fail here rather than leaving the operator guide describing a revert
+    * that cannot happen.
     */
-    public function testTheRevertHandlerIsRegisteredButNeverHandedAToken(): void
+    public function testTheRevertHandlerIsRegisteredAndHandedTokens(): void
     {
     self::assertStringContainsString(
     'ActionTokenPurpose::REVERT_CHANGE',
@@ -982,7 +998,13 @@ final class AdminGuideClaimsTest extends TestCase
     self::assertStringContainsString(
     'RevertChangeHandler',
     self::source('src/WordPress/Plugin.php'),
-    'RevertChangeHandler is no longer registered, so #71 has changed the shape of this gap.'
+    'RevertChangeHandler is no longer registered, so a minted token would act on nothing.'
+    );
+    self::assertStringContainsString(
+    'ActionTokenPurpose::REVERT_CHANGE',
+    self::source('src/WordPress/Change/ChangeNoticeJob.php'),
+    'Nothing mints a revert token any more, so the front-end queue\'s'
+    . " 'Ask to revert' and the operator guide both promise an email that is never sent."
     );
     }
 
