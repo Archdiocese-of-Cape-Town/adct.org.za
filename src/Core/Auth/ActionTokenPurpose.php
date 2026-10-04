@@ -46,6 +46,24 @@ enum ActionTokenPurpose: string
     case REVERT_CHANGE = 'revert_change';
 
     /**
+     * Take one published event off the events page, from the link in a change
+     * notice. ADR 0008 point 4 puts Revert and Unpublish side by side: a change
+     * that moved an event to the wrong parish is not fixed by restoring the old
+     * fields, because the event itself was never ours to publish. Implemented in
+     * #71 by UnpublishEventHandler.
+     *
+     * Unpublishing is terminal for the post but not for the record. It appends an
+     * `unpublish` row to the same trail a revert appends a `revert` row to, so
+     * "who took this down, and what was live before" stays answerable from the
+     * history rather than from a trashed post.
+     *
+     * Separate from REVERT_CHANGE rather than a flag on it: the two answer
+     * different questions, only one of them is undoable from the trail, and a
+     * token that could mean either would be a credential for both.
+     */
+    case UNPUBLISH_EVENT = 'unpublish_event';
+
+    /**
      * Move one approver between per-item email and the daily digest (#169).
      * Implemented by NotifyModeChangeHandler, reached from the link in the
      * approval email so a dean who has never had a wp-admin account can set
