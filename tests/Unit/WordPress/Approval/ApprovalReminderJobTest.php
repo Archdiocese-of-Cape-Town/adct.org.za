@@ -8,6 +8,7 @@ namespace {
     // home_url, add_query_arg and WP_User) are declared once in Support/WordPressStubs.php
     // and required here, so this file runs on its own as well as in a full suite run.
     require_once __DIR__ . '/../../../Support/WordPressStubs.php';
+require_once __DIR__ . '/../../../Support/WordPressCapabilityStubs.php';
 }
 
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {

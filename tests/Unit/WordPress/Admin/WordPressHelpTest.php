@@ -9,6 +9,7 @@ namespace {
     // copies: a second declaration in one namespace is a fatal, and which file
     // PHPUnit includes first decides which stub wins.
     require_once __DIR__ . '/../../../Support/WordPressStubs.php';
+require_once __DIR__ . '/../../../Support/WordPressCapabilityStubs.php';
 }
 
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {

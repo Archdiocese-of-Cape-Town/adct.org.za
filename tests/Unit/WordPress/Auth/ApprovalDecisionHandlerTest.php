@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace {
     require_once __DIR__ . '/../../../Support/WordPressStubs.php';
+require_once __DIR__ . '/../../../Support/WordPressCapabilityStubs.php';
 
     if (! function_exists('get_permalink')) {
         function get_permalink(int $postId): string

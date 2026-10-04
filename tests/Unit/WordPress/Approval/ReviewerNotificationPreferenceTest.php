@@ -12,6 +12,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Approval {
     use WP_User;
 
     require_once __DIR__ . '/../../../Support/WordPressStubs.php';
+require_once __DIR__ . '/../../../Support/WordPressCapabilityStubs.php';
 
     /**
      * #171, third and last class: the per-user approval notification preference

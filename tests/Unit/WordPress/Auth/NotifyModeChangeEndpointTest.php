@@ -5,12 +5,13 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Auth {
 
     require_once __DIR__ . '/../../../Support/WordPressAuthDoubles.php';
+        require_once __DIR__ . '/../../../Support/WordPressCapabilityStubs.php';
 
-    // get_user_by(), user_can(), esc_*(), __(), home_url() and add_query_arg()
-    // come from the shared doubles and WordPressStubs.php. Only the two nonce
-    // functions are declared here, because the endpoint's own tests are the
-    // only place that needs them and a second declaration of an existing
-    // namespaced function is a fatal, not a shadow.
+        // get_user_by(), user_can(), esc_*(), __(), home_url() and add_query_arg()
+        // come from the shared doubles and WordPressStubs.php. Only the two nonce
+        // functions are declared here, because the endpoint's own tests are the
+        // only place that needs them and a second declaration of an existing
+        // namespaced function is a fatal, not a shadow.
     if (! function_exists('ADCT\ParishIntake\WordPress\Auth\wp_create_nonce')) {
         /**
          * Deterministic, because the endpoint only asks whether the nonce it
