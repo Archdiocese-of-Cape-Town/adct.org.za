@@ -498,7 +498,7 @@ private ?ReviewQueueRepository $reviewQueue = null;
             $this->sourcesPage,
             $contactAudit,
             $subjectAuditPanel
-                    );
+        );
         $this->sendersPage = new SendersPage($contacts, $contactService, $parishes, $contactAudit);
         $this->eventPostType = new EventPostType();
         $listingGeneration = new EventListingGeneration();
