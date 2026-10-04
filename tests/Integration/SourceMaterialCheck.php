@@ -191,9 +191,12 @@ final class SourceMaterialCheck
             // bulletin public" has to be answerable without asking anyone.
             foreach ([$poster, $bulletin] as $source) {
                 if (! self::hasAuditRow($wpdb, 'source_material_promoted', $eventId, $source->attachmentId, $source->mediaId)) {
-                    $fail('Promotion wrote no audit row naming the event, the intake attachment and the copy.');
-                }
-            }
+                                $fail(
+                                    'Promotion wrote no audit row naming the event, the intake attachment and the copy.'
+                                    . self::describeAuditRows($wpdb, $eventId)
+                                );
+                            }
+                        }
 
             // Removing is a visibility change: the bytes and the attachment post
             // both stay, and the poster role goes with it.
@@ -208,7 +211,7 @@ final class SourceMaterialCheck
             }
 
             if (! self::hasAuditRow($wpdb, 'source_material_removed', $eventId, $poster->attachmentId, $poster->mediaId)) {
-                $fail('Removal wrote no audit row.');
+                            $fail('Removal wrote no audit row.' . self::describeAuditRows($wpdb, $eventId));
             }
 
             if (count($store->forEvent($eventId)) !== 1) {
@@ -542,23 +545,69 @@ final class SourceMaterialCheck
     private static function hasAuditRow($wpdb, string $action, int $eventId, int $attachmentId, int $mediaId): bool
     {
         $table = $wpdb->prefix . 'adct_pi_audit_log';
-        $details = $wpdb->get_var($wpdb->prepare(
-            "SELECT details FROM {$table} WHERE action = %s AND subject_type = %s AND subject_id = %d ORDER BY id DESC LIMIT 1",
-            $action,
-            AuditSubjectType::EVENT,
-            $eventId
-        ));
 
-        if (! is_string($details) || $details === '') {
-            return false;
-        }
+                // Every matching row is examined, not just the newest. "The most recent
+                // promotion wrote a row" and "this promotion wrote a row" are different
+                // claims: taking `ORDER BY id DESC LIMIT 1` here would report the
+                // bulletin's row when asked about the poster's, and the check would
+                // blame the store for a query that was wrong.
+                foreach ($wpdb->get_results($wpdb->prepare(
+                    "SELECT details FROM {$table} WHERE action = %s AND subject_type = %s AND subject_id = %d",
+                    $action,
+                    AuditSubjectType::EVENT,
+                    $eventId
+                )) ?: [] as $row) {
+                    $decoded = json_decode((string) ($row->details ?? ''), true);
 
-        $decoded = json_decode($details, true);
+                    if (is_array($decoded)
+                        && (int) ($decoded['attachment_id'] ?? 0) === $attachmentId
+                        && (int) ($decoded['media_id'] ?? 0) === $mediaId
+                    ) {
+                        return true;
+                    }
+                }
 
-        return is_array($decoded)
-            && (int) ($decoded['attachment_id'] ?? 0) === $attachmentId
-            && (int) ($decoded['media_id'] ?? 0) === $mediaId;
-    }
+                return false;
+            }
+
+            /**
+             * The rows that are actually on the table for this event, for the failure
+             * message.
+             *
+             * Six CI cycles of "it wrote no audit row" with no evidence of what it did
+             * write is a check that guesses. A failing run should say which of three
+             * things is wrong -- the row is absent, the ids disagree, or a details key
+             * is named differently -- instead of sending someone back to the source to
+             * read it again.
+             */
+            private static function describeAuditRows($wpdb, int $eventId): string
+            {
+                $table = $wpdb->prefix . 'adct_pi_audit_log';
+                $rows = $wpdb->get_results($wpdb->prepare(
+                    "SELECT id, actor, action, subject_type, subject_id, details FROM {$table} WHERE subject_id = %d",
+                    $eventId
+                ));
+
+                if (! is_array($rows) || $rows === []) {
+                    return ' No audit row at all names this event id (' . $eventId . ').';
+                }
+
+                $described = [];
+
+                foreach ($rows as $row) {
+                    $described[] = sprintf(
+                        ' [id=%s actor=%s action=%s subject_type=%s subject_id=%s details=%s]',
+                        (string) ($row->id ?? '?'),
+                        (string) ($row->actor ?? '?'),
+                        (string) ($row->action ?? '?'),
+                        (string) ($row->subject_type ?? '?'),
+                        (string) ($row->subject_id ?? '?'),
+                        (string) ($row->details ?? '?')
+                    );
+                }
+
+                return ' Rows on the table for this event:' . implode('', $described);
+            }
 
     /**
      * A real retention sweep, through the real store, over the real directory.
