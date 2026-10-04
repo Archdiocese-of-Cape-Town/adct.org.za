@@ -480,11 +480,23 @@ final class ReviewQueuePage
         if (empty($row['can_retry'])) {
             return false;
         }
+        // Deliberately `fields()`, not `requiresMatchResolution()`. The latter is
+        // total by contract — it answers `false` for a row it cannot decode, so the
+        // rendering path can ask it without throwing — which makes `! false` here
+        // read as "unblocked". That inverts the meaning: unreadable would become
+        // approvable, and the row would get a bulk-approval checkbox.
+        //
+        // `fields()` stays strict, so this `DomainException` still means "we cannot
+        // know what is in this row". Blocking is the only honest answer to that, and
+        // the write path independently refuses it (`decide()` requires an undecided
+        // row), so the two agree. Reversing the question back to
+        // `requiresMatchResolution()` here silently reintroduces that regression.
         try {
-            return ! $this->policy->requiresMatchResolution($row);
+            $this->policy->fields($row);
         } catch (DomainException) {
             return false;
         }
+        return ! $this->policy->requiresMatchResolution($row);
     }
 
     /**

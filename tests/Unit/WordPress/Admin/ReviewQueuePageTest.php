@@ -11,7 +11,8 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
     use ADCT\ParishIntake\Core\Ports\PreviewableImageRepositoryInterface;
     use ADCT\ParishIntake\Core\Ports\PublicationStoreInterface;
     use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
-    use ADCT\ParishIntake\WordPress\Admin\ReviewQueuePage;
+        use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
+        use ADCT\ParishIntake\WordPress\Admin\ReviewQueuePage;
     use ADCT\ParishIntake\WordPress\Attachments\AttachmentImageEndpoint;
     use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
     use ADCT\ParishIntake\WordPress\Attachments\WordPressPreviewableImageRepository;
@@ -1040,6 +1041,102 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
         }
 
         /**
+         * The retry branch of `canApproveRow()`, which the two tests above never reach.
+         *
+                 * Those cover `canDecide()` (that candidate is `awaiting_approval`, so
+                 * `canBulkApprove()` decides) and the detail screen. This third branch runs
+                 * only for a candidate that is *already decided* yet retryable — one a dean
+                 * approved themselves, that a higher reviewer may now act on again. It reads
+                 * `can_retry`, which the `SELECT` computes, and asks a different question:
+                 * not "may this row be decided?" but "is anything blocking it?".
+         *
+                 * It is reached through the listing, not the detail screen: `canEdit()` is
+                 * false for a decided row, so the detail form emits no submit buttons at all.
+                 * The listing's affordance is the checkbox, whose name follows the verdict —
+                 * `candidate_ids[]` selects it for bulk approval, `manual_review_candidate_ids[]`
+                 * only for rejection or assignment. That is the observable this pins.
+                 *
+                 * Unreadable details are what make this branch dangerous. Answered through
+                 * `requiresMatchResolution()`, which deliberately returns `false` for a row
+                 * it cannot decode, the branch reads `! false` as **approvable**. The old
+                 * `catch (DomainException)` absorbed that only because the method threw;
+                 * once it stopped throwing for the render path the catch went dead and the
+                 * row began reading as clear. Unreadable is not the same as unblocked.
+                 */
+                public function testACorruptRetryRowIsStillNotOfferedForApproval(): void
+                {
+                    $database = new ManualEntryDatabase();
+                    $database->sourceFields = '{bad';
+                    $database->sourceStatus = 'published';
+                    $database->sourceApprovedBy = 'dean@example.invalid';
+                    $database->sourceDecidedAt = '2026-03-01 09:00:00';
+                    $database->sourceCanRetry = true;
+
+                    $row = $database->rowForSourceCandidate();
+                    self::assertFalse(
+                        $database->canDecideRow($row),
+                        'Precondition: a decided candidate must miss canDecide(), or this test is '
+                        . 'silently exercising the canBulkApprove() branch instead of the retry one.'
+                    );
+
+                    $rendered = $this->renderListing($database);
+
+                    self::assertStringNotContainsString(
+                        'name="candidate_ids[]"',
+                        $rendered,
+                        'A retryable candidate whose details cannot be parsed must not get a bulk-approval '
+                        . 'checkbox. Unreadable is not the same as unblocked, and the retry branch must '
+                        . 'not read a row it cannot decode as clear.'
+            );
+                    self::assertStringNotContainsString(
+                        'name="manual_review_candidate_ids[]"',
+                        $rendered,
+                        'Neither checkbox is offered, because `canDecide()` is false for an already '
+                        . 'decided row and `can_retry` alone authorises nothing. That matches the write '
+                        . 'path, where `decide()` refuses an already-decided row, so the screen offers no '
+                        . 'action the queue would then reject. The row is a duplicate to be resolved from '
+                        . 'its detail screen, not a decision this listing can start.'
+                    );
+                }
+
+                /**
+                 * The same row, readable, proves the test above is about the corrupt JSON and
+                 * not about the retry branch refusing everything. Without this, a fix that
+                 * simply disabled retry approval would also go green.
+                 */
+                public function testAReadableRetryRowIsStillOfferedForApproval(): void
+                {
+                    $database = new ManualEntryDatabase();
+                    $database->sourceFields = json_encode([
+                        'title' => 'Fictional event',
+                        'match_kind' => 'new',
+                    ], JSON_THROW_ON_ERROR);
+                    $database->sourceStatus = 'published';
+                    $database->sourceApprovedBy = 'dean@example.invalid';
+                    $database->sourceDecidedAt = '2026-03-01 09:00:00';
+                    $database->sourceCanRetry = true;
+
+                    $rendered = $this->renderListing($database);
+
+                    self::assertStringContainsString(
+                        'name="candidate_ids[]"',
+                        $rendered,
+                        'A decided-but-retryable candidate with readable, unambiguous details is still '
+                        . 'approvable. The corrupt row above is refused for its JSON, not for being a retry.'
+                    );
+                }
+
+                private function renderListing(ManualEntryDatabase $database): string
+                {
+                    ob_start();
+                    try {
+                        $this->page($database)->renderPage();
+                    } finally {
+                        return (string) ob_get_clean();
+                    }
+                }
+
+        /**
          * A candidate served as a valid, ambiguous one, with the chosen parish
          * existing so the resolution reaches its update rather than a validation.
          */
@@ -1205,6 +1302,20 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
 
         /** The status the source candidate is served with. */
         public string $sourceStatus = 'awaiting_approval';
+
+        /** The decider the source candidate already carries, if any. */
+        public ?string $sourceApprovedBy = null;
+
+        /** When the source candidate was decided, if ever. */
+        public ?string $sourceDecidedAt = null;
+
+        /**
+         * Whether the `SELECT` computed this candidate as retryable.
+         *
+         * Only the retry branch of `canApproveRow()` reads it, and reaching that
+         * branch also needs the row to be already decided, so both are settable.
+         */
+        public bool $sourceCanRetry = false;
 
         /** Which message the served attachment belongs to. */
         public int $attachmentMessageId = ReviewQueuePageTestIds::MESSAGE;
@@ -1387,8 +1498,9 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                 'message_id' => (string) $this->sourceMessageId,
                 'parish_id' => (string) $this->sourceParishId,
                 'status' => $this->sourceStatus,
-                'approved_by' => null,
-                'decided_at' => null,
+                'approved_by' => $this->sourceApprovedBy,
+                'decided_at' => $this->sourceDecidedAt,
+                'can_retry' => $this->sourceCanRetry ? 1 : 0,
                 'fields' => $this->sourceFields,
                 'notes' => '[]',
                 'block_index' => '0',
@@ -1405,9 +1517,35 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                 'match_event_id' => null,
                 'sender_email' => '',
                 'parish_name' => '',
+                                'category' => 'awaiting_approval',
                 'updated_at' => '2026-03-01 08:00:00',
-                'decided_by' => null,
+                'decided_by' => $this->sourceApprovedBy,
             ];
+        }
+
+        /**
+         * The row the double serves, so a test can assert against it directly.
+         *
+         * @return array<string, mixed>
+         */
+        public function rowForSourceCandidate(): array
+        {
+            return $this->sourceCandidate();
+        }
+
+        /**
+         * Whether `canDecide()` says this row may still be decided.
+         *
+         * Exposed so a test can prove which branch of `canApproveRow()` it is about
+         * to exercise. Without it, a row that unexpectedly still matches `canDecide()`
+         * would be refused by `canBulkApprove()` for an unrelated reason and the test
+         * would pass without ever reaching the branch it names.
+         *
+         * @param array<string, mixed> $row
+         */
+        public function canDecideRow(array $row): bool
+        {
+            return (new ReviewQueuePolicy())->canDecide($row);
         }
 
         /**
