@@ -176,32 +176,122 @@ final class PrinsFrankPdfTextExtractorTest extends TestCase
     }
 
     /**
-         * The extractor checks its time budget against a stopwatch, so building it
-         * without one makes the result depend on how loaded the machine is. These
-         * fixtures are small and the assertions are about content and reading
-         * order, never about timing, so pin the clock and keep the outcome stable.
-         * The timeout path is covered separately, with an explicit budget.
+         * A bulletin that starts full width and then splits into two columns. The
+         * heading and the centred line above the columns belong to neither column,
+         * and the two notices below have to read as two whole notices.
          */
-        private function extractor(): PrinsFrankPdfTextExtractor
+        public function testDetectsTheColumnSwitchPartWayDownThePage(): void
         {
-            return new PrinsFrankPdfTextExtractor(stopwatch: new FixedStopwatch(0.0));
+            $text = $this->extractor()->extract(
+                $this->fixture('column-switch-bulletin.pdf'),
+                PdfExtractionLimits::defaults()
+            )->text;
+
+            self::assertStringContainsString(
+                "Parish Newsletter for November 2026\n"
+                . 'The annual Mass intention list is on the table.',
+                $text,
+                'The full width lines above the columns must stay whole and stay first.'
+            );
+
+            self::assertMatchesRegularExpression(
+                '/Confirmation Day\s+at 10am in the hall\./u',
+                $text,
+                'The left notice must read as one block.'
+            );
+
+            self::assertMatchesRegularExpression(
+                '/Sunday 8 November 2026\s+at 6pm in the church\./u',
+                $text,
+                'The right notice must read as one block, not interleaved with the left.'
+            );
         }
 
-        private function fixture(string $name): string
+        /**
+         * The Mass times table crosses the gutter between the two columns. Splitting
+         * it at the gutter pairs each day with the wrong time, so each row has to be
+         * read whole, left to right.
+         */
+        public function testReadsATableThatCrossesTheColumnGutterAsWholeRows(): void
         {
-            return dirname(__DIR__, 3) . '/fixtures/pdfs/' . $name;
+            $text = $this->extractor()->extract(
+                $this->fixture('cross-column-table.pdf'),
+                PdfExtractionLimits::defaults()
+            )->text;
+
+            self::assertStringContainsString(
+                'Monday 5:45am Wednesday 9:00am',
+                $text,
+                'A row spanning both columns must not be split at the gutter.'
+            );
+
+            self::assertStringContainsString('Tuesday 6:30am Thursday 6:00pm', $text);
+            self::assertMatchesRegularExpression('/5:45am.*9:00am/su', $text, 'Times must stay on their own row.');
         }
 
-    private function temporaryFile(string $contents): string
-    {
-        $path = tempnam(sys_get_temp_dir(), 'adct-pdf-');
+        /**
+         * A vertical caption is one sentence, not one line per word. Its runs share a
+         * single x position and step through y, so a naive x axis read both shreds
+         * the caption and reverses it.
+         */
+        public function testReadsAVerticalCaptionAsOneLineInItsOwnOrder(): void
+        {
+            $text = $this->extractor()->extract(
+                $this->fixture('rotated-caption.pdf'),
+                PdfExtractionLimits::defaults()
+            )->text;
 
-        self::assertIsString($path);
-        file_put_contents($path, $contents);
+            self::assertStringContainsString('Retreat programme', $text);
+            self::assertStringNotContainsString('programme Retreat', $text);
+            self::assertStringContainsString('Confirmation Day', $text);
+        }
 
-        return $path;
+        /**
+         * The sidebar's list is indented under its heading. That indent is a nested
+         * list, not a column, so the sidebar must read as one block with the heading
+         * at the top.
+         */
+        public function testReadsAnIndentedSidebarListAsOneBlockRatherThanAColumn(): void
+        {
+            $text = $this->extractor()->extract(
+                $this->fixture('boxed-sidebar.pdf'),
+                PdfExtractionLimits::defaults()
+            )->text;
+
+            self::assertStringContainsString(
+                "Prayer group\n* Youth group\n* Marriage preparation",
+                $text,
+                'The indented list must stay under its own heading.'
+            );
+        }
+
+        /**
+             * The extractor checks its time budget against a stopwatch, so building it
+             * without one makes the result depend on how loaded the machine is. These
+             * fixtures are small and the assertions are about content and reading
+             * order, never about timing, so pin the clock and keep the outcome stable.
+             * The timeout path is covered separately, with an explicit budget.
+             */
+            private function extractor(): PrinsFrankPdfTextExtractor
+            {
+                return new PrinsFrankPdfTextExtractor(stopwatch: new FixedStopwatch(0.0));
+            }
+
+            private function fixture(string $name): string
+            {
+                return dirname(__DIR__, 3) . '/fixtures/pdfs/' . $name;
+            }
+
+        private function temporaryFile(string $contents): string
+        {
+            $path = tempnam(sys_get_temp_dir(), 'adct-pdf-');
+
+            self::assertIsString($path);
+            file_put_contents($path, $contents);
+
+            return $path;
+        }
     }
-}
 
 /**
  * Reports the same elapsed time on every reading, so a timeout can be tested

@@ -38,6 +38,9 @@ attachment becomes a dated candidate once the OCR reply is replayed, and that ex
 are uploaded. The reply in `posters/recorded-ocr-response.json` is a **recording**, never re-requested at
 test time, so the suite makes no network call and does not depend on OCR.space being reachable.
 
+Every fixture page positions its text with an explicit `Tm` matrix, so a line's x and y are exact and a
+fixture can be turned through a given angle (`TextLine`'s `$degrees`) to exercise turned-run reading order.
+
 ## Adding a fixture
 
 Drop two files in `emails/` with the same basename:
@@ -105,6 +108,10 @@ reduced, anonymised form — record nothing beyond the generic class of input na
 | Real class of input (from the private review) | Fixture(s) covering it |
 |---|---|
 | Weekly parish bulletin, 2–3 columns, text layer | `bulletin-multi-event-skip-sections`, `bulletin-numbered-events`, `bulletin-all-non-event-sections`, `pdfs/two-column-bulletin.pdf`, `pdfs/three-column-bulletin.pdf` |
+| Bulletin that switches column count partway down | `pdfs/column-switch-bulletin.pdf` |
+| Mass-times table running across the column gutter | `pdfs/cross-column-table.pdf` |
+| Turned (rotated) margin caption | `pdfs/rotated-caption.pdf` |
+| Boxed sidebar whose list is indented under its heading | `pdfs/boxed-sidebar.pdf` |
 | Multi-church parish bulletin naming venues | `multi-church-bulletin` |
 | Printed Mailchimp-style archdiocesan email | `mailchimp-style-newsletter`, `printed-email-style` |
 | Event poster with a text layer | `text-poster`, `pdfs/single-column-poster.pdf` |

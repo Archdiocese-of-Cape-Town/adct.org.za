@@ -131,7 +131,9 @@ final class PrinsFrankPdfTextExtractor implements PdfTextExtractorInterface
                 $element->getText($page),
                 $matrix->offsetX,
                 $matrix->offsetY,
-                $element->getHeight()
+                $element->getHeight(),
+                $this->widthOf($element, $page),
+                $this->angleOf($matrix),
             );
         }
 
@@ -145,6 +147,59 @@ final class PrinsFrankPdfTextExtractor implements PdfTextExtractorInterface
         // still read, for instance a single text run the column split discarded.
         // Falling back beats losing a page silently.
         return trim($page->getText());
+    }
+
+    /**
+     * How far the run advances along the page, which is what tells the assembler
+     * where a row of cells ends and the gutter after it begins.
+     *
+     * The library scales this by the x component of the text matrix only, so a
+     * run turned through ninety degrees reports a width of about zero. That is
+     * not a width worth reporting, and the assembler reads turned runs along
+     * their own baseline instead, so zero is passed through and let stand for
+     * "unknown".
+     *
+     * @param \PrinsFrank\PdfParser\Document\ContentStream\PositionedText\PositionedTextElement $element
+     * @param \PrinsFrank\PdfParser\Document\Object\Decorator\Page                         $page
+     */
+    private function widthOf(object $element, object $page): float
+    {
+        try {
+            $font = $element->getFont($page);
+
+            // A font carrying no width array cannot report a real advance. The
+            // library then charges a whole em per character, which makes a short
+            // run look several times wider than it is and swallows the gutter
+            // after it. Those runs are left for the assembler to measure from
+            // their own text length, which errs far more gently.
+            if ($font->getWidths() === null) {
+                return 0.0;
+            }
+
+            $width = $element->getAdvanceWidth($font);
+        } catch (Throwable) {
+            // A font the document references but does not contain, or one the
+            // library cannot map to a width. The assembler falls back to an
+            // estimate from the text length.
+            return 0.0;
+        }
+
+        return is_finite($width) ? max(0.0, $width) : 0.0;
+    }
+
+    /**
+     * The angle of the run's baseline, in degrees counter-clockwise.
+     *
+     * The `Tm` operator maps the text-space x-axis onto `(a, b)`, the first two
+     * values of the matrix, so that pair is the direction the run reads in.
+     * `atan2` already reports (-180, 180], which is the range the assembler
+     * expects, so no normalisation is needed.
+     *
+     * @param \PrinsFrank\PdfParser\Document\ContentStream\PositionedText\TransformationMatrix $matrix
+     */
+    private function angleOf(object $matrix): float
+    {
+        return rad2deg(atan2($matrix->shearX, $matrix->scaleX));
     }
 
     private function failure(Throwable $throwable, int $pageCount = 0): PdfExtractionResult
