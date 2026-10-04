@@ -109,7 +109,7 @@ final class SourceMaterialCheck
                 new WordPressMediaLibraryGateway(),
                 new WordPressEventMeta(),
                 new WordPressActorResolver(),
-                new AuditLogRepository($connection, new SystemClock(), new WordPressActorResolver())
+                new AuditLogRepository($connection, new SystemClock())
             );
 
             // Nothing is promoted before anyone asks. The unit stubs can be told
