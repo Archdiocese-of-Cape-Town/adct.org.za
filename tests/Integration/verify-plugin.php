@@ -281,7 +281,7 @@ $expectedTableSuffixes = [
     'adct_pi_venues',
 ];
 if (count($expectedTableSuffixes) !== 19) {
-    $fail('The schema v10 integration fixture must enumerate all 19 plugin tables.');
+    $fail('The schema v11 integration fixture must enumerate all 19 plugin tables.');
 }
 
 $expectedTables = array_map(
@@ -299,7 +299,7 @@ if ($actualTables !== $expectedTables) {
     $missingTables = array_diff($expectedTables, $actualTables);
     $unexpectedTables = array_diff($actualTables, $expectedTables);
     $fail(sprintf(
-        'Schema v10 tables differ. Missing: [%s]; unexpected: [%s].',
+        'Schema v11 tables differ. Missing: [%s]; unexpected: [%s].',
         implode(', ', $missingTables),
         implode(', ', $unexpectedTables)
     ));
@@ -465,7 +465,7 @@ $processedOwnershipColumns = (array) $wpdb->get_col("SHOW COLUMNS FROM {$process
 if ($processedOwnershipColumns !== $expectedProcessedOwnershipColumns) {
     $fail('A fresh install did not create the expected v9 processed-mail ownership table.');
 }
-$assertSenderSuggestionColumns('fresh v10 install');
+$assertSenderSuggestionColumns('fresh v11 install');
 
 $freshMailQueueIndexRows = (array) $wpdb->get_results(
     $wpdb->prepare("SHOW INDEX FROM {$mailQueueTable} WHERE Key_name = %s", 'recipient_group'),
@@ -5764,4 +5764,4 @@ foreach (array_keys(Capabilities::customRoleLabels()) as $roleName) {
     }
 }
 
-WP_CLI::success('Installed release ZIP checks passed: schema v10 fresh and upgrade paths, v7 confirmation fields, v8 approval notices, v9 processed-mail ownership and v10 sender suggestions, action-token, approval/review-queue/candidate-detail and confirmation flows, confirmation-to-approval routing in every deanery configuration, bounded inbound parsing and safe reprocessing, mailbox retention safety, event and directory administration, and public output.');
+WP_CLI::success('Installed release ZIP checks passed: a fresh install at schema v11 plus every upgrade path from a previously released version, covering the columns each schema version introduced — v7 confirmation fields, v8 approval notices, v9 processed-mail ownership, v10 sender suggestions and v11 nullable follow-up parish fields — together with action-token, approval/review-queue/candidate-detail and confirmation flows, confirmation-to-approval routing in every deanery configuration, bounded inbound parsing and safe reprocessing, mailbox retention safety, event and directory administration, and public output.');
