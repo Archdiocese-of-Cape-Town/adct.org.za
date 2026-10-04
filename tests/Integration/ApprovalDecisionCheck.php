@@ -17,6 +17,7 @@ use ADCT\ParishIntake\WordPress\Approval\ReviewerNotificationPreference;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalEditHandler;
+use ADCT\ParishIntake\WordPress\Auth\NotifyModeChangeHandler;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRenewalDelivery;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
@@ -134,27 +135,46 @@ final class ApprovalDecisionCheck
             preg_match_all('/adct_token=([A-Za-z0-9_-]{43})/', (string) $mail['body_text'], $matches);
             return [$mail, $matches[1]];
         };
-        // Position in the body is not an identity: the notice mail also carries the digest-choice
-        // link, and any future link shifts every index after it. Each token is resolved through the
-        // token store and matched on the purpose the click under test is supposed to have, so a
-        // link that is added, removed or reordered cannot silently point a decision at the wrong
-        // button. A purpose that is absent fails loudly here rather than being borrowed.
-        $linkFor = static function (array $links, ActionTokenPurpose $want, string $label) use (
-            $tokens, $fail
-        ): string {
-            foreach ($links as $link) {
-                $binding = $tokens->inspect((string) $link)->binding;
-                if ($binding !== null && $binding->purpose === $want) {
-                    return (string) $link;
-                }
-            }
-            $fail('Approver decisions: no ' . $label . ' link (' . $want->value
-                . ') was in the mail; found purposes: '
-                . implode(', ', array_map(static function (string $link) use ($tokens): string {
-                    return $tokens->inspect($link)->binding?->purpose->value ?? 'unresolvable';
-                }, $links)));
-            return '';
-        };
+        // Position in the body is not an identity, and neither is the purpose on its own.
+                //
+                // ApprovalNoticeJob::deliver() mints Approve, Reject and Edit PER CANDIDATE (the loop over
+                // $notices binds each token to that iteration's $id), so a grouped mail carries several
+                // tokens for the same purpose, each bound to a different candidate. Matching on purpose
+                // alone returns the FIRST one in the body, which is candidate one whenever the caller
+                // meant candidate two -- a link that resolves, resolves successfully, and acts on the
+                // wrong event. The subject id is therefore part of the key: purpose says what the link
+                // does, the subject id says which event it acts on, and a token belonging to an adjacent
+                // candidate is not an acceptable neighbour to borrow.
+                //
+                // Resolving through the token store and comparing both fields means a link that is added,
+                // removed, reordered or duplicated cannot silently point a decision at the wrong button or
+                // the wrong event. An absent purpose+subject fails loudly here rather than being borrowed.
+                $describe = static function (string $link) use ($tokens): string {
+                    $binding = $tokens->inspect($link)->binding;
+                    return $binding === null
+                        ? 'unresolvable'
+                        : $binding->purpose->value . '@' . $binding->subjectType . '#' . $binding->subjectId;
+                };
+                $linkFor = static function (array $links, ActionTokenPurpose $want, int $subjectId, string $subjectType, string $label) use (
+                    $tokens, $fail, $describe
+                ): string {
+                    foreach ($links as $link) {
+                        $binding = $tokens->inspect((string) $link)->binding;
+                        if (
+                            $binding !== null
+                            && $binding->purpose === $want
+                                            && $binding->subjectType === $subjectType
+                            && $binding->subjectId === $subjectId
+                        ) {
+                            return (string) $link;
+                        }
+                    }
+                    $fail('Approver decisions: no ' . $label . ' link (' . $want->value
+                                        . ' on ' . $subjectType . ' ' . $subjectId . ') was in the mail; found: '
+                        . implode(', ', array_map($describe, $links)));
+                    return '';
+                };
+                        $candidateSubject = 'event_candidate';
         $act = static function (string $secret, string $reason = '', array $edits = []) use ($endpoint): array {
             $get = $endpoint->respond('GET', $secret, '', '', '', '203.0.113.90');
             preg_match('/name="adct_token_nonce" value="([^"]+)"/', $get->body, $nonce);
@@ -170,16 +190,31 @@ final class ApprovalDecisionCheck
             $job->processNext((string) ($first - 1));
             [$deanMail, $deanLinks] = $tokensFor($first, $deanEmail);
             [$reviewMail, $reviewLinks] = $tokensFor($first, $reviewerEmail);
-            $deanApprove = $linkFor($deanLinks, ActionTokenPurpose::APPROVE_EVENT, "the dean's approval");
-            $reviewApprove = $linkFor($reviewLinks, ActionTokenPurpose::APPROVE_EVENT, "the reviewer's approval");
-            $reviewEdit = $linkFor($reviewLinks, ActionTokenPurpose::EDIT, "the reviewer's edit");
-            $reviewReject = $linkFor($reviewLinks, ActionTokenPurpose::REJECT_EVENT, "the reviewer's rejection");
+            // The reviewer mails are grouped over BOTH candidates, so each of these names the
+                        // candidate the assertion below is about. $reviewApprove/$reviewEdit/$reviewReject are
+                        // deliberately split across the two events: first approves, second is edited and then
+                        // rejected. Asking for candidate one where the assertion reads candidate two would pass
+                        // every check and change the wrong event.
+                        $deanApprove = $linkFor($deanLinks, ActionTokenPurpose::APPROVE_EVENT, $first, $candidateSubject, "the dean's approval");
+                                                $reviewApprove = $linkFor($reviewLinks, ActionTokenPurpose::APPROVE_EVENT, $first, $candidateSubject, "the reviewer's approval");
+                                                $reviewEdit = $linkFor($reviewLinks, ActionTokenPurpose::EDIT, $second, $candidateSubject, "the reviewer's edit");
+                                                $reviewReject = $linkFor($reviewLinks, ActionTokenPurpose::REJECT_EVENT, $second, $candidateSubject, "the reviewer's rejection");
             // The dean holds a live deanery_approvers row, so the notice also carries the
             // digest-choice link (issue #169). The reviewer holds no assignment row, so the same
             // mail to them is unchanged and they set the choice on their own profile page instead.
             // Both halves are asserted: which token the dean's extra link is, and that the reviewer
             // is sent no such link rather than one that would resolve to nobody on click.
-            $deansPurpose = $linkFor($deanLinks, ActionTokenPurpose::CHANGE_NOTIFY_MODE, "the dean's digest-choice");
+            // The digest-choice link is bound to the dean's wp user, not to a candidate
+            // (ApprovalNoticeJob mints it against NotifyModeChangeHandler::SUBJECT_TYPE with the
+            // approver's user id), so it is looked up by its own subject -- asking for a
+            // candidate id here would be the wrong question, not merely a stricter one.
+            $deansPurpose = $linkFor(
+                $deanLinks,
+                ActionTokenPurpose::CHANGE_NOTIFY_MODE,
+                $deanId,
+                NotifyModeChangeHandler::SUBJECT_TYPE,
+                "the dean's digest-choice"
+            );
             $reviewerPurposes = array_map(static function (string $link) use ($tokens): string {
                 return $tokens->inspect($link)->binding?->purpose->value ?? 'unresolvable';
             }, $reviewLinks);
@@ -231,7 +266,7 @@ final class ApprovalDecisionCheck
                         $job->beginRun();
                         $job->processNext((string) ($stale - 1));
                         [, $staleLinks] = $tokensFor($stale, $deanEmail);
-                        $staleApprove = $linkFor($staleLinks, ActionTokenPurpose::APPROVE_EVENT, 'the stale dean approval');
+                        $staleApprove = $linkFor($staleLinks, ActionTokenPurpose::APPROVE_EVENT, $stale, $candidateSubject, 'the stale dean approval');
                         $wpdb->query($wpdb->prepare(
                             "UPDATE {$base}deanery_approvers SET active = 0 WHERE wp_user_id = %d", $deanId
                         ));
@@ -291,7 +326,7 @@ final class ApprovalDecisionCheck
                 $orphan, $deanEmail
             )) === 0, 'a parish without a deanery must not notify a dean.');
             [, $orphanLinks] = $tokensFor($orphan, $reviewerEmail);
-            $orphanApprove = $linkFor($orphanLinks, ActionTokenPurpose::APPROVE_EVENT, 'the orphan reviewer approval');
+            $orphanApprove = $linkFor($orphanLinks, ActionTokenPurpose::APPROVE_EVENT, $orphan, $candidateSubject, 'the orphan reviewer approval');
             [, $reviewerApproval] = $act($orphanApprove);
             $check($reviewerApproval->statusCode === 200, 'a reviewer must approve without a deanery.');
             $posts[] = (int) $wpdb->get_var($wpdb->prepare(
@@ -556,7 +591,7 @@ final class ApprovalDecisionCheck
             $job->beginRun();
             $job->processNext((string) ($suppressed - 1));
             [$suppressedMail, $suppressedLinks] = $tokensFor($suppressed, $deanEmail);
-            $suppressedLink = $linkFor($suppressedLinks, ActionTokenPurpose::APPROVE_EVENT, 'the suppressed approval');
+            $suppressedLink = $linkFor($suppressedLinks, ActionTokenPurpose::APPROVE_EVENT, $suppressed, $candidateSubject, 'the suppressed approval');
             $check($suppressedMail['status'] === 'suppressed'
                 && $endpoint->respond('GET', $suppressedLink, '', '', '', '203.0.113.90')->statusCode === 200
                 && ! str_contains(
