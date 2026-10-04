@@ -70,8 +70,8 @@ final class ReviewQueuePolicyTest extends TestCase
      * pins the half of that which could plausibly go wrong.
      *
      * @param mixed $fields
-     * @dataProvider corruptFieldRows
      */
+    #[DataProvider('corruptFieldRows')]
     public function testRequiresMatchResolutionAnswersInsteadOfThrowingOnUnreadableDetails($fields): void
     {
         $policy = new ReviewQueuePolicy();
