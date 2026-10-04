@@ -223,8 +223,9 @@ final class WordPressStubSurfaceTest extends TestCase
                     'AdctTestRedirect',
                     'AdctTestWpDie',
                                     'WP_Error',
-                                    'WP_Screen',
-                        ],
+                                                    'WP_REST_Request',
+                                                    'WP_Screen',
+                                        ],
     ];
 
     /**

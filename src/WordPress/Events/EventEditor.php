@@ -506,6 +506,14 @@ final class EventEditor
             );
         }
 
+        if (array_key_exists(EventPostType::SOURCE_MATERIAL_META_KEY, $incoming)) {
+            return new \WP_Error(
+                'adct_event_private_source_material',
+                'The published source files can only be changed by the promotion action.',
+                ['status' => 400]
+            );
+        }
+
         $postId = $preparedPost instanceof \WP_Post
             ? (int) $preparedPost->ID
             : absint($request->get_param('id'));

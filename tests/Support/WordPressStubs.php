@@ -613,9 +613,46 @@ namespace {
                 {
                     return $this->code;
                 }
+
+                /**
+                 * @return mixed
+                 */
+                public function get_error_data()
+                {
+                    return $this->data;
+                }
             }
         }
-    }
+
+                        if (! class_exists('WP_REST_Request', false)) {
+                            /**
+                             * Only as much of WP_REST_Request as the event editor's REST guard
+                             * needs: `get_param()`, `set_param()` and the object form of a meta
+                             * param. `set_param()` writes back into `$params` so a test can
+                             * assert that the normalised value replaced the submitted one —
+                             * without that, "the guard normalised the meta" would be untestable.
+                             */
+                            class WP_REST_Request
+                            {
+                                /**
+                                 * @param array<string, mixed> $params
+                                 */
+                                public function __construct(private array $params = [])
+                                {
+                                }
+
+                                public function get_param(string $key): mixed
+                                {
+                                    return $this->params[$key] ?? null;
+                                }
+
+                                public function set_param(string $key, mixed $value): void
+                                {
+                                    $this->params[$key] = $value;
+                                }
+                            }
+                        }
+                    }
 
 namespace ADCT\ParishIntake\WordPress\Admin {
 

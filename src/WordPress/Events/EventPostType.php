@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Events;
 
+use ADCT\ParishIntake\Core\Attachments\SourceMaterialReference;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Parsing\EventTypeClassifier;
 use RuntimeException;
@@ -15,6 +16,13 @@ final class EventPostType
     public const CONTENT_VERSION_OPTION = 'adct_pi_event_content_version';
     public const SETUP_ERROR_OPTION = 'adct_pi_event_content_error';
     public const CURRENT_CONTENT_VERSION = 2;
+
+    /**
+     * The ordered promotion meta key (issue #172). Re-declared here rather than
+     * imported from the store so `registerMeta()` can build the key list as a
+     * literal array; the test pins that the two names never diverge.
+     */
+    public const SOURCE_MATERIAL_META_KEY = 'source_attachment_ids';
 
     /**
      * @var list<array{name: string, slug: string}>
@@ -310,12 +318,73 @@ final class EventPostType
                 'sanitize_callback' => [self::class, 'sanitizeContact'],
                 'auth_callback' => $editorAccess,
             ],
-        ];
+                        self::SOURCE_MATERIAL_META_KEY => self::sourceMaterialMetaDefinition($editorAccess),
+                    ];
 
-        foreach ($definitions as $metaKey => $definition) {
-            register_post_meta(self::POST_TYPE, $metaKey, $definition);
-        }
-    }
+                    foreach ($definitions as $metaKey => $definition) {
+                        register_post_meta(self::POST_TYPE, $metaKey, $definition);
+                    }
+                }
+
+                /**
+                 * The registration for an event's ordered promotion meta (issue #172).
+                 *
+                 * Three choices, each of which the test above pins:
+                 *
+                 * - **Not exposed in REST.** Promotion is a deliberate human action on an
+                 *   admin screen. Exposing the key would make the block editor's meta
+                 *   endpoint a second way to change which files the public side serves,
+                 *   without the nonce, the capability check or the audit row that the admin
+                 *   route gives.
+                 * - **The editor's auth callback, not a bare one.** Whoever can edit the
+                 *   event is whoever may promote its source material; that is the same rule
+                 *   the promote route applies.
+                 * - **A sanitiser that can only remove.** It normalises entries it
+                 *   recognises and drops the rest. It cannot invent an attachment id, so a
+                 *   malformed write cannot become a published file.
+                 *
+                 * @param callable|null $authCallback
+                 * @return array<string, mixed>
+                 */
+                public static function sourceMaterialMetaDefinition(?callable $authCallback = null): array
+                {
+                    if ($authCallback === null) {
+                        $authCallback = static function (
+                            $allowed,
+                            $metaKey,
+                            $postId,
+                            $userId,
+                            $cap,
+                            $caps
+                        ): bool {
+                            return (int) $postId > 0 && current_user_can('edit_post', (int) $postId);
+                        };
+                    }
+
+                    return [
+                        'type' => 'array',
+                        'single' => true,
+                        'default' => [],
+                        'show_in_rest' => false,
+                        'sanitize_callback' => [self::class, 'sanitizeSourceMaterial'],
+                        'auth_callback' => $authCallback,
+                    ];
+                }
+
+                /**
+                 * Normalises a submitted promotion list to entries that are safe to store.
+                 *
+                 * Deliberately shares
+                 * {@see \ADCT\ParishIntake\Core\Attachments\SourceMaterialReference::listFromStored()}
+                 * with the reader, so what is stored and what is rendered cannot drift
+                 * apart: if the reader would skip an entry, the sanitiser never wrote it.
+                 *
+                 * @return list<array{attachment_id: int, role: string, name: string}>
+                 */
+                public static function sanitizeSourceMaterial(mixed $value): array
+                {
+                    return SourceMaterialReference::encodeStored(SourceMaterialReference::listFromStored($value));
+                }
 
     public static function sanitizeInteger(mixed $value): int
     {
