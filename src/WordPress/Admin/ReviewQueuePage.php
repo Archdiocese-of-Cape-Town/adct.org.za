@@ -49,6 +49,18 @@ final class ReviewQueuePage
     public const CREATE_MANUAL_NONCE = 'manual_nonce';
 
     /**
+     * The POST action and nonce for resolving an ambiguous match in place
+     * (issue #177).
+     *
+     * Its own action, its own nonce and its own form, for the same reason the
+     * manual-entry button has its own: pressing Enter in a text field on this
+     * screen must never be able to clear a block, and a form that can clear a
+     * block must never be a mode on a form that only edits text.
+     */
+    public const RESOLVE_MATCH_ACTION = 'adct_pi_candidate_resolve_match';
+    public const RESOLVE_MATCH_NONCE = 'resolve_match_nonce';
+
+    /**
      * One nonce name for both download actions. The file a reviewer is allowed to
      * see is decided by the candidate they came from, not by the button, so
      * there is nothing to vary.
@@ -468,10 +480,52 @@ final class ReviewQueuePage
         if (empty($row['can_retry'])) {
             return false;
         }
+        // Deliberately `fields()`, not `requiresMatchResolution()`. The latter is
+        // total by contract — it answers `false` for a row it cannot decode, so the
+        // rendering path can ask it without throwing — which makes `! false` here
+        // read as "unblocked". That inverts the meaning: unreadable would become
+        // approvable, and the row would get a bulk-approval checkbox.
+        //
+        // `fields()` stays strict, so this `DomainException` still means "we cannot
+        // know what is in this row". Blocking is the only honest answer to that, and
+        // the write path independently refuses it (`decide()` requires an undecided
+        // row), so the two agree. Reversing the question back to
+        // `requiresMatchResolution()` here silently reintroduces that regression.
         try {
-            return ! $this->policy->requiresMatchResolution($row);
+            $this->policy->fields($row);
         } catch (DomainException) {
             return false;
+        }
+        return ! $this->policy->requiresMatchResolution($row);
+    }
+
+    /**
+     * Whether this candidate's stored `fields` can no longer be decoded.
+     *
+     * A rendering path must not throw on data it merely displays, so this screen
+     * never lets the policy's strict `fields()` decide anything. But swallowing
+     * the throw and calling the row "fine" would be its own lie, so the condition
+     * is detected here, once, and named.
+     *
+     * What an unreadable row then gets is decided, not accidental:
+     *
+     * - No resolve control. A correct resolve *rewrites* `fields`, so offering the
+     *   form would overwrite the very event we failed to parse.
+     * - No approval. {@see canApproveRow()} already refuses it, on its own
+     *   `fields()`, and the reviewer is told why.
+     * - A visible notice, because a row that silently offers nothing looks like a
+     *   row that simply has no match problem.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function detailsAreUnreadable(array $row): bool
+    {
+        try {
+            $this->policy->fields($row);
+
+            return false;
+        } catch (DomainException) {
+            return true;
         }
     }
 
@@ -640,6 +694,20 @@ final class ReviewQueuePage
         $canApprove = $editable && $this->canApproveRow($row);
         $poster = $this->posterImageFor($messageId);
 
+        // Issue #177: the screen already names the ambiguity; this decides whether
+        // to also offer the control that clears it. Deliberately driven by the
+        // same policy the publisher and the decide path trust, so a candidate is
+        // never shown a resolve button that would then be refused.
+        //
+        // `requiresMatchResolution()` reads `fields` and used to throw on JSON that
+        // is not an object. That is right for the decide and publish routes, which
+        // must refuse a candidate they cannot understand; it is fatal here, because
+        // a screen that only displays a row has no licence to die on it — the
+        // re-render path after a rejected save reaches exactly such a candidate.
+        // The policy now answers either way, and this screen names the difference.
+        $unreadable = $this->detailsAreUnreadable($row);
+        $needsResolution = ! $unreadable && $editable && $this->policy->requiresMatchResolution($row);
+
         $view = new CandidateDetailView();
         $view->render(
             $row,
@@ -654,7 +722,9 @@ final class ReviewQueuePage
             $this->isDownloadable(...),
             $this->renderFieldConfidence(...),
             $this->posterPanel($poster),
-            $editable && $messageId > 0
+            $editable && $messageId > 0,
+            $needsResolution,
+            $unreadable
         );
         $view->renderAuditTrail($this->queue->history($id));
     }
@@ -1094,6 +1164,80 @@ final class ReviewQueuePage
     }
 
     /**
+     * Resolve an ambiguous match from the candidate's own screen (issue #177).
+     *
+     * The candidate detail screen already said *why* a match was ambiguous —
+     * {@see CandidateDetailView::renderProvenance()} shows the match kind and the
+     * parish — but until now it offered nothing to do about it, and the reviewer
+     * had to find the queue's separate assignment control. This route is that
+     * control, scoped exactly like deciding and routed through exactly the same
+     * repository method, so there is one code path and one audit row.
+     *
+     * A reviewer may pick a different parish and venue, or deliberately leave the
+     * candidate unassigned — an unassigned candidate matches no dean, so it is
+     * the archdiocese's to approve, and saying so is a real answer rather than a
+     * shrug. Both outcomes clear the two `fields` keys that block approval, in the
+     * same transaction as the parish change, which is what makes the candidate
+     * approvable afterwards.
+     */
+    public function handleResolveMatch(): void
+    {
+        [$userId, $email, $reviewer] = $this->identity();
+        check_admin_referer(self::RESOLVE_MATCH_ACTION, self::RESOLVE_MATCH_NONCE);
+
+        $id = absint($this->text($_POST['candidate_id'] ?? '0'));
+        $tab = $this->tab($this->text($_POST['tab'] ?? 'awaiting_approval'));
+        $search = substr(sanitize_text_field($this->text($_POST['search'] ?? '')), 0, 100);
+        if ($id < 1) {
+            wp_die(esc_html('That candidate is not valid.'), '', ['response' => 400]);
+        }
+
+        // Re-resolved on every POST, never trusted from the form: a dean can only
+        // resolve a candidate in their own scope, exactly as when deciding it.
+        $row = $this->scopedCandidate($id, $userId, $email, $reviewer);
+        if ($row === null) {
+            wp_die(esc_html('This candidate is not in your review queue.'), '', ['response' => 404]);
+        }
+        if (! $this->canEdit($row)) {
+            wp_die(esc_html('This candidate has already been decided.'), '', ['response' => 409]);
+        }
+
+        // An empty `parish_id` is the deliberate "leave it unassigned" choice, so it
+        // is not a validation failure. `CandidateFieldSet::intOrNull()` maps 0,
+        // negatives and non-numeric input to null, so a crafted POST cannot smuggle a
+        // negative or non-numeric id through.
+        $parishId = CandidateFieldSet::intOrNull($this->text($_POST['parish_id'] ?? '')) ?? 0;
+        $venueId = CandidateFieldSet::intOrNull($this->text($_POST['venue_id'] ?? ''));
+        if ($venueId !== null && $venueId < 1) {
+            wp_die(esc_html('That venue is not valid.'), '', ['response' => 400]);
+        }
+        if ($parishId < 1 && $venueId !== null) {
+            wp_die(
+                esc_html('Choose a parish before selecting a venue, or leave the venue blank.'),
+                '',
+                ['response' => 400]
+            );
+        }
+
+        try {
+            $this->queue->assignParish($id, $parishId, $userId, $email, $reviewer, $venueId, true);
+        } catch (DomainException $failure) {
+            wp_die(esc_html($failure->getMessage()), '', ['response' => 409]);
+        } catch (Throwable $failure) {
+            error_log('[ADCT Parish Intake] Match resolution failed: ' . $failure->getMessage());
+            wp_die(esc_html('The match could not be resolved. Try again in a moment.'), '', [
+                'response' => 500,
+            ]);
+        }
+
+        // Outside the try, so a success redirect can never become a 500.
+        wp_safe_redirect(add_query_arg(
+            ['candidate' => $id, 'tab' => $tab, 'search' => $search, 'resolved' => 1],
+            self::queueUrl($tab, $search)
+        ));
+        exit;
+    }
+    /**
      * The candidate, but only if this reviewer is allowed to see it.
      *
      * A reviewer with the archdiocese-wide capability sees every candidate; a
@@ -1338,6 +1482,16 @@ final class ReviewQueuePage
 
     private function renderNotice(): void
     {
+        if (isset($_GET['resolved'])) {
+            ?>
+            <div class="notice notice-success"><p><?php echo esc_html(
+                'The ambiguous match is resolved and recorded in the history below. The event details are '
+                . 'still yours to check before you approve it; nothing has been published.'
+            ); ?></p></div>
+            <?php
+            return;
+        }
+
         if (isset($_GET['created'])) {
             ?>
             <div class="notice notice-success"><p><?php echo esc_html(

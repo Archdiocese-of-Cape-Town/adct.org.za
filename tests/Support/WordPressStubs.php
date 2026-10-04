@@ -318,9 +318,23 @@ namespace ADCT\ParishIntake\WordPress\Admin {
          * The array form, as WordPress takes it. The Auth namespace above takes
          * the (key, value, url) form instead, matching what each caller uses.
          */
-        function add_query_arg(array $args, string $url): string
+        /**
+         * Both documented forms, because the queue listing calls the 3-argument one:
+         * `add_query_arg( 'candidate', $id, $url )`.
+         *
+         * A union rather than two overloads, so that mixing the shapes up fails
+         * loudly at the call site instead of silently dropping the key.
+         */
+        function add_query_arg(string|array $args, string|int|array|null $url = null, string|int|null $third = null): string
         {
-            return $url . (str_contains($url, '?') ? '&' : '?') . http_build_query($args);
+            if (is_array($args)) {
+                $target = (string) $url;
+                $pairs = $args;
+            } else {
+                $target = (string) $third;
+                $pairs = [$args => $url];
+            }
+            return $target . (str_contains($target, '?') ? '&' : '?') . http_build_query($pairs);
         }
     }
 

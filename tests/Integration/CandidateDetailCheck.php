@@ -1054,6 +1054,255 @@ final class CandidateDetailCheck
                 }
             }
 
+            // --- Resolving an ambiguous match (issue #177) -----------------------
+            // Two candidates the parser could not tell apart. The flags live only
+            // in `fields`, which is why nothing before this issue could resolve one
+            // without a database edit.
+            $ambiguity = [
+                'match_review_required' => true,
+                'matched_candidate_id' => $main['candidate'],
+            ];
+            $ambiguous = $makeCandidate('ambiguous', 'awaiting_approval', $parish, $contact, $rawPath, $ambiguity);
+            $decidedAmbiguous = $makeCandidate(
+                'decided-ambiguous',
+                'approved',
+                $parish,
+                $contact,
+                $rawPath,
+                $ambiguity,
+                $approvedExtras
+            );
+            $foreignAmbiguous = $makeCandidate(
+                'foreign-ambiguous',
+                'awaiting_approval',
+                $foreignParish,
+                $foreignContact,
+                $rawPath,
+                $ambiguity
+            );
+            // A venue of this parish, so a resolution that corrects the venue can be
+            // proved to have chosen the pair rather than one without the other.
+            $venue = $insert($prefix . 'venues', [
+                'parish_id' => $parish,
+                'name' => 'Fictional Detail Hall ' . $suffix,
+                'created_at' => $stamp,
+                'updated_at' => $stamp,
+            ]);
+            $otherParishVenue = $insert($prefix . 'venues', [
+                'parish_id' => $foreignParish,
+                'name' => 'Fictional Foreign Hall ' . $suffix,
+                'created_at' => $stamp,
+                'updated_at' => $stamp,
+            ]);
+
+            // The panel appears only where it is needed, with its own action and
+            // nonce, so pressing Enter in the editor cannot resolve anything.
+            $ambiguousDetail = $openDetail($ambiguous['candidate']);
+            $check(str_contains($ambiguousDetail, ReviewQueuePage::RESOLVE_MATCH_ACTION),
+                'an ambiguous candidate must offer the resolution control.');
+            $check(str_contains($ambiguousDetail, 'adct-pi-resolve-parish'),
+                'the resolution control must offer a parish.');
+            $check(str_contains($ambiguousDetail, 'Leave unassigned'),
+                'the resolution control must offer the deliberate "leave it unassigned" choice.');
+            $check(
+                str_contains(
+                    $ambiguousDetail,
+                    wp_create_nonce(ReviewQueuePage::RESOLVE_MATCH_ACTION)
+                ),
+                'the resolution control must carry its own nonce.'
+            );
+            $check(! str_contains($openDetail($sibling['candidate']), ReviewQueuePage::RESOLVE_MATCH_ACTION),
+                'a candidate with no ambiguity must not be offered a resolution.');
+            $check(! str_contains($openDetail($decidedAmbiguous['candidate']), ReviewQueuePage::RESOLVE_MATCH_ACTION),
+                'a decided candidate must not be offered a resolution.');
+
+            $resolvePost = [
+                'action' => ReviewQueuePage::RESOLVE_MATCH_ACTION,
+                'candidate_id' => (string) $ambiguous['candidate'],
+                'tab' => 'awaiting_approval',
+                'search' => 'Fictional',
+                'parish_id' => (string) $parish,
+                'venue_id' => (string) $venue,
+                ReviewQueuePage::RESOLVE_MATCH_NONCE => wp_create_nonce(ReviewQueuePage::RESOLVE_MATCH_ACTION),
+            ];
+
+            // Every refusal writes nothing.
+            $before = self::candidateCount($wpdb, $prefix);
+            $refusals = [];
+
+            $refusals['a nonce from another route'] = [$resolvePost, function (array $post) use ($ambiguous): array {
+                unset($post[ReviewQueuePage::RESOLVE_MATCH_NONCE]);
+                $post[ReviewQueuePage::SAVE_NONCE] = wp_create_nonce(ReviewQueuePage::SAVE_ACTION);
+
+                return $post;
+            }, $reviewer];
+
+            $refusals['no nonce at all'] = [$resolvePost, function (array $post): array {
+                unset($post[ReviewQueuePage::RESOLVE_MATCH_NONCE]);
+
+                return $post;
+            }, $reviewer];
+
+            $refusals['a candidate outside the deaner\'s own deaneries'] = [
+                $resolvePost,
+                function (array $post) use ($foreignAmbiguous): array {
+                    $post['candidate_id'] = (string) $foreignAmbiguous['candidate'];
+                    $post[ReviewQueuePage::RESOLVE_MATCH_NONCE] = wp_create_nonce(
+                        ReviewQueuePage::RESOLVE_MATCH_ACTION
+                    );
+
+                    return $post;
+                },
+                $dean,
+            ];
+
+            $refusals['a candidate that has already been decided'] = [
+                $resolvePost,
+                function (array $post) use ($decidedAmbiguous): array {
+                    $post['candidate_id'] = (string) $decidedAmbiguous['candidate'];
+                    $post[ReviewQueuePage::RESOLVE_MATCH_NONCE] = wp_create_nonce(
+                        ReviewQueuePage::RESOLVE_MATCH_ACTION
+                    );
+
+                    return $post;
+                },
+                $reviewer,
+            ];
+
+            $refusals['a venue of another parish'] = [$resolvePost, function (array $post) use (
+                $otherParishVenue
+            ): array {
+                $post['venue_id'] = (string) $otherParishVenue;
+
+                return $post;
+            }, $reviewer];
+
+            foreach ($refusals as $why => [$base, $amend, $actor]) {
+                $post = $amend($base);
+                wp_set_current_user($actor->ID);
+                add_filter('wp_die_handler', $dieHandler);
+                try {
+                    $page->handleResolveMatch();
+                    $fail('Candidate detail: resolving a match with ' . $why . ' was accepted.');
+                } catch (RuntimeException $error) {
+                    $check(true, 'the guard for ' . $why . ' fired.');
+                } finally {
+                    remove_filter('wp_die_handler', $dieHandler);
+                }
+                $check(self::candidateCount($wpdb, $prefix) === $before,
+                    'resolving a match with ' . $why . ' must write nothing.');
+            }
+            wp_set_current_user($reviewer->ID);
+
+            // The one a person actually makes: choose the parish, correct the
+            // venue, and the block goes in the same transaction.
+            $redirect = $redirectFor($page, 'handleResolveMatch', $resolvePost);
+            $check($redirect !== null && str_contains($redirect, 'resolved=1'),
+                'a resolution must redirect with a notice.');
+            $resolved = $wpdb->get_row($wpdb->prepare(
+                "SELECT parish_id, status, fields FROM {$prefix}event_candidates WHERE id = %d",
+                $ambiguous['candidate']
+            ), ARRAY_A);
+            $resolvedFields = json_decode((string) ($resolved['fields'] ?? '{}'), true);
+            $resolvedFields = is_array($resolvedFields) ? $resolvedFields : [];
+            $check($resolved !== null && (int) $resolved['parish_id'] === $parish,
+                'a resolution must route the candidate to the chosen parish.');
+            $check((int) ($resolvedFields['parish_id'] ?? 0) === $parish,
+                'the column and the JSON must agree, or approval is still refused.');
+            $check((int) ($resolvedFields['venue_id'] ?? 0) === $venue,
+                'a resolution must be able to correct the venue at the same time.');
+            $check(! array_key_exists('match_review_required', $resolvedFields),
+                'the review flag must be removed, not set to false: the matcher reads presence.');
+            $check(! array_key_exists('matched_candidate_id', $resolvedFields),
+                'the matched id must be removed, not set to zero, for the same reason.');
+
+            $resolvedHistory = $queue->history($ambiguous['candidate']);
+            $resolutions = array_values(array_filter(
+                $resolvedHistory,
+                static function (array $row): bool {
+                    return $row['action'] === 'candidate_match_resolved';
+                }
+            ));
+            $check(count($resolutions) === 1,
+                'a resolution must write exactly one audit row, however many times it is looked for.');
+            $resolutionDetails = json_decode((string) ($resolutions[0]['details'] ?? ''), true);
+            $check(($resolutions[0]['actor'] ?? '') === $reviewer->user_email,
+                'the audit row must name the reviewer who resolved it.');
+            $check(is_array($resolutionDetails) && ($resolutionDetails['match_review_cleared'] ?? null) === true,
+                'the audit row must record that a block was cleared, not merely that a parish changed.');
+            $check(is_array($resolutionDetails) && (int) ($resolutionDetails['to_parish_id'] ?? 0) === $parish,
+                'the audit row must record the parish it chose.');
+
+            // And the panel is gone, because there is nothing left to resolve.
+            $check(! str_contains($openDetail($ambiguous['candidate']), ReviewQueuePage::RESOLVE_MATCH_ACTION),
+                'a resolved candidate must not be offered a second resolution.');
+
+            // A resolved candidate is approvable through the ordinary save route,
+            // which is the whole point of the control.
+            $resolvedApproval = $validPost;
+            $resolvedApproval['candidate_id'] = (string) $ambiguous['candidate'];
+            $resolvedApproval['save_mode'] = 'approve';
+            $resolvedApproval['title'] = 'Resolved Fictional Event ' . $suffix;
+            $resolvedApproval['event_date'] = '11/11/2026';
+            $resolvedApproval['recurrence_preset'] = 'none';
+            $resolvedApproval['parish_id'] = (string) $parish;
+            $redirect = $redirectFor($page, 'handleSave', $resolvedApproval);
+            $check($redirect !== null && str_contains($redirect, 'decision='),
+                'a resolved candidate must be approvable through the ordinary save route.');
+            $resolvedDecided = $wpdb->get_row($wpdb->prepare(
+                "SELECT status FROM {$prefix}event_candidates WHERE id = %d",
+                $ambiguous['candidate']
+            ), ARRAY_A);
+            $check($resolvedDecided !== null && $resolvedDecided['status'] !== 'awaiting_approval',
+                'a resolved candidate must actually be decided.');
+            $resolvedPublished = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT match_event_id FROM {$prefix}event_candidates WHERE id = %d",
+                $ambiguous['candidate']
+            ));
+            if ($resolvedPublished > 0) {
+                $published[] = $resolvedPublished;
+            }
+
+            // "Leave it unassigned" is the other real answer: an unassigned
+            // candidate matches no dean, so the archdiocese decides it.
+            $unassignedAmbiguous = $makeCandidate(
+                'unassigned-ambiguous',
+                'awaiting_approval',
+                null,
+                $contact,
+                $rawPath,
+                $ambiguity
+            );
+            $unassignedPost = $resolvePost;
+            $unassignedPost['candidate_id'] = (string) $unassignedAmbiguous['candidate'];
+            $unassignedPost['parish_id'] = '';
+            $unassignedPost['venue_id'] = '';
+            $redirect = $redirectFor($page, 'handleResolveMatch', $unassignedPost);
+            $check($redirect !== null && str_contains($redirect, 'resolved=1'),
+                'leaving a candidate unassigned must be accepted as an answer.');
+            $unassigned = $wpdb->get_row($wpdb->prepare(
+                "SELECT parish_id, fields FROM {$prefix}event_candidates WHERE id = %d",
+                $unassignedAmbiguous['candidate']
+            ), ARRAY_A);
+            $unassignedFields = json_decode((string) ($unassigned['fields'] ?? '{}'), true);
+            $unassignedFields = is_array($unassignedFields) ? $unassignedFields : [];
+            $check($unassigned !== null && $unassigned['parish_id'] === null,
+                'an unassigned candidate must store a real NULL parish, not 0: the column is unsigned.');
+            $check(! array_key_exists('parish_id', $unassignedFields),
+                'no parish was chosen, so none is stored.');
+            $check(! array_key_exists('match_review_required', $unassignedFields),
+                'leaving it unassigned must still clear the block.');
+            $unassignedHistory = array_values(array_filter(
+                $queue->history($unassignedAmbiguous['candidate']),
+                static function (array $row): bool {
+                    return $row['action'] === 'candidate_match_resolved';
+                }
+            ));
+            $unassignedDetails = json_decode((string) ($unassignedHistory[0]['details'] ?? ''), true);
+            $check(count($unassignedHistory) === 1 && is_array($unassignedDetails)
+                && ($unassignedDetails['left_unassigned'] ?? null) === true,
+                'the audit row must record that the reviewer deliberately left it unassigned.');
+
             // --- Reject ------------------------------------------------------------
             $rejectCandidate = $makeCandidate('reject', 'awaiting_approval', $parish, $contact, $rawPath);
             $reject = $validPost;
@@ -1099,6 +1348,8 @@ final class CandidateDetailCheck
                 'the attachment action must be registered on the installed plugin.');
                         $check(has_action('admin_post_' . ReviewQueuePage::CREATE_MANUAL_ACTION) !== false,
                             'the hand-typed-event action must be registered on the installed plugin.');
+                                    $check(has_action('admin_post_' . ReviewQueuePage::RESOLVE_MATCH_ACTION) !== false,
+                                        'the resolve-match action must be registered on the installed plugin.');
         } finally {
             $_GET = $originalGet;
             $_POST = $originalPost;
@@ -1126,7 +1377,9 @@ final class CandidateDetailCheck
             $wpdb->delete($prefix . 'parish_contacts', ['email' => $contact]);
             $wpdb->delete($prefix . 'parish_contacts', ['email' => $foreignContact]);
             $wpdb->delete($prefix . 'deanery_approvers', ['deanery_id' => $deanery]);
-            $wpdb->delete($prefix . 'parishes', ['id' => $parish]);
+                        $wpdb->delete($prefix . 'venues', ['parish_id' => $parish]);
+                        $wpdb->delete($prefix . 'venues', ['parish_id' => $foreignParish]);
+                        $wpdb->delete($prefix . 'parishes', ['id' => $parish]);
             $wpdb->delete($prefix . 'parishes', ['id' => $foreignParish]);
             $wpdb->delete($prefix . 'deaneries', ['id' => $deanery]);
             $wpdb->delete($prefix . 'deaneries', ['id' => $foreignDeanery]);

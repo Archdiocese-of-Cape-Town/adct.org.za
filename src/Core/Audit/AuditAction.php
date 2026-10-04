@@ -75,6 +75,18 @@ enum AuditAction: string
             case CANDIDATE_CREATED_BY_HAND = 'candidate_created_by_hand';
 
     /**
+     * An approver resolved an ambiguous match from the candidate detail screen
+     * (issue #177).
+     *
+     * Deliberately its own verb rather than another `candidate_parish_assigned`:
+     * the two acts are audited for different reasons. Assigning a parish is a
+     * routing correction; resolving a match also removes the two `fields` keys
+     * that block approval, so a trail that showed only the assignment would not
+     * record that anybody ever cleared the block.
+     */
+    case CANDIDATE_MATCH_RESOLVED = 'candidate_match_resolved';
+
+    /**
      * Human labels for the filter dropdown, keyed by action value.
      *
      * @return array<string, string>
@@ -119,6 +131,7 @@ enum AuditAction: string
             self::CONTACT_REMOVED => 'Contact removed',
             self::SETTINGS_UPDATED => 'Settings updated',
             self::CANDIDATE_CREATED_BY_HAND => 'Event started by hand',
+            self::CANDIDATE_MATCH_RESOLVED => 'Ambiguous match resolved',
         };
     }
 }

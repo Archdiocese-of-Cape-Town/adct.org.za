@@ -11,7 +11,8 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
     use ADCT\ParishIntake\Core\Ports\PreviewableImageRepositoryInterface;
     use ADCT\ParishIntake\Core\Ports\PublicationStoreInterface;
     use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
-    use ADCT\ParishIntake\WordPress\Admin\ReviewQueuePage;
+        use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
+        use ADCT\ParishIntake\WordPress\Admin\ReviewQueuePage;
     use ADCT\ParishIntake\WordPress\Attachments\AttachmentImageEndpoint;
     use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
     use ADCT\ParishIntake\WordPress\Attachments\WordPressPreviewableImageRepository;
@@ -541,7 +542,664 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             self::assertSame([], $GLOBALS['adct_test_styles']);
         }
 
-        private function page(ManualEntryDatabase $database): ReviewQueuePage
+        /**
+         * Issue #177: the resolution route on the candidate detail screen.
+         *
+         * An ambiguous match used to be a dead end — the screen could show it but
+         * nothing could clear it. What is pinned here is everything a unit test
+         * can decide on its own: that this route has its own action and nonce, that
+         * it refuses everything the save route refuses and in the same order, that
+         * it writes through `assignParish()` rather than its own statement, and
+         * that the reviewer lands back where they were with word of what happened.
+         *
+         * The rendered panel is exercised by tests/Integration/CandidateDetailCheck.php
+         * under a real WordPress.
+         */
+        public function testTheResolveMatchActionIsTheOneTheHookIsBuiltFrom(): void
+        {
+            self::assertSame(
+                'adct_pi_candidate_resolve_match',
+                ReviewQueuePage::RESOLVE_MATCH_ACTION,
+                'A cross-file contract: Plugin.php builds the hook from this constant and the form '
+                . 'posts to it. Nothing else notices if the two drift apart.'
+            );
+            self::assertSame(
+                'resolve_match_nonce',
+                ReviewQueuePage::RESOLVE_MATCH_NONCE,
+                'A cross-file contract: the rendered form and this handler have to name the nonce alike.'
+            );
+        }
+
+        /**
+         * Clearing an ambiguity is a distinct act from saving or deciding, so it
+         * gets its own action and its own nonce — and its own form.
+         *
+         * The form matters as much as the constants: the detail screen carries
+         * title and date fields, and a shared form would let Enter in a title field
+         * silently clear a block the reviewer was only trying to retype.
+         */
+        public function testResolvingAMatchIsNotAModeOnTheSaveRoute(): void
+        {
+            self::assertNotSame(
+                ReviewQueuePage::SAVE_ACTION,
+                ReviewQueuePage::RESOLVE_MATCH_ACTION,
+                'A shared action would let a crafted POST clear the block through the save route.'
+            );
+            self::assertNotSame(
+                ReviewQueuePage::SAVE_NONCE,
+                ReviewQueuePage::RESOLVE_MATCH_NONCE,
+                'A shared nonce would let one form be replayed as the other.'
+            );
+            self::assertNotSame(
+                ReviewQueuePage::CREATE_MANUAL_ACTION,
+                ReviewQueuePage::RESOLVE_MATCH_ACTION,
+                'Opening a blank event is not resolving anything.'
+            );
+        }
+
+        public function testTheResolveRouteDemandsItsOwnNonceBeforeReadingAnything(): void
+        {
+            $GLOBALS['adct_test_nonce_should_fail'] = true;
+            $database = $this->ambiguousDatabase();
+            $_POST = ['candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE];
+
+            try {
+                $this->page($database)->handleResolveMatch();
+            } catch (\AdctTestNonceRefused) {
+                self::assertSame(
+                    [],
+                    $database->executedQueries,
+                    'A refused nonce must not write anything.'
+                );
+
+                return;
+            }
+
+            self::assertSame(
+                [
+                    ['action' => 'adct_pi_candidate_resolve_match', 'name' => 'resolve_match_nonce'],
+                ],
+                $GLOBALS['adct_test_nonce_checks'],
+                'The recorded action and name are the whole point of this test.'
+            );
+        }
+
+        /**
+         * The capability gate runs before the nonce, so a caller without the
+         * capability cannot even make WordPress ask for a word.
+         */
+        public function testSomeoneWhoCannotReviewCannotResolveAMatch(): void
+        {
+            $GLOBALS['adct_test_wp_caps'] = [Capabilities::MANAGE_SETTINGS];
+            $database = $this->ambiguousDatabase();
+            $_POST = ['candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE];
+
+            try {
+                $this->page($database)->handleResolveMatch();
+            } catch (\AdctTestWpDie $refused) {
+                self::assertSame(403, $refused->status);
+                self::assertSame([], $database->executedQueries);
+                self::assertSame(
+                    [],
+                    $GLOBALS['adct_test_nonce_checks'],
+                    'The capability is checked first, so the nonce is never even asked for.'
+                );
+
+                return;
+            }
+
+            self::fail('Reviewing is required to resolve a match.');
+        }
+
+        /**
+         * A dean may only resolve inside their own scope. The relationship is
+         * re-resolved on every POST rather than trusted from the form, so a crafted
+         * `candidate_id` cannot reach another deanery's candidate.
+         */
+        public function testAMatchOutsideTheReviewersScopeIsRefused(): void
+        {
+            $database = $this->ambiguousDatabase();
+            $database->visible = false;
+            $_POST = [
+                'candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                'parish_id' => (string) ReviewQueuePageTestIds::CHOSEN_PARISH,
+            ];
+
+            try {
+                $this->page($database)->handleResolveMatch();
+            } catch (\AdctTestWpDie $refused) {
+                self::assertSame(404, $refused->status);
+                self::assertSame([], $database->executedQueries);
+
+                return;
+            }
+
+            self::fail('An out-of-scope candidate must be refused.');
+        }
+
+        /**
+         * A decided candidate cannot be re-opened by resolving it: the resolution
+         * runs under the same lock and the same guard as every other write here.
+         */
+        public function testAMatchOnAnAlreadyDecidedCandidateIsRefused(): void
+        {
+            $database = $this->ambiguousDatabase();
+            $database->sourceStatus = 'published';
+            $_POST = [
+                'candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                'parish_id' => (string) ReviewQueuePageTestIds::CHOSEN_PARISH,
+            ];
+
+            try {
+                $this->page($database)->handleResolveMatch();
+            } catch (\AdctTestWpDie $refused) {
+                self::assertSame(409, $refused->status);
+                self::assertSame([], $database->executedQueries);
+
+                return;
+            }
+
+            self::fail('A decided candidate must not be resolved after the fact.');
+        }
+
+        /**
+         * The happy path, stated as the one safety property that matters: the
+         * chosen parish is written *and* the two blocking `fields` keys are gone,
+         * in the same statement. Clearing only the column would leave a candidate
+         * that still refuses approval.
+         */
+        public function testResolvingAMatchClearsTheBlockInTheSameStatementThatChoosesTheParish(): void
+        {
+            $database = $this->ambiguousDatabase();
+            $_POST = [
+                'candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                'parish_id' => (string) ReviewQueuePageTestIds::CHOSEN_PARISH,
+                'tab' => 'low_confidence',
+                'search' => 'retreat',
+            ];
+
+            try {
+                $this->page($database)->handleResolveMatch();
+            } catch (\AdctTestRedirect) {
+                // wp_safe_redirect() throws here; the request would end instead.
+            }
+
+            $update = $this->candidateUpdate($database->executedQueries);
+            self::assertNotNull($update, 'The resolution must reach the candidate row.');
+
+            $fields = $this->fieldsFrom($update);
+            self::assertSame(
+                ReviewQueuePageTestIds::CHOSEN_PARISH,
+                $fields['parish_id'] ?? null,
+                'The chosen parish is written into fields as well as the column, so the two agree.'
+            );
+            self::assertArrayNotHasKey(
+                'match_review_required',
+                $fields,
+                'The key is removed, not set to false.'
+            );
+            self::assertArrayNotHasKey(
+                'matched_candidate_id',
+                $fields,
+                'The key is removed, not set to zero.'
+            );
+            self::assertStringContainsString(
+                'parish_id = ',
+                $update,
+                'The column follows the choice.'
+            );
+
+            $redirect = $GLOBALS['adct_test_redirect'];
+            self::assertIsString($redirect);
+            self::assertStringContainsString('candidate=' . ReviewQueuePageTestIds::SOURCE_CANDIDATE, $redirect);
+            self::assertStringContainsString('resolved=1', $redirect, 'So the screen can say what happened.');
+            self::assertStringContainsString('tab=low_confidence', $redirect, 'Their tab is kept.');
+            self::assertStringContainsString('search=retreat', $redirect, 'Their search is kept.');
+        }
+
+        /**
+         * "Leave it unassigned" is a real answer, not a shrug: an unassigned
+         * candidate matches no dean, so the archdiocese decides it, and the block
+         * is still cleared.
+         */
+        public function testAvenueOfNothingIsDeliberatelyLeavingTheCandidateUnassigned(): void
+        {
+            $database = $this->ambiguousDatabase();
+            $_POST = [
+                'candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                'parish_id' => '',
+                'venue_id' => '',
+            ];
+
+            try {
+                $this->page($database)->handleResolveMatch();
+            } catch (\AdctTestRedirect) {
+                // Expected.
+            }
+
+            $update = $this->candidateUpdate($database->executedQueries);
+            self::assertNotNull($update);
+
+            $fields = $this->fieldsFrom($update);
+            self::assertArrayNotHasKey('parish_id', $fields, 'No parish was chosen, so none is stored.');
+            self::assertArrayNotHasKey('match_review_required', $fields, 'The block is cleared regardless.');
+            self::assertStringContainsString(
+                'NULLIF(',
+                $update,
+                'A cleared parish is a real SQL NULL, not 0: the column is bigint unsigned, so 0 '
+                . 'would name a parish that does not exist.'
+            );
+        }
+
+        /**
+         * The venue travels with the parish, so a correction can fix both at once.
+         */
+        public function testResolvingAMatchCanCorrectTheVenueAsWell(): void
+        {
+            $database = $this->ambiguousDatabase();
+            $database->lookupRows[ReviewQueuePageTestIds::CHOSEN_VENUE] = [
+                'id' => (string) ReviewQueuePageTestIds::CHOSEN_VENUE,
+            ];
+            $_POST = [
+                'candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                'parish_id' => (string) ReviewQueuePageTestIds::CHOSEN_PARISH,
+                'venue_id' => (string) ReviewQueuePageTestIds::CHOSEN_VENUE,
+            ];
+
+            try {
+                $this->page($database)->handleResolveMatch();
+            } catch (\AdctTestRedirect) {
+                // Expected.
+            }
+
+            $fields = $this->fieldsFrom($this->candidateUpdate($database->executedQueries));
+                        self::assertSame(
+                            ReviewQueuePageTestIds::CHOSEN_VENUE,
+                            $fields['venue_id'] ?? null,
+                            'The corrected venue is stored with the parish.'
+                        );
+        }
+
+        /**
+         * A venue with no parish is refused at the screen rather than reaching the
+         * repository: the choice is incoherent, and the message says so in words.
+         */
+        public function testAVenueWithNoParishIsRefusedAtTheScreen(): void
+        {
+            $database = $this->ambiguousDatabase();
+            $_POST = [
+                'candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                'parish_id' => '',
+                'venue_id' => (string) ReviewQueuePageTestIds::CHOSEN_VENUE,
+            ];
+
+            try {
+                $this->page($database)->handleResolveMatch();
+            } catch (\AdctTestWpDie $refused) {
+                self::assertSame(400, $refused->status);
+                self::assertSame([], $database->executedQueries);
+
+                return;
+            }
+
+            self::fail('A venue cannot be chosen without a parish.');
+        }
+
+        /**
+         * `CandidateFieldSet::intOrNull()` maps a negative to null, so a crafted
+         * POST naming venue `-1` reads as "no venue" rather than a bogus id. The
+         * repository only ever sees the sanitised value.
+         */
+        public function testACraftedVenueIdCannotSmuggleANegativeThrough(): void
+        {
+            $database = $this->ambiguousDatabase();
+            $_POST = [
+                'candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                'parish_id' => (string) ReviewQueuePageTestIds::CHOSEN_PARISH,
+                'venue_id' => '-1',
+            ];
+
+            try {
+                $this->page($database)->handleResolveMatch();
+            } catch (\AdctTestRedirect) {
+                // Expected: a negative venue is "no venue", not a validation failure.
+            }
+
+            $fields = $this->fieldsFrom($this->candidateUpdate($database->executedQueries));
+                        self::assertArrayNotHasKey('venue_id', $fields, 'A negative venue id is no venue id at all.');
+            self::assertArrayNotHasKey('match_review_required', $fields);
+        }
+
+        public function testACandidateIdIsRequiredToResolveAMatch(): void
+        {
+            $database = $this->ambiguousDatabase();
+            $_POST = ['candidate_id' => '0'];
+
+            try {
+                $this->page($database)->handleResolveMatch();
+            } catch (\AdctTestWpDie $refused) {
+                self::assertSame(400, $refused->status);
+                self::assertSame([], $database->executedQueries);
+
+                return;
+            }
+
+            self::fail('A missing candidate id must be refused before anything is read.');
+        }
+
+        /**
+         * Exactly one audit row, under a verb of its own. A resolution is not a
+         * parish assignment: it removes the block as well as routing the
+         * candidate, and the trail has to show that somebody cleared it.
+         */
+        public function testResolvingAMatchWritesExactlyOneRowUnderItsOwnVerb(): void
+        {
+            $database = $this->ambiguousDatabase();
+            $_POST = [
+                'candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                'parish_id' => (string) ReviewQueuePageTestIds::CHOSEN_PARISH,
+            ];
+
+            try {
+                $this->page($database)->handleResolveMatch();
+            } catch (\AdctTestRedirect) {
+                // Expected.
+            }
+
+            // `prepare()` and `query()` both record, so one INSERT arrives twice.
+                        $audits = array_values(array_unique(array_filter(
+                            $database->executedQueries,
+                            static fn (string $query): bool => str_starts_with($query, 'INSERT INTO ')
+                                && str_contains($query, '(actor, action, subject_type, subject_id, details, created_at, updated_at)')
+                        )));
+                        self::assertCount(1, $audits, 'One resolution is one row.');
+                        self::assertStringContainsString('candidate_match_resolved', $audits[0]);
+            self::assertStringContainsString('"match_review_cleared":true', $audits[0]);
+            self::assertStringContainsString(
+                '"to_parish_id":' . ReviewQueuePageTestIds::CHOSEN_PARISH,
+                $audits[0]
+            );
+        }
+
+        /**
+         * A venue belonging to another parish is refused, and the message is the
+         * resolution route's own: telling someone resolving a venue to "resolve the
+         * venue first" would be nonsense.
+         */
+        public function testAVenueOfAnotherParishIsRefusedInWordsThatFitThisRoute(): void
+        {
+            $database = $this->ambiguousDatabase();
+            $database->sourceFields = json_encode([
+                'title' => 'Fictional event',
+                'match_review_required' => true,
+                'matched_candidate_id' => 91,
+                'venue_id' => ReviewQueuePageTestIds::OTHER_PARISH_VENUE,
+            ], JSON_THROW_ON_ERROR);
+            // The chosen parish exists; the stored venue is not one of its venues.
+            $database->lookupRows[ReviewQueuePageTestIds::CHOSEN_PARISH] = [
+                'id' => (string) ReviewQueuePageTestIds::CHOSEN_PARISH,
+            ];
+            $_POST = [
+                'candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                'parish_id' => (string) ReviewQueuePageTestIds::CHOSEN_PARISH,
+            ];
+
+            try {
+                $this->page($database)->handleResolveMatch();
+            } catch (\AdctTestWpDie $refused) {
+                self::assertSame(409, $refused->status);
+                self::assertStringContainsString(
+                    'Choose a venue of the parish you selected',
+                                        $refused->getMessage(),
+                    'On this route the venue is the thing being fixed.'
+                );
+                self::assertNull(
+                    $this->candidateUpdate($database->executedQueries),
+                    'Nothing may be written for a venue that belongs elsewhere.'
+                );
+
+                return;
+            }
+
+            self::fail('A venue of another parish must be refused.');
+        }
+
+        /**
+         * Issue #177 follow-up: a candidate whose `fields` JSON cannot be parsed must
+         * still *render*. The detail screen only displays what it is given, so it has
+         * no business throwing on bad stored data -- and once the resolve control was
+         * added there was a path from `renderDetail()` into
+         * `ReviewQueuePolicy::fields()`, which throws on anything that is not a JSON
+         * object. That fatal took out the whole screen on the re-render after a
+         * rejected save.
+         *
+         * `canApproveRow()` already caught `DomainException` for exactly this reason.
+         * The panel has to follow the same rule rather than invent a second one.
+         */
+        public function testACandidateWhoseDetailsCannotBeParsedStillRendersItsScreen(): void
+        {
+            $database = new ManualEntryDatabase();
+            $database->sourceFields = '{bad';
+            $_GET = ['candidate' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE];
+
+            ob_start();
+            try {
+                $this->page($database)->renderPage();
+            } finally {
+                $rendered = (string) ob_get_clean();
+            }
+
+            self::assertNotSame(
+                '',
+                trim($rendered),
+                'The screen rendered something rather than dying before output.'
+            );
+            self::assertStringNotContainsString(
+                ReviewQueuePage::RESOLVE_MATCH_ACTION,
+                $rendered,
+                'A candidate whose details cannot be parsed is not offered the resolve control. '
+                . 'The route would rewrite fields we cannot read, so offering it would be a lie.'
+            );
+            self::assertStringContainsString(
+                'could not be read',
+                $rendered,
+                'And the screen says why it is offering neither control. A page that silently withholds '
+                . 'them looks exactly like a page where there was nothing to resolve.'
+            );
+        }
+
+        /**
+         * The decision that follows from the one above: details we cannot read cannot
+         * be shown, saved or published either. `canApproveRow()` already refused it, and
+         * this pins that the widening of `canDecide()` to `duplicate` did not quietly
+         * undo that.
+         */
+        public function testACandidateWhoseDetailsCannotBeParsedIsNotOfferedForApproval(): void
+        {
+            $database = new ManualEntryDatabase();
+            $database->sourceFields = '{bad';
+            $_GET = ['candidate' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE];
+
+            ob_start();
+            try {
+                $this->page($database)->renderPage();
+            } finally {
+                $rendered = (string) ob_get_clean();
+            }
+
+            self::assertStringContainsString(
+                'Save changes',
+                $rendered,
+                'This is an editable, undecided candidate, so the editor is on screen.'
+            );
+            self::assertStringNotContainsString(
+                'Save and approve',
+                $rendered,
+                'A candidate whose details cannot be parsed is not approvable. `canApproveRow()` '
+                . 'refuses it, and widening `canDecide()` to `duplicate` must not have undone that.'
+            );
+        }
+
+        /**
+         * The retry branch of `canApproveRow()`, which the two tests above never reach.
+         *
+                 * Those cover `canDecide()` (that candidate is `awaiting_approval`, so
+                 * `canBulkApprove()` decides) and the detail screen. This third branch runs
+                 * only for a candidate that is *already decided* yet retryable — one a dean
+                 * approved themselves, that a higher reviewer may now act on again. It reads
+                 * `can_retry`, which the `SELECT` computes, and asks a different question:
+                 * not "may this row be decided?" but "is anything blocking it?".
+         *
+                 * It is reached through the listing, not the detail screen: `canEdit()` is
+                 * false for a decided row, so the detail form emits no submit buttons at all.
+                 * The listing's affordance is the checkbox, whose name follows the verdict —
+                 * `candidate_ids[]` selects it for bulk approval, `manual_review_candidate_ids[]`
+                 * only for rejection or assignment. That is the observable this pins.
+                 *
+                 * Unreadable details are what make this branch dangerous. Answered through
+                 * `requiresMatchResolution()`, which deliberately returns `false` for a row
+                 * it cannot decode, the branch reads `! false` as **approvable**. The old
+                 * `catch (DomainException)` absorbed that only because the method threw;
+                 * once it stopped throwing for the render path the catch went dead and the
+                 * row began reading as clear. Unreadable is not the same as unblocked.
+                 */
+                public function testACorruptRetryRowIsStillNotOfferedForApproval(): void
+                {
+                    $database = new ManualEntryDatabase();
+                    $database->sourceFields = '{bad';
+                    $database->sourceStatus = 'published';
+                    $database->sourceApprovedBy = 'dean@example.invalid';
+                    $database->sourceDecidedAt = '2026-03-01 09:00:00';
+                    $database->sourceCanRetry = true;
+
+                    $row = $database->rowForSourceCandidate();
+                    self::assertFalse(
+                        $database->canDecideRow($row),
+                        'Precondition: a decided candidate must miss canDecide(), or this test is '
+                        . 'silently exercising the canBulkApprove() branch instead of the retry one.'
+                    );
+
+                    $rendered = $this->renderListing($database);
+
+                    self::assertStringNotContainsString(
+                        'name="candidate_ids[]"',
+                        $rendered,
+                        'A retryable candidate whose details cannot be parsed must not get a bulk-approval '
+                        . 'checkbox. Unreadable is not the same as unblocked, and the retry branch must '
+                        . 'not read a row it cannot decode as clear.'
+            );
+                    self::assertStringNotContainsString(
+                        'name="manual_review_candidate_ids[]"',
+                        $rendered,
+                        'Neither checkbox is offered, because `canDecide()` is false for an already '
+                        . 'decided row and `can_retry` alone authorises nothing. That matches the write '
+                        . 'path, where `decide()` refuses an already-decided row, so the screen offers no '
+                        . 'action the queue would then reject. The row is a duplicate to be resolved from '
+                        . 'its detail screen, not a decision this listing can start.'
+                    );
+                }
+
+                /**
+                 * The same row, readable, proves the test above is about the corrupt JSON and
+                 * not about the retry branch refusing everything. Without this, a fix that
+                 * simply disabled retry approval would also go green.
+                 */
+                public function testAReadableRetryRowIsStillOfferedForApproval(): void
+                {
+                    $database = new ManualEntryDatabase();
+                    $database->sourceFields = json_encode([
+                        'title' => 'Fictional event',
+                        'match_kind' => 'new',
+                    ], JSON_THROW_ON_ERROR);
+                    $database->sourceStatus = 'published';
+                    $database->sourceApprovedBy = 'dean@example.invalid';
+                    $database->sourceDecidedAt = '2026-03-01 09:00:00';
+                    $database->sourceCanRetry = true;
+
+                    $rendered = $this->renderListing($database);
+
+                    self::assertStringContainsString(
+                        'name="candidate_ids[]"',
+                        $rendered,
+                        'A decided-but-retryable candidate with readable, unambiguous details is still '
+                        . 'approvable. The corrupt row above is refused for its JSON, not for being a retry.'
+                    );
+                }
+
+                private function renderListing(ManualEntryDatabase $database): string
+                {
+                    ob_start();
+                    try {
+                        $this->page($database)->renderPage();
+                    } finally {
+                        return (string) ob_get_clean();
+                    }
+                }
+
+        /**
+         * A candidate served as a valid, ambiguous one, with the chosen parish
+         * existing so the resolution reaches its update rather than a validation.
+         */
+        private function ambiguousDatabase(): ManualEntryDatabase
+        {
+            $database = new ManualEntryDatabase();
+            $database->sourceFields = json_encode([
+                'title' => 'Fictional event',
+                'match_review_required' => true,
+                'matched_candidate_id' => 91,
+            ], JSON_THROW_ON_ERROR);
+            $database->lookupRows = [
+                ReviewQueuePageTestIds::CHOSEN_PARISH => ['id' => (string) ReviewQueuePageTestIds::CHOSEN_PARISH],
+            ];
+
+            return $database;
+        }
+
+        /**
+         * The `UPDATE` against the candidate table, which is the statement that
+         * both chooses a parish and clears the block.
+         *
+         * @param list<string> $queries
+         */
+        private function candidateUpdate(array $queries): ?string
+        {
+            foreach (array_unique($queries) as $query) {
+                if (str_starts_with($query, 'UPDATE ')
+                    && str_contains($query, 'adct_pi_event_candidates')
+                    && str_contains($query, 'SET parish_id = ')) {
+                    return $query;
+                }
+            }
+
+            return null;
+        }
+
+        /**
+                 * The `fields` JSON the candidate `UPDATE` carried.
+                 *
+                 * `$wpdb->prepare()` substitutes into the SQL and so does this double, so
+                 * the value is in the query itself. The trailing anchor (`updated_at =`)
+                 * matters: stopping at the JSON alone would truncate at the first comma
+                 * inside it, and these fields are a whole event.
+                 *
+                 * @return array<string, mixed>
+                 */
+                private function fieldsFrom(?string $update): array
+                {
+                    self::assertNotNull($update, 'The statement under test was never issued.');
+                    self::assertSame(
+                        1,
+                        preg_match('/fields = (.*), updated_at = /sU', $update, $match),
+                        'The candidate update carries no single readable fields value: ' . $update
+                    );
+
+                    $fields = json_decode($match[1], true, 32, JSON_THROW_ON_ERROR);
+                    self::assertIsArray($fields);
+
+                    return $fields;
+                }
+
+                private function page(ManualEntryDatabase $database): ReviewQueuePage
         {
             $attachments = new AttachmentRepository($database);
             $images = new WordPressPreviewableImageRepository($attachments);
@@ -645,8 +1303,41 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
         /** The status the source candidate is served with. */
         public string $sourceStatus = 'awaiting_approval';
 
+        /** The decider the source candidate already carries, if any. */
+        public ?string $sourceApprovedBy = null;
+
+        /** When the source candidate was decided, if ever. */
+        public ?string $sourceDecidedAt = null;
+
+        /**
+         * Whether the `SELECT` computed this candidate as retryable.
+         *
+         * Only the retry branch of `canApproveRow()` reads it, and reaching that
+         * branch also needs the row to be already decided, so both are settable.
+         */
+        public bool $sourceCanRetry = false;
+
         /** Which message the served attachment belongs to. */
         public int $attachmentMessageId = ReviewQueuePageTestIds::MESSAGE;
+
+                /**
+                 * The `fields` JSON the source candidate is served with.
+                 *
+                 * Public so a test can make the candidate genuinely ambiguous: the whole
+                 * point of issue #177 is that `match_review_required` and
+                 * `matched_candidate_id` live only here, so nothing else in this double
+                 * can express one.
+                 */
+                public string $sourceFields = '{}';
+
+                /**
+                 * Parishes and venues the resolution route's own lookups will find, keyed
+                 * by id. Anything absent is "no such row", which is how the repository
+                 * learns that a venue belongs to another parish.
+                 *
+                 * @var array<int, array<string, mixed>>
+                 */
+                public array $lookupRows = [];
 
         /** @var list<array{query: string, arguments: list<mixed>}> */
         public array $preparedQueries = [];
@@ -714,27 +1405,43 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
 
         public function getResults(string $query): array
         {
-            $table = $this->tableIn($query);
+                    if ($this->tableIn($query) === 'adct_pi_attachments') {
+                        return $this->attachmentRow($query);
+                    }
 
-            if ($table === 'adct_pi_attachments') {
-                return $this->attachmentRow($query);
-            }
+                    // The attachments table arrives unquoted, from tableName().
+                    if (str_contains($query, 'FROM wp_adct_pi_attachments')) {
+                        return $this->attachmentRow($query);
+                    }
 
-            // The attachments table arrives unquoted, from tableName().
-            if (str_contains($query, 'FROM wp_adct_pi_attachments')) {
-                return $this->attachmentRow($query);
-            }
+                    // `assignParish()` asks whether a chosen parish and a stored venue
+                    // exist, both with a statement of the shape
+                    // `SELECT id FROM `…` WHERE id = N`. The answer depends on the id in the
+                    // statement, not on position, so it is served from `$lookupRows` and an
+                    // absent id is an empty result — never a row of empty columns, which
+                    // `getRow()` would turn into a false "found".
+                    //
+                    // Anchored at the start of the statement on purpose: the retry and scope
+                    // subqueries inside `lockedCandidate()` read `wp_adct_pi_parishes` too,
+                    // and matching on the table name alone would answer those from here.
+                    if (preg_match('/^SELECT id FROM `wp_adct_pi_(?:parishes|venues)` WHERE id = (\d+)/', $query, $parts) === 1) {
+                        $row = $this->lookupRows[(int) $parts[1]] ?? null;
 
-            if ($table !== 'adct_pi_event_candidates') {
-                return [];
-            }
+                        return $row === null ? [] : [$row];
+                    }
 
+                    // Every remaining read is of the candidate table, and each is
+                    // recognised by a fragment of its own statement rather than by the
+                    // table name: `lockedCandidate()` opens its subqueries with a `FROM`
+                    // of `adct_pi_parishes`, so the first table named in the string is not
+                    // the one being read.
+                    //
             // The next free block on the message.
             if (str_contains($query, 'SELECT block_index')) {
                 return [['block_index' => (string) ReviewQueuePageTestIds::EXISTING_BLOCKS]];
             }
 
-            // findScoped(): the candidate as the reviewer's own queue serves it.
+                    // findScoped(), and assignParish()'s locked re-read.
             if (str_contains($query, 'SELECT c.*')) {
                 return $this->visible ? [$this->sourceCandidate()] : [];
             }
@@ -791,12 +1498,54 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                 'message_id' => (string) $this->sourceMessageId,
                 'parish_id' => (string) $this->sourceParishId,
                 'status' => $this->sourceStatus,
-                'approved_by' => null,
-                'decided_at' => null,
-                'fields' => '{}',
+                'approved_by' => $this->sourceApprovedBy,
+                'decided_at' => $this->sourceDecidedAt,
+                'can_retry' => $this->sourceCanRetry ? 1 : 0,
+                'fields' => $this->sourceFields,
                 'notes' => '[]',
                 'block_index' => '0',
+
+                // Every column the queue's own `SELECT` returns. The provenance card
+                // reads these without a `??` default, and a real query hands it all of
+                // them, so a partial row here would manufacture warnings that production
+                // never has.
+                'parser_version' => '1.0.0',
+                'confidence' => '0.82',
+                'ai_used' => '0',
+                'ai_model' => null,
+                'match_kind' => 'new',
+                'match_event_id' => null,
+                'sender_email' => '',
+                'parish_name' => '',
+                                'category' => 'awaiting_approval',
+                'updated_at' => '2026-03-01 08:00:00',
+                'decided_by' => $this->sourceApprovedBy,
             ];
+        }
+
+        /**
+         * The row the double serves, so a test can assert against it directly.
+         *
+         * @return array<string, mixed>
+         */
+        public function rowForSourceCandidate(): array
+        {
+            return $this->sourceCandidate();
+        }
+
+        /**
+         * Whether `canDecide()` says this row may still be decided.
+         *
+         * Exposed so a test can prove which branch of `canApproveRow()` it is about
+         * to exercise. Without it, a row that unexpectedly still matches `canDecide()`
+         * would be refused by `canBulkApprove()` for an unrelated reason and the test
+         * would pass without ever reaching the branch it names.
+         *
+         * @param array<string, mixed> $row
+         */
+        public function canDecideRow(array $row): bool
+        {
+            return (new ReviewQueuePolicy())->canDecide($row);
         }
 
         /**
@@ -866,6 +1615,15 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
         public const MESSAGE = 42;
 
         public const PARISH = 3;
+
+                /** The parish the reviewer picks when resolving an ambiguous match. */
+                public const CHOSEN_PARISH = 21;
+
+                /** A venue of {@see self::CHOSEN_PARISH}, so a correction is coherent. */
+                public const CHOSEN_VENUE = 2101;
+
+                /** A venue that belongs to some other parish entirely. */
+                public const OTHER_PARISH_VENUE = 3305;
 
         public const OWN_ATTACHMENT = 11;
 

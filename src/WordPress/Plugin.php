@@ -1168,6 +1168,10 @@ private ?ReviewQueueRepository $reviewQueue = null;
             'admin_post_' . ReviewQueuePage::CREATE_MANUAL_ACTION,
             [$this->reviewQueuePage, 'handleCreateManual']
         );
+        add_action(
+            'admin_post_' . ReviewQueuePage::RESOLVE_MATCH_ACTION,
+            [$this->reviewQueuePage, 'handleResolveMatch']
+        );
         add_action('admin_post_adct_pi_test_mailbox', [$this->mailboxesPage, 'handleTestConnection']);
         add_action(
             'admin_post_adct_pi_create_mailbox_processed_folder',
