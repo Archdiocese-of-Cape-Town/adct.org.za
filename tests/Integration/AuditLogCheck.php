@@ -225,7 +225,7 @@ final class AuditLogCheck
             // The panel mounted on the candidate, event and parish screens, and
             // the 24-month window as MySQL applies it. Both need a real table.
             self::checkMountedPanel($repository, $stamp, $subject, $fail);
-            self::checkRetentionWindow($audit, $suffix, $fail);
+            self::checkRetentionWindow($audit, $fail);
 
             // The menu is registered on admin_menu, which the harness never
             // fires, so the registration is replayed here.
