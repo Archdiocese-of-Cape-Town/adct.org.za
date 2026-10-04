@@ -1,6 +1,7 @@
 <?php
 
 use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
+use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
 use ADCT\ParishIntake\Core\Publishing\SourceAttachment;
 use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\WordPress\Audit\WordPressActorResolver;
@@ -79,24 +80,29 @@ final class SourceMaterialCheck
             // the private folder, which is exactly why promotion has to read it
             // back rather than trust a path.
             $posterPath = $storage->storeAttachment($posterBytes, 'png');
-            $bulletinPath = $storage->storeAttachment("%PDF-1.4\n% synthetic\n", 'pdf');
+                        $bulletinBytes = "%PDF-1.4\n% synthetic\n";
+                        $bulletinPath = $storage->storeAttachment($bulletinBytes, 'pdf');
 
-            $attachmentIds['poster'] = self::insertAttachment(
-                $wpdb,
-                $fail,
-                $posterPath,
-                $posterName,
-                'image/png',
-                strlen($posterBytes)
-            );
-            $attachmentIds['bulletin'] = self::insertAttachment(
-                $wpdb,
-                $fail,
-                $bulletinPath,
-                $bulletinName,
-                'application/pdf',
-                24
-            );
+                        // `size_bytes` is passed to the sideload verbatim and WordPress
+                        // trusts it, so it is derived from the bytes rather than counted by
+                        // hand -- a stale constant here would be a failing check with no
+                        // cause anyone could find.
+                        $attachmentIds['poster'] = self::insertAttachment(
+                            $wpdb,
+                            $fail,
+                            $posterPath,
+                            $posterName,
+                            'image/png',
+                            strlen($posterBytes)
+                        );
+                        $attachmentIds['bulletin'] = self::insertAttachment(
+                            $wpdb,
+                            $fail,
+                            $bulletinPath,
+                            $bulletinName,
+                            'application/pdf',
+                            strlen($bulletinBytes)
+                        );
 
             if ($attachmentIds['poster'] < 1 || $attachmentIds['bulletin'] < 1) {
                 return;
@@ -115,7 +121,7 @@ final class SourceMaterialCheck
             // Nothing is promoted before anyone asks. The unit stubs can be told
             // what to return; this is the state of the database and the disk
             // after a publication that copied nothing.
-            self::assertNothingPromoted($fail, $eventId, (string) $uploads['basedir'], $posterPath);
+            self::assertNothingPromoted($fail, $eventId, (string) $uploads['basedir'], $storage, $posterPath);
 
             $poster = $store->promote($eventId, $attachmentIds['poster'], SourceAttachment::ROLE_POSTER);
             $mediaIds[] = $poster->mediaId;
@@ -355,8 +361,9 @@ final class SourceMaterialCheck
         callable $fail,
         int $eventId,
         string $uploadsBaseDir,
-        string $posterPath
-    ): void {
+                InboundMailStorageReaderInterface $storage,
+                string $posterRelativePath
+            ): void {
         $meta = new WordPressEventMeta();
 
         if ($meta->readSourceAttachmentIds($eventId) !== []) {
@@ -386,9 +393,13 @@ final class SourceMaterialCheck
             $fail('Promoted source material exists on disk before anything was promoted.');
         }
 
-        if (! is_file($posterPath)) {
-            $fail('The private intake file went missing before any promotion.');
-        }
+        // `storage_path` holds a path *relative to the protected directory*, not
+                // an absolute one, so it has to go through the same resolution the store
+                // uses. Asserting on the raw relative path would pass or fail for reasons
+                // that have nothing to do with promotion.
+                if (! is_file($storage->resolveAttachmentPath($posterRelativePath))) {
+                    $fail('The private intake file went missing before any promotion.');
+                }
     }
 
     /**
