@@ -66,18 +66,38 @@ final class SourceMaterialRole
         };
     }
 
+/**
+     * The roles this MIME type could actually be given, in the order a form
+     * should offer them.
+     *
+     * Drives the reviewer-facing select directly from {@see allows()}, so a
+     * form can never offer a role the handler would refuse — the two cannot
+     * drift apart, because there is only one list.
+     *
+     * @return list<string>
+     */
+    public static function rolesFor(string $mimeType): array
+    {
+        // No normalisation here on purpose: allows() already does it, so doing it
+        // twice would be a second place for the rule to be wrong.
+        return array_values(array_filter(
+            self::values(),
+            static fn (string $role): bool => self::allows($role, $mimeType)
+        ));
+    }
+
     /**
      * The word a reviewer and a visitor see for this role.
      */
     public static function label(string $role): string
-    {
-        return match ($role) {
-            self::POSTER => 'Poster',
-            self::BULLETIN => 'Parish bulletin',
-            self::DOCUMENT => 'Document',
-            default => throw new InvalidArgumentException('The source material role is not known.'),
-        };
-    }
+{
+    return match ($role) {
+        self::POSTER => 'Poster',
+        self::BULLETIN => 'Parish bulletin',
+        self::DOCUMENT => 'Document',
+        default => throw new InvalidArgumentException('The source material role is not known.'),
+    };
+}
 
     /**
      * Normalises submitted input to a known role, or null.

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Admin;
 
+use ADCT\ParishIntake\Core\Attachments\SourceMaterialRole;
 use ADCT\ParishIntake\Core\Parsing\UnparsedDateTimeCandidate;
 use ADCT\ParishIntake\Core\Review\CandidateEditResult;
 use ADCT\ParishIntake\Core\Review\CandidateFieldSet;
@@ -50,6 +51,15 @@ final class CandidateDetailView
      *        whether this saved candidate can have its confirmation preview resent, and
      *        when it last was (issue #176). An empty array means "no service", which
      *        renders nothing at all.
+     * @param list<array<string, mixed>> $promotable the files on this candidate's message
+     *        that could be published as the event's source material (issue #172). Empty
+     *        when there are none, or when the message has none to begin with.
+     * @param int|null $sourceMaterialEventId the event this candidate was published as,
+     *        or null while there is not one yet. Promotion needs a published event, so this
+     *        decides whether the panel is offered at all.
+     * @param string $notice already-escaped banner markup for whatever the reviewer just
+     *        did, or '' when the request did not come from a success redirect. Handed in as
+     *        markup rather than read from `$_GET`, so this view stays a view.
      */
     public function render(
         array $row,
@@ -67,7 +77,10 @@ final class CandidateDetailView
         bool $canStartManual = false,
         bool $needsMatchResolution = false,
         bool $detailsUnreadable = false,
-        array $resend = []
+        array $resend = [],
+        array $promotable = [],
+        ?int $sourceMaterialEventId = null,
+        string $notice = ''
     ): void {
         $id = (int) $row['id'];
         $fields = CandidateFieldSet::decodeFields($row['fields'] ?? null);
@@ -83,6 +96,9 @@ final class CandidateDetailView
             <p>
                 <a href="<?php echo esc_url(ReviewQueuePage::queueUrl($tab, $search)); ?>">Back to review queue</a>
             </p>
+            <?php if ($notice !== '') {
+                echo $notice; // already-escaped markup built by the page
+            } ?>
             <?php $this->renderAttemptNotice($attempt, $id); ?>
             <?php $this->renderUnreadableNotice($id, $detailsUnreadable); ?>
             <?php $this->renderMatchResolution($row, $fields, $parishes, $id, $tab, $search, $needsMatchResolution); ?>
@@ -114,6 +130,7 @@ final class CandidateDetailView
             </div>
             <?php $this->source->render($message, $attachments, $isDownloadable, $canStartManual); ?>
             <?php $this->renderDownloadForms($id); ?>
+            <?php $this->renderSourceMaterialPanel($id, $tab, $search, $promotable, $sourceMaterialEventId); ?>
         </div>
         <?php
     }
@@ -421,6 +438,138 @@ final class CandidateDetailView
             <input type="hidden" name="candidate" value="<?php echo esc_attr((string) $candidateId); ?>" ?>
             <?php wp_nonce_field(ReviewQueuePage::CREATE_MANUAL_ACTION, ReviewQueuePage::CREATE_MANUAL_NONCE); ?>
         </form>
+        <?php
+    }
+
+    /**
+     * The panel that publishes a notice's own poster or bulletin beside its event
+     * (issue #172).
+     *
+     * It is a panel of its own, after the downloads and below everything else,
+     * because it is the one action on this screen that makes a private parish
+     * file fetchable by the whole internet. Nothing here is preselected and no
+     * file is offered a default role: criterion 2 is that a person says out loud
+     * which file is the poster and which is the bulletin, so the page arrives
+     * with every box empty and an empty submission does nothing at all.
+     *
+     * The words stay "publish", not "promote". A reviewer reads this screen to
+     * decide what goes on the website, and "promote" here would mean an internal
+     * state change that no such reviewer is thinking about.
+     *
+     * Three states, and each says which one it is rather than showing nothing:
+     *
+     * 1. No published event yet — the panel says so and offers nothing, because a
+     *    file published against no event would have nowhere to live. The reviewer
+     *    is sent to Approve, which is the action that creates the event.
+     * 2. A published event but no publishable file — the panel says so. An email
+     *    with no JPEG, PNG, WebP or PDF has nothing to publish, and a silent
+     *    absence would read as a broken screen.
+     * 3. A published event and files — the table.
+     *
+     * @param list<array<string, mixed>> $promotable
+     */
+    private function renderSourceMaterialPanel(
+        int $candidateId,
+        string $tab,
+        string $search,
+        array $promotable,
+        ?int $sourceMaterialEventId
+    ): void {
+        ?>
+        <div class="adct-pi-source-material" id="adct-pi-source-material-panel">
+            <h2>Publish the poster or bulletin</h2>
+            <?php if ($sourceMaterialEventId === null || $sourceMaterialEventId < 1) : ?>
+                <p class="description">
+                    This candidate has not been published as an event yet, so there is nothing to attach
+                    a poster or bulletin to. Approve it first; the panel will be here afterwards.
+                </p>
+            <?php elseif ($promotable === []) : ?>
+                <p class="description">
+                    This notice has no file that can be published. A poster or bulletin has to be a JPEG,
+                    PNG, WebP or PDF that is still stored — nothing here is missing from the website.
+                </p>
+            <?php else : ?>
+                <p class="description">
+                    Tick the file to publish beside the event, and say what it is. Everything ticked here
+                    becomes public the moment you submit: it is copied into the media library, where anyone
+                    can fetch it by its address. Nothing is ticked for you, and an empty form publishes
+                    nothing.
+                </p>
+                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                    <input type="hidden" name="action"
+                        value="<?php echo esc_attr(ReviewQueuePage::PROMOTE_SOURCE_ACTION); ?>" />
+                    <input type="hidden" name="candidate_id"
+                        value="<?php echo esc_attr((string) $candidateId); ?>" />
+                    <input type="hidden" name="tab" value="<?php echo esc_attr($tab); ?>" />
+                    <input type="hidden" name="search" value="<?php echo esc_attr($search); ?>" />
+                    <?php wp_nonce_field(
+                        ReviewQueuePage::PROMOTE_SOURCE_ACTION,
+                        ReviewQueuePage::PROMOTE_SOURCE_NONCE
+                    ); ?>
+                    <table class="widefat striped">
+                        <thead><tr>
+                            <th scope="col">Publish</th>
+                            <th scope="col">File</th>
+                            <th scope="col">Type</th>
+                            <th scope="col">Publish it as</th>
+                        </tr></thead>
+                        <tbody>
+                        <?php foreach ($promotable as $attachment) : ?>
+                            <?php $this->promotableRow($attachment); ?>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                    <p>
+                        <button type="submit" class="button button-primary">
+                            Publish the ticked files
+                        </button>
+                    </p>
+                </form>
+            <?php endif; ?>
+        </div>
+        <?php
+    }
+
+    /**
+     * One publishable file: an unticked checkbox and a role a person must pick.
+     *
+     * The roles offered are the ones this file's own type can actually fill, so
+     * the form cannot build a request the handler will refuse. The select starts
+     * on the empty prompt rather than on the first role.
+     *
+     * @param array<string, mixed> $attachment
+     */
+    private function promotableRow(array $attachment): void
+    {
+        $id = (int) ($attachment['id'] ?? 0);
+        if ($id < 1) {
+            return;
+        }
+
+        $mimeType = strtolower(trim((string) ($attachment['mime_type'] ?? '')));
+        $name = trim((string) ($attachment['filename'] ?? ''));
+        ?>
+        <tr>
+            <td>
+                <input type="checkbox" name="selected[]" value="<?php echo esc_attr((string) $id); ?>" />
+            </td>
+            <td><?php echo esc_html($name === '' ? '(unnamed)' : $name); ?></td>
+            <td><?php echo esc_html($mimeType === '' ? 'unknown' : $mimeType); ?></td>
+            <td>
+                <label class="screen-reader-text" for="adct-pi-role-<?php echo esc_attr((string) $id); ?>">
+                    Publish <?php echo esc_html($name === '' ? 'this file' : $name); ?> as
+                </label>
+                <select name="roles[<?php echo esc_attr((string) $id); ?>]" id="adct-pi-role-<?php
+                    echo esc_attr((string) $id); ?>">
+                    <option value="">Choose&hellip;</option>
+                    <?php foreach (SourceMaterialRole::rolesFor($mimeType) as $role) : ?>
+                        <option value="<?php echo esc_attr($role); ?>">
+                            <?php echo esc_html(SourceMaterialRole::label($role)); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </td>
+        </tr>
         <?php
     }
 

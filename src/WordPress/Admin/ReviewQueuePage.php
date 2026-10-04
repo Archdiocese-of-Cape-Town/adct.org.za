@@ -341,7 +341,7 @@ final class ReviewQueuePage
             if ($candidate === null) {
                 wp_die(esc_html('This candidate is not in your review queue.'), '', ['response' => 404]);
             }
-            $this->renderDetail($candidate, $tab, $search, $reviewer);
+            $this->renderDetail($candidate, $tab, $search, $reviewer, null, $this->renderNotice());
             return;
         }
         $page = max(1, absint($this->text($_GET['paged'] ?? '1')));
@@ -359,7 +359,7 @@ final class ReviewQueuePage
         <div class="wrap">
             <h1>Review queue</h1>
             <p>Awaiting approval shows every scoped approval item, including low-confidence and unknown-sender items. The other pending tabs show each candidate in one primary category. An unknown sender is not verified by assigning a parish.</p>
-            <?php $this->renderNotice(); ?>
+            <?php echo $this->renderNotice(); // already-escaped markup built here ?>
             <nav class="nav-tab-wrapper" aria-label="Review queue tabs">
                 <?php foreach (ReviewQueueRepository::TABS as $key => $label) : ?>
                     <a class="nav-tab <?php echo $tab === $key ? 'nav-tab-active' : ''; ?>"
@@ -844,7 +844,8 @@ final class ReviewQueuePage
         string $tab,
         string $search,
         bool $reviewer,
-        ?CandidateEditResult $attempt = null
+        ?CandidateEditResult $attempt = null,
+        string $notice = ''
     ): void {
         $id = (int) $row['id'];
         $messageId = (int) ($row['message_id'] ?? 0);
@@ -881,6 +882,14 @@ final class ReviewQueuePage
         // is read here purely to explain the button; the service is what decides.
         $resend = $this->resendPanelState($row);
 
+        // Issue #172: the panel below is only worth offering when a file could
+        // actually be published, and publishing one needs a published event.
+        // Both are decided here from the same collaborators the promote route
+        // itself uses, so the screen never shows a button the handler would
+        // refuse.
+        $promotable = $this->promotableSourceMaterial($messageId);
+        $sourceEventId = $this->queue->findPublishedEventForCandidate($id);
+
         $view = new CandidateDetailView();
         $view->render(
             $row,
@@ -898,7 +907,10 @@ final class ReviewQueuePage
             $editable && $messageId > 0,
             $needsResolution,
             $unreadable,
-            $resend
+            $resend,
+            $promotable,
+            $sourceEventId,
+            $notice
         );
         // The audit trail for this candidate, so a reviewer can see who has
                 // already touched it (issue #58).
@@ -1747,6 +1759,34 @@ final class ReviewQueuePage
     }
 
     /**
+     * The files on a candidate's message that could be published, for the panel.
+     *
+     * Read on the display path, so it swallows a repository failure the way
+     * {@see posterImageFor()} does: a screen that only lists files has no
+     * licence to die, because a missing panel is recoverable and a fatal error
+     * on an admin GET is not.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function promotableSourceMaterial(int $messageId): array
+    {
+        if ($messageId < 1 || $this->attachments === null) {
+            return [];
+        }
+
+        try {
+            return $this->attachments->findPromotableForMessage($messageId);
+        } catch (Throwable $failure) {
+            error_log(
+                '[ADCT Parish Intake] Could not list files to publish ('
+                . get_class($failure) . ').'
+            );
+
+            return [];
+        }
+    }
+
+    /**
      * The promotable attachments this candidate's message actually owns, each
      * paired with the role the reviewer chose for it, validated as a whole.
      *
@@ -2194,38 +2234,52 @@ final class ReviewQueuePage
         );
     }
 
-    private function renderNotice(): void
+    /**
+     * The banner for whatever the reviewer just did, as markup.
+     *
+     * Returned rather than echoed because the success routes for "create a blank
+     * event", "resolve an ambiguous match" and #172's "publish the source
+     * material" all redirect back to `?candidate=<id>`, which `renderPage()`
+     * answers from the detail branch. Before #172 the notice was echoed from the
+     * listing branch only, so all three landed on a screen that showed no
+     * confirmation at all; the two older instances were unreachable in exactly
+     * the same way. Rendering once into a string lets both branches show it, and
+     * keeps `$_GET` reading where it already was -- the detail view is handed
+     * markup, never the request.
+     */
+    private function renderNotice(): string
     {
         if (isset($_GET['resolved'])) {
-            ?>
-            <div class="notice notice-success"><p><?php echo esc_html(
+            return '<div class="notice notice-success"><p>' . esc_html(
                 'The ambiguous match is resolved and recorded in the history below. The event details are '
                 . 'still yours to check before you approve it; nothing has been published.'
-            ); ?></p></div>
-            <?php
-            return;
+            ) . '</p></div>';
         }
 
         if (isset($_GET['created'])) {
-            ?>
-            <div class="notice notice-success"><p><?php echo esc_html(
+            return '<div class="notice notice-success"><p>' . esc_html(
                 'A blank event has been created below, beside the poster. Fill in what the poster says, '
                 . 'check it against the poster, then choose Approve. Nothing is published until you do.'
-            ); ?></p></div>
-            <?php
-            return;
+            ) . '</p></div>';
         }
+
+        if (isset($_GET['promoted'])) {
+            return '<div class="notice notice-success"><p>' . esc_html(
+                'The files you chose are now in the media library and attached to the published event. '
+                . 'They are public from now on, and removing one from the event will not delete the file.'
+            ) . '</p></div>';
+        }
+
         if (! isset($_GET['changed'], $_GET['skipped'], $_GET['manual'])) {
-            return;
+            return '';
         }
         $changed = absint($this->text($_GET['changed']));
         $skipped = absint($this->text($_GET['skipped']));
         $manual = absint($this->text($_GET['manual']));
-        ?>
-        <div class="notice notice-info"><p><?php echo esc_html(sprintf(
+
+        return '<div class="notice notice-info"><p>' . esc_html(sprintf(
             '%d updated, %d already decided or unchanged, %d require manual resolution before approval.',
             $changed, $skipped, $manual
-        )); ?></p></div>
-        <?php
+        )) . '</p></div>';
     }
 }
