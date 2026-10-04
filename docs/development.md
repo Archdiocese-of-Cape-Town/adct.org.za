@@ -60,7 +60,31 @@ GreenMail's standalone image provides a throwaway local IMAP/SMTP server. Tests 
 
 The build pins Strauss 0.30.0 and verifies the official [release asset](https://github.com/BrianHenryIE/strauss/releases/download/0.30.0/strauss.phar) against SHA-256 `08c1a8e553594745c22294e158129005fd11ed09ed452d7d4f48566f38c66c96` before running it. To upgrade Strauss, calculate the SHA-256 of the chosen official release asset and update both `STRAUSS_VERSION` and `STRAUSS_SHA256` in `scripts/build-release.sh`, then rebuild the zip locally.
 
-The build validates the zip by unpacking it, checking its contents (including the small public event block script and stylesheet in `assets/`, and the `ocr.js`/`ocr-settings.js`/`ocr.css` trio that backs on-demand client-side OCR), linting every packaged PHP file, and loading the plugin bootstrap and Core autoloader under plain PHP. The zip's small `WordPress\Autoloader` loads the plugin's `src/` classes; Composer's generated PSR-4 autoloader is used in development and tests. CI runs this same build on every PR and `v*` tag; PRs receive an `adct-parish-intake.zip` artifact.
+The build validates the zip by unpacking it, checking its contents (including the small public event block script and stylesheet in `assets/`, the `ocr.js`/`ocr-settings.js`/`ocr.css` trio that backs on-demand client-side OCR, and the `assets/release-check/two-column-bulletin.pdf` fixture the bootstrap check reads), linting every packaged PHP file, and loading the plugin bootstrap and Core autoloader under plain PHP. The zip's small `WordPress\Autoloader` loads the plugin's `src/` classes; Composer's generated PSR-4 autoloader is used in development and tests. CI runs this same build on every PR and `v*` tag; PRs receive an `adct-parish-intake.zip` artifact.
+
+### Never import a dependency class by its unprefixed name in `src/`
+
+Strauss prefixes the dependency packages under `vendor-prefixed/`, but it does **not** rewrite `use` statements in our own `src/`. A hard `use PrinsFrank\PdfParser\PdfParser;` therefore compiles in development and throws `Error: Class not found` in every release, where the class exists only as `ADCT\ParishIntake\Dependencies\PrinsFrank\PdfParser\PdfParser`. Issue [#239](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/239) shipped exactly that: every PDF failed, and the adapter's catch-all reported it as `The file could not be read as a PDF.` — blaming the file instead of the code.
+
+Resolve dependency classes **by string, probing the unprefixed name first and the prefixed name second**, as `Core\Ingestion\MimeMessageParser` and `Core\Ingestion\RawMessageInspector` already do:
+
+```php
+private const PDF_PARSER_CLASSES = [
+    'PrinsFrank\\PdfParser\\PdfParser',
+    'ADCT\\ParishIntake\\Dependencies\\PrinsFrank\\PdfParser\\PdfParser',
+];
+
+$parserClass = $this->resolveClass(self::PDF_PARSER_CLASSES);
+```
+
+Unprefixed first keeps development working against plain `vendor/`. In `@param` and `@return` docblocks, describe these as `object` or `string` — there is no class to name at compile time. See [ADR 0024](decisions/0024-runtime-resolution-of-prefixed-dependency-classes.md).
+
+`scripts/check-release-bootstrap.php` enforces this two ways, and both run in CI on every PR:
+
+- It **extracts text** from the packaged fixture PDF and fails unless the text is non-empty. Checking that classes load is not enough — that is precisely what stayed green while #239 shipped.
+- It tokenises every shipped `src/**/*.php` and fails if any name token starts with a dependency namespace (`PrinsFrank\`, `ZBateson\`). Tokenising means a namespace-qualified *string* — the supported pattern above — is correctly ignored, not flagged.
+
+**When you add a dependency**, add its namespace to `$vendorNamespaces` in that script, or its imports ship unguarded.
 
 Because that plain-PHP step runs `Plugin::boot()` with no WordPress loaded, the plugin constructor must never call a WordPress function — a `plugins_url()` call there is a fatal error at install time, not a test-only failure. Anything that needs WordPress (asset URLs, enqueueing, `get_option()` reads that are not `function_exists`-guarded) is resolved later, on first use, in a private factory method. `CoreIsolationTest::testPluginConstructorRunsWithoutWordPressLoaded` reproduces the bootstrap in a subprocess and fails with the fatal if that rule is broken, so run `vendor/bin/phpunit` rather than relying on the slower release build.
 
