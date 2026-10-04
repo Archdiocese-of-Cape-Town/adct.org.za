@@ -145,13 +145,24 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
                 throw new DomainException('That change did not record a state to restore.');
             }
 
-            if ($tokens->consume($token, $binding)->status !== ActionTokenStatus::CONSUMED) {
-                throw new DomainException('The revert link was already used or expired.');
-            }
-
             $eventId = (int) ($row['event_id'] ?? 0);
             if ($eventId < 1 || ! $this->lockEvent($eventId)) {
                 throw new DomainException('The event that was changed no longer exists.');
+            }
+
+            // Checked inside the transaction, after the change row and the post are
+            // both locked, so a later publication cannot slip in between the read
+            // and the restore.
+            //
+            // Deliberately before the token is consumed. Every other refusal in
+            // this handler leaves the link usable, and this one is about the state
+            // of the event rather than the link: burning a link that was correctly
+            // issued to a real approver would cost them the only copy of a notice
+            // they are still entitled to act on.
+            $this->assertStillCurrent($row);
+
+            if ($tokens->consume($token, $binding)->status !== ActionTokenStatus::CONSUMED) {
+                throw new DomainException('The revert link was already used or expired.');
             }
 
             // The state being replaced is read before the restore, not after:
@@ -298,6 +309,65 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
 
         return $this->snapshot($eventId);
             }
+
+    /**
+     * Whether anything was recorded against this event after the change under
+     * revert. The trail is the authority here, not the post: a later publication
+     * appends a row whether or not it happened to change the fields this revert
+     * would touch, and re-reading the post cannot tell the difference between
+     * "a later change rewrote these fields" and "somebody edited them by hand".
+     *
+     * @param array<string, mixed> $row
+     */
+    private function supersededBy(array $row): ?int
+    {
+        $changeId = (int) ($row['id'] ?? 0);
+        $eventId = (int) ($row['event_id'] ?? 0);
+        if ($changeId < 1 || $eventId < 1) {
+            return null;
+        }
+
+        $newer = $this->read($this->database->prepare(
+            'SELECT id FROM ' . $this->table('adct_pi_event_changes')
+            . ' WHERE event_id = %d AND id > %d ORDER BY id ASC LIMIT 1',
+            $eventId, $changeId
+        ));
+
+        if ($newer === null) {
+            return null;
+        }
+
+        $newerId = (int) ($newer['id'] ?? 0);
+
+        return $newerId > 0 ? $newerId : null;
+    }
+
+    /**
+     * A revert restores a snapshot of the past. Once a later change has been
+     * published on the same event, that snapshot predates the later change too,
+     * so applying it would silently discard the later change and its approver
+     * would never learn their edit was thrown away by a link they did not press.
+     *
+     * This is the same hazard WordPressPublicationStore::publish() refuses in the
+     * other direction ("A newer candidate has already updated this event."), and
+     * without it a one-click link in an email is the most likely way to lose a
+     * later edit.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function assertStillCurrent(array $row): void
+    {
+        $newer = $this->supersededBy($row);
+        if ($newer === null) {
+            return;
+        }
+
+        throw new DomainException(
+            'A newer change (change ' . $newer . ') has been published on this event since'
+                . ' this one, so reverting would discard it. Unpublish or revert the newer'
+                . ' change first.'
+        );
+    }
 
     /**
      * @param array<string, mixed> $row

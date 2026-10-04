@@ -599,6 +599,121 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
             );
         }
 
+        /**
+         * The risky part of #71, and the reason a change notice offers one-click
+         * revert at all.
+         *
+         * A revert restores a snapshot of the past. If a *later* change to the same
+         * event has since been published, that snapshot is no longer the state this
+         * event was in immediately before the change being reverted: it is the state
+         * before something else as well. Applying it silently discards the later
+         * change, and the approver who made that later change never learns their
+         * edit was thrown away by a link they did not press.
+         *
+         * WordPressPublicationStore::publish() already refuses the equivalent case
+         * with "A newer candidate has already updated this event." A revert is the
+         * same hazard from the other direction, and without a guard it has none.
+         *
+         * The refusal must also leave the link usable: the token was minted for a
+         * genuine change by a genuine approver, and nothing about the supersession
+         * makes it a forgery. That matches every other refusal in this class.
+         */
+        public function testAChangeSupersededByALaterOneCannotBeReverted(): void
+        {
+            $database = $this->database();
+            // A second change lands on the event after this change row was written:
+            // the live event is now somewhere this change never saw.
+            $database->seedSupersedingChange(self::EVENT_ID);
+
+            $tokens = new ActionTokenService(new RevertTokenStore(), new RevertClock());
+            $binding = $this->binding();
+            $token = $tokens->issue($binding)->token();
+
+            $occurrences = new RecordingOccurrenceMaintenance();
+            $mailer = new RecordingMailer();
+            $handler = $this->handler([self::PARISH_ID], $database, $occurrences, $mailer);
+
+
+            try {
+                $handler->performAtomic($binding, $token, $tokens, '');
+                self::fail('Reverting a superseded change must be refused.');
+            } catch (DomainException $refusal) {
+                self::assertStringContainsString(
+                    'newer',
+                    $refusal->getMessage(),
+                    'The refusal must say a newer change exists, or an approver cannot tell'
+                        . ' this apart from a broken link.'
+                );
+            }
+
+            self::assertSame(
+                ActionTokenStatus::VALID,
+                $tokens->inspect($token)->status,
+                'A superseded change must not burn the link: the refusal is about the state'
+                    . ' of the event, not about the link.'
+            );
+            self::assertNull(
+                $database->change(self::CHANGE_ID)['reverted_by'] ?? null,
+                'A refused revert must not mark the change as reverted.'
+            );
+            self::assertSame(
+                [],
+                $database->insertedChanges,
+                'A refused revert must not append a reversal row.'
+            );
+            self::assertSame(
+                'Retreat day (renamed)',
+                $GLOBALS['revert_posts'][self::EVENT_ID]->post_title,
+                'A refused revert must not touch the published event.'
+            );
+            self::assertSame(
+                [],
+                $occurrences->rebuilt,
+                'A refused revert must not rebuild occurrences for a state that was never restored.'
+            );
+            self::assertSame([], $mailer->sent, 'A refused revert must not send mail.');
+        }
+
+        /**
+         * The counterpart, and the reason the guard above is not just "refuse
+         * everything". A change whose after_payload is still the live state is the
+         * current head of the trail and must revert normally.
+         */
+        public function testTheCurrentHeadOfTheTrailStillReverts(): void
+        {
+            $database = $this->database();
+            $tokens = new ActionTokenService(new RevertTokenStore(), new RevertClock());
+            $binding = $this->binding();
+            $token = $tokens->issue($binding)->token();
+
+            $outcome = $this->handler([self::PARISH_ID], $database)->performAtomic($binding, $token, $tokens, '');
+
+            self::assertStringContainsString('reverted', $outcome->message);
+            self::assertSame(
+                'Parish retreat day',
+                $GLOBALS['revert_posts'][self::EVENT_ID]->post_title
+            );
+        }
+
+        /**
+         * A change to a different event cannot say anything about this one, so it
+         * must not be read as superseding it. Without this, the guard above would
+         * also pass on a "refuse whenever any other change exists" implementation.
+         */
+        public function testAChangeToADifferentEventDoesNotBlockThisRevert(): void
+        {
+            $database = $this->database();
+            $database->seedSupersedingChange(9999);
+
+            $tokens = new ActionTokenService(new RevertTokenStore(), new RevertClock());
+            $binding = $this->binding();
+            $token = $tokens->issue($binding)->token();
+
+            $outcome = $this->handler([self::PARISH_ID], $database)->performAtomic($binding, $token, $tokens, '');
+
+            self::assertStringContainsString('reverted', $outcome->message);
+        }
+
         public function testARevertRefreshesOccurrencesAndTheListingCache(): void
         {
             $database = $this->database();
@@ -931,6 +1046,28 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
         }
 
         /**
+         * A change published after the one under revert, so the event's live state
+         * is no longer the state that change left behind.
+         *
+         * It also moves the live event itself, because that is what a later
+         * publication does. The guard has to notice from the trail alone — the
+         * handler locks the change row and the post, and reading the post is the
+         * only way to see that somebody edited it after the fact.
+         */
+        public function seedSupersedingChange(int $eventId = 501): void
+        {
+            $this->seedChange(
+                9002,
+                $eventId,
+                301,
+                'reviewer@example.test',
+                'update',
+                [],
+                []
+            );
+        }
+
+        /**
          * @return array<string, mixed>|null
          */
         public function change(int $id): ?array
@@ -1032,6 +1169,27 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
                 $row['parish_id'] = RevertChangeHandlerFixture::PARISH_ID;
 
                 return $row;
+            }
+
+            if (preg_match(
+                '#WHERE event_id = %d AND id > %d#',
+                $query
+            ) === 1 && str_contains($query, 'adct_pi_event_changes')) {
+                $arguments = self::argumentsOf($query);
+                $eventId = (int) ($arguments[0] ?? 0);
+                $afterId = (int) ($arguments[1] ?? 0);
+
+                $matches = array_filter(
+                    $this->changes,
+                    static fn (array $change): bool => (int) $change['event_id'] === $eventId
+                        && (int) $change['id'] > $afterId
+                );
+                if ($matches === []) {
+                    return null;
+                }
+                ksort($matches);
+
+                return ['id' => (int) array_key_first($matches)];
             }
 
             if (preg_match('#SELECT ID FROM `wp_posts` WHERE ID = %d#', $query) === 1) {
