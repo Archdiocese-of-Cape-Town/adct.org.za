@@ -134,16 +134,17 @@ enum AuditAction: string
     case CANDIDATE_CONFIRMATION_RESENT = 'candidate_confirmation_resent';
 
     /**
-     * A person promoted an inbound attachment into the media library as an
-     * event's source material (issue #172).
+         * An inbound attachment was copied into the media library as an event's
+         * source material (issue #172).
      *
-     * Deliberately its own verb rather than an `event_published` detail: a
-     * parish posting a bulletin by email has not consented to that bulletin
-     * becoming world-readable, so "who made this bulletin public" is a separate
-     * question from "who published this event", and it is exactly the question a
-     * POPIA enquiry asks. The details carry the new attachment id, the role and
-     * the parish's own filename.
-     */
+         * Deliberately its own verb rather than an `event_published` detail: the
+         * file became public at this moment, so "who made this file public" is a
+         * separate question from "who published this event", and it is exactly the
+         * question a POPIA enquiry asks. Since ADR 0026 the copy usually happens
+         * automatically at publication, so the actor is whatever context was active
+         * at that moment; the details carry the new attachment id, the role, the
+         * parish's own filename, and the intake row the file came from.
+         */
     case SOURCE_MATERIAL_PROMOTED = 'source_material_promoted';
 
     /**

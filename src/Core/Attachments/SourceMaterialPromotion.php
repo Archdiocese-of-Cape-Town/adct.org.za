@@ -15,9 +15,11 @@ use RuntimeException;
  * two very different surfaces (the review queue and the event editor) have to
  * obey the same ones:
  *
- * - **Nothing is promoted without a person saying so.** There is no default
- *   list, no "promote the first attachment" behaviour and no configuration
- *   switch that promotes anything. A call with no candidate role is a refusal.
+ * - **Nothing is promoted without a reason.** Since ADR 0026 the reason is the
+  *   publication itself, decided by PublishedSourceMaterialPromoter, so a call
+  *   still carries an explicit role and a call with no candidate role is a
+  *   refusal. What is gone is the second confirmation step; the rule that the
+  *   caller must say which file and in what role is unchanged.
  * - **Promotion is a copy into the media library, at that moment.** There is no
  *   "stored but not yet public" state, so the public renderer cannot show a
  *   file nobody approved.

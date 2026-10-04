@@ -1,8 +1,17 @@
 # ADR 0025: The media-library copy is the promotion, and promotion is always a human act
 
-- Status: Proposed
+- Status: Superseded by [ADR 0026](0026-publishing-an-event-publishes-its-source-material.md)
 - Date: 2026-10-06
 - Issue: [#172](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/172)
+
+> **Partly superseded.** The central claim below — that copying a file into the
+> media library *is* the publication, because a WordPress attachment is
+> world-readable the moment its row exists — **stands and is not revisited**.
+>
+> What is superseded is the second half: the decision that promotion must be an
+> explicit human act, separate from publishing the event. The project owner
+> overruled it. See [ADR 0026](0026-publishing-an-event-publishes-its-source-material.md).
+> This file is kept as-is so the reasoning that lost is not silently deleted.
 
 ## Context
 

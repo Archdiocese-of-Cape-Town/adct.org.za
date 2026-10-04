@@ -266,7 +266,7 @@ The private post meta `_adct_pi_featured_override` records that an editor explic
 
 #### Promoted source material (`source_attachment_ids`)
 
-An event's poster or the bulletin PDF it arrived as becomes public only through **promotion**, a deliberate human action taken either on the review queue or on the event editor ([ADR 0025](decisions/0025-media-library-copy-is-the-promotion.md)). Nothing is ever promoted automatically, at any point, for any MIME type.
+An event's poster or the bulletin PDF it arrived as becomes public when the **event is published**, because a parish that emails an event notice has already decided the material is public ([ADR 0026](decisions/0026-publishing-an-event-publishes-its-source-material.md), which reverses the promotion gate in [ADR 0025](decisions/0025-media-library-copy-is-the-promotion.md)). The copy runs after the publication transaction commits, so a failed copy cannot unpublish a correct event, and only on a fresh publish, never on a re-publish that repairs a listing generation. The role comes from the file's type rather than from anyone's choice, and a type no role accepts is skipped rather than given a default. The manual add controls on the review queue and the event editor remain as a repair hatch.
 
 Promotion is recorded as an ordered list in the `source_attachment_ids` post meta on `adct_event`, one entry per promoted file:
 
@@ -281,7 +281,7 @@ Promotion is recorded as an ordered list in the `source_attachment_ids` post met
 - The front end reads **this meta and nothing else**. It never queries the event's media with `get_children()`, so an attachment that sits in the media library but was never promoted cannot become reachable through any public page, feed or REST response.
 - Promoting an image with role `poster` also calls `set_post_thumbnail()`, which fills the existing `<figure class="adct-event__poster">` and the JSON-LD `image` field. The listing card reads the featured image rather than a role lookup, so clearing the featured-image role empties the card and the single-event figure together.
 - **Removal is a visibility change, not a deletion.** Removing an item drops it from this meta and releases its featured-image role. The stored original stays on disk; retention owns it, and re-promoting restores the item. Because media-library copies are a published site asset rather than inbox ephemera, retention cleanup of the private intake originals does not touch them.
-- Every promotion and every removal writes an `adct_pi_audit_log` row naming the acting user, the event and the affected attachment. The meta records what was promoted and in what role; the audit table records who did it.
+- Every promotion and every removal writes an `adct_pi_audit_log` row naming the acting context, the event and the affected attachment. The meta records what was published and in what role; the audit table records who did it, and for an automatic promotion it also records the intake row the file came from, so an audit reader can see exactly which file became public.
 
 This needs **no table and no migration**: promotion state is post meta, and attribution reuses the existing audit table. The schema version is unchanged at 11.
 

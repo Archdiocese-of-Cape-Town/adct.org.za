@@ -202,6 +202,48 @@ final class SourceMaterialWiringTest extends TestCase
         }
     }
 
+    /**
+     * The publication store is given the promoter, so publishing an event
+     * publishes the source material that arrived with it (ADR 0026).
+     *
+     * This is the one thing that makes the automatic copy reachable at all. The
+     * store accepts the promoter as an optional argument, which means a
+     * correctly-constructed store with the argument left null is silently inert
+     * and every unit test stays green — precisely the fault this file exists to
+     * catch. Mutation probe recorded in the PR body.
+     */
+    public function testThePublicationStoreIsGivenThePromoter(): void
+    {
+        $construction = $this->constructionOf(
+            self::pluginSource(),
+            'new WordPressPublicationStore('
+        );
+
+        self::assertStringContainsString(
+            '$this->publishedSourceMaterialPromoter()',
+            $construction,
+            'The publication store is built without the promoter, so publishing an event would never '
+            . 'publish its source material. See ADR 0026.'
+        );
+    }
+
+    /**
+     * The promoter is built by a method that touches no global, like its two
+     * siblings, because a constructor that calls a WordPress function is a
+     * fatal error at install time.
+     */
+    public function testThePromoterIsBuiltByAMethodThatDoesNotTouchAGlobal(): void
+    {
+        $reflection = new ReflectionClass(\ADCT\ParishIntake\WordPress\Plugin::class);
+
+        self::assertTrue($reflection->hasMethod('publishedSourceMaterialPromoter'));
+
+        $method = $reflection->getMethod('publishedSourceMaterialPromoter');
+
+        self::assertTrue($method->isPrivate());
+        self::assertSame([], $method->getParameters());
+    }
+
     private function constructionOf(string $source, string $opening): string
     {
         $start = strpos($source, $opening);
