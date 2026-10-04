@@ -1,6 +1,8 @@
 <?php
 
+use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
 use ADCT\ParishIntake\Core\Publishing\SourceAttachment;
+use ADCT\ParishIntake\Core\Support\SystemClock;
 use ADCT\ParishIntake\WordPress\Audit\WordPressActorResolver;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
@@ -36,7 +38,7 @@ use ADCT\ParishIntake\WordPress\Publishing\WordPressSourceMaterialStore;
  */
 final class SourceMaterialCheck
 {
-    public static function run(callable $fail, int $parishId, string $occurrenceType, string $occurrenceVenue): void
+    public static function run(callable $fail, int $parishId): void
     {
         global $wpdb;
 
@@ -55,7 +57,7 @@ final class SourceMaterialCheck
         $attachmentIds = [];
 
         try {
-            $eventId = self::createEvent($fail, $parishId, $occurrenceType, $occurrenceVenue);
+            $eventId = self::createEvent($fail, $parishId);
 
             if ($eventId < 1) {
                 return;
@@ -237,8 +239,8 @@ final class SourceMaterialCheck
                 return;
             }
 
-            if ((int) get_post($eventId)->post_parent === 0) {
-                $fail('Retention detached the event whose source material survives.');
+            if ((int) get_post($bulletin->mediaId)->post_parent !== $eventId) {
+                $fail('Retention detached the promoted copy from its event.');
             }
         } finally {
             foreach ($mediaIds as $mediaId) {
@@ -275,7 +277,7 @@ final class SourceMaterialCheck
         }
     }
 
-    private static function createEvent(callable $fail, int $parishId, string $occurrenceType, string $occurrenceVenue): int
+    private static function createEvent(callable $fail, int $parishId): int
     {
         $eventId = wp_insert_post([
             'post_type' => 'adct_event',
@@ -290,9 +292,7 @@ final class SourceMaterialCheck
         }
 
         $eventId = (int) $eventId;
-        update_post_meta($eventId, '_adct_parish_id', (string) $parishId);
-        update_post_meta($eventId, '_adct_occurrence_type', $occurrenceType);
-        update_post_meta($eventId, '_adct_occurrence_venue', $occurrenceVenue);
+        update_post_meta($eventId, 'parish_id', $parishId);
 
         return $eventId;
     }
@@ -378,10 +378,11 @@ final class SourceMaterialCheck
         }
 
         // Only this plugin writes `adct-source-` files, and nothing has been
-        // promoted yet, so a glob is the bluntest possible "no copy exists".
-        $matches = glob(rtrim($uploadsBaseDir, '/\\') . '/adct-source-*') ?: [];
-
-        if ($matches !== []) {
+        // promoted yet, so a search is the bluntest possible "no copy exists".
+        // It has to recurse: WordPress files uploads under a year/month
+        // subdirectory, so a glob of the base directory alone would pass
+        // whether or not a copy had been made.
+        if (self::findStoredCopies($uploadsBaseDir) !== []) {
             $fail('Promoted source material exists on disk before anything was promoted.');
         }
 
@@ -436,6 +437,36 @@ final class SourceMaterialCheck
         if (strpos(str_replace('\\', '/', $file), $expected) !== 0) {
             $fail('The promoted copy was written outside the uploads directory: ' . $file);
         }
+    }
+
+    /**
+     * Every `adct-source-` file under the uploads directory, at any depth.
+     *
+     * @return list<string>
+     */
+    private static function findStoredCopies(string $directory, int $depth = 0): array
+    {
+        if ($depth > 3 || ! is_dir($directory)) {
+            return [];
+        }
+
+        $found = [];
+
+        foreach (scandir($directory) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+
+            $path = $directory . DIRECTORY_SEPARATOR . $entry;
+
+            if (is_dir($path)) {
+                $found = array_merge($found, self::findStoredCopies($path, $depth + 1));
+            } elseif (str_starts_with($entry, 'adct-source-') && is_file($path)) {
+                $found[] = $path;
+            }
+        }
+
+        return $found;
     }
 
     /**
@@ -503,7 +534,7 @@ final class SourceMaterialCheck
         $details = $wpdb->get_var($wpdb->prepare(
             "SELECT details FROM {$table} WHERE action = %s AND subject_type = %s AND subject_id = %d ORDER BY id DESC LIMIT 1",
             $action,
-            'event',
+            AuditSubjectType::EVENT,
             $eventId
         ));
 
