@@ -124,9 +124,9 @@ disjoint priority categories (unknown sender takes precedence). **Failed**
 includes expired items, failed previews, unusual states and approvals still
 awaiting publication; **Awaiting submitter** includes unsent drafts and is
 read-only. **Recently published** and **Recent decisions** show only the past
-30 days. **Recent changes** is a reserved tab with nothing in it yet; the
-change trail lives on each event&rsquo;s own edit screen (see
-[Change history on an event](#change-history-on-an-event)).
+30 days. **Recent changes** is empty for now: the admin tab is a reserved
+placeholder, and the change trail lives on each event&rsquo;s own edit screen
+instead (see [Change history on an event](#change-history-on-an-event)).
 
 Select up to 25 pending items to approve or reject. The first decision wins; subsequent attempts cannot overwrite it, and the row displays the deciding address and UTC time. If publishing fails after an approval is recorded, the item stays in the queue's **Failed** category, and the same approver can select it again to retry publication without another decision or audit record. Dean retries are matched to the active deanery assignment, even when its email differs from the WordPress account email. Fix invalid event details before retrying. Ambiguous matches and pending duplicates cannot be bulk-approved: open the candidate and use the **Resolve this match** panel at the top of its page to set the parish and venue yourself (#177); an undecided item still in awaiting approval can instead be rejected. The candidate link opens a bounded read-only preview, not an editor.
 
