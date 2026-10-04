@@ -129,11 +129,12 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Events {
 
             $this->store = new InMemorySourceMaterialStore();
 
-            $reflection = new ReflectionClass(Plugin::class);
+            // No setAccessible() calls anywhere below: they have been a no-op
+            // since PHP 8.1 and are deprecated in 8.5, which the advisory CI job
+            // fails on. A private static property is already reachable on 8.1+.
             $property = new ReflectionProperty(Plugin::class, 'instance');
-            $property->setAccessible(true);
             $this->savedInstance = $property->getValue();
-            $this->hadInstance = $property->getValue() !== null;
+            $this->hadInstance = $this->savedInstance !== null;
 
             $this->hadQueriedObject = isset($GLOBALS['adct_test_queried_object']);
             $this->savedQueriedObject = $GLOBALS['adct_test_queried_object'] ?? null;
@@ -156,7 +157,6 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Events {
 
             $stub = (new ReflectionClass(Plugin::class))->newInstanceWithoutConstructor();
             $reflectionPage = new ReflectionProperty(Plugin::class, 'publicEventPage');
-            $reflectionPage->setAccessible(true);
             $reflectionPage->setValue($stub, $this->page());
             $property->setValue(null, $stub);
         }
@@ -164,7 +164,6 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Events {
         protected function tearDown(): void
         {
             $property = new ReflectionProperty(Plugin::class, 'instance');
-            $property->setAccessible(true);
             $property->setValue(null, $this->hadInstance ? $this->savedInstance : null);
 
             if ($this->hadQueriedObject) {
