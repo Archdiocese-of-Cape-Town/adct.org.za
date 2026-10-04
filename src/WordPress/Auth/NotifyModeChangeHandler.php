@@ -73,6 +73,24 @@ final class NotifyModeChangeHandler implements ActionTokenActionHandlerInterface
         Approver::NOTIFY_EACH => 'An email each time something needs me',
     ];
 
+    /**
+     * What the confirmation page says once a mode is saved, keyed by the same
+     * values as MODES and deliberately not derived from them.
+     *
+     * It sits beside MODES so that adding a third mode has to add its wording
+     * here as well: a bare `$mode === A ? ... : ...` would compile, pass every
+     * test and then tell somebody who had just chosen the new mode that they
+     * would get an email each time something needs them. The two maps are
+     * checked against each other, so a mode with no wording is a refusal rather
+     * than a wrong sentence about the wrong setting.
+     */
+    private const SAVED_MESSAGES = [
+        Approver::NOTIFY_DIGEST => 'Saved. You will get one email a day listing everything waiting for you. '
+            . 'It applies from the next event that needs you.',
+        Approver::NOTIFY_EACH => 'Saved. You will get an email each time something needs you. '
+            . 'It applies from the next event that needs you.',
+    ];
+
     public function __construct(
         private readonly DatabaseConnectionInterface $database,
         private readonly DeaneryApproverRepository $approvers,
@@ -194,13 +212,14 @@ final class NotifyModeChangeHandler implements ActionTokenActionHandlerInterface
             throw $failure;
         }
 
-        return new ActionTokenOutcome(
-            $mode === Approver::NOTIFY_DIGEST
-                ? __('Saved. You will get one email a day listing everything waiting for you. '
-                    . 'It applies from the next event that needs you.', 'adct-parish-intake')
-                : __('Saved. You will get an email each time something needs you. '
-                    . 'It applies from the next event that needs you.', 'adct-parish-intake')
-        );
+        // A mode that validated against MODES but has no wording here would mean
+        // the two maps had drifted, which is the failure this lookup exists to
+        // make loud instead of quietly reporting the wrong setting back.
+        if (! array_key_exists($mode, self::SAVED_MESSAGES)) {
+            throw new LogicException('A notify mode was saved with no confirmation message.');
+        }
+
+        return new ActionTokenOutcome(__(self::SAVED_MESSAGES[$mode], 'adct-parish-intake'));
     }
 
     /**

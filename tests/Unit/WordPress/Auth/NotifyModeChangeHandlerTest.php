@@ -31,6 +31,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
     use DomainException;
     use LogicException;
     use PHPUnit\Framework\TestCase;
+    use ReflectionClass;
     use WP_User;
 
     /**
@@ -193,6 +194,32 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
             self::assertSame(
                 Approver::NOTIFY_EACH,
                 $database->assignmentRow(self::ASSIGNMENT_ID)['notify_mode']
+            );
+        }
+
+        /**
+         * The confirmation wording lives in its own map keyed by the same
+         * values as MODES, so adding a third mode has to add its sentence too.
+         * Without this, a third mode would be offered, saved, and then confirmed
+         * with whichever of the two sentences happened to be on the other side
+         * of the conditional.
+         */
+        public function testEveryOfferedModeHasItsOwnConfirmationWording(): void
+        {
+            $messages = $this->savedMessages();
+
+            self::assertSame(
+                array_keys(NotifyModeChangeHandler::MODES),
+                array_keys($messages),
+                'A mode offered on the form but missing a confirmation message would be'
+                    . ' confirmed with the wrong wording.'
+            );
+
+            self::assertSame(
+                count(NotifyModeChangeHandler::MODES),
+                count(array_unique($messages)),
+                'Each mode must say something distinct; two modes sharing a sentence means one'
+                    . ' of them is being confirmed in words that describe the other.'
             );
         }
 
@@ -779,7 +806,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
          * The stamp comes from the injected clock, in UTC as every other audit
          * row is, so the row sorts and compares consistently regardless of the
          * server's timezone.
-     */
+         */
         public function testTheAuditStampComesFromTheInjectedClockInUtc(): void
         {
             $database = $this->database();
@@ -802,6 +829,22 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
         private function mint(ActionTokenService $tokens, ActionTokenBinding $binding): string
         {
             return $tokens->issue($binding)->token();
+        }
+
+        /**
+         * The confirmation wording, read the way CandidateEditFormTest reads its
+         * own constants. It is private on purpose -- nothing outside this handler
+         * needs to read a sentence back -- so a test asserting the two maps agree
+         * has to say so.
+         *
+         * @return array<string, string>
+         */
+        private function savedMessages(): array
+        {
+            $value = (new ReflectionClass(NotifyModeChangeHandler::class))->getConstant('SAVED_MESSAGES');
+            self::assertIsArray($value, 'SAVED_MESSAGES must still be a map of mode => sentence.');
+
+            return $value;
         }
 
         private function save(
