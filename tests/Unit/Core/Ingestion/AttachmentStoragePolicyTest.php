@@ -6,13 +6,12 @@ namespace ADCT\ParishIntake\Tests\Unit\Core\Ingestion;
 
 use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
 use ADCT\ParishIntake\Core\Ingestion\RawEmailAttachment;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class AttachmentStoragePolicyTest extends TestCase
 {
-    /**
-     * @dataProvider allowedAttachmentProvider
-     */
+    #[DataProvider('allowedAttachmentProvider')]
     public function testAllowsConfiguredMimeTypesWhenTheirSignaturesMatch(
         string $mimeType,
         string $bytes,

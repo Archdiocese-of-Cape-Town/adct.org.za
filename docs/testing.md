@@ -382,6 +382,18 @@ The GreenMail group uses plain IMAP only in its explicit test configuration and 
 
 Without a local PHP, use the Docker commands in the [development guide](development.md#local-setup-windows-no-php-install-needed). CI (`.github/workflows/ci.yml`) runs `composer validate`, a `php -l` lint and `composer test` on PHP 8.2, 8.3 and 8.4 for every PR and push to `main`, plus the same steps on PHP 8.5 as an advisory `continue-on-error` job. Because `phpunit.xml.dist` sets `failOnDeprecation`, `failOnWarning` and `failOnNotice` to `true`, the 8.2–8.4 jobs are what enforce the rule that nothing deprecated in PHP 8.3 or later is used.
 
+### Reading the summary line
+
+The suite prints `OK, but there were issues!` and exits **0** when the only issue is the three tracked `markTestIncomplete()` markers (#98 twice, #63). `failOnIncomplete` is deliberately not set, so incompletes are reported without failing the run; the alternative would make the suite permanently red until #98 and #63 are closed. Deprecations, warnings and notices *do* fail the run.
+
+`OK, but there were issues!` is therefore ambiguous on its own — check the counts. `PHPUnit Deprecations: N` in that line counts runner-level diagnostics (deprecated test metadata, such as `@dataProvider` doc-comment annotations, which PHPUnit 12 removes), which are **not** covered by `failOnDeprecation`. That is why `--display-deprecations` does not show them: it displays test-triggered PHP/user deprecations, not the runner's own. To see them:
+
+```powershell
+docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli vendor/bin/phpunit --display-phpunit-deprecations
+```
+
+Write test metadata as attributes (`#[DataProvider('name')]`), which is what every test in this suite now does, and both counts stay at zero. If you want the runner-level deprecations to fail the build too, add `failOnPhpunitDeprecation="true"` to `phpunit.xml.dist`; it is not set today because PHPUnit 12 will remove the only two ways of expressing this metadata that the suite could otherwise trip over.
+
 The integration suite runs against a disposable `wp-env` Docker environment and installs `dist/adct-parish-intake.zip` with WP-CLI. The raw repository checkout is not activated or used as the plugin. With Node.js/npm and Docker Desktop installed, run:
 
 ```powershell
