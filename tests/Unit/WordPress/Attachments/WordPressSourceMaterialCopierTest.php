@@ -641,12 +641,34 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Attachments {
         public function testDetachingReleasesTheFeaturedImageOnlyWhenItIsThisAttachment(): void
         {
             // Removing an unrelated bulletin must not strip the poster.
-            $copier = $this->copier();
+                        //
+                        // Two distinct attachments, both parented to the event: 77 is the
+                        // bulletin being removed, 88 is the poster that is the featured
+                        // image and must survive. Both used to be 77, which made the
+                        // assertion pass for the wrong reason - releasing the thumbnail
+                        // would then have been correct, not a bug.
+                        //
+                        // The ownership check matters too. At first attachment 77 had no
+                        // parent, so `detachFromEvent()` returned false at the guard and the
+                        // conditional on the release was never reached; the mutation probe
+                        // showed it by replacing the equality check with `if (true)` and
+                        // watching every test stay green.
+                        $copier = $this->copier();
 
-            $GLOBALS['adct_test_media_thumbnails'][self::EVENT_ID] = 77;
-            self::assertFalse($copier->detachFromEvent(self::EVENT_ID, 77));
-            self::assertSame(77, $GLOBALS['adct_test_media_thumbnails'][self::EVENT_ID]);
-        }
+                        $GLOBALS['adct_test_media_posts'][77] = (object) [
+                            'ID' => 77,
+                            'post_parent' => self::EVENT_ID,
+                        ];
+                        $GLOBALS['adct_test_media_posts'][88] = (object) [
+                            'ID' => 88,
+                            'post_parent' => self::EVENT_ID,
+                        ];
+                        $GLOBALS['adct_test_media_thumbnails'][self::EVENT_ID] = 88;
+
+                        self::assertTrue($copier->detachFromEvent(self::EVENT_ID, 77));
+                        self::assertSame(0, $GLOBALS['adct_test_media_posts'][77]->post_parent);
+                        self::assertSame(88, $GLOBALS['adct_test_media_thumbnails'][self::EVENT_ID]);
+                    }
 
         public function testDetachingAnAttachmentThatIsTheFeaturedImageReleasesIt(): void
         {

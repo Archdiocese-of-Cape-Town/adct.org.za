@@ -356,7 +356,7 @@ final class Plugin
         private ?MailQueueRepositoryInterface $mailQueueRepository = null;
         private ?ConfirmationEmailResendService $confirmationResendService = null;
     private ?ReviewQueuePage $reviewQueuePage = null;
-private ?ReviewQueueRepository $reviewQueue = null;
+    private ?ReviewQueueRepository $reviewQueue = null;
     private ?FrontEndApprovalQueue $frontEndApprovalQueue = null;
     private ?MagicLinkLoginRequestPage $magicLinkLoginRequestPage = null;
     private ReviewerNotificationPreference $reviewerNotificationPreference;
@@ -367,7 +367,7 @@ private ?ReviewQueueRepository $reviewQueue = null;
      *
      * Lazy for the same reason {@see ocrControl()} is: `Plugin` is constructed
      * by the release bootstrap check with no WordPress loaded, so nothing here
-     * may touch a global. The box is optional ? when its collaborators cannot be
+     * may touch a global. The box is optional - when its collaborators cannot be
      * built the property stays null and the meta box is simply not registered.
      */
     private ?EventSourceMaterialEditor $eventSourceMaterial = null;
@@ -397,8 +397,8 @@ private ?ReviewQueueRepository $reviewQueue = null;
      * The promotion rules shared by the review queue's promote control and the
      * event editor's box (issue #172).
      *
-     * Both surfaces get the *same* instance so the rules ? at most one poster,
-     * a copy taken at the moment of the decision, removal never deletes ? cannot
+     * Both surfaces get the *same* instance so the rules - at most one poster,
+          * a copy taken at the moment of the decision, removal never deletes - cannot
      * drift apart between them.
      */
     private function sourceMaterialPromotion(): SourceMaterialPromotion
@@ -553,8 +553,13 @@ private ?ReviewQueueRepository $reviewQueue = null;
             $parishes,
             $venues,
             $occurrences,
-            $pluginFile
-        );
+                        $pluginFile,
+                        // Stateless, so the renderers and the promotion service share one
+                        // instance. Constructed here rather than inside
+                        // sourceMaterialPromotion() so the three readers of the promoted
+                        // list cannot disagree about what has been promoted.
+                        new WordPressSourceMaterialStore()
+                    );
         $this->eventEditor = new EventEditor(
             $parishes,
             $venues,

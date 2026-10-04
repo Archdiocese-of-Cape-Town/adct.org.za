@@ -904,7 +904,7 @@ use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
                      *
                      * A value that is not an id at all (`absint()` makes it 0) is a
                      * malformed request and gets 400. A negative number is a perfectly
-                     * well-formed id ? `absint('-3')` is 3 ? so it fails the "is this
+                     * well-formed id - `absint('-3')` is 3 - so it fails the "is this
                      * published beside the event" check instead and gets 404. Asserting
                      * one status for both would hide whichever guard was dropped.
                      *
