@@ -66,7 +66,7 @@ final class SourceMaterialRole
         };
     }
 
-/**
+    /**
      * The roles this MIME type could actually be given, in the order a form
      * should offer them.
      *
@@ -90,7 +90,7 @@ final class SourceMaterialRole
      * The word a reviewer and a visitor see for this role.
      */
     public static function label(string $role): string
-{
+    {
     return match ($role) {
         self::POSTER => 'Poster',
         self::BULLETIN => 'Parish bulletin',
