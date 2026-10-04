@@ -6,6 +6,8 @@ namespace ADCT\ParishIntake\WordPress\Events;
 
 use ADCT\ParishIntake\Core\Events\EventPresentation;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
+use ADCT\ParishIntake\Core\Ports\SourceMaterialStoreInterface;
+use ADCT\ParishIntake\Core\Publishing\SourceAttachment;
 use ADCT\ParishIntake\WordPress\Database\Repository\OccurrenceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
@@ -18,13 +20,28 @@ final class PublicEventPage
 {
     private const MAX_NEXT_DATES = 5;
 
+    /**
+     * How each promotion role reads on the public page (issue #172).
+     *
+     * A publisher chose these words when they promoted the file, so the public
+     * page reuses them rather than inventing its own wording for the same state.
+     *
+     * @var array<string, string>
+     */
+    private const ROLE_LABELS = [
+        SourceAttachment::ROLE_POSTER => 'Poster',
+        SourceAttachment::ROLE_BULLETIN => 'Bulletin',
+        SourceAttachment::ROLE_DOCUMENT => 'Document',
+    ];
+
     public function __construct(
         private ClockInterface $clock,
         private DateTimeZone $timezone,
         private ParishRepository $parishes,
         private VenueRepository $venues,
         private OccurrenceRepository $occurrences,
-        private string $pluginFile
+                private string $pluginFile,
+        private ?SourceMaterialStoreInterface $sourceMaterial = null
     ) {
     }
 
@@ -97,6 +114,8 @@ final class PublicEventPage
      *     map_url: string|null,
      *     contact: array{name: string, email: string, phone: string},
      *     poster: array{url: string, width: int, height: int, alt: string}|null,
+     *     source_material: list<array{role: string, role_label: string, filename: string, url: string, media_id: int}>,
+     *     source_material_has_poster: bool,
      *     calendar_url: string,
      *     google_calendar_url: string|null,
      *     json_ld: array<string, mixed>,
@@ -145,6 +164,7 @@ final class PublicEventPage
             $rdates
         );
         $poster = $this->poster($post);
+        $sourceMaterial = $this->sourceMaterial($post, $poster);
 
         return [
             'title' => wp_strip_all_tags((string) $post->post_title),
@@ -160,6 +180,8 @@ final class PublicEventPage
             'map_url' => $mapUrl,
             'contact' => $contact,
             'poster' => $poster,
+            'source_material' => $sourceMaterial['items'],
+            'source_material_has_poster' => $sourceMaterial['has_poster'],
             'calendar_url' => $calendarUrl,
             'google_calendar_url' => $googleCalendarUrl,
             'json_ld' => $this->jsonLd(
@@ -475,6 +497,63 @@ final class PublicEventPage
             'height' => (int) $image[2],
             'alt' => trim((string) get_post_meta($thumbnailId, '_wp_attachment_image_alt', true)),
         ];
+    }
+
+    /**
+     * The source material a publisher promoted onto this event.
+     *
+     * Read through `SourceMaterialStoreInterface::forEvent()` and nothing else,
+     * because that method answers from the ordered post meta. A promoted file is
+     * a child of the event in WordPress (that is how `post_parent` records the
+     * association), so a broad `get_children()` over the event would also return
+     * anything that ended up parented to it for any other reason and publish it
+     * without a person having chosen to. There is no "copied but not yet public"
+     * state to get wrong: the copy is created by the promotion, so what is not
+     * in the meta has no file and no URL.
+     *
+     * @param array{url: string, width: int, height: int, alt: string}|null $poster
+     * @return array{items: list<array{role: string, role_label: string, filename: string, url: string, media_id: int}>, has_poster: bool}
+     */
+    private function sourceMaterial(WP_Post $post, ?array $poster): array
+    {
+        if ($this->sourceMaterial === null) {
+            return ['items' => [], 'has_poster' => false];
+        }
+
+        $items = [];
+        $hasPoster = false;
+
+        foreach ($this->sourceMaterial->forEvent((int) $post->ID) as $source) {
+            if ($source->role === SourceAttachment::ROLE_POSTER) {
+                $hasPoster = true;
+            }
+
+            // The poster already has its own figure above the description, driven
+            // by has_post_thumbnail(). Listing it a second time under "source
+            // material" would show the same image twice on one page.
+            $thumbnailId = (int) get_post_thumbnail_id($post);
+            if ($source->role === SourceAttachment::ROLE_POSTER && $poster !== null && $thumbnailId === $source->mediaId) {
+                continue;
+            }
+
+            $url = wp_get_attachment_url($source->mediaId);
+            if (! is_string($url) || $url === '') {
+                continue;
+            }
+
+            $items[] = [
+                'role' => $source->role,
+                'role_label' => self::ROLE_LABELS[$source->role] ?? 'File',
+                // The parish's own filename, carried as text. It is attacker
+                // controlled and is escaped on render; the URL above is built
+                // from the stored name and cannot contain it.
+                'filename' => $source->originalFilename,
+                'url' => $url,
+                'media_id' => $source->mediaId,
+            ];
+        }
+
+        return ['items' => $items, 'has_poster' => $hasPoster];
     }
 
     private function statusBanner(string $statusFlag): string

@@ -57,10 +57,12 @@ final class WordPressStubSurfaceTest extends TestCase
         'StubSurface.php',
         'WordPressAuthDoubles.php',
                 'WordPressCapabilityStubs.php',
-                                'WordPressEventEditorStubs.php',
-                                'WordPressOptionsStubs.php',
-        'WordPressStubs.php',
-    ];
+                'WordPressEventEditorStubs.php',
+                'WordPressMediaStubs.php',
+                'WordPressOptionsStubs.php',
+                'WordPressPublicEventStubs.php',
+                'WordPressStubs.php',
+            ];
 
     /**
      * The free-function WordPress surface each file declares.
@@ -126,18 +128,67 @@ final class WordPressStubSurfaceTest extends TestCase
                     'wp_get_current_user',
                 ],
                                     'WordPressEventEditorStubs.php' => [
-                                        'ADCT\ParishIntake\WordPress\Events\add_meta_box',
-                                        'ADCT\ParishIntake\WordPress\Events\current_user_can',
-                                        'ADCT\ParishIntake\WordPress\Events\remove_meta_box',
-                                    ],
-                                    'WordPressOptionsStubs.php' => [
+                                                                            'ADCT\ParishIntake\WordPress\Events\__',
+                                                                            'ADCT\ParishIntake\WordPress\Events\absint',
+                                                                            'ADCT\ParishIntake\WordPress\Events\add_meta_box',
+                                                                            'ADCT\ParishIntake\WordPress\Events\admin_url',
+                                                                            'ADCT\ParishIntake\WordPress\Events\check_admin_referer',
+                                                                            'ADCT\ParishIntake\WordPress\Events\current_user_can',
+                                                                            'ADCT\ParishIntake\WordPress\Events\error_log',
+                                                                            'ADCT\ParishIntake\WordPress\Events\esc_attr',
+                                                                            'ADCT\ParishIntake\WordPress\Events\esc_html',
+                                                                            'ADCT\ParishIntake\WordPress\Events\esc_html__',
+                                                                            'ADCT\ParishIntake\WordPress\Events\esc_html_e',
+                                                                            'ADCT\ParishIntake\WordPress\Events\esc_url',
+                                                                            'ADCT\ParishIntake\WordPress\Events\get_post_meta',
+                                                                            'ADCT\ParishIntake\WordPress\Events\get_post_type',
+                                                                            'ADCT\ParishIntake\WordPress\Events\remove_meta_box',
+                                                                            'ADCT\ParishIntake\WordPress\Events\selected',
+                                                                            'ADCT\ParishIntake\WordPress\Events\wp_die',
+                                                                            'ADCT\ParishIntake\WordPress\Events\wp_nonce_field',
+                                                                            'ADCT\ParishIntake\WordPress\Events\wp_safe_redirect',
+                                                                        ],
+                                                                        'WordPressMediaStubs.php' => [
+                                                                            'delete_post_meta',
+                                                                            'delete_post_thumbnail',
+                                                                            'get_attached_file',
+                                                                            'get_post_meta',
+                                                                            'get_post_thumbnail_id',
+                                                                            'set_post_thumbnail',
+                                                                            'update_post_meta',
+                                                                            'wp_check_filetype_and_ext',
+                                                                            'wp_delete_attachment',
+                                                                            'wp_delete_file',
+                                                                            'wp_generate_attachment_metadata',
+                                                                            'wp_get_attachment_url',
+                                                                            'wp_handle_sideload',
+                                                                            'wp_insert_attachment',
+                                                                            'wp_update_attachment_metadata',
+                                                                            'wp_update_post',
+                                                                        ],
+                                                                        'WordPressOptionsStubs.php' => [
                     'ADCT\ParishIntake\WordPress\Jobs\add_option',
             'ADCT\ParishIntake\WordPress\Jobs\delete_option',
             'ADCT\ParishIntake\WordPress\Jobs\get_option',
             'ADCT\ParishIntake\WordPress\Jobs\update_option',
             'new_options_database',
         ],
-        'WordPressStubs.php' => [
+                                                                                'WordPressPublicEventStubs.php' => [
+                                                                                    // `get_children` is stubbed, and deliberately so: the stub records every
+                                                                                    // call so a test can prove the public page never asks WordPress for the
+                                                                                    // event's attachments and reads only the ordered post meta instead.
+                                                                                    'ADCT\ParishIntake\WordPress\Events\add_query_arg',
+                                                                                    'ADCT\ParishIntake\WordPress\Events\home_url',
+                                                                                    'ADCT\ParishIntake\WordPress\Events\sanitize_text_field',
+                                                                                    'get_children',
+                                                                                    'get_permalink',
+                                                                                    'has_post_thumbnail',
+                                                                                    'sanitize_email',
+                                                                                    'wp_get_attachment_image_src',
+                                                                                    'wp_kses_post',
+                                                                                    'wp_strip_all_tags',
+                                                                                ],
+                                                                                'WordPressStubs.php' => [
             'ADCT\ParishIntake\WordPress\Admin\__',
             'ADCT\ParishIntake\WordPress\Admin\add_action',
             'ADCT\ParishIntake\WordPress\Admin\add_query_arg',
@@ -200,9 +251,17 @@ final class WordPressStubSurfaceTest extends TestCase
         'StubSurface.php' => ['ADCT\ParishIntake\Tests\Support\StubSurface'],
         'WordPressAuthDoubles.php' => ['WP_User'],
                 'WordPressCapabilityStubs.php' => ['WP_User'],
-                                'WordPressEventEditorStubs.php' => ['WP_Post'],
-                                'WordPressOptionsStubs.php' => ['FakeWordPressOptionsDatabase'],
-                'WordPressStubs.php' => [
+                        // The editor gateway's source-material controls reject uploads that arrive
+                        // as WP_Error, and render a REST request body, so those two fakes are
+                        // declared here rather than by whichever suite reaches for them first.
+                        'WordPressEventEditorStubs.php' => ['WP_Error', 'WP_Post', 'WP_REST_Request'],
+                        'WordPressOptionsStubs.php' => ['FakeWordPressOptionsDatabase'],
+                        // The promotion gateway declares no fake classes of its own: the
+                        // `WP_Post` and `WP_Error` it reads come from the editor stubs above.
+                        'WordPressMediaStubs.php' => [],
+                        // The public event page adds nothing; it reuses the WP_Post from above.
+                        'WordPressPublicEventStubs.php' => [],
+                        'WordPressStubs.php' => [
                     'AdctTestNonceRefused',
                     'AdctTestRedirect',
                     'AdctTestWpDie',

@@ -6,9 +6,13 @@ namespace ADCT\ParishIntake\WordPress\Database\Repository;
 
 use ADCT\ParishIntake\Core\Ocr\OcrExtractionResult;
 use ADCT\ParishIntake\Core\Pdf\PdfExtractionResult;
+use ADCT\ParishIntake\Core\Ports\IntakeAttachmentReaderInterface;
 use InvalidArgumentException;
 
-final class AttachmentRepository extends AbstractRepository
+// #172: a promotion reads one attachment row by id, and that is the whole of
+// what it needs. Saying so in a port keeps the filesystem adapter honest about
+// the fields it is allowed to see, and keeps it testable without a database.
+final class AttachmentRepository extends AbstractRepository implements IntakeAttachmentReaderInterface
 {
     protected const TABLE_SUFFIX = 'adct_pi_attachments';
 
@@ -262,6 +266,43 @@ final class AttachmentRepository extends AbstractRepository
             'image/jpeg',
             'image/png',
             'image/webp',
+            ''
+        ));
+    }
+
+    /**
+     * The stored attachments of one message that a person may promote as an
+     * event's source material (issue #172), oldest first.
+     *
+     * Wider than `findStoredImagesForMessage()` by exactly one type -- the
+     * bulletin PDF -- and narrower than `AttachmentStoragePolicy` by exactly two.
+     * HEIC and HEIF are stored so an operator can open the file, but no browser
+     * renders them, so offering them as a promote target would publish a link
+     * that is broken for every visitor who clicks it.
+     *
+     * The four types are named literally rather than matched with a LIKE on
+     * `image/%` on purpose: a future addition to the storage allowlist must not
+     * be able to widen what can be published without someone editing this.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function findPromotableForMessage(int $messageId): array
+    {
+        if ($messageId < 1) {
+            throw new InvalidArgumentException('A message ID must be positive.');
+        }
+
+        return $this->fetchRows($this->database->prepare(
+            'SELECT id, message_id, filename, mime_type, size_bytes, storage_path, status'
+            . ' FROM ' . $this->tableName()
+            . ' WHERE message_id = %d AND mime_type IN (%s, %s, %s, %s)'
+            . ' AND storage_path IS NOT NULL AND storage_path <> %s'
+            . ' ORDER BY id ASC',
+            $messageId,
+            'image/jpeg',
+            'image/png',
+            'image/webp',
+            PdfExtractionResult::MIME_TYPE,
             ''
         ));
     }

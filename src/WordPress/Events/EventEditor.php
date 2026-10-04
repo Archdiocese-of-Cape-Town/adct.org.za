@@ -9,14 +9,20 @@ use ADCT\ParishIntake\Core\Events\EventDetails;
 use ADCT\ParishIntake\Core\Events\EventValidationResult;
 use ADCT\ParishIntake\Core\Events\EventValidator;
 use ADCT\ParishIntake\Core\Events\RRulePresetMapper;
+use ADCT\ParishIntake\Core\Ports\CandidateSourceMessageInterface;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
+use ADCT\ParishIntake\Core\Ports\IntakeAttachmentReaderInterface;
+use ADCT\ParishIntake\Core\Ports\SourceMaterialStoreInterface;
 use ADCT\ParishIntake\Core\Directory\Venue;
+use ADCT\ParishIntake\Core\Publishing\SourceAttachment;
 use ADCT\ParishIntake\WordPress\Admin\SubjectAuditPanel;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use DateTimeImmutable;
 use DateTimeZone;
+use DomainException;
 use InvalidArgumentException;
+use Throwable;
 
 final class EventEditor
 {
@@ -24,6 +30,35 @@ final class EventEditor
     public const NONCE_FIELD = 'adct_event_meta_nonce';
     public const NONCE_ACTION_PREFIX = 'adct_pi_save_event_meta_';
     public const FEATURED_OVERRIDE_META = '_adct_pi_featured_override';
+
+    /**
+     * The event editor's half of #172's promotion.
+     *
+     * Four names, not two, and that is the point of the design rather than
+     * redundancy. Add and remove are separate `admin-post.php` actions with
+     * separate nonce fields, so a nonce harvested from one control cannot authorise
+     * the other -- and the remove button is the one a stranger would want to forge.
+     * Neither action shares a name, a nonce or a handler with the review queue's
+     * equivalent: the two screens are genuinely independent decisions, and one
+     * compromised screen should not open the other.
+     */
+    public const PROMOTE_SOURCE_MATERIAL_ACTION = 'adct_pi_promote_event_source_material';
+
+    public const PROMOTE_SOURCE_MATERIAL_NONCE = 'adct_pi_promote_event_source_material_nonce';
+
+    public const REMOVE_SOURCE_MATERIAL_ACTION = 'adct_pi_remove_event_source_material';
+
+    public const REMOVE_SOURCE_MATERIAL_NONCE = 'adct_pi_remove_event_source_material_nonce';
+
+    /**
+     * The ordered post meta holding an event's promoted source material.
+     *
+     * Declared here as well as in the store so the screen that *writes* it and the
+     * screen that *offers* it cannot disagree about the key. There is one key and it
+     * is this one.
+     */
+    public const SOURCE_MATERIAL_META = 'source_attachment_ids';
+
     private const VALIDATION_TRANSIENT_PREFIX = 'adct_pi_event_validation_';
     private const VALIDATION_TTL_SECONDS = 900;
     private const MAX_INPUT_LENGTH = 32768;
@@ -52,7 +87,10 @@ final class EventEditor
         private RRulePresetMapper $presetMapper,
         private DateTimeZone $timezone,
         private ClockInterface $clock,
-        private ?SubjectAuditPanel $auditPanel = null
+        private ?SubjectAuditPanel $auditPanel = null,
+        private ?SourceMaterialStoreInterface $sourceMaterial = null,
+        private ?IntakeAttachmentReaderInterface $attachments = null,
+        private ?CandidateSourceMessageInterface $candidates = null
     ) {
     }
 
@@ -66,6 +104,20 @@ final class EventEditor
             'normal',
             'high'
         );
+
+        // Registered only when a store was wired in. A box whose buttons would be
+        // refused is a control that looks like it works and does not, which is worse
+        // than no box: the same treatment the audit box gets below.
+        if ($this->sourceMaterial !== null) {
+            add_meta_box(
+                'adct_event_source_material',
+                'Source material',
+                [$this, 'renderSourceMaterialMetaBox'],
+                EventPostType::POST_TYPE,
+                'normal',
+                'low'
+            );
+        }
 
         if ($this->auditPanel !== null) {
             add_meta_box(
@@ -168,7 +220,7 @@ final class EventEditor
                                 </option>
                                 <?php foreach ($venues as $venue) : ?>
                                     <?php
-                                    $venueLabel = $venue->name . ' — ' . ($this->parishLabel($venue->parishId) ?? 'Unknown parish');
+                                    $venueLabel = $venue->name . ' Ã¢â‚¬â€ ' . ($this->parishLabel($venue->parishId) ?? 'Unknown parish');
 
                                     if ($venue->status !== Venue::ACTIVE) {
                                         $venueLabel .= ' (inactive)';
@@ -414,8 +466,412 @@ final class EventEditor
         <?php
     }
 
-    public function handleSavePost(int $postId, \WP_Post $post, bool $update): void
+    /**
+     * Add or remove this event's promoted source material, after the fact.
+     *
+     * The second of the two places #172 offers a promotion, and the one that
+     * works on an event that is already published. A publisher who promoted the
+     * wrong poster at review time, or who is asked to add a bulletin afterwards,
+     * comes here.
+     *
+     * The list is rendered from `forEvent()` -- the ordered post meta, the same
+     * read the public page makes.
+     *
+     * What can be added is derived from the event's own provenance, not from a
+     * search of the intake directory. The walk is: the `source_candidate_id` the
+     * publication store wrote on this event, then the message that candidate was
+     * extracted from, then that one message's attachments. So this screen can
+     * only ever offer files that arrived in the email this event was published
+     * from -- one parish's files cannot appear on another parish's event, because
+     * the other parish's files were never asked for. An event with no
+     * `source_candidate_id` has no email behind it and is offered nothing, which
+     * is the honest answer for a manually entered event (issue #63).
+     *
+     * Both forms post to `admin-post.php` rather than to this screen, each with
+     * its own action and its own nonce, because they are not an edit of the
+     * event. Promotion is a decision about which of a parish's files becomes
+     * world-readable, and it must not ride along on the save-post nonce that a
+     * dozen other controls share.
+     */
+    public function renderSourceMaterialMetaBox(\WP_Post $post): void
     {
+        if ($this->sourceMaterial === null || ! current_user_can('edit_post', $post->ID)) {
+            return;
+        }
+
+        $eventId = (int) $post->ID;
+        $promoted = $this->sourceMaterial->forEvent($eventId);
+        $alreadyPublished = array_map(
+            static fn (SourceAttachment $item): int => $item->attachmentId,
+            $promoted
+        );
+        [$offer, $unavailable] = $this->partitionOffer($eventId, $alreadyPublished);
+        ?>
+        <div id="adct-event-source-material-box">
+            <?php if ($promoted === []) : ?>
+                <p class="adct-event-source-material__empty">
+                    Nothing has been published with this event yet.
+                </p>
+            <?php else : ?>
+           <p class="adct-event-source-material__intro">
+               Published with this event. Removing one only hides it &mdash; the
+               stored original is kept, and it can be published again.
+           </p>
+           <table class="widefat striped adct-event-source-material__table">
+               <thead>
+                   <tr>
+                       <th scope="col">File</th>
+                       <th scope="col">Role</th>
+                       <th scope="col"><span class="screen-reader-text">Remove</span></th>
+                   </tr>
+               </thead>
+               <tbody>
+               <?php foreach ($promoted as $item) : ?>
+                   <tr>
+                       <td><?php echo esc_html($item->originalFilename); ?></td>
+                       <td><?php echo esc_html($this->roleLabel($item->role)); ?></td>
+                       <td>
+                           <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                               <input type="hidden" name="action" value="<?php echo esc_attr(self::REMOVE_SOURCE_MATERIAL_ACTION); ?>" />
+                               <input type="hidden" name="event_id" value="<?php echo esc_attr((string) $eventId); ?>" />
+                               <input type="hidden" name="media_id" value="<?php echo esc_attr((string) $item->mediaId); ?>" />
+                               <?php wp_nonce_field(self::REMOVE_SOURCE_MATERIAL_ACTION, self::REMOVE_SOURCE_MATERIAL_NONCE); ?>
+                               <button type="submit" class="button-link-delete">
+                                   <?php esc_html_e('Remove', 'adct-parish-intake'); ?>
+                               </button>
+                           </form>
+                       </td>
+                   </tr>
+               <?php endforeach; ?>
+               </tbody>
+           </table>
+       <?php endif; ?>
+
+        <?php if ($offer === [] && $unavailable === []) : ?>
+            <p class="adct-event-source-material__none-to-add">
+                <?php
+                esc_html_e(
+                    'This event was not published from an intake email, so it has no source material to publish.',
+                    'adct-parish-intake'
+                );
+                ?>
+            </p>
+        <?php elseif ($unavailable !== []) : ?>
+            <p class="adct-event-source-material__unavailable">
+                <?php
+                esc_html_e(
+                    'Some files arrived with this notice but cannot be published:',
+                    'adct-parish-intake'
+                );
+                ?>
+                <span class="adct-event-source-material__unavailable-list">
+                    <?php echo esc_html(implode(', ', $unavailable)); ?>
+                </span>
+            </p>
+        <?php endif; ?>
+
+        <?php if ($offer !== []) : ?>
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="adct-event-source-material__add">
+                <input type="hidden" name="action" value="<?php echo esc_attr(self::PROMOTE_SOURCE_MATERIAL_ACTION); ?>" />
+                <input type="hidden" name="event_id" value="<?php echo esc_attr((string) $eventId); ?>" />
+                <?php wp_nonce_field(self::PROMOTE_SOURCE_MATERIAL_ACTION, self::PROMOTE_SOURCE_MATERIAL_NONCE); ?>
+                <label class="screen-reader-text" for="adct-event-source-material-file">
+                    <?php esc_html_e('File from this event\'s notice', 'adct-parish-intake'); ?>
+                </label>
+                <select id="adct-event-source-material-file" name="attachment_id">
+                    <?php foreach ($offer as $file) : ?>
+                        <option value="<?php echo esc_attr((string) $file['id']); ?>">
+                            <?php echo esc_html($file['filename']); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+                <label class="screen-reader-text" for="adct-event-source-material-role">
+                    <?php esc_html_e('Role', 'adct-parish-intake'); ?>
+                </label>
+                <select id="adct-event-source-material-role" name="role">
+                    <option value="<?php echo esc_attr(SourceAttachment::ROLE_POSTER); ?>">
+                        <?php echo esc_html($this->roleLabel(SourceAttachment::ROLE_POSTER)); ?>
+                    </option>
+                    <option value="<?php echo esc_attr(SourceAttachment::ROLE_BULLETIN); ?>">
+                        <?php echo esc_html($this->roleLabel(SourceAttachment::ROLE_BULLETIN)); ?>
+                    </option>
+                    <option value="<?php echo esc_attr(SourceAttachment::ROLE_DOCUMENT); ?>">
+                        <?php echo esc_html($this->roleLabel(SourceAttachment::ROLE_DOCUMENT)); ?>
+                    </option>
+                </select>
+                <button type="submit" class="button">
+                    <?php esc_html_e('Publish with this event', 'adct-parish-intake'); ?>
+                </button>
+            </form>
+        <?php endif; ?>
+        </div>
+        <?php
+    }
+
+    /**
+     * The intake files this event's own notice supplied, split into those a
+     * publisher may offer and those that are accounted for but unpublishable.
+     *
+     * A file the parish sent is never silently dropped from the screen: HEIC and
+     * HEIF clear the storage allowlist so an operator can open them, but no
+     * browser renders them, so promoting one would publish a link broken for
+     * every visitor. They are listed as unavailable instead of hidden, which
+     * tells the publisher the file arrived rather than leaving them to wonder
+     * whether the parish's poster was missed.
+     *
+     * @param list<int> $alreadyPublished
+     * @return array{0: list<array{id: int, filename: string}>, 1: list<string>}
+     */
+    private function partitionOffer(int $eventId, array $alreadyPublished): array
+    {
+        if ($this->attachments === null || $this->candidates === null) {
+            return [[], []];
+        }
+
+        $candidateId = absint((string) get_post_meta($eventId, 'source_candidate_id', true));
+        $messageId = $candidateId > 0 ? $this->candidates->sourceMessageIdForCandidate($candidateId) : null;
+
+        if ($messageId === null) {
+            return [[], []];
+        }
+
+        $offer = [];
+        $unavailable = [];
+
+        foreach ($this->attachments->findPromotableForMessage($messageId) as $attachment) {
+            $id = (int) ($attachment['id'] ?? 0);
+            $filename = (string) ($attachment['filename'] ?? '');
+
+            if ($id < 1 || $filename === '' || in_array($id, $alreadyPublished, true)) {
+                continue;
+            }
+
+            if (SourceAttachment::isPromotableMimeType((string) ($attachment['mime_type'] ?? ''))) {
+                $offer[] = ['id' => $id, 'filename' => $filename];
+
+                continue;
+            }
+
+            $unavailable[] = $filename;
+        }
+
+        return [$offer, $unavailable];
+    }
+
+    /**
+      * Attach one of this event's own intake files to the event.
+      *
+      * Guard order is the security order: nonce, then the id checks, then the
+   * post type, then the capability, then the provenance check, then the role
+   * -- before the store. Nothing from the request is read until its nonce has
+   * been verified, so a replayed request cannot reach a capability check at
+   * all, and the store is never reached by a request that was not going to be
+   * refused anyway.
+   *
+   * The provenance check is the one that matters here. Rendering the offer is
+   * not authorisation: a crafted POST can name any attachment id in the
+   * installation. So the handler re-derives the event's own offer and refuses
+   * an id outside it, exactly as the remove handler re-derives the promoted
+   * list. Without that, another parish's bulletin could be published on this
+   * event and an audit row would name the publisher who was tricked into
+   * clicking the button.
+   *
+   * A failure is reported and nothing else changes. The copy runs outside any
+   * transaction precisely so a broken filesystem cannot unpublish the event
+   * (ADR 0024).
+   */
+    public function handlePromoteSourceMaterial(): void
+    {
+        check_admin_referer(self::PROMOTE_SOURCE_MATERIAL_ACTION, self::PROMOTE_SOURCE_MATERIAL_NONCE);
+
+        $eventId = $this->guardedEventId('event_id');
+        $attachmentId = $this->guardedAttachmentId();
+        $role = trim($this->posted('role'));
+
+        // An unknown role is refused rather than coerced: defaulting here would
+        // turn a crafted value into a real one, and the poster role decides what
+        // the public page shows.
+        if (! in_array($role, SourceAttachment::ROLES, true)) {
+            wp_die(
+                esc_html__('That file cannot be published in the role requested.', 'adct-parish-intake'),
+                '',
+                ['response' => 400]
+            );
+        }
+
+        [$offer] = $this->partitionOffer($eventId, []);
+
+        if (! in_array($attachmentId, array_column($offer, 'id'), true)) {
+            wp_die(
+                esc_html__('That file is not published with this event.', 'adct-parish-intake'),
+                '',
+                ['response' => 404]
+            );
+        }
+
+        try {
+            $this->sourceMaterial?->promote($eventId, $attachmentId, $role);
+        } catch (DomainException $failure) {
+            wp_die(esc_html($failure->getMessage()), '', ['response' => 409]);
+        } catch (Throwable $failure) {
+            error_log('[ADCT Parish Intake] Source material promotion failed: ' . $failure->getMessage());
+            wp_die(
+                esc_html__('That file could not be published with the event. Try again in a moment.', 'adct-parish-intake'),
+                '',
+                ['response' => 500]
+            );
+        }
+
+        $this->backToEvent($eventId);
+    }
+
+    /**
+     * Stop one promoted file appearing publicly.
+     *
+     * A visibility change, never a deletion: the stored original stays and the
+     * promotion can be made again. The media id is matched against the ordered
+     * post meta rather than trusted, so a crafted id cannot detach something this
+     * event does not have attached.
+     */
+    public function handleRemoveSourceMaterial(): void
+    {
+        check_admin_referer(self::REMOVE_SOURCE_MATERIAL_ACTION, self::REMOVE_SOURCE_MATERIAL_NONCE);
+
+        $eventId = $this->guardedEventId('event_id');
+        $mediaId = $this->guardedPromotedMediaId($eventId);
+
+        try {
+            $this->sourceMaterial?->remove($eventId, $mediaId);
+        } catch (Throwable $failure) {
+            error_log('[ADCT Parish Intake] Source material removal failed: ' . $failure->getMessage());
+            wp_die(
+                esc_html__('That file could not be removed from the event. Try again in a moment.', 'adct-parish-intake'),
+                '',
+                ['response' => 500]
+            );
+        }
+
+        $this->backToEvent($eventId);
+    }
+
+    /**
+     * The event id from the request, once the request itself has been found to be
+     * aimed at an event this plugin owns.
+     *
+     * Both handlers share this because both need the same two refusals in the
+     * same order: the id must be a real event post, and the user must be allowed
+     * to edit it. Checking the post type before the capability is not tidiness --
+     * `edit_post` is also satisfied for other post types, so a type check alone
+     * does not establish that the target is ours.
+     *
+     * Both refusals are 403 rather than 400. A post that is not one of ours is
+     * not a thing the requester is allowed to touch, and answering "400, that
+     * post does not exist" turns the form into an oracle for guessing which post
+     * ids exist and which types they have.
+     */
+    private function guardedEventId(string $key): int
+    {
+        $raw = $this->posted($key);
+
+        if (! is_numeric($raw) || (int) $raw < 1) {
+            wp_die(
+                esc_html__('You are not allowed to change this event.', 'adct-parish-intake'),
+                '',
+                ['response' => 403]
+            );
+        }
+
+        $eventId = (int) $raw;
+
+        if (get_post_type($eventId) !== EventPostType::POST_TYPE) {
+            wp_die(
+                esc_html__('You are not allowed to change this event.', 'adct-parish-intake'),
+                '',
+                ['response' => 403]
+            );
+        }
+
+        if (! current_user_can('edit_post', $eventId)) {
+            wp_die(
+                esc_html__('You are not allowed to change this event.', 'adct-parish-intake'),
+                '',
+                ['response' => 403]
+            );
+        }
+
+        return $eventId;
+            }
+
+    /**
+     * Confirm the request names an item this event actually has promoted.
+     *
+     * The membership test is done against the ordered post meta rather than
+     * trusted from the request, so a crafted media id cannot detach -- or
+     * re-point -- something this event does not have attached. The store enforces
+     * the same rule again; checking here means a refused request writes no audit
+     * row at all, which is what makes the audit trail answerable.
+     */
+    private function guardedPromotedMediaId(int $eventId): int
+    {
+        $mediaId = absint($this->posted('media_id'));
+
+        if ($mediaId < 1) {
+            wp_die(esc_html__('That request is not valid.', 'adct-parish-intake'), '', ['response' => 400]);
+        }
+
+        foreach ($this->sourceMaterial?->forEvent($eventId) ?? [] as $item) {
+            if ($item->mediaId === $mediaId) {
+                return $mediaId;
+            }
+        }
+
+        wp_die(esc_html__('That file is not published with this event.', 'adct-parish-intake'), '', [
+            'response' => 404,
+        ]);
+    }
+
+    /**
+     * The intake attachment id from the request, refused if it is not a positive
+     * number.
+     *
+     * `absint()` of "3 OR 1=1" is 3 and of a float-ish string is 0, so the check
+     * is on the result rather than on the shape of the input.
+     */
+    private function guardedAttachmentId(): int
+    {
+        $attachmentId = absint($this->posted('attachment_id'));
+
+        if ($attachmentId < 1) {
+            wp_die(esc_html__('That request is not valid.', 'adct-parish-intake'), '', ['response' => 400]);
+        }
+
+        return $attachmentId;
+    }
+
+    private function posted(string $key): string
+    {
+        $value = $_POST[$key] ?? '';
+
+        return is_string($value) ? $value : '';
+    }
+
+    private function backToEvent(int $eventId): void
+    {
+        wp_safe_redirect(admin_url('post.php?post=' . $eventId . '&action=edit'));
+        exit;
+    }
+
+    private function roleLabel(string $role): string
+    {
+        return match ($role) {
+            SourceAttachment::ROLE_POSTER => __('Poster', 'adct-parish-intake'),
+            SourceAttachment::ROLE_BULLETIN => __('Bulletin', 'adct-parish-intake'),
+            default => __('Document', 'adct-parish-intake'),
+        };
+    }
+
+        public function handleSavePost(int $postId, \WP_Post $post, bool $update): void
+        {
         if (
             $post->post_type !== EventPostType::POST_TYPE
             || wp_is_post_revision($postId)
@@ -505,6 +961,18 @@ final class EventEditor
                 ['status' => 400]
             );
         }
+
+                // Promotion copies a file and writes an audit row naming the human who
+                // asked for it. A REST write can do neither, and would let anyone with a
+                // token rewrite attribution without appearing in the log, so the only
+                // door to this meta key is the review queue and the editor screen.
+                if (array_key_exists('source_attachment_ids', $incoming)) {
+                    return new \WP_Error(
+                        'adct_event_source_material_manual',
+                        'Source material is promoted from the review queue or the event editor, which record who did it.',
+                        ['status' => 400]
+                    );
+                }
 
         $postId = $preparedPost instanceof \WP_Post
             ? (int) $preparedPost->ID

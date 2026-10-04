@@ -7,11 +7,16 @@ namespace {
 require_once __DIR__ . '/../../../Support/WordPressCapabilityStubs.php';
 
     if (! function_exists('get_permalink')) {
-        function get_permalink(int $postId): string
-        {
-            return 'https://adct.org.za/events/event-' . $postId . '/';
+            // WordPress takes a post object as well as an id. `PublicEventPage::jsonLd()`
+            // passes one, and `phpunit.xml.dist` has no bootstrap, so whichever of the
+            // two declarations loads first has to be the union.
+            function get_permalink($post = 0, bool $leavename = false): string|false
+            {
+                $postId = $post instanceof WP_Post ? $post->ID : (int) $post;
+
+                return 'https://adct.org.za/events/event-' . $postId . '/';
+            }
         }
-    }
 
     if (! function_exists('esc_html')) {
         function esc_html(mixed $value): string
