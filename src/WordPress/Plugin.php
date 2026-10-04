@@ -20,6 +20,7 @@ use ADCT\ParishIntake\Core\Database\VenueSchemaMigration;
 use ADCT\ParishIntake\Core\Events\EventValidator;
 use ADCT\ParishIntake\Core\Events\IcsCalendar;
 use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
+use ADCT\ParishIntake\Core\Publishing\ReviewRequiredPublicationAuthority;
 use ADCT\ParishIntake\Core\Events\OccurrenceExpander;
 use ADCT\ParishIntake\Core\Events\RRulePresetMapper;
 use ADCT\ParishIntake\Core\Events\RRuleValidator;
@@ -540,7 +541,15 @@ private ?ReviewQueueRepository $reviewQueue = null;
                 $timezone,
                 $auditLog
             ),
-            new EventValidator($timezone, $rruleValidator)
+            new EventValidator($timezone, $rruleValidator),
+            // Issue #200 asks whether a verified contact may publish a change or whether
+            // it must still be reviewed. It is still open, so the conservative answer is
+            // the one that ships: a contact change waits for a dean or a reviewer like
+            // anything else, and ReviewRequiredPublicationAuthority says so without ever
+            // looking at the directory. When the owner answers, this argument becomes
+            // new VerifiedContactPublicationAuthority($contacts) and nothing else changes.
+            new ReviewRequiredPublicationAuthority(),
+            $contacts
         );
         if (function_exists('add_action')) {
             // The review threshold is deliberately its own setting (#43). It used to be read from
