@@ -635,7 +635,12 @@ use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
             } catch
             (\AdctTestWpDie $refused) {
                 self::assertSame(400, $refused->status);
-                self::assertSame([], $copier->calls);
+                self::assertSame(
+                    'One of the files you chose is not on this notice.',
+                    $refused->getMessage(),
+                    'Refused by the on-this-notice guard specifically. Without that guard the missing row falls through to the role check and is refused as a role mismatch instead, which is true but says the wrong thing.'
+                );
+                self::assertSame([], $copier->calls, 'And nothing was copied.');
 
                 return;
             }
