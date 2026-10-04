@@ -73,8 +73,8 @@ final class ChangeDiff
      * @var array<string, array{0: string, 1: list<string>}>
      */
     private const FIELDS = [
-            'title' => ['Title', ['title']],
-                    'published_status' => ['Published status', ['status']],
+        'title' => ['Title', ['title']],
+        'published_status' => ['Published status', ['status']],
         'status_flag' => ['Event status', ['meta', 'status_flag']],
         'start' => ['Starts', ['meta', 'start_local']],
         'end' => ['Ends', ['meta', 'end_local']],
@@ -82,7 +82,7 @@ final class ChangeDiff
         'repeats' => ['Repeats', ['meta', 'rrule']],
         'parish' => ['Parish', ['meta', 'parish_id']],
         'venue' => ['Venue', ['meta', 'venue_id']],
-                'content' => ['Description', ['content']],
+        'content' => ['Description', ['content']],
         'featured' => ['Featured', ['meta', 'featured']],
         'featured_image' => ['Featured image', ['featured_image_id']],
         'event_type' => ['Event type', ['event_type_term_ids']],

@@ -177,6 +177,7 @@ use ADCT\ParishIntake\WordPress\Jobs\RetentionCleanupJob;
 use ADCT\ParishIntake\WordPress\Jobs\RetentionSettings;
 use ADCT\ParishIntake\WordPress\Jobs\OcrSettings;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
+use ADCT\ParishIntake\WordPress\Change\ChangeNoticeJob;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailQueueImmediateDispatch;
 use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeRecipientPolicy;
@@ -882,6 +883,15 @@ private ?ReviewQueueRepository $reviewQueue = null;
                     new FollowUpRepository($database, $clock),
                     $clock,
                     static fn (): ApprovalReminderSettings => (new ApprovalReminderOptionReader())->read()
+                ),
+                // Same digest hour as the approval notice, deliberately: two jobs
+                // reading one setting would let them disagree about when "daily"
+                // starts, and a change notice is an approval notice about an event
+                // that is already live.
+                new ChangeNoticeJob(
+                    $database, $approvalRecipients, $this->actionTokenService,
+                    $this->mailQueue, $mailQueueRepository, $clock,
+                    self::approvalDigestHour()
                 ),
                 $inboundMessageProcessingJob,
                 $retentionCleanupJob,
