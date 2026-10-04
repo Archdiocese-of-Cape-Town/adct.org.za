@@ -1315,8 +1315,37 @@ final class CandidateDetailCheck
             $check(str_contains($duplicateDetail, ReviewQueuePage::RESOLVE_MATCH_ACTION),
                 'a duplicate candidate must offer the resolution control: #217 already lets a reviewer '
                 . 'decide one, so a panel that refused it was a dead end.');
-            $check(! str_contains($duplicateDetail, ReviewQueuePage::SAVE_ACTION),
-                'a duplicate must still get no editor form: only the resolution route accepts its status.');
+            // The editor form still *renders* for a duplicate: `CandidateDetailView`
+                        // emits it unconditionally and only adds `readonly` to its inputs, so the
+                        // absence of markup is not the invariant to assert. The invariant lives at
+                        // the write path -- `canEdit()` accepts `awaiting_approval` only, so a save
+                        // POST for a duplicate is refused. #218 widens the resolution route by one
+                        // status and deliberately does not widen this one.
+                        $duplicateEdit = $validPost;
+                        $duplicateEdit['candidate_id'] = (string) $duplicateAmbiguous['candidate'];
+                        $duplicateEdit['title'] = 'Should Not Persist ' . $suffix;
+                        $_POST = $duplicateEdit;
+                        $_REQUEST = $_POST;
+                        add_filter('wp_die_handler', $dieHandler);
+                        try {
+                            $page->handleSave();
+                            $fail('Candidate detail: a duplicate candidate was edited.');
+                        } catch (RuntimeException $error) {
+                            $check(str_contains($error->getMessage(), 'already been decided'),
+                                'editing a duplicate must still be refused: ' . $error->getMessage());
+                        } finally {
+                            remove_filter('wp_die_handler', $dieHandler);
+                        }
+                        $check(self::storedTitle($wpdb, $prefix, $duplicateAmbiguous['candidate'])
+                            === 'Fictional Harvest Tea ' . $suffix,
+                            'a refused duplicate save must leave the title alone.');
+                        $check(array_values(array_filter(
+                            $queue->history($duplicateAmbiguous['candidate']),
+                            static function (array $row): bool {
+                                return $row['action'] === 'update_fields';
+                            }
+                        )) === [],
+                            'and must write no audit row.');
 
             $duplicatePost = $resolvePost;
             $duplicatePost['candidate_id'] = (string) $duplicateAmbiguous['candidate'];
