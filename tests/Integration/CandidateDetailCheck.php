@@ -1104,11 +1104,13 @@ final class CandidateDetailCheck
                 'the resolution control must offer a parish.');
             $check(str_contains($ambiguousDetail, 'Leave unassigned'),
                 'the resolution control must offer the deliberate "leave it unassigned" choice.');
-            $check(str_contains(
-                $ambiguousDetail,
-                wp_create_nonce(ReviewQueuePage::RESOLVE_MATCH_ACTION),
+            $check(
+                str_contains(
+                    $ambiguousDetail,
+                    wp_create_nonce(ReviewQueuePage::RESOLVE_MATCH_ACTION)
+                ),
                 'the resolution control must carry its own nonce.'
-            ));
+            );
             $check(! str_contains($openDetail($sibling['candidate']), ReviewQueuePage::RESOLVE_MATCH_ACTION),
                 'a candidate with no ambiguity must not be offered a resolution.');
             $check(! str_contains($openDetail($decidedAmbiguous['candidate']), ReviewQueuePage::RESOLVE_MATCH_ACTION),
