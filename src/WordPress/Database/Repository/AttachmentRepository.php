@@ -266,38 +266,38 @@ final class AttachmentRepository extends AbstractRepository
         ));
     }
 
-                /**
-                 * A message's attachments that a person may promote into the media library
-                 * as an event's source material (issue #172), in the order they arrived.
-                 *
-                 * Only the four types a browser can serve are returned: JPEG, PNG, WebP and
-                 * PDF. HEIC and HEIF pass the intake storage allowlist but render in no
-                 * browser, so promoting one would publish a dead link. A row with no stored
-                 * file is left out too, because there is nothing to copy.
-                 *
-                 * `extracted_text` is deliberately left out: it can be the whole document
-                 * and the promote control needs none of it.
-                 *
-                 * @return list<array<string, mixed>>
-                 */
-                public function findPromotableForMessage(int $messageId): array
-                {
-                    if ($messageId < 1) {
-                        throw new InvalidArgumentException('A message ID must be positive.');
-                    }
-
-                    return $this->fetchRows($this->database->prepare(
-                        'SELECT id, message_id, filename, mime_type, size_bytes, storage_path, status'
-                        . ' FROM ' . $this->tableName()
-                        . ' WHERE message_id = %d AND mime_type IN (%s, %s, %s, %s)'
-                        . ' AND storage_path IS NOT NULL AND storage_path <> %s'
-                        . ' ORDER BY id ASC',
-                        $messageId,
-                        'image/jpeg',
-                        'image/png',
-                        'image/webp',
-                        'application/pdf',
-                        ''
-                    ));
+     /**
+     * A message's attachments that a person may promote into the media library
+     * as an event's source material (issue #172), in the order they arrived.
+     *
+     * Only the four types a browser can serve are returned: JPEG, PNG, WebP and
+     * PDF. HEIC and HEIF pass the intake storage allowlist but render in no
+     * browser, so promoting one would publish a dead link. A row with no stored
+     * file is left out too, because there is nothing to copy.
+     *
+     * `extracted_text` is deliberately left out: it can be the whole document
+     * and the promote control needs none of it.
+     *
+     * @return list<array<string, mixed>>
+     */
+        public function findPromotableForMessage(int $messageId): array
+        {
+            if ($messageId < 1) {
+                throw new InvalidArgumentException('A message ID must be positive.');
                 }
+
+            return $this->fetchRows($this->database->prepare(
+            'SELECT id, message_id, filename, mime_type, size_bytes, storage_path, status'
+            . ' FROM ' . $this->tableName()
+            . ' WHERE message_id = %d AND mime_type IN (%s, %s, %s, %s)'
+            . ' AND storage_path IS NOT NULL AND storage_path <> %s'
+            . ' ORDER BY id ASC',
+            $messageId,
+            'image/jpeg',
+            'image/png',
+            'image/webp',
+            'application/pdf',
+            ''
+            ));
             }
+        }

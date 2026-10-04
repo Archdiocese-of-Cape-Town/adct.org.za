@@ -60,14 +60,14 @@ interface SourceMaterialCopierInterface
          *
          * @return bool true when the attachment was detached
          */
-         public function detachFromEvent(int $eventId, int $attachmentId): bool;
+        public function detachFromEvent(int $eventId, int $attachmentId): bool;
 
-         /**
-         * Make this attachment the event's featured image.
-         *
-         * @param int $attachmentId the media-library attachment, or 0 to release
-         *        the event's featured image without setting a new one
-         * @return bool true when the thumbnail was set
-         */
-         public function setFeaturedImage(int $eventId, int $attachmentId): bool;
+     /**
+     * Make this attachment the event's featured image.
+     *
+     * @param int $attachmentId the media-library attachment, or 0 to release
+     *        the event's featured image without setting a new one
+     * @return bool true when the thumbnail was set
+     */
+        public function setFeaturedImage(int $eventId, int $attachmentId): bool;
 }
