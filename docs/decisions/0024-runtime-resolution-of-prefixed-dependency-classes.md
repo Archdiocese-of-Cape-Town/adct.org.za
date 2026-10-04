@@ -1,7 +1,7 @@
 # ADR 0024: Resolve prefixed dependency classes by name at runtime
 
 - Status: Proposed
-- Date: 2026-11-11
+- Date: 2026-10-04
 
 ## Context
 The release build runs Strauss (`composer strauss`) to copy the dependency tree into `vendor-prefixed/` under the `ADCT\ParishIntake\Dependencies\` namespace, which keeps two plugins that vendor the same library from colliding. Strauss rewrites the vendor packages themselves. It does **not** rewrite `use` statements in our own `src/`.
