@@ -45,6 +45,13 @@ final class EventEditor
      */
     private ?array $parishNames = null;
 
+    /**
+     * @param SubjectAuditPanel|null $auditPanel the per-event audit trail box (issue #58)
+     * @param EventSourceMaterialEditor|null $sourceMaterial the poster and
+     *        bulletin box, with its own add and remove routes (#172). Null when
+     *        source material is unavailable, which hides the box rather than
+     *        showing one whose buttons all refuse.
+     */
     public function __construct(
         private ParishRepository $parishes,
         private VenueRepository $venues,
@@ -52,7 +59,8 @@ final class EventEditor
         private RRulePresetMapper $presetMapper,
         private DateTimeZone $timezone,
         private ClockInterface $clock,
-        private ?SubjectAuditPanel $auditPanel = null
+        private ?SubjectAuditPanel $auditPanel = null,
+        private ?EventSourceMaterialEditor $sourceMaterial = null
     ) {
     }
 
@@ -77,6 +85,11 @@ final class EventEditor
                 'low'
             );
         }
+
+        // Registered here rather than from `Plugin.php`, so the box cannot appear
+        // on the event screen without the editor that owns it. Null-safe because
+        // the collaborators are resolved lazily.
+        $this->sourceMaterial?->registerMetaBox();
 
         foreach (['normal', 'advanced', 'side'] as $context) {
             remove_meta_box('postcustom', EventPostType::POST_TYPE, $context);

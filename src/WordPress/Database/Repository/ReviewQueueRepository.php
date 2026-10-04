@@ -295,7 +295,7 @@ final class ReviewQueueRepository
 
         $row = $this->row($this->prepared(
             "SELECT p.ID, p.post_status FROM {$this->postmeta} meta "
-            . 'INNER JOIN {$this->postsTable()} p ON p.ID = meta.post_id '
+            . "INNER JOIN {$this->postsTable()} p ON p.ID = meta.post_id "
             . "WHERE meta.meta_key = 'source_candidate_id' AND meta.meta_value = CAST(%d AS CHAR) "
             . "AND p.post_type = 'adct_event' AND p.post_status = 'publish' "
             . 'ORDER BY p.ID DESC',
@@ -312,10 +312,50 @@ final class ReviewQueueRepository
     }
 
     /**
+     * The candidate a published event came from, read **backwards**
+     * (issue #172's event-editor add/remove surface).
+     *
+     * The event editor knows only a post id. It needs the candidate that
+     * produced that event so it can list the files that arrived with it, so this
+     * is the inverse of {@see findPublishedEventForCandidate()}.
+     *
+     * The same three guards as the forward lookup, for the same reasons:
+     * published only, scoped to the post type, and the meta value compared as
+     * text. The `post_status` check is repeated in PHP so that widening the
+     * WHERE clause later cannot quietly widen what this returns -- a bulletin
+     * copied out of a draft event would be world-readable with no page showing
+     * it. The newest link wins, because a candidate can be relinked to a second
+     * event and the most recent one is the one a reviewer is looking at.
+     */
+    public function findPublishedCandidateForEvent(int $eventId): ?int
+    {
+        if ($eventId < 1) {
+            throw new InvalidArgumentException('The event ID must be positive.');
+        }
+
+        $row = $this->row($this->prepared(
+            "SELECT p.ID, p.post_status, meta.meta_value FROM {$this->postmeta} meta "
+            . 'INNER JOIN ' . $this->postsTable() . ' p ON p.ID = meta.post_id '
+            . "WHERE meta.meta_key = 'source_candidate_id' AND meta.post_id = %d "
+            . "AND p.post_type = 'adct_event' AND p.post_status = 'publish' "
+            . 'ORDER BY meta.meta_id DESC',
+            [$eventId]
+        ));
+
+        if ($row === null || (string) ($row['post_status'] ?? '') !== 'publish') {
+            return null;
+        }
+
+        $candidateId = (int) ($row['meta_value'] ?? 0);
+
+        return $candidateId > 0 ? $candidateId : null;
+    }
+
+    /**
      * The `wp_posts` table, quoted.
      *
-     * Named once here because the promote lookup is the only statement in this
-     * repository that reaches for it, and a table name is not something to
+     * Named once here because the two promote lookups are the only statements in
+     * this repository that reach for it, and a table name is not something to
      * interpolate from a call site.
      */
     private function postsTable(): string
