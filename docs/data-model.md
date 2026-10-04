@@ -460,6 +460,15 @@ change it after the fact would defeat its purpose. Rows are removed only by the
 retention job, in bounded steps, and only once they are past the 24-month horizon
 described above.
 
+**#58 adds no columns and no migration.** The per-record panel added on the
+candidate detail screen, the event editor and the parish row reads the same
+`adct_pi_audit_log` rows through the existing `AuditLogReader`, filtered on
+`subject_type` and `subject_id` together. No new table, column or index is
+introduced, because the pair is exactly the existing `KEY subject
+(subject_type,subject_id)` on that table. The panel shows at most 25 rows
+within the same 24 months retention prunes at, so it can never offer an
+operator a window the data has already left.
+
 The **Audit log** screen (`Parish Intake → Audit log`, capability
 `adct_pi_view_reports`) is read-only. Its default window is the last 3 months,
 with a bounded choice of 1, 3, 6, 12 or 24 months and 25 rows per page; an

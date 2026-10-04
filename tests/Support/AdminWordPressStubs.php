@@ -141,6 +141,19 @@ namespace ADCT\ParishIntake\WordPress\Admin {
         }
     }
 
+        if (! function_exists('ADCT\ParishIntake\WordPress\Admin\sanitize_key')) {
+            /**
+             * WordPress keeps only the characters a key or a slug may contain. The
+             * admin screens use it on every $_GET value before dispatching on it, so
+             * the stub has to actually drop the rest — a screen that dispatched on an
+             * unsanitised value would otherwise pass here and fail on the site.
+             */
+            function sanitize_key(string $key): string
+            {
+                return preg_replace('/[^a-z0-9_\-]/', '', strtolower($key)) ?? '';
+            }
+        }
+
     // Near enough to WordPress for these purposes: it drops anything that is
     // not part of a single address, which is exactly the filter a query
     // argument carrying a recipient has to survive before it is echoed back.

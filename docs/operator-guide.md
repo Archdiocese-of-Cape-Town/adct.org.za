@@ -161,8 +161,18 @@ Two things to know:
   same schedule as the rest of the personal data, so the oldest selectable window
   is 24 months and anything older will not appear.
 
-The per-candidate **History** list on the candidate detail screen reads the same
-rows and is usually the faster way to answer "what happened to *this* event".
+The **Audit trail** panel on the candidate detail screen reads the same rows and
+is usually the faster way to answer "what happened to *this* event". The same
+panel now appears on the event editor and on the parish row, so "what happened
+to *this* event?" or "what has been done to *this* parish?" can be answered
+without opening the Audit log screen and typing an ID into a filter.
+
+The panel is the same read-only list, capped at the most recent 25 rows over the
+last 24 months. It shows only rows about **that one record**: a different
+candidate, event or parish is never mixed in. Where nothing has been recorded
+yet, it says so rather than showing an empty table. When the count reaches 25 it
+does not claim to be complete — the Audit log screen, filtered by record type
+and record ID, is the way to read further back.
 
 ### Create and edit events
 

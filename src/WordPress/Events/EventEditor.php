@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Events;
 
+use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
 use ADCT\ParishIntake\Core\Events\EventDetails;
 use ADCT\ParishIntake\Core\Events\EventValidationResult;
 use ADCT\ParishIntake\Core\Events\EventValidator;
 use ADCT\ParishIntake\Core\Events\RRulePresetMapper;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Directory\Venue;
+use ADCT\ParishIntake\WordPress\Admin\SubjectAuditPanel;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
 use DateTimeImmutable;
@@ -49,7 +51,8 @@ final class EventEditor
         private EventValidator $validator,
         private RRulePresetMapper $presetMapper,
         private DateTimeZone $timezone,
-        private ClockInterface $clock
+        private ClockInterface $clock,
+        private ?SubjectAuditPanel $auditPanel = null
     ) {
     }
 
@@ -64,9 +67,41 @@ final class EventEditor
             'high'
         );
 
+        if ($this->auditPanel !== null) {
+            add_meta_box(
+                'adct_event_audit',
+                'Audit trail',
+                [$this, 'renderAuditMetaBox'],
+                EventPostType::POST_TYPE,
+                'normal',
+                'low'
+            );
+        }
+
         foreach (['normal', 'advanced', 'side'] as $context) {
             remove_meta_box('postcustom', EventPostType::POST_TYPE, $context);
         }
+    }
+
+    /**
+     * What was published, edited or reverted for this event (issue #58).
+     *
+     * Read-only, in its own box and its own render call, so it carries no form
+     * and no nonce of its own. The details box above holds the edit form and its
+     * nonce; the audit box below it holds evidence of what has already been
+     * decided, and mixing the two would mean putting a nonce next to something
+     * that must never be submitted.
+     *
+     * Only registered when a panel was wired in, so an editor built without one
+     * shows no box rather than an error.
+     */
+    public function renderAuditMetaBox(\WP_Post $post): void
+    {
+        if ($this->auditPanel === null || ! current_user_can('edit_post', $post->ID)) {
+            return;
+        }
+
+        $this->auditPanel->render(AuditSubjectType::EVENT, (int) $post->ID, 'Audit trail');
     }
 
     public function renderMetaBox(\WP_Post $post): void
