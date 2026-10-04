@@ -188,60 +188,60 @@ final class ReleaseBootstrapCheckTest extends TestCase
     }
 
     /**
-         * A classmap entry under an unprefixed name is the same leak as an unrewritten
-         * PSR-4 path, reached through a different route: the class exists only under
-         * its unprefixed name, and Composer loads it by that name.
-         */
-        public function testItStillFailsWhenAPackageRegistersAnUnprefixedClassmapEntry(): void
-        {
-                    $fixture = $this->createPrefixedFixture();
-                    $autoloader = $fixture . '/vendor-prefixed/autoload.php';
+     * A classmap entry under an unprefixed name is the same leak as an unrewritten
+     * PSR-4 path, reached through a different route: the class exists only under
+     * its unprefixed name, and Composer loads it by that name.
+     */
+    public function testItStillFailsWhenAPackageRegistersAnUnprefixedClassmapEntry(): void
+    {
+        $fixture = $this->createPrefixedFixture();
+        $autoloader = $fixture . '/vendor-prefixed/autoload.php';
 
-                    // A file standing in for a classmap entry Strauss failed to prefix: it
-                    // declares the class under its unprefixed name, which is what makes the
-                    // entry a leak rather than an ordinary mapping.
-                    $leak = $fixture . '/vendor-prefixed/leaked/Container.php';
-                    $directory = dirname($leak);
+        // A file standing in for a classmap entry Strauss failed to prefix: it
+        // declares the class under its unprefixed name, which is what makes the
+        // entry a leak rather than an ordinary mapping.
+        $leak = $fixture . '/vendor-prefixed/leaked/Container.php';
+        $directory = dirname($leak);
 
-                    if (! is_dir($directory) && ! mkdir($directory, 0777, true) && ! is_dir($directory)) {
-                        self::fail("Could not create the classmap leak fixture directory {$directory}.");
-                    }
-
-                    self::assertNotFalse(file_put_contents($leak, "<?php\n\nnamespace DI;\n\nclass Container {}\n"));
-
-                    $contents = (string) file_get_contents($autoloader);
-                    $anchor = "\$classmap = [\n";
-
-                    self::assertStringContainsString($anchor, $contents, 'The fixture must register a classmap.');
-
-                    // Composer maps one class name to one file, so registering the unprefixed
-                    // name is enough for the class to answer to it, which is exactly the leak
-                    // the script's unprefixed-class assertion looks for.
-                    $mutated = str_replace(
-                        $anchor,
-                        $anchor . '    ' . var_export('DI\\Container', true) . ' => ' . var_export($leak, true) . ",\n",
-                        $contents
-                    );
-
-                    self::assertNotSame($contents, $mutated, 'The classmap mutation must change the autoloader.');
-
-                    file_put_contents($autoloader, $mutated);
-
-                    $result = $this->runCheck($fixture);
-
-                    self::assertSame(
-                        1,
-                        $result['exit'],
-                        "An unprefixed classmap entry must fail the release check.\nstderr: " . $result['stderr']
-                    );
-                    self::assertStringContainsString(
-                        'Unprefixed dependency class loaded from the release: DI\\Container',
-                        $result['stderr'],
-                        'The leak assertion must fire for a class reached through a classmap entry.'
-                    );
+        if (! is_dir($directory) && ! mkdir($directory, 0777, true) && ! is_dir($directory)) {
+            self::fail("Could not create the classmap leak fixture directory {$directory}.");
         }
 
-                public function testItRejectsADirectoryWithNoPluginBootstrap(): void
+        self::assertNotFalse(file_put_contents($leak, "<?php\n\nnamespace DI;\n\nclass Container {}\n"));
+
+        $contents = (string) file_get_contents($autoloader);
+        $anchor = "\$classmap = [\n";
+
+        self::assertStringContainsString($anchor, $contents, 'The fixture must register a classmap.');
+
+        // Composer maps one class name to one file, so registering the unprefixed
+        // name is enough for the class to answer to it, which is exactly the leak
+        // the script's unprefixed-class assertion looks for.
+        $mutated = str_replace(
+            $anchor,
+            $anchor . '    ' . var_export('DI\\Container', true) . ' => ' . var_export($leak, true) . ",\n",
+            $contents
+        );
+
+        self::assertNotSame($contents, $mutated, 'The classmap mutation must change the autoloader.');
+
+        file_put_contents($autoloader, $mutated);
+
+        $result = $this->runCheck($fixture);
+
+        self::assertSame(
+            1,
+            $result['exit'],
+            "An unprefixed classmap entry must fail the release check.\nstderr: " . $result['stderr']
+        );
+        self::assertStringContainsString(
+            'Unprefixed dependency class loaded from the release: DI\\Container',
+            $result['stderr'],
+            'The leak assertion must fire for a class reached through a classmap entry.'
+        );
+    }
+
+    public function testItRejectsADirectoryWithNoPluginBootstrap(): void
     {
         $result = $this->runCheck($this->createFixtureDirectory());
 
@@ -791,23 +791,23 @@ final class ReleaseBootstrapCheckTest extends TestCase
     }
 
     /**
-         * The package-relative file that holds $class, resolved through the package's
-         * own PSR-4 root, so the mutation can alias the prefixed file the class is.
-         */
-        private function packageFor(string $class): string
-        {
-            foreach ($this->packages as $package => $roots) {
-                foreach ($roots as $root => $relativeDirectory) {
-                    if (str_starts_with($class, $root)) {
-                        $relative = str_replace('\\', '/', substr($class, strlen($root)));
+     * The package-relative file that holds $class, resolved through the package's
+     * own PSR-4 root, so the mutation can alias the prefixed file the class is.
+     */
+    private function packageFor(string $class): string
+    {
+        foreach ($this->packages as $package => $roots) {
+            foreach ($roots as $root => $relativeDirectory) {
+                if (str_starts_with($class, $root)) {
+                    $relative = str_replace('\\', '/', substr($class, strlen($root)));
 
-                        return $package . '/' . $relativeDirectory . '/' . $relative . '.php';
-                    }
+                    return $package . '/' . $relativeDirectory . '/' . $relative . '.php';
                 }
             }
-
-            throw new RuntimeException("No production package declares the namespace of {$class}.");
         }
+
+        throw new RuntimeException("No production package declares the namespace of {$class}.");
+    }
 
     // ------------------------------------------------------------------
     // Running the script
@@ -902,11 +902,11 @@ final class ReleaseBootstrapCheckTest extends TestCase
     }
 
     /**
-         * Renders the PSR-4 map. Each value stays a list, because one namespace root
-         * can legitimately map to several directories.
-         *
-         * @param array<string, list<string>> $values
-         */
+     * Renders the PSR-4 map. Each value stays a list, because one namespace root
+     * can legitimately map to several directories.
+     *
+     * @param array<string, list<string>> $values
+     */
     private function exportPsr4(array $values): string
     {
         if ($values === []) {
@@ -924,8 +924,8 @@ final class ReleaseBootstrapCheckTest extends TestCase
     }
 
     /**
-         * @param array<string, string> $values Class => file.
-         */
+     * @param array<string, string> $values Class => file.
+     */
     private function exportClassmap(array $values): string
     {
         if ($values === []) {
