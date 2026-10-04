@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Events;
 
+use ADCT\ParishIntake\Core\Attachments\SourceMaterialReference;
+use ADCT\ParishIntake\Core\Attachments\SourceMaterialRole;
 use ADCT\ParishIntake\Core\Events\EventPresentation;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
+use ADCT\ParishIntake\Core\Ports\SourceMaterialStoreInterface;
 use ADCT\ParishIntake\WordPress\Database\Repository\OccurrenceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
@@ -24,7 +27,8 @@ final class PublicEventPage
         private ParishRepository $parishes,
         private VenueRepository $venues,
         private OccurrenceRepository $occurrences,
-        private string $pluginFile
+        private string $pluginFile,
+        private SourceMaterialStoreInterface $sourceMaterial
     ) {
     }
 
@@ -97,6 +101,13 @@ final class PublicEventPage
      *     map_url: string|null,
      *     contact: array{name: string, email: string, phone: string},
      *     poster: array{url: string, width: int, height: int, alt: string}|null,
+     *     source_material: list<array{
+     *         attachment_id: int,
+     *         role: string,
+     *         label: string,
+     *         name: string,
+     *         url: string
+     *     }>,
      *     calendar_url: string,
      *     google_calendar_url: string|null,
      *     json_ld: array<string, mixed>,
@@ -160,6 +171,7 @@ final class PublicEventPage
             'map_url' => $mapUrl,
             'contact' => $contact,
             'poster' => $poster,
+            'source_material' => $this->sourceMaterial($post->ID),
             'calendar_url' => $calendarUrl,
             'google_calendar_url' => $googleCalendarUrl,
             'json_ld' => $this->jsonLd(
@@ -451,6 +463,57 @@ final class PublicEventPage
         }
 
         return $json;
+    }
+
+    /**
+     * AC4: the page shows exactly the source material a reviewer promoted, and
+     * nothing else.
+     *
+     * The list is read from the promotion store and nowhere else, which is what
+     * makes "never promoted" mean "unreachable". Any attachment a parish
+     * supplied sits in the same media library, one `wp_get_attachment_url()`
+     * call away, so the guarantee is not that the files are private — media
+     * library attachments have public URLs by WordPress's own defaults — it is
+     * that nothing on a public page points at one until a human promotes it.
+     *
+     * The role is carried through but the poster figure is *not* derived from
+     * it. `poster()` follows `has_post_thumbnail()`, because promotion is what
+     * sets the featured image; if this list also rendered a `poster` role as the
+     * figure, removing the featured image would bring the figure back.
+     *
+     * A reference whose URL will not resolve is dropped rather than rendered.
+     * WordPress answers `false` once an attachment's file is gone, and an empty
+     * `href` would read as "the bulletin is here" — a worse answer than saying
+     * nothing.
+     *
+     * @return list<array{attachment_id: int, role: string, label: string, name: string, url: string}>
+     */
+    private function sourceMaterial(int $postId): array
+    {
+        if ($postId < 1) {
+            return [];
+        }
+
+        $items = [];
+
+        // Stored order, deliberately: the reviewer chose it when they promoted.
+        foreach ($this->sourceMaterial->forEvent($postId) as $reference) {
+            $url = wp_get_attachment_url($reference->attachmentId);
+            if (! is_string($url) || $url === '') {
+                continue;
+            }
+
+            $items[] = [
+                'attachment_id' => $reference->attachmentId,
+                'role' => $reference->role,
+                'label' => SourceMaterialRole::label($reference->role),
+                // Raw: the parish's own filename, which the template escapes.
+                'name' => $reference->originalName,
+                'url' => $url,
+            ];
+        }
+
+        return $items;
     }
 
     private function poster(WP_Post $post): ?array

@@ -10,6 +10,8 @@ use ADCT\ParishIntake\Core\Attachments\PreviewableImage;
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendCooldownException;
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendOutcome;
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendService;
+use ADCT\ParishIntake\Core\Attachments\SourceMaterialPromotion;
+use ADCT\ParishIntake\Core\Attachments\SourceMaterialRole;
 use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
 use ADCT\ParishIntake\Core\Parsing\UnparsedDateTimeCandidate;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
@@ -20,6 +22,7 @@ use ADCT\ParishIntake\Core\Review\CandidateFieldSet;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use ADCT\ParishIntake\WordPress\Attachments\AttachmentImageEndpoint;
 use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
+use ADCT\ParishIntake\WordPress\Attachments\SourceMaterialAuditTrail;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ReviewQueueRepository;
@@ -66,6 +69,19 @@ final class ReviewQueuePage
      */
     public const RESOLVE_MATCH_ACTION = 'adct_pi_candidate_resolve_match';
     public const RESOLVE_MATCH_NONCE = 'resolve_match_nonce';
+
+        /**
+             * The POST action and nonce for promoting a candidate's own source material
+             * into the media library (issue #172).
+             *
+             * Its own action and nonce for a stronger reason than the two above: every
+             * other route on this screen edits text or decides whether an event exists,
+             * and this one takes a private parish file and makes it fetchable by the
+             * whole internet. It must not be reachable by replaying another form's
+             * nonce, so the pair is deliberately unlike every other on the page.
+             */
+            public const PROMOTE_SOURCE_ACTION = 'adct_pi_candidate_promote_source';
+            public const PROMOTE_SOURCE_NONCE = 'promote_source_nonce';
 
     /**
      * The POST action and nonce for resending a confirmation preview
@@ -122,6 +138,18 @@ final class ReviewQueuePage
      * @param (callable(): ConfirmationEmailResendService)|null $resendConfirmation builds
      *        the resend service on first use, because it needs the mail queue and the
      *        token service, which are themselves built after this page
+    /**
+     * @param string $pluginFile the plugin's main file, so assets resolve and cache-bust
+     * @param OcrControl|null $ocr the shared client-side reader for a poster preview (ADR 0018)
+     * @param AttachmentImageEndpoint|null $imageEndpoint builds the nonce-bound URL that
+     *        serves one stored poster to an already-authorised reviewer
+     * @param (callable(): ConfirmationEmailResendService)|null $resendConfirmation builds
+     *        the resend service on first use, because it needs the mail queue and the
+     *        token service, which are themselves built after this page
+     * @param SubjectAuditPanel|null $auditPanel the per-record audit trail panel
+     * @param SourceMaterialPromotion|null $sourceMaterial the promotion rules shared with the
+     *        event editor (issue #172); null disables the promote route entirely
+     * @param SourceMaterialAuditTrail|null $audit the "who made this public" trail for a promotion
      */
     public function __construct(
         private readonly ReviewQueueRepository $queue,
@@ -134,9 +162,11 @@ final class ReviewQueuePage
         private readonly string $pluginFile = '',
         private readonly ?OcrControl $ocr = null,
         private readonly ?AttachmentImageEndpoint $imageEndpoint = null,
-                private readonly mixed $resendConfirmation = null,
-                private readonly ?SubjectAuditPanel $auditPanel = null
-            ) {
+        private readonly mixed $resendConfirmation = null,
+        private readonly ?SubjectAuditPanel $auditPanel = null,
+        private readonly ?SourceMaterialPromotion $sourceMaterial = null,
+        private readonly ?SourceMaterialAuditTrail $audit = null
+    ) {
     }
 
     /**
@@ -311,7 +341,7 @@ final class ReviewQueuePage
             if ($candidate === null) {
                 wp_die(esc_html('This candidate is not in your review queue.'), '', ['response' => 404]);
             }
-            $this->renderDetail($candidate, $tab, $search, $reviewer);
+            $this->renderDetail($candidate, $tab, $search, $reviewer, null, $this->renderNotice());
             return;
         }
         $page = max(1, absint($this->text($_GET['paged'] ?? '1')));
@@ -329,7 +359,7 @@ final class ReviewQueuePage
         <div class="wrap">
             <h1>Review queue</h1>
             <p>Awaiting approval shows every scoped approval item, including low-confidence and unknown-sender items. The other pending tabs show each candidate in one primary category. An unknown sender is not verified by assigning a parish.</p>
-            <?php $this->renderNotice(); ?>
+            <?php echo $this->renderNotice(); // already-escaped markup built here ?>
             <nav class="nav-tab-wrapper" aria-label="Review queue tabs">
                 <?php foreach (ReviewQueueRepository::TABS as $key => $label) : ?>
                     <a class="nav-tab <?php echo $tab === $key ? 'nav-tab-active' : ''; ?>"
@@ -814,7 +844,8 @@ final class ReviewQueuePage
         string $tab,
         string $search,
         bool $reviewer,
-        ?CandidateEditResult $attempt = null
+        ?CandidateEditResult $attempt = null,
+        string $notice = ''
     ): void {
         $id = (int) $row['id'];
         $messageId = (int) ($row['message_id'] ?? 0);
@@ -851,6 +882,14 @@ final class ReviewQueuePage
         // is read here purely to explain the button; the service is what decides.
         $resend = $this->resendPanelState($row);
 
+        // Issue #172: the panel below is only worth offering when a file could
+        // actually be published, and publishing one needs a published event.
+        // Both are decided here from the same collaborators the promote route
+        // itself uses, so the screen never shows a button the handler would
+        // refuse.
+        $promotable = $this->promotableSourceMaterial($messageId);
+        $sourceEventId = $this->queue->findPublishedEventForCandidate($id);
+
         $view = new CandidateDetailView();
         $view->render(
             $row,
@@ -868,7 +907,10 @@ final class ReviewQueuePage
             $editable && $messageId > 0,
             $needsResolution,
             $unreadable,
-            $resend
+            $resend,
+            $promotable,
+            $sourceEventId,
+            $notice
         );
         // The audit trail for this candidate, so a reviewer can see who has
                 // already touched it (issue #58).
@@ -1623,6 +1665,233 @@ final class ReviewQueuePage
         ));
         exit;
     }
+
+            /**
+             * Promote the source material a candidate's own email carried into the media
+     * library, on the published event that candidate became (issue #172).
+     *
+     * This is the one route on this screen that turns a private file into a
+     * public one, so the order of the checks below is the design:
+     *
+     * 1. **Capability first.** {@see identity()} runs before the nonce, so
+     *    somebody who cannot review never even makes WordPress ask for a word.
+     * 2. **Nonce before any read.** A forged request that gets past the
+     *    capability check still causes no database query, so nothing is
+     *    revealed by probing with somebody else's cookie.
+     * 3. **The event is derived, never posted.** No event id is read out of
+     *    `$_POST` at all; it comes from the candidate the reviewer was scoped to,
+     *    so no form can name a different event. That is also why a candidate
+     *    with no published event is a 409 rather than a 400: the request was
+     *    well-formed, the event simply is not there.
+     * 4. **The whole selection is validated before anything is copied.** A batch
+     *    is either promoted or refused. An event half promoted from one press of
+     *    a button is worse than an event not promoted at all, because nobody
+     *    chose the half.
+     * 5. **No selection is not a promotion.** Criterion 2 is a no-op: no copy,
+     *    no store write and no audit row blaming a reviewer for nothing.
+     */
+    public function handlePromoteSourceMaterial(): void
+    {
+        [$userId, $email, $reviewer] = $this->identity();
+        check_admin_referer(self::PROMOTE_SOURCE_ACTION, self::PROMOTE_SOURCE_NONCE);
+
+        if ($this->sourceMaterial === null || $this->audit === null || $this->attachments === null) {
+            wp_die(
+                esc_html('Source material cannot be published from here.'),
+                '',
+                ['response' => 400]
+            );
+        }
+
+        $candidateId = absint($this->text($_POST['candidate_id'] ?? '0'));
+        $tab = $this->tab($this->text($_POST['tab'] ?? 'awaiting_approval'));
+        $search = substr(sanitize_text_field($this->text($_POST['search'] ?? '')), 0, 100);
+        if ($candidateId < 1) {
+            wp_die(esc_html('That candidate is not valid.'), '', ['response' => 400]);
+        }
+
+        $row = $this->scopedCandidate($candidateId, $userId, $email, $reviewer);
+        if ($row === null) {
+            wp_die(esc_html('This candidate is not in your review queue.'), '', ['response' => 404]);
+        }
+
+        // Derived from the candidate, so a posted event id has nothing to change.
+        $eventId = $this->queue->findPublishedEventForCandidate($candidateId);
+        if ($eventId === null || $eventId < 1) {
+            wp_die(
+                esc_html('Publish this event before publishing its poster or bulletin.'),
+                '',
+                ['response' => 409]
+            );
+        }
+
+        $selection = $this->sourceMaterialSelection($candidateId);
+
+        try {
+            foreach ($selection as $item) {
+                $reference = $this->sourceMaterial->promote(
+                    $eventId,
+                    $item['storage_name'],
+                    $item['original_name'],
+                    $item['mime_type'],
+                    $item['role']
+                );
+
+                $this->audit->recordPromotion($eventId, $reference, $item['attachment_id']);
+            }
+        } catch (Throwable $failure) {
+            // The reviewer is told what happened in our own words; the internal
+            // class name and WordPress's own phrasing stay in the log.
+            error_log('[ADCT Parish Intake] Source material promotion failed: ' . $failure->getMessage());
+            wp_die(
+                esc_html('The source material could not be copied. Nothing was published — try again in a moment.'),
+                '',
+                ['response' => 500]
+            );
+        }
+
+        // Outside the try, so a success redirect can never become a 500.
+        wp_safe_redirect(add_query_arg(
+            ['candidate' => $candidateId, 'tab' => $tab, 'search' => $search, 'promoted' => 1],
+            self::queueUrl($tab, $search)
+        ));
+        exit;
+    }
+
+    /**
+     * The files on a candidate's message that could be published, for the panel.
+     *
+     * Read on the display path, so it swallows a repository failure the way
+     * {@see posterImageFor()} does: a screen that only lists files has no
+     * licence to die, because a missing panel is recoverable and a fatal error
+     * on an admin GET is not.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function promotableSourceMaterial(int $messageId): array
+    {
+        if ($messageId < 1 || $this->attachments === null) {
+            return [];
+        }
+
+        try {
+            return $this->attachments->findPromotableForMessage($messageId);
+        } catch (Throwable $failure) {
+            error_log(
+                '[ADCT Parish Intake] Could not list files to publish ('
+                . get_class($failure) . ').'
+            );
+
+            return [];
+        }
+    }
+
+    /**
+     * The promotable attachments this candidate's message actually owns, each
+     * paired with the role the reviewer chose for it, validated as a whole.
+     *
+     * Three refusals live here rather than in the loop, because all three are
+     * about the request rather than about any single file:
+     *
+     * - an id that is not one of the candidate's own attachments, so a crafted
+     *   POST cannot promote another parish's poster by guessing an id;
+     * - a role that is not on {@see SourceMaterialRole}'s closed list, so a
+     *   crafted POST cannot invent a fourth role;
+     * - a role the file's own declared type cannot fill, so the front end can
+     *   never be told to embed a PDF as an image.
+     *
+     * A ticked file with no role is refused too, rather than defaulted: the
+     * default would be invisible to the reviewer, and criterion 2 says a
+     * promotion is something a person says out loud.
+     *
+     * @return list<array{attachment_id: int, storage_name: string, original_name: string,
+     *                    mime_type: string, role: string}>
+     */
+    private function sourceMaterialSelection(int $candidateId): array
+    {
+        $messageId = $this->queue->findMessageOf($candidateId);
+        if ($messageId === null || $messageId < 1 || $this->attachments === null) {
+            wp_die(esc_html('That candidate has no source material to publish.'), '', ['response' => 400]);
+        }
+
+        $owned = [];
+        foreach ($this->attachments->findPromotableForMessage($messageId) as $attachment) {
+            $owned[(int) ($attachment['id'] ?? 0)] = $attachment;
+        }
+
+        $chosen = $this->textList($_POST['selected'] ?? []);
+        $roles = $_POST['roles'] ?? [];
+        $roles = is_array($roles) ? $roles : [];
+
+        $selection = [];
+        foreach ($chosen as $value) {
+            $attachmentId = absint($value);
+            $attachment = $owned[$attachmentId] ?? null;
+            if ($attachmentId < 1 || $attachment === null) {
+                wp_die(
+                    esc_html('One of the files you chose is not on this candidate.'),
+                    '',
+                    ['response' => 400]
+                );
+            }
+
+            $role = SourceMaterialRole::fromInput(
+                is_array($roles) ? ($roles[(string) $attachmentId] ?? null) : null
+            );
+            $mimeType = strtolower(trim((string) ($attachment['mime_type'] ?? '')));
+            if ($role === null || ! SourceMaterialRole::allows($role, $mimeType)) {
+                wp_die(
+                    esc_html('One of the files you chose cannot be published in the role you gave it.'),
+                    '',
+                    ['response' => 400]
+                );
+            }
+
+            $storageName = $this->nullableString($attachment['storage_path'] ?? null);
+            if ($storageName === null) {
+                wp_die(esc_html('One of the files you chose is no longer stored.'), '', ['response' => 400]);
+            }
+
+            $selection[] = [
+                'attachment_id' => $attachmentId,
+                'storage_name' => $storageName,
+                'original_name' => $this->nullableString($attachment['filename'] ?? null) ?? '',
+                'mime_type' => $mimeType,
+                'role' => $role,
+            ];
+        }
+
+        return $selection;
+    }
+
+    /**
+     * A submitted list of ids, as strings.
+     *
+     * A single scalar is accepted as well as an array, because a hand-written
+     * form or a `curl` one-liner sends one value where a checkbox list sends
+     * many; both are read the same way and neither is trusted for anything but
+     * its own id.
+     *
+     * @return list<string>
+     */
+    private function textList(mixed $value): array
+    {
+        if (is_string($value)) {
+            return [$value];
+        }
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $items = [];
+        foreach ($value as $item) {
+            if (is_string($item)) {
+                $items[] = $item;
+            }
+        }
+
+        return $items;
+    }
     /**
      * Queue a fresh copy of this candidate's confirmation preview for the parish.
      *
@@ -1965,38 +2234,52 @@ final class ReviewQueuePage
         );
     }
 
-    private function renderNotice(): void
+    /**
+     * The banner for whatever the reviewer just did, as markup.
+     *
+     * Returned rather than echoed because the success routes for "create a blank
+     * event", "resolve an ambiguous match" and #172's "publish the source
+     * material" all redirect back to `?candidate=<id>`, which `renderPage()`
+     * answers from the detail branch. Before #172 the notice was echoed from the
+     * listing branch only, so all three landed on a screen that showed no
+     * confirmation at all; the two older instances were unreachable in exactly
+     * the same way. Rendering once into a string lets both branches show it, and
+     * keeps `$_GET` reading where it already was -- the detail view is handed
+     * markup, never the request.
+     */
+    private function renderNotice(): string
     {
         if (isset($_GET['resolved'])) {
-            ?>
-            <div class="notice notice-success"><p><?php echo esc_html(
+            return '<div class="notice notice-success"><p>' . esc_html(
                 'The ambiguous match is resolved and recorded in the history below. The event details are '
                 . 'still yours to check before you approve it; nothing has been published.'
-            ); ?></p></div>
-            <?php
-            return;
+            ) . '</p></div>';
         }
 
         if (isset($_GET['created'])) {
-            ?>
-            <div class="notice notice-success"><p><?php echo esc_html(
+            return '<div class="notice notice-success"><p>' . esc_html(
                 'A blank event has been created below, beside the poster. Fill in what the poster says, '
                 . 'check it against the poster, then choose Approve. Nothing is published until you do.'
-            ); ?></p></div>
-            <?php
-            return;
+            ) . '</p></div>';
         }
+
+        if (isset($_GET['promoted'])) {
+            return '<div class="notice notice-success"><p>' . esc_html(
+                'The files you chose are now in the media library and attached to the published event. '
+                . 'They are public from now on, and removing one from the event will not delete the file.'
+            ) . '</p></div>';
+        }
+
         if (! isset($_GET['changed'], $_GET['skipped'], $_GET['manual'])) {
-            return;
+            return '';
         }
         $changed = absint($this->text($_GET['changed']));
         $skipped = absint($this->text($_GET['skipped']));
         $manual = absint($this->text($_GET['manual']));
-        ?>
-        <div class="notice notice-info"><p><?php echo esc_html(sprintf(
+
+        return '<div class="notice notice-info"><p>' . esc_html(sprintf(
             '%d updated, %d already decided or unchanged, %d require manual resolution before approval.',
             $changed, $skipped, $manual
-        )); ?></p></div>
-        <?php
+        )) . '</p></div>';
     }
 }

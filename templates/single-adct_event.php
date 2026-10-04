@@ -47,6 +47,37 @@ $venue = $event['venue'];
             <?php echo $event['description_html']; ?>
         </div>
 
+        <?php if ($event['source_material'] !== []) : ?>
+            <?php
+            /*
+             * Issue #172, AC6. Only files a reviewer promoted appear here, and the
+             * list comes from the view rather than from a media query, so nothing
+             * a parish supplied can reach the page on its own.
+             *
+             * `name` is the parish's own filename, so it is escaped here; the URL
+             * is escaped by esc_url() and, because it is a different origin from
+             * the uploads directory, it is marked noopener like the Google
+             * Calendar link above.
+             *
+             * A theme that overrides this template is running a static copy and
+             * will not have this section. See docs/architecture.md.
+             */
+            ?>
+            <section class="adct-event__source-material" aria-label="Parish documents">
+                <h2>Documents from the parish</h2>
+                <ul>
+                    <?php foreach ($event['source_material'] as $source) : ?>
+                        <li>
+                            <a href="<?php echo esc_url($source['url']); ?>" target="_blank" rel="noopener noreferrer">
+                                <?php echo esc_html($source['name'] !== '' ? $source['name'] : $source['label']); ?>
+                            </a>
+                            <span class="adct-event__source-material-role"><?php echo esc_html($source['label']); ?></span>
+                        </li>
+                    <?php endforeach; ?>
+                </ul>
+            </section>
+        <?php endif; ?>
+
         <section class="adct-event__actions" aria-label="Calendar options">
             <a class="button" href="<?php echo esc_url($event['calendar_url']); ?>">Download ICS</a>
             <?php if ($event['google_calendar_url'] !== null) : ?>

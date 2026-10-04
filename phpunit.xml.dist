@@ -18,6 +18,16 @@
             <directory>tests/Unit</directory>
         </testsuite>
     </testsuites>
+    <php>
+        <!--
+            PHP's default memory_limit is 128M, which this suite intermittently exceeds:
+            AttachmentStoragePolicyTest materialises a 15 MB string (the production
+            maximum attachment size), and PHPUnit's random execution order makes the
+            total depend on what is still resident when that test runs. The limit is
+            raised here rather than by changing the test, so the expectation stays honest.
+        -->
+        <ini name="memory_limit" value="256M"/>
+    </php>
     <source>
         <include>
             <directory>src</directory>

@@ -45,6 +45,13 @@ final class EventEditor
      */
     private ?array $parishNames = null;
 
+    /**
+     * @param SubjectAuditPanel|null $auditPanel the per-event audit trail box (issue #58)
+     * @param EventSourceMaterialEditor|null $sourceMaterial the poster and
+     *        bulletin box, with its own add and remove routes (#172). Null when
+     *        source material is unavailable, which hides the box rather than
+     *        showing one whose buttons all refuse.
+     */
     public function __construct(
         private ParishRepository $parishes,
         private VenueRepository $venues,
@@ -52,8 +59,25 @@ final class EventEditor
         private RRulePresetMapper $presetMapper,
         private DateTimeZone $timezone,
         private ClockInterface $clock,
-        private ?SubjectAuditPanel $auditPanel = null
+        private ?SubjectAuditPanel $auditPanel = null,
+        private ?EventSourceMaterialEditor $sourceMaterial = null
     ) {
+    }
+
+    /**
+     * Attach the poster and bulletin box after construction (issue #172).
+     *
+     * The box needs the review queue repository, which is only built once
+     * WordPress has loaded and has read a setting from the options table, so it
+     * cannot be built at the same time as this editor. Passing it to the
+     * constructor would force either a null box or a second repository
+     * configured differently from the one the review queue uses, and two
+     * repositories configured differently is how a file ends up offered on one
+     * screen and not the other.
+     */
+    public function attachSourceMaterial(?EventSourceMaterialEditor $sourceMaterial): void
+    {
+        $this->sourceMaterial = $sourceMaterial;
     }
 
     public function registerMetaBox(): void
@@ -77,6 +101,11 @@ final class EventEditor
                 'low'
             );
         }
+
+        // Registered here rather than from `Plugin.php`, so the box cannot appear
+        // on the event screen without the editor that owns it. Null-safe because
+        // the collaborators are resolved lazily.
+        $this->sourceMaterial?->registerMetaBox();
 
         foreach (['normal', 'advanced', 'side'] as $context) {
             remove_meta_box('postcustom', EventPostType::POST_TYPE, $context);
@@ -502,6 +531,14 @@ final class EventEditor
             return new \WP_Error(
                 'adct_event_internal_source',
                 'The source candidate link can only be set by the publishing workflow.',
+                ['status' => 400]
+            );
+        }
+
+        if (array_key_exists(EventPostType::SOURCE_MATERIAL_META_KEY, $incoming)) {
+            return new \WP_Error(
+                'adct_event_private_source_material',
+                'The published source files can only be changed by the promotion action.',
                 ['status' => 400]
             );
         }

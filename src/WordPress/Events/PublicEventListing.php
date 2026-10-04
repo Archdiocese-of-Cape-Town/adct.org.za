@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Events;
 
+use ADCT\ParishIntake\Core\Attachments\SourceMaterialRole;
 use ADCT\ParishIntake\Core\Events\GeoDistance;
 use ADCT\ParishIntake\Core\Events\IcsFeedLinks;
 use ADCT\ParishIntake\Core\Events\ListingRange;
@@ -12,6 +13,7 @@ use ADCT\ParishIntake\Core\Events\NearMePoint;
 use ADCT\ParishIntake\Core\Events\RecurrenceSummary;
 use ADCT\ParishIntake\Core\Events\SuburbResolver;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
+use ADCT\ParishIntake\Core\Ports\SourceMaterialStoreInterface;
 use DateTimeZone;
 use InvalidArgumentException;
 use RuntimeException;
@@ -51,7 +53,8 @@ final class PublicEventListing
         private DateTimeZone $timezone,
         private string $pluginFile,
         private ?EventListingGeneration $generation = null,
-        private ?SuburbResolver $suburbs = null
+        private ?SuburbResolver $suburbs = null,
+        private ?SourceMaterialStoreInterface $sourceMaterial = null
     ) {
     }
 
@@ -304,7 +307,7 @@ final class PublicEventListing
         return $html;
     }
 
-        /**
+    /**
      * The opt-in "Near me" controls.
      *
      * Nothing here asks for a location on its own: the browser prompt appears only when a visitor
@@ -571,6 +574,7 @@ final class PublicEventListing
             } elseif (get_post_meta($post->ID, 'status_flag', true) === 'postponed') {
                 $html .= '<span class="adct-events__badge">Postponed</span>';
             }
+            $html .= $this->cardSourceMaterial($post);
             $html .= '</li>';
         }
 
@@ -593,6 +597,90 @@ final class PublicEventListing
         }
 
         return $html . '</nav></section>';
+    }
+
+    /**
+     * The card's source material: the poster if the event has a featured image,
+     * otherwise a link to the first promoted document (issue #172, AC6).
+     *
+     * This asks the promotion store and nothing else, for the same reason the
+     * single event page does: an attachment sitting in the media library that
+     * nobody promoted must not become reachable by being a child of the event.
+     * A null store is the "no port wired" case and renders nothing, rather than
+     * falling back to a broad `get_children()`, which would be the opposite of
+     * the guarantee.
+     *
+     * The poster is the featured image rather than a role lookup, so that
+     * removing a source item's featured-image role empties the card the same way
+     * it empties the single-event figure. A promoted poster that was never set
+     * as the featured image must not sneak back in through this path.
+     *
+     * A reference whose URL will not resolve is skipped, not emptied: an empty
+     * `href` reads as "the bulletin is here" when it is not.
+     */
+    private function cardSourceMaterial(\WP_Post $post): string
+    {
+        $poster = $this->cardPoster((int) $post->ID);
+        if ($poster !== null) {
+            return '<figure class="adct-events__poster">'
+        . '<img src="' . esc_url($poster['url']) . '"'
+        . ' width="' . esc_attr((string) $poster['width']) . '"'
+        . ' height="' . esc_attr((string) $poster['height']) . '"'
+        . ' alt="' . esc_attr($poster['alt']) . '" loading="lazy">'
+        . '</figure>';
+        }
+
+        if ($this->sourceMaterial === null) {
+            return '';
+        }
+
+        foreach ($this->sourceMaterial->forEvent((int) $post->ID) as $reference) {
+            $url = wp_get_attachment_url($reference->attachmentId);
+            if (! is_string($url) || $url === '') {
+                continue;
+            }
+
+            return '<p class="adct-events__source"><a href="' . esc_url($url) . '" rel="noopener noreferrer">'
+        . esc_html(SourceMaterialRole::label($reference->role)) . '</a></p>';
+        }
+
+        return '';
+    }
+
+    /**
+     * The event's featured image, or null when it has none that can be shown.
+     *
+     * The same answer `PublicEventPage::poster()` gives, by the same route, so
+     * that clearing the featured-image role empties the card and the single
+     * event figure together. The alt text is the attachment's own alt, and
+     * empty when there is none: an empty alt is right for a poster that repeats
+     * the event's title, which the card already shows beside it, and inventing
+     * text from the filename would only be a worse version of it.
+     *
+     * @return array{url: string, width: int, height: int, alt: string}|null
+     */
+    private function cardPoster(int $postId): ?array
+    {
+        if ($postId < 1 || ! has_post_thumbnail($postId)) {
+            return null;
+        }
+
+        $thumbnailId = get_post_thumbnail_id($postId);
+        if (! is_int($thumbnailId) || $thumbnailId < 1) {
+            return null;
+        }
+
+        $image = wp_get_attachment_image_src($thumbnailId, 'medium');
+        if (! is_array($image) || ! isset($image[0], $image[1], $image[2])) {
+            return null;
+        }
+
+        return [
+            'url' => (string) $image[0],
+            'width' => (int) $image[1],
+            'height' => (int) $image[2],
+            'alt' => trim((string) get_post_meta($thumbnailId, '_wp_attachment_image_alt', true)),
+        ];
     }
 
     /**

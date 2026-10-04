@@ -185,7 +185,129 @@ final class AttachmentRepositoryTest extends TestCase
 
             self::assertStringEndsWith('ORDER BY id ASC', $query);
         }
-    }
+
+                    /**
+                     * Issue #172: the review queue's promote control needs the message's
+                     * attachments that a person is allowed to publish as an event's source
+                     * material.
+                     */
+                    public function testPromotableAttachmentsAreTheFourTypesAPublicPageCanServe(): void
+                    {
+                        $database = new RecordingAttachmentDatabase();
+
+                        (new AttachmentRepository($database))->findPromotableForMessage(7);
+
+                        $arguments = $database->preparedArguments[0]['arguments'] ?? [];
+
+                        self::assertSame(7, $arguments[0] ?? null);
+                        self::assertSame(
+                            ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'],
+                            array_slice($arguments, 1, 4)
+                        );
+                    }
+
+                    /**
+                     * HEIC and HEIF pass the intake storage allowlist but render in no
+                     * browser, so promoting one would publish a dead link. The issue
+                     * excludes them from promotion and shows them as unavailable.
+                     */
+                    public function testPromotableAttachmentsExcludeTheTypesNoBrowserRenders(): void
+                    {
+                        $database = new RecordingAttachmentDatabase();
+
+                        (new AttachmentRepository($database))->findPromotableForMessage(7);
+
+                        $arguments = $database->preparedArguments[0]['arguments'] ?? [];
+
+                        self::assertNotContains('image/heic', $arguments);
+                        self::assertNotContains('image/heif', $arguments);
+                        self::assertNotContains('application/gzip', $arguments);
+                    }
+
+                    /**
+                     * A row with no stored file has nothing to copy, so offering it would
+                     * produce a promote button that can only fail.
+                     */
+                    public function testPromotableAttachmentsRequireAStoredFile(): void
+                    {
+                        $database = new RecordingAttachmentDatabase();
+
+                        (new AttachmentRepository($database))->findPromotableForMessage(7);
+
+                        $query = (string) ($database->preparedArguments[0]['query'] ?? '');
+
+                        self::assertStringContainsString('storage_path IS NOT NULL', $query);
+                        self::assertStringContainsString('storage_path <> %s', $query);
+                    }
+
+                    /**
+                     * The promote control needs the intake row id and the parish's own
+                     * filename; it has no use for a whole document's extracted text, which
+                     * can be the entire bulletin.
+                     */
+                    public function testPromotableAttachmentsDoNotCarryTheExtractedText(): void
+                    {
+                        $database = new RecordingAttachmentDatabase();
+
+                        (new AttachmentRepository($database))->findPromotableForMessage(7);
+
+                        self::assertStringNotContainsString(
+                            'extracted_text',
+                            (string) ($database->preparedArguments[0]['query'] ?? '')
+                        );
+                    }
+
+                    public function testPromotableAttachmentsAreOrderedAsTheyArrived(): void
+                    {
+                        $database = new RecordingAttachmentDatabase();
+
+                        (new AttachmentRepository($database))->findPromotableForMessage(7);
+
+                        self::assertStringEndsWith('ORDER BY id ASC', (string) ($database->preparedArguments[0]['query'] ?? ''));
+                    }
+
+                    public function testThePromotableQueryHasOneArgumentPerPlaceholder(): void
+                    {
+                        $database = new RecordingAttachmentDatabase();
+
+                        try {
+                            (new AttachmentRepository($database))->findPromotableForMessage(7);
+                        } catch (\Throwable $thrown) {
+                            self::fail('prepare() was given a mismatched query: ' . $thrown->getMessage());
+                        }
+
+                        $prepared = $database->preparedArguments[0] ?? null;
+
+                        self::assertSame(
+                            substr_count((string) $prepared['query'], '%s') + substr_count((string) $prepared['query'], '%d'),
+                            count($prepared['arguments'])
+                        );
+                    }
+
+                    public function testPromotableAttachmentsRejectAnImpossibleMessageId(): void
+                    {
+                        $this->expectException(\InvalidArgumentException::class);
+
+                        (new AttachmentRepository(new RecordingAttachmentDatabase()))->findPromotableForMessage(0);
+                    }
+
+                    public function testThePromotableQueryIsSafeOnBothMySqlAndMariaDb(): void
+                    {
+                        $database = new RecordingAttachmentDatabase();
+
+                        (new AttachmentRepository($database))->findPromotableForMessage(3);
+
+                        $query = (string) ($database->preparedArguments[0]['query'] ?? '');
+
+                        foreach (['REGEXP', 'JSON_', '->>', 'GROUP_CONCAT', 'ON DUPLICATE', 'WINDOW '] as $unsupported) {
+                            self::assertStringNotContainsString(
+                                $unsupported,
+                                $query,
+                                sprintf('%s is not portable across MySQL 8 and MariaDB 10.11', $unsupported)
+                            );
+                        }
+                    }
+                }
 
 final class RecordingAttachmentDatabase implements DatabaseConnectionInterface
 {

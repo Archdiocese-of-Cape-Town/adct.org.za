@@ -39,7 +39,9 @@ namespace ADCT\ParishIntake\WordPress\Admin {
     // reason current_user_can() is: several screen tests need it, and a second
     // declaration would be a fatal. It fans out to whichever per-class buffer
     // the calling test set up, so each test still owns its own capture.
-    if (! function_exists('ADCT\ParishIntake\WordPress\Admin\error_log')) {
+        // event_editor_logs is the buffer EventSourceMaterialEditorTest captures
+        // into; the two existing buffers are for the screens that were here first.
+        if (! function_exists('ADCT\ParishIntake\WordPress\Admin\error_log')) {
         function error_log(string $message): bool
         {
             if (isset($GLOBALS['audit_page_logs']) && is_array($GLOBALS['audit_page_logs'])) {
@@ -50,8 +52,12 @@ namespace ADCT\ParishIntake\WordPress\Admin {
                 $GLOBALS['parser_page_logs'][] = $message;
             }
 
-            return true;
-        }
+                    if (isset($GLOBALS['event_editor_logs']) && is_array($GLOBALS['event_editor_logs'])) {
+                        $GLOBALS['event_editor_logs'][] = $message;
+                    }
+
+                    return true;
+                }
     }
 
     if (! function_exists('ADCT\ParishIntake\WordPress\Admin\esc_html')) {

@@ -28,6 +28,8 @@ Short records of important decisions: what was decided, why, and what follows fr
 | [0022](0022-surface-unparsed-date-time-in-the-notes-column.md) | Surface unparsed date/time in the notes column, with no schema change | Proposed |
 | [0023](0023-injected-publication-authority-policy.md) | Publication authority is an injected policy, defaulting to review | Proposed |
 | [0024](0024-runtime-resolution-of-prefixed-dependency-classes.md) | Resolve prefixed dependency classes by name at runtime; release checks must exercise behaviour | Proposed |
+| [0025](0025-media-library-copy-is-the-promotion.md) | The media-library copy is the promotion, and promotion is always a human act | Superseded by [0026](0026-publishing-an-event-publishes-its-source-material.md) |
+| [0026](0026-publishing-an-event-publishes-its-source-material.md) | Publishing an event publishes its source material | Proposed |
 
 Template:
 
