@@ -1,4 +1,4 @@
-# ADR 0024: The media-library copy is the promotion, and promotion is always a human act
+# ADR 0025: The media-library copy is the promotion, and promotion is always a human act
 
 - Status: Proposed
 - Date: 2026-10-06

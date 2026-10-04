@@ -266,7 +266,7 @@ The private post meta `_adct_pi_featured_override` records that an editor explic
 
 #### Promoted source material (`source_attachment_ids`)
 
-An event's poster or the bulletin PDF it arrived as becomes public only through **promotion**, a deliberate human action taken either on the review queue or on the event editor ([ADR 0024](decisions/0024-media-library-copy-is-the-promotion.md)). Nothing is ever promoted automatically, at any point, for any MIME type.
+An event's poster or the bulletin PDF it arrived as becomes public only through **promotion**, a deliberate human action taken either on the review queue or on the event editor ([ADR 0025](decisions/0025-media-library-copy-is-the-promotion.md)). Nothing is ever promoted automatically, at any point, for any MIME type.
 
 Promotion is recorded as an ordered list in the `source_attachment_ids` post meta on `adct_event`, one entry per promoted file:
 
