@@ -45,8 +45,31 @@ enum ActionTokenPurpose: string
      */
     case REVERT_CHANGE = 'revert_change';
 
+    /**
+     * Move one approver between per-item email and the daily digest (#169).
+     * Implemented by NotifyModeChangeHandler, reached from the link in the
+     * approval email so a dean who has never had a wp-admin account can set
+     * the mode without an administrator acting for them.
+     *
+     * The token carries no authority: it names the wp_user_id to change, and
+     * the handler re-resolves that user's live, active deanery assignments on
+     * both the GET preview and the POST, so a dean removed from every deanery
+     * in the meantime cannot change anything with an old link.
+     *
+     * Seven days rather than the fourteen the decision-making purposes get:
+     * the link arrives with the next notice the recipient reads, and a
+     * preference is the one link in the set that only ever needs to be walked
+     * from the inbox once. Seven days keeps it valid across a weekend and a
+     * quiet Monday, and expires it before it can be found months later.
+     */
+    case CHANGE_NOTIFY_MODE = 'change_notify_mode';
+
     public function defaultLifetimeSeconds(): int
     {
-        return $this === self::LOGIN ? 30 * 60 : 14 * 24 * 60 * 60;
+        return match ($this) {
+            self::LOGIN => 30 * 60,
+            self::CHANGE_NOTIFY_MODE => 7 * 24 * 60 * 60,
+            default => 14 * 24 * 60 * 60,
+        };
     }
 }

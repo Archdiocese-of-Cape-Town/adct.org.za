@@ -32,6 +32,14 @@ final class AuditSubjectType
     public const SETTINGS = 'settings';
 
     /**
+     * An approver's own notification preference; subject_id is the WordPress
+     * user ID, not a row of a plugin table. A dean may approve for more than
+     * one deanery, so this deliberately does not point at a single assignment
+     * (issue #169).
+     */
+    public const APPROVAL_PREFERENCE = 'approval_preference';
+
+    /**
      * Human labels for the filter dropdown, keyed by subject type.
      *
      * @return array<string, string>
@@ -45,6 +53,7 @@ final class AuditSubjectType
             self::PARISH => 'Parish',
             self::EVENT => 'Published event',
             self::SETTINGS => 'Plugin settings',
+            self::APPROVAL_PREFERENCE => 'Approver email preference',
         ];
     }
 

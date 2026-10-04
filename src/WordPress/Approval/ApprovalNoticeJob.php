@@ -18,7 +18,9 @@ use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\MailerInterface;
 use ADCT\ParishIntake\Core\Ports\MailQueueRepositoryInterface;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
+use ADCT\ParishIntake\WordPress\Auth\NotifyModeChangeHandler;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
+use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use DateTimeZone;
 use OutOfBoundsException;
 use RuntimeException;
@@ -42,6 +44,7 @@ final class ApprovalNoticeJob extends AbstractJob implements JobRunLifecycleInte
         private readonly MailerInterface $mailer,
         private readonly MailQueueRepositoryInterface $queue,
         private readonly ClockInterface $clock,
+        private readonly DeaneryApproverRepository $approvers,
         private readonly int $digestHour = self::DEFAULT_DIGEST_HOUR
     ) {
         if ($digestHour < 0 || $digestHour > 23) {
@@ -235,6 +238,26 @@ final class ApprovalNoticeJob extends AbstractJob implements JobRunLifecycleInte
                 $html .= '</section>';
             }
             $digest = $notices[0]['notify_mode'] === Approver::NOTIFY_DIGEST;
+            // The link to change the frequency goes only in the per-item mail
+            // (issue #169). Someone already on the daily digest has nothing to
+            // switch away from and would only be annoyed by the repetition, and
+            // minting a token for a message we have already decided not to send
+            // would issue a credential nothing points at.
+            if (! $digest) {
+                $binding = $this->notifyModeBindingFor($email);
+
+                // Without a live account there is nothing to bind the token to,
+                // so no link is offered rather than one that could only be
+                // refused. Deanery approvers always have one (ADR 0007).
+                if ($binding !== null) {
+                    $settingsUrl = ActionTokenEndpoint::urlForToken(
+                        $this->tokens->issue($binding)->token()
+                    );
+                    $text = 'Change how often we email you: ' . $settingsUrl . "\n\n" . $text;
+                    $html = '<p><a href="' . esc_url($settingsUrl) . '">'
+                        . esc_html('Change how often we email you') . '</a></p>' . $html;
+                }
+            }
             $this->mailer->enqueue(new OutboundEmail(
                 $email, $digest ? 'Your daily event approvals' : 'Events awaiting your approval',
                 $html, $text,
@@ -257,6 +280,45 @@ final class ApprovalNoticeJob extends AbstractJob implements JobRunLifecycleInte
             . ' WHERE candidate_id = %d AND recipient = %s LIMIT 1',
             $id, $email
         )) !== [];
+    }
+
+    /**
+     * The token binding that lets this recipient change their own email
+     * frequency, or null when there is nobody to bind it to.
+     *
+     * Two things have to line up, and neither can be guessed from the notice:
+     *
+     * - The user comes from the live deanery assignment, keyed on the *notice*
+     *   address. An approver's approval address is deliberately allowed to
+     *   differ from the address on their WordPress account, so looking the user
+     *   up by the notice address would find nobody.
+     * - The bound email is the address on the *account*, not the notice address.
+     *   The handler re-resolves the live account from the bound email before it
+     *   will change anything, so a binding carrying the notice address would be
+     *   refused even for a dean who holds the right to change it.
+     *
+     * A notice address belonging to more than one live approver gets no link:
+     * there is no single right answer for who is choosing, and offering one
+     * would mean guessing.
+     */
+    private function notifyModeBindingFor(string $email): ?ActionTokenBinding
+    {
+        $userIds = $this->approvers->findLiveWpUserIdsByNoticeEmail($email);
+        if (count($userIds) !== 1) {
+            return null;
+        }
+
+        $user = get_userdata($userIds[0]);
+        if (! $user instanceof \WP_User || $user->user_email === '') {
+            return null;
+        }
+
+        return new ActionTokenBinding(
+            ActionTokenPurpose::CHANGE_NOTIFY_MODE,
+            NotifyModeChangeHandler::SUBJECT_TYPE,
+            $userIds[0],
+            $user->user_email
+        );
     }
 
     private function utcNow(): string

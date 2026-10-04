@@ -23,6 +23,7 @@ use ADCT\ParishIntake\WordPress\Auth\ApprovalEditHandler;
 use ADCT\ParishIntake\WordPress\Auth\ConfirmationDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRenewalDelivery;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenRateLimitStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
@@ -70,7 +71,8 @@ final class ConfirmationRoutingCheck
             $tokens,
             Plugin::mailer(),
             new WordPressMailQueueRepository($db),
-            $clock
+            $clock,
+            new DeaneryApproverRepository($db)
         );
         $approvalHandler = static fn (ActionTokenPurpose $purpose): ApprovalDecisionHandler
             => new ApprovalDecisionHandler(

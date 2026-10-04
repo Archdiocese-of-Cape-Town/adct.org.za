@@ -27,6 +27,15 @@ final class ActionTokenEndpoint
     public const ACTION_FIELD = 'adct_token_action';
     public const NONCE_FIELD = 'adct_token_nonce';
     public const REASON_FIELD = 'adct_denial_reason';
+    /**
+     * The submitted notify mode, read and validated by NotifyModeChangeHandler.
+     *
+     * Threaded alongside `$edits` rather than inside it because it is a single
+     * choice, not a set of fields, and because it belongs to a different
+     * purpose. `$edits` is whitelisted to the four correction fields, which is
+     * what stops an unrecognised key in a POST from reaching anything.
+     */
+    public const NOTIFY_MODE_FIELD = NotifyModeField::POST_FIELD;
 
     private const ROUTE_VALUE = '1';
 
@@ -74,6 +83,7 @@ final class ActionTokenEndpoint
         foreach (['title', 'event_date', 'event_time', 'description'] as $field) {
             $edits[$field] = $this->stringInput($_POST['adct_edit_' . $field] ?? null);
         }
+        $notifyMode = $this->stringInput($_POST[self::NOTIFY_MODE_FIELD] ?? null);
         $remoteAddress = $this->stringInput($_SERVER['REMOTE_ADDR'] ?? null);
 
         $response = $this->respond(
@@ -84,12 +94,16 @@ final class ActionTokenEndpoint
             $nonce,
             $remoteAddress,
             $reason,
-            $edits
+            $edits,
+            $notifyMode
         );
 
         $this->send($response);
     }
 
+    /**
+     * @param array<string, mixed> $edits
+     */
     public function respond(
         string $method,
         string $queryToken,
@@ -98,7 +112,8 @@ final class ActionTokenEndpoint
         string $nonce,
         string $remoteAddress,
         string $reason = '',
-        array $edits = []
+        array $edits = [],
+        string $notifyMode = ''
     ): ActionTokenHttpResponse {
         $method = strtoupper($method);
 
@@ -141,7 +156,7 @@ final class ActionTokenEndpoint
             return $this->respondToRenewal($postToken, $remoteAddress);
         }
 
-        return $this->respondToAction($postToken, $reason, $edits);
+        return $this->respondToAction($postToken, $reason, $edits, $notifyMode);
     }
 
     public static function urlForToken(string $token): string
@@ -240,8 +255,15 @@ final class ActionTokenEndpoint
         return new ActionTokenHttpResponse(200, $this->renderPreview($preview, $token, $inspection->binding->purpose));
     }
 
-    private function respondToAction(string $token, string $reason, array $edits): ActionTokenHttpResponse
-    {
+    /**
+     * @param array<string, mixed> $edits
+     */
+    private function respondToAction(
+        string $token,
+        string $reason,
+        array $edits,
+        string $notifyMode = ''
+    ): ActionTokenHttpResponse {
         $inspection = $this->tokens->inspect($token);
 
         if (
@@ -282,6 +304,30 @@ final class ActionTokenEndpoint
             ));
         }
 
+        if ($inspection->binding->purpose === ActionTokenPurpose::CHANGE_NOTIFY_MODE
+            && $handler instanceof NotifyModeChangeHandler
+        ) {
+            if ($inspection->status !== ActionTokenStatus::VALID) {
+                return $this->statusResponse($inspection, $token);
+            }
+            try {
+                $outcome = $handler->save($inspection->binding, $token, $this->tokens, $notifyMode);
+            } catch (DomainException $failure) {
+                return new ActionTokenHttpResponse(409, $this->renderPage(
+                    __('Preference not changed', 'adct-parish-intake'), $failure->getMessage()
+                ));
+            } catch (RuntimeException $failure) {
+                error_log('[ADCT Parish Intake] Notification mode change failed ('
+                    . get_class($failure) . ').');
+                return new ActionTokenHttpResponse(503, $this->renderPage(
+                    __('Preference could not be saved', 'adct-parish-intake'),
+                    __('Please try again later.', 'adct-parish-intake')
+                ));
+            }
+            return new ActionTokenHttpResponse(200, $this->renderPage(
+                __('Preference saved', 'adct-parish-intake'), $outcome->message
+            ));
+        }
         if ($handler instanceof AtomicActionTokenHandlerInterface) {
             if (strlen($reason) > 1000 || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $reason)) {
                 return new ActionTokenHttpResponse(400, $this->renderPage(
@@ -418,7 +464,9 @@ final class ActionTokenEndpoint
             . $this->hiddenField(self::TOKEN_PARAM, $token)
             . $this->hiddenField(self::ACTION_FIELD, 'perform')
             . $this->nonceField('perform', $token)
-            . $this->editFields($preview)
+            . ($purpose === ActionTokenPurpose::CHANGE_NOTIFY_MODE
+                ? $this->notifyModeField($preview)
+                : $this->editFields($preview))
             . (in_array($purpose, [ActionTokenPurpose::DENY, ActionTokenPurpose::REJECT_EVENT], true)
                 ? '<label>' . esc_html__('Reason (optional)', 'adct-parish-intake')
                     . ' <textarea name="' . esc_attr(self::REASON_FIELD) . '" maxlength="1000"></textarea></label>'
@@ -488,6 +536,34 @@ final class ActionTokenEndpoint
         return $html;
     }
 
+    /**
+     * The single-choice notify-mode control.
+     *
+     * A purpose-specific branch rather than an extension of editFields(): the
+     * choices are a fixed list owned by NotifyModeChangeHandler::MODES, and a
+     * radio group has to render that list with the stored choice preselected.
+     * Edit fields are free text and whitelisted; these are not free text, and
+     * nothing outside MODES is ever rendered as a selectable option.
+     */
+    private function notifyModeField(ActionTokenPreview $preview): string
+    {
+        $stored = $preview->formFields[NotifyModeField::FORM_FIELD] ?? null;
+        $html = '';
+
+        foreach (NotifyModeChangeHandler::MODES as $value => $label) {
+            $id = self::NOTIFY_MODE_FIELD . '_' . $value;
+            $html .= '<label for="' . esc_attr($id) . '">'
+                . '<input type="radio" name="' . esc_attr(self::NOTIFY_MODE_FIELD) . '"'
+                . ' id="' . esc_attr($id) . '"'
+                . ' value="' . esc_attr($value) . '"'
+                . ($value === $stored ? ' checked' : '')
+                . ' required>'
+                . ' ' . esc_html($label)
+                . '</label><br>';
+        }
+
+        return $html;
+    }
     private function renderRenewalForm(string $token, ?ActionTokenBinding $binding): string
     {
         if ($binding === null || $this->handlers->forPurpose($binding->purpose) === null) {

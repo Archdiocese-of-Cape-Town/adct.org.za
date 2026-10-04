@@ -17,6 +17,10 @@ use ADCT\ParishIntake\Core\Auth\ActionTokenService;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Jobs\JobStepResult;
 use ADCT\ParishIntake\Core\Mail\MailQueueEnqueueResult;
+use ADCT\ParishIntake\Core\Auth\ActionTokenBinding;
+use ADCT\ParishIntake\WordPress\Auth\NotifyModeChangeHandler;
+use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
+use ADCT\ParishIntake\Core\Auth\ActionTokenRecord;
 use ADCT\ParishIntake\Core\Mail\MailQueueStatus;
 use ADCT\ParishIntake\Core\Mail\OutboundEmail;
 use ADCT\ParishIntake\Core\Ports\ApprovalRouteRepositoryInterface;
@@ -27,6 +31,9 @@ use ADCT\ParishIntake\Core\Ports\MailQueueRepositoryInterface;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalNoticeJob;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalRecipients;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
+use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
+use ADCT\ParishIntake\Tests\Support\NotifyModeClock;
+use ADCT\ParishIntake\Tests\Support\NotifyModeDatabase;
 use DateTimeImmutable;
 use DateTimeZone;
 use InvalidArgumentException;
@@ -87,7 +94,8 @@ final class ApprovalNoticeJobTest extends TestCase
             ),
             $this->createMock(MailerInterface::class),
             $this->createMock(MailQueueRepositoryInterface::class),
-            $this->createMock(ClockInterface::class)
+            $this->createMock(ClockInterface::class),
+            new DeaneryApproverRepository($database)
         );
 
         $this->expectException(RuntimeException::class);
@@ -118,7 +126,8 @@ final class ApprovalNoticeJobTest extends TestCase
             ),
             $this->createMock(MailerInterface::class),
             $this->createMock(MailQueueRepositoryInterface::class),
-            $this->createMock(ClockInterface::class)
+            $this->createMock(ClockInterface::class),
+            new DeaneryApproverRepository($database)
         );
 
         self::assertNull($job->processNext(null));
@@ -163,7 +172,8 @@ final class ApprovalNoticeJobTest extends TestCase
             new ActionTokenService($tokenStore, $clock),
             $mailer,
             $queue,
-            $clock
+            $clock,
+            new DeaneryApproverRepository($database)
         );
 
         $result = $job->processNext(null);
@@ -214,7 +224,8 @@ final class ApprovalNoticeJobTest extends TestCase
                 new ActionTokenService($this->createMock(ActionTokenStoreInterface::class), $this->createMock(ClockInterface::class)),
                 $this->createMock(MailerInterface::class),
                 $this->createMock(MailQueueRepositoryInterface::class),
-                $this->createMock(ClockInterface::class)
+                $this->createMock(ClockInterface::class),
+                new DeaneryApproverRepository($database)
             );
 
             $result = $job->processNext(null);
@@ -238,6 +249,7 @@ final class ApprovalNoticeJobTest extends TestCase
             $this->createMock(MailerInterface::class),
             $this->createMock(MailQueueRepositoryInterface::class),
             $this->createMock(ClockInterface::class),
+            new DeaneryApproverRepository($this->createMock(DatabaseConnectionInterface::class)),
             $digestHour
         );
 
@@ -273,6 +285,7 @@ final class ApprovalNoticeJobTest extends TestCase
             $this->createMock(MailerInterface::class),
             $this->createMock(MailQueueRepositoryInterface::class),
             $this->createMock(ClockInterface::class),
+            new DeaneryApproverRepository($this->createMock(DatabaseConnectionInterface::class)),
             24
         );
     }
@@ -328,49 +341,225 @@ final class ApprovalNoticeJobTest extends TestCase
         );
     }
 
+    public function testThePerItemMailOffersThePreferenceLinkToADeanWhoseApprovalAddressDiffersFromTheirAccount(): void
+    {
+        $job = $this->runJobForApprover(
+            Approver::NOTIFY_EACH,
+            'dean-office@example.test',
+            new DateTimeImmutable('2026-09-24 03:15:00', new DateTimeZone('Africa/Johannesburg')),
+            [['account' => 'dean.personal@example.test', 'email' => 'dean-office@example.test']]
+        );
+
+        $binding = self::notifyModeBinding($job['bindings']);
+        self::assertNotNull($binding, 'The mail must offer the preference link to a dean.');
+        // The address the mail went to is the approval address. The address the
+        // token is bound to has to be the one on the account, because that is
+        // what the handler re-resolves before it will change anything. Binding
+        // the notice address would hand out a token the holder cannot use.
+        self::assertSame('dean-office@example.test', $job['enqueued'][0]->recipient);
+        self::assertSame('dean.personal@example.test', $binding->email);
+        self::assertSame(NotifyModeDatabase::DEAN_USER_ID, $binding->subjectId);
+        self::assertSame(NotifyModeChangeHandler::SUBJECT_TYPE, $binding->subjectType);
+    }
+
+    public function testThePreferenceLinkResolvesToTheSameLiveAccountTheHandlerWillReResolve(): void
+    {
+        $job = $this->runJobForApprover(
+            Approver::NOTIFY_EACH,
+            'dean-office@example.test',
+            new DateTimeImmutable('2026-09-24 03:15:00', new DateTimeZone('Africa/Johannesburg')),
+            [['account' => 'dean.personal@example.test', 'email' => 'dean-office@example.test']]
+        );
+
+        $binding = self::notifyModeBinding($job['bindings']);
+        self::assertNotNull($binding);
+
+        // End to end, through the real handler and the real repository: the
+        // binding the mail carries must be one the handler accepts. If this
+        // fails, the dean has a link that opens a refusal page.
+        $handler = new NotifyModeChangeHandler(
+            new NotifyModeDatabase(),
+            new DeaneryApproverRepository(
+                $this->approverDatabaseFor(
+                    [['account' => 'dean.personal@example.test', 'email' => 'dean-office@example.test']]
+                )
+            ),
+            new NotifyModeClock('2026-09-24 10:15:00')
+        );
+
+        self::assertNull(
+            $handler->preview($binding),
+            'The mailed binding must not be refused as unresolvable.'
+        );
+    }
+
+    public function testThePreferenceLinkIsNotOfferedWhenTheNoticeAddressIsNotAnyLiveApprovers(): void
+    {
+        // No live assignment carries the notice address, so there is nobody to
+        // bind a token to. The mail is still the ordinary approval mail.
+        $job = $this->runJobForApprover(
+            Approver::NOTIFY_EACH,
+            'dean-office@example.test',
+            new DateTimeImmutable('2026-09-24 03:15:00', new DateTimeZone('Africa/Johannesburg')),
+            []
+        );
+
+        self::assertCount(1, $job['enqueued']);
+        self::assertNull(
+            self::notifyModeBinding($job['bindings']),
+            'A notice address belonging to nobody live must not carry a preference link.'
+        );
+
+        // Non-vacuity: the same pass with a live approver at that address does
+        // mint the link, so the refusal above is the lookup and not the fixture.
+        $offered = $this->runJobForApprover(
+            Approver::NOTIFY_EACH,
+            'dean-office@example.test',
+            new DateTimeImmutable('2026-09-24 03:15:00', new DateTimeZone('Africa/Johannesburg'))
+        );
+        self::assertNotNull(self::notifyModeBinding($offered['bindings']));
+    }
+
+    public function testThePreferenceLinkIsNotOfferedWhenTwoLiveApproversShareTheNoticeAddress(): void
+    {
+        // A shared address has no single right answer for who is choosing, so
+        // the plugin offers no link rather than guessing between them.
+        $job = $this->runJobForApprover(
+            Approver::NOTIFY_EACH,
+            'shared-desk@example.test',
+            new DateTimeImmutable('2026-09-24 03:15:00', new DateTimeZone('Africa/Johannesburg')),
+            [
+                ['account' => 'first.dean@example.test', 'email' => 'shared-desk@example.test'],
+                ['account' => 'second.dean@example.test', 'email' => 'shared-desk@example.test'],
+            ]
+        );
+
+        // Both are still notified about the event itself.
+        self::assertCount(1, $job['enqueued']);
+        self::assertNull(
+            self::notifyModeBinding($job['bindings']),
+            'A notice address shared by two live approvers must not carry a preference link.'
+        );
+    }
+
+    public function testTheDailyDigestMailCarriesNoPreferenceLink(): void
+    {
+        $job = $this->runJobForApprover(
+            Approver::NOTIFY_DIGEST,
+            'dean-digest@example.test',
+            new DateTimeImmutable('2026-09-24 07:05:00', new DateTimeZone('Africa/Johannesburg'))
+        );
+
+        self::assertCount(1, $job['enqueued']);
+        self::assertNull(
+            self::notifyModeBinding($job['bindings']),
+            'Someone already on the daily digest has nothing to switch away from.'
+        );
+    }
+
     /**
-     * Runs one approval-notice pass for a single active dean on a parish.
+     * @param array<int, array{account: string, email: string}> $approvers
+     *        The WordPress accounts and the live deanery assignments behind the
+     *        notice addresses. Real parishes use three shapes: the approval
+     *        address is the account address; it is deliberately a different
+     *        address (the operator guide allows it); or it belongs to nobody
+     *        live. An empty list models the third: the mail still goes out,
+     *        because it is driven by the route, but there is nobody to bind a
+     *        preference token to.
      *
      * @return array{
      *     statements: list<string>,
      *     enqueued: list<OutboundEmail>,
      *     queueKey: ?string,
-     *     result: JobStepResult
+     *     result: JobStepResult,
+     *     bindings: list<ActionTokenBinding>,
+     *     approvers: array<int, array{account: string, email: string}>
      * }
      */
     private function runJobForApprover(
         string $mode,
         string $email,
-        DateTimeImmutable $localNow
+        DateTimeImmutable $localNow,
+        ?array $approvers = null
     ): array {
-        $GLOBALS['adct_test_wp_users'] = [9 => new \WP_User(9, $email)];
-        $GLOBALS['adct_test_wp_caps'] = [9 => [Capabilities::APPROVE_DEANERY]];
+        $approvers ??= [['account' => $email, 'email' => $email]];
+
+        $fake = new NotifyModeDatabase();
+        $wpUserId = NotifyModeDatabase::DEAN_USER_ID;
+        $notice = [[
+            'candidate_id' => 44,
+            'notify_mode' => $mode,
+            'fields' => json_encode(['title' => 'Retreat day'], JSON_THROW_ON_ERROR),
+            'notes' => '[]',
+            'message_id' => null,
+            'sender_email' => 'parish-office@example.test',
+            'sender_name' => '',
+            'parish_name' => 'St Anne',
+        ]];
+        $GLOBALS['adct_test_wp_users'] = [];
+        $GLOBALS['adct_test_wp_caps'] = [];
+
+        // The routed approver and the live assignment both follow the notice
+        // address, but they are seeded separately: the route decides who is
+        // notified about the event, the assignment table decides who may change
+        // their own notification frequency. Letting them drift apart is the
+        // point of these tests, so they must not be built from one another.
+        $fake->setVisibleAssignments([]);
+
+        // The routed approver always has an account, even when the caller says
+        // no live assignment carries the notice address: the mail is still sent
+        // because the route decides that, not the assignment table.
+        $GLOBALS['adct_test_wp_users'][$wpUserId] = new \WP_User($wpUserId, $email);
+        $GLOBALS['adct_test_wp_caps'][$wpUserId] = [Capabilities::APPROVE_DEANERY];
+
+        foreach (array_values($approvers) as $index => $approver) {
+            $userId = $wpUserId + $index;
+            $GLOBALS['adct_test_wp_users'][$userId] = new \WP_User($userId, $approver['account']);
+            $GLOBALS['adct_test_wp_caps'][$userId] = [Capabilities::APPROVE_DEANERY];
+
+            $assignmentId = NotifyModeDatabase::ASSIGNMENT_ID + $index;
+            $fake->setAssignmentEmail($assignmentId, $approver['email']);
+            $fake->setAssignmentWpUserId($assignmentId, $userId);
+            $fake->addVisibleAssignment($assignmentId);
+        }
 
         $database = $this->createMock(DatabaseConnectionInterface::class);
         $database->method('prefix')->willReturn('wp_');
         $database->method('lastError')->willReturn('');
-        $database->method('prepare')->willReturnCallback(static fn (string $sql, mixed ...$args): string => $sql);
-        $database->method('getResults')->willReturnOnConsecutiveCalls(
-            [],
-            [[
-                'id' => 44,
-                'fields' => json_encode(['title' => 'Retreat day'], JSON_THROW_ON_ERROR),
-                'match_kind' => 'new',
-                'status' => 'awaiting_approval',
-                'parish_id' => 5,
-                'notes' => '[]',
-            ]],
-            [],
-            [[
-                'candidate_id' => 44,
-                'notify_mode' => $mode,
-                'fields' => json_encode(['title' => 'Retreat day'], JSON_THROW_ON_ERROR),
-                'notes' => '[]',
-                'message_id' => null,
-                'sender_email' => 'parish-office@example.test',
-                'sender_name' => '',
-                'parish_name' => 'St Anne',
-            ]]
+        // Faithful enough for the fakes that read prepared arguments back out
+        // of the trailing JSON $wpdb->prepare appends, without interpolating the
+        // placeholders themselves.
+        $database->method('prepare')->willReturnCallback(
+            static function (string $sql, mixed ...$args): string {
+                return $args === [] ? $sql : $sql . '/*' . json_encode($args) . '*/';
+            }
+        );
+        // Answered by the shape of the query rather than by call order: a new
+        // read (the notice-address lookup behind the preference link) must not
+        // silently shift the rows the rest of the pass depends on.
+        $database->method('getResults')->willReturnCallback(
+            static function (string $sql) use ($fake, $notice): array {
+                if (str_contains($sql, 'SELECT n.candidate_id')) {
+                    return $notice;
+                }
+                if (str_contains($sql, 'adct_pi_deanery_approvers')) {
+                    return $fake->getResults($sql);
+                }
+                if (str_contains($sql, 'adct_pi_event_candidates')) {
+                    return [[
+                        'id' => 44,
+                        'fields' => json_encode(['title' => 'Retreat day'], JSON_THROW_ON_ERROR),
+                        'match_kind' => 'new',
+                        'status' => 'awaiting_approval',
+                        'parish_id' => 5,
+                        'notes' => '[]',
+                    ]];
+                }
+
+                // The pending-notice probe and noticeExists() read the notices
+                // table; both are empty for a fresh candidate.
+                return [];
+            }
         );
 
         $statements = [];
@@ -385,7 +574,7 @@ final class ApprovalNoticeJobTest extends TestCase
         $routes->method('findForParish')->willReturn(new ApprovalRouteSnapshot(
             7,
             true,
-            [new Approver(4, 9, $email, 'Dean Test', $mode, true, true)]
+            [new Approver(4, $wpUserId, $email, 'Dean Test', $mode, true, true)]
         ));
 
         $queueKey = null;
@@ -394,6 +583,14 @@ final class ApprovalNoticeJobTest extends TestCase
             static function (string $recipient, string $key) use (&$queueKey): null {
                 $queueKey = $key;
                 return null;
+            }
+        );
+
+        $bindings = [];
+        $tokenStore = $this->createMock(ActionTokenStoreInterface::class);
+        $tokenStore->method('create')->willReturnCallback(
+            static function (ActionTokenRecord $record) use (&$bindings): void {
+                $bindings[] = $record->binding;
             }
         );
 
@@ -412,13 +609,11 @@ final class ApprovalNoticeJobTest extends TestCase
         $result = (new ApprovalNoticeJob(
             $database,
             new ApprovalRecipients(new ApprovalRouteResolver($routes)),
-            new ActionTokenService(
-                $this->createMock(ActionTokenStoreInterface::class),
-                $clock
-            ),
+            new ActionTokenService($tokenStore, $clock),
             $mailer,
             $queue,
-            $clock
+            $clock,
+            new DeaneryApproverRepository($database)
         ))->processNext(null);
 
         self::assertNotNull($result);
@@ -428,7 +623,47 @@ final class ApprovalNoticeJobTest extends TestCase
             'enqueued' => $enqueued,
             'queueKey' => $queueKey,
             'result' => $result,
+            'bindings' => $bindings,
+            'approvers' => $approvers,
         ];
+    }
+
+    /**
+     * A database whose live assignments carry exactly the given approval
+     * addresses, for the tests that check what the handler makes of a binding
+     * the mail produced.
+     *
+     * @param array<int, array{account: string, email: string}> $approvers
+     */
+    private function approverDatabaseFor(array $approvers): DatabaseConnectionInterface
+    {
+        $database = new NotifyModeDatabase();
+        $database->setVisibleAssignments([]);
+        foreach (array_values($approvers) as $index => $approver) {
+            $assignmentId = NotifyModeDatabase::ASSIGNMENT_ID + $index;
+            $database->setAssignmentEmail($assignmentId, $approver['email']);
+            $database->setAssignmentWpUserId($assignmentId, NotifyModeDatabase::DEAN_USER_ID + $index);
+            $database->addVisibleAssignment($assignmentId);
+        }
+
+        return $database;
+    }
+
+    /**
+     * The binding for the one token issued for the notification preference, or
+     * null when the mail offered no such link.
+     *
+     * @param list<ActionTokenBinding> $bindings
+     */
+    private static function notifyModeBinding(array $bindings): ?ActionTokenBinding
+    {
+        foreach ($bindings as $binding) {
+            if ($binding->purpose === ActionTokenPurpose::CHANGE_NOTIFY_MODE) {
+                return $binding;
+            }
+        }
+
+        return null;
     }
 }
 

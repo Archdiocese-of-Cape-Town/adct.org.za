@@ -5,6 +5,7 @@ declare(strict_types=1);
 use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;
 use ADCT\ParishIntake\Core\Auth\ActionTokenBinding;
 use ADCT\ParishIntake\Core\Auth\ActionTokenHandlerRegistry;
+use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 use ADCT\ParishIntake\Core\Auth\ActionTokenRateLimiter;
 use ADCT\ParishIntake\Core\Auth\ActionTokenRenewalService;
 use ADCT\ParishIntake\Core\Auth\ActionTokenService;
@@ -16,15 +17,16 @@ use ADCT\ParishIntake\WordPress\Approval\ReviewerNotificationPreference;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalDecisionHandler;
 use ADCT\ParishIntake\WordPress\Auth\ApprovalEditHandler;
+use ADCT\ParishIntake\WordPress\Auth\NotifyModeChangeHandler;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRenewalDelivery;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenRateLimitStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Database\WordPressMailQueueRepository;
 use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeSettings;
 use ADCT\ParishIntake\WordPress\Plugin;
-use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 
 final class ApprovalDecisionCheck
 {
@@ -38,7 +40,8 @@ final class ApprovalDecisionCheck
         $tokens = new ActionTokenService(new WordPressActionTokenStore($db), $clock);
         $recipients = new ApprovalRecipients(new ApprovalRouteResolver(new ApprovalRouteRepository($db)));
         $queue = new WordPressMailQueueRepository($db);
-        $job = new ApprovalNoticeJob($db, $recipients, $tokens, Plugin::mailer(), $queue, $clock);
+        $job = new ApprovalNoticeJob($db, $recipients, $tokens, Plugin::mailer(), $queue, $clock,
+            new DeaneryApproverRepository($db));
         $approveHandler = new ApprovalDecisionHandler(ActionTokenPurpose::APPROVE_EVENT, $db, $recipients,
             Plugin::candidatePublisher(), Plugin::mailer(), $clock);
         $registry = new ActionTokenHandlerRegistry([
@@ -132,6 +135,46 @@ final class ApprovalDecisionCheck
             preg_match_all('/adct_token=([A-Za-z0-9_-]{43})/', (string) $mail['body_text'], $matches);
             return [$mail, $matches[1]];
         };
+        // Position in the body is not an identity, and neither is the purpose on its own.
+                //
+                // ApprovalNoticeJob::deliver() mints Approve, Reject and Edit PER CANDIDATE (the loop over
+                // $notices binds each token to that iteration's $id), so a grouped mail carries several
+                // tokens for the same purpose, each bound to a different candidate. Matching on purpose
+                // alone returns the FIRST one in the body, which is candidate one whenever the caller
+                // meant candidate two -- a link that resolves, resolves successfully, and acts on the
+                // wrong event. The subject id is therefore part of the key: purpose says what the link
+                // does, the subject id says which event it acts on, and a token belonging to an adjacent
+                // candidate is not an acceptable neighbour to borrow.
+                //
+                // Resolving through the token store and comparing both fields means a link that is added,
+                // removed, reordered or duplicated cannot silently point a decision at the wrong button or
+                // the wrong event. An absent purpose+subject fails loudly here rather than being borrowed.
+                $describe = static function (string $link) use ($tokens): string {
+                    $binding = $tokens->inspect($link)->binding;
+                    return $binding === null
+                        ? 'unresolvable'
+                        : $binding->purpose->value . '@' . $binding->subjectType . '#' . $binding->subjectId;
+                };
+                $linkFor = static function (array $links, ActionTokenPurpose $want, int $subjectId, string $subjectType, string $label) use (
+                    $tokens, $fail, $describe
+                ): string {
+                    foreach ($links as $link) {
+                        $binding = $tokens->inspect((string) $link)->binding;
+                        if (
+                            $binding !== null
+                            && $binding->purpose === $want
+                                            && $binding->subjectType === $subjectType
+                            && $binding->subjectId === $subjectId
+                        ) {
+                            return (string) $link;
+                        }
+                    }
+                    $fail('Approver decisions: no ' . $label . ' link (' . $want->value
+                                        . ' on ' . $subjectType . ' ' . $subjectId . ') was in the mail; found: '
+                        . implode(', ', array_map($describe, $links)));
+                    return '';
+                };
+                        $candidateSubject = 'event_candidate';
         $act = static function (string $secret, string $reason = '', array $edits = []) use ($endpoint): array {
             $get = $endpoint->respond('GET', $secret, '', '', '', '203.0.113.90');
             preg_match('/name="adct_token_nonce" value="([^"]+)"/', $get->body, $nonce);
@@ -147,22 +190,53 @@ final class ApprovalDecisionCheck
             $job->processNext((string) ($first - 1));
             [$deanMail, $deanLinks] = $tokensFor($first, $deanEmail);
             [$reviewMail, $reviewLinks] = $tokensFor($first, $reviewerEmail);
+            // The reviewer mails are grouped over BOTH candidates, so each of these names the
+                        // candidate the assertion below is about. $reviewApprove/$reviewEdit/$reviewReject are
+                        // deliberately split across the two events: first approves, second is edited and then
+                        // rejected. Asking for candidate one where the assertion reads candidate two would pass
+                        // every check and change the wrong event.
+                        $deanApprove = $linkFor($deanLinks, ActionTokenPurpose::APPROVE_EVENT, $first, $candidateSubject, "the dean's approval");
+                                                $reviewApprove = $linkFor($reviewLinks, ActionTokenPurpose::APPROVE_EVENT, $first, $candidateSubject, "the reviewer's approval");
+                                                $reviewEdit = $linkFor($reviewLinks, ActionTokenPurpose::EDIT, $second, $candidateSubject, "the reviewer's edit");
+                                                $reviewReject = $linkFor($reviewLinks, ActionTokenPurpose::REJECT_EVENT, $second, $candidateSubject, "the reviewer's rejection");
+            // The dean holds a live deanery_approvers row, so the notice also carries the
+            // digest-choice link (issue #169). The reviewer holds no assignment row, so the same
+            // mail to them is unchanged and they set the choice on their own profile page instead.
+            // Both halves are asserted: which token the dean's extra link is, and that the reviewer
+            // is sent no such link rather than one that would resolve to nobody on click.
+            // The digest-choice link is bound to the dean's wp user, not to a candidate
+            // (ApprovalNoticeJob mints it against NotifyModeChangeHandler::SUBJECT_TYPE with the
+            // approver's user id), so it is looked up by its own subject -- asking for a
+            // candidate id here would be the wrong question, not merely a stricter one.
+            $deansPurpose = $linkFor(
+                $deanLinks,
+                ActionTokenPurpose::CHANGE_NOTIFY_MODE,
+                $deanId,
+                NotifyModeChangeHandler::SUBJECT_TYPE,
+                "the dean's digest-choice"
+            );
+            $reviewerPurposes = array_map(static function (string $link) use ($tokens): string {
+                return $tokens->inspect($link)->binding?->purpose->value ?? 'unresolvable';
+            }, $reviewLinks);
+            $check($deansPurpose !== $deanApprove
+                && ! in_array(ActionTokenPurpose::CHANGE_NOTIFY_MODE->value, $reviewerPurposes, true),
+                'the digest-choice link must reach only approvers with a live deanery assignment.');
             $check($deanMail['priority'] == 2 && $reviewMail['priority'] == 2
-                && count($deanLinks) === 6 && count($reviewLinks) === 6
+                && count($deanLinks) === 7 && count($reviewLinks) === 6
                 && str_contains($deanMail['body_text'], 'Unknown sender')
                 && str_contains($deanMail['body_text'], 'Parish: Example parish')
                 && str_contains($deanMail['body_text'], (new DateTimeImmutable($date))->format('j F Y'))
                 && str_contains($deanMail['body_text'], $submitter),
                 'one grouped, priority-2 email per active dean and reviewer must show trust and sender.');
-            $check($endpoint->respond('GET', $deanLinks[0], '', '', '', '203.0.113.90')->statusCode === 200
+            $check($endpoint->respond('GET', $deanApprove, '', '', '', '203.0.113.90')->statusCode === 200
                 && $wpdb->get_var($wpdb->prepare(
                     "SELECT status FROM {$base}event_candidates WHERE id = %d", $first
                 )) === 'awaiting_approval', 'GET must not approve.');
-            $check($endpoint->respond('POST', '', $deanLinks[0], 'perform', 'wrong', '203.0.113.90')->statusCode === 403,
+            $check($endpoint->respond('POST', '', $deanApprove, 'perform', 'wrong', '203.0.113.90')->statusCode === 403,
                 'POST without a valid nonce must not approve.');
-            $reviewerPreview = $endpoint->respond('GET', $reviewLinks[0], '', '', '', '203.0.113.90');
+            $reviewerPreview = $endpoint->respond('GET', $reviewApprove, '', '', '', '203.0.113.90');
             preg_match('/name="adct_token_nonce" value="([^"]+)"/', $reviewerPreview->body, $reviewerNonce);
-            [$get, $approved] = $act($deanLinks[0]);
+            [$get, $approved] = $act($deanApprove);
             $row = $wpdb->get_row($wpdb->prepare(
                 "SELECT status, approved_via, approved_by, match_event_id FROM {$base}event_candidates WHERE id = %d",
                 $first
@@ -171,17 +245,17 @@ final class ApprovalDecisionCheck
             $check($approved->statusCode === 200 && $row['status'] === 'published'
                 && $row['approved_via'] === 'dean' && $row['approved_by'] === $deanEmail,
                 'dean approval must publish once.');
-            $laterGet = $endpoint->respond('GET', $reviewLinks[0], '', '', '', '203.0.113.90');
-            $laterPost = $endpoint->respond('POST', '', $reviewLinks[0], 'perform',
+            $laterGet = $endpoint->respond('GET', $reviewApprove, '', '', '', '203.0.113.90');
+            $laterPost = $endpoint->respond('POST', '', $reviewApprove, 'perform',
                 $reviewerNonce[1] ?? '', '203.0.113.90'
             );
             $check(str_contains($laterGet->body, 'Already approved')
                 && str_contains($laterGet->body, $deanEmail) && $laterPost->statusCode === 409,
                 'reviewer arriving second must see the winning approver and cannot reverse it.');
             preg_match('/name="adct_token_nonce" value="([^"]+)"/', $get->body, $deanNonce);
-            $replayed = $endpoint->respond('POST', '', $deanLinks[0], 'perform',
+            $replayed = $endpoint->respond('POST', '', $deanApprove, 'perform',
                 $deanNonce[1] ?? '', '203.0.113.90');
-            $check($tokens->inspect($deanLinks[0])->status === ActionTokenStatus::USED
+            $check($tokens->inspect($deanApprove)->status === ActionTokenStatus::USED
                 && $replayed->statusCode === 200,
                 'replaying the winning token must recover without another publication.');
 
@@ -192,16 +266,17 @@ final class ApprovalDecisionCheck
                         $job->beginRun();
                         $job->processNext((string) ($stale - 1));
                         [, $staleLinks] = $tokensFor($stale, $deanEmail);
+                        $staleApprove = $linkFor($staleLinks, ActionTokenPurpose::APPROVE_EVENT, $stale, $candidateSubject, 'the stale dean approval');
                         $wpdb->query($wpdb->prepare(
                             "UPDATE {$base}deanery_approvers SET active = 0 WHERE wp_user_id = %d", $deanId
                         ));
-                        $refusedGet = $endpoint->respond('GET', $staleLinks[0], '', '', '', '203.0.113.90');
-                        $check($tokens->inspect($staleLinks[0])->status === ActionTokenStatus::VALID,
+                        $refusedGet = $endpoint->respond('GET', $staleApprove, '', '', '', '203.0.113.90');
+                        $check($tokens->inspect($staleApprove)->status === ActionTokenStatus::VALID,
                             'a GET refused because the dean lost the deanery must leave the link usable.');
                         $wpdb->query($wpdb->prepare(
                             "UPDATE {$base}deanery_approvers SET active = 1 WHERE wp_user_id = %d", $deanId
                         ));
-                        [, $staleApproved] = $act($staleLinks[0]);
+                        [, $staleApproved] = $act($staleApprove);
                         $check($staleApproved->statusCode === 200
                             && $wpdb->get_var($wpdb->prepare(
                                 "SELECT status FROM {$base}event_candidates WHERE id = %d", $stale
@@ -215,7 +290,7 @@ final class ApprovalDecisionCheck
                 $submitter, 'approval-live:' . $first
             )) === 1, 'the submitter must receive one queued live link.');
 
-            [$editGet, $editPost] = $act($reviewLinks[5], '', [
+            [$editGet, $editPost] = $act($reviewEdit, '', [
                 'title' => 'Corrected second', 'event_date' => (new DateTimeImmutable($date))->format('d/m/Y'),
                 'event_time' => '10:30', 'description' => 'Corrected invented text.',
             ]);
@@ -224,7 +299,7 @@ final class ApprovalDecisionCheck
                     "SELECT fields FROM {$base}event_candidates WHERE id = %d", $second
                 )), 'Corrected second'),
                 'Edit must save corrections without approving.');
-            [, $rejected] = $act($reviewLinks[4], 'Incorrect date <script>alert(1)</script>');
+            [, $rejected] = $act($reviewReject, 'Incorrect date <script>alert(1)</script>');
             $check($rejected->statusCode === 200
                 && $wpdb->get_var($wpdb->prepare(
                     "SELECT status FROM {$base}event_candidates WHERE id = %d", $second
@@ -251,7 +326,8 @@ final class ApprovalDecisionCheck
                 $orphan, $deanEmail
             )) === 0, 'a parish without a deanery must not notify a dean.');
             [, $orphanLinks] = $tokensFor($orphan, $reviewerEmail);
-            [, $reviewerApproval] = $act($orphanLinks[0]);
+            $orphanApprove = $linkFor($orphanLinks, ActionTokenPurpose::APPROVE_EVENT, $orphan, $candidateSubject, 'the orphan reviewer approval');
+            [, $reviewerApproval] = $act($orphanApprove);
             $check($reviewerApproval->statusCode === 200, 'a reviewer must approve without a deanery.');
             $posts[] = (int) $wpdb->get_var($wpdb->prepare(
                 "SELECT match_event_id FROM {$base}event_candidates WHERE id = %d", $orphan
@@ -515,10 +591,11 @@ final class ApprovalDecisionCheck
             $job->beginRun();
             $job->processNext((string) ($suppressed - 1));
             [$suppressedMail, $suppressedLinks] = $tokensFor($suppressed, $deanEmail);
+            $suppressedLink = $linkFor($suppressedLinks, ActionTokenPurpose::APPROVE_EVENT, $suppressed, $candidateSubject, 'the suppressed approval');
             $check($suppressedMail['status'] === 'suppressed'
-                && $endpoint->respond('GET', $suppressedLinks[0], '', '', '', '203.0.113.90')->statusCode === 200
+                && $endpoint->respond('GET', $suppressedLink, '', '', '', '203.0.113.90')->statusCode === 200
                 && ! str_contains(
-                    $endpoint->respond('GET', $suppressedLinks[0], '', '', '', '203.0.113.90')->body,
+                    $endpoint->respond('GET', $suppressedLink, '', '', '', '203.0.113.90')->body,
                     'Approve and publish'
                 ) && $wpdb->get_var($wpdb->prepare(
                     "SELECT status FROM {$base}event_candidates WHERE id = %d", $suppressed
