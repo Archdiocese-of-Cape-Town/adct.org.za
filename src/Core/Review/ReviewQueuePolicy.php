@@ -19,7 +19,7 @@ final class ReviewQueuePolicy
     /** @param array<string, mixed> $candidate */
     public function canDecide(array $candidate): bool
     {
-        return ($candidate['status'] ?? null) === 'awaiting_approval'
+        return in_array($candidate['status'] ?? null, ['awaiting_approval', 'duplicate'], true)
             && empty($candidate['approved_by'])
             && empty($candidate['decided_at']);
     }

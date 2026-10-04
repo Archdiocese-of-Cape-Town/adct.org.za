@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Database\Repository;
 
+use ADCT\ParishIntake\Core\Matching\MatchReviewPolicy;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
@@ -485,58 +486,138 @@ final class ReviewQueueRepository
         }
     }
 
-    public function assignParish(int $id, int $parishId, int $userId, string $email): bool
-    {
-        if ($id < 1 || $parishId < 1) {
-            throw new InvalidArgumentException('Candidate and parish IDs must be positive.');
+    /**
+     * Assign, clear or leave a candidate's parish alone, and — for an ambiguous
+     * match — clear the two `fields` keys that block approval (issue #177).
+     *
+     * One method for both routes, deliberately. The queue's bulk assignment and
+     * the candidate detail screen's resolution panel are the same act, and a
+     * second implementation would be a second thing to keep in step with the
+     * scope predicate, the lock and the audit row.
+     *
+     * The defaults are the bulk form's behaviour exactly: a reviewer, no venue
+     * change and no ambiguity keys in play. So `handleBulk()` and the
+     * `candidate_parish_assigned` row it has always written are untouched.
+     *
+     * @param int|null $venueId the venue this candidate should point at, or null
+     *        to keep the stored one. Only meaningful on the resolution route,
+     *        where the venue is often the reason the match was ambiguous.
+     * @param bool $resolveMatch clear `match_review_required` and
+     *        `matched_candidate_id` in the same transaction as the parish
+     *        change. The keys are *removed*, not set to false:
+     *        {@see \ADCT\ParishIntake\Core\Matching\MatchReviewPolicy::requiresManualReview()}
+     *        decides on key presence, so a falsified key would still ask for
+     *        manual review forever.
+     */
+    public function assignParish(
+        int $id,
+        int $parishId,
+        int $userId,
+        string $email,
+        bool $reviewer = true,
+        ?int $venueId = null,
+        bool $resolveMatch = false
+    ): bool {
+        if ($id < 1) {
+            throw new InvalidArgumentException('The candidate ID must be positive.');
+        }
+        if ($parishId < 1 && ! $resolveMatch) {
+            // Only the resolution route may deliberately clear a parish. The
+            // bulk form posts `parish_id = 0` when no parish was chosen, and it
+            // is refused before it ever reaches here.
+            throw new InvalidArgumentException('Select an active parish.');
         }
         $this->execute('START TRANSACTION');
         try {
-            $candidate = $this->lockedCandidate($id, $userId, $email, true);
+            $candidate = $this->lockedCandidate($id, $userId, $email, $reviewer);
             if ($candidate === null || $candidate['status'] !== 'awaiting_approval'
                 || ! empty($candidate['approved_by']) || ! empty($candidate['decided_at'])) {
                 throw new DomainException('Only an undecided candidate can be assigned a parish.');
             }
-            if ($this->row($this->database->prepare(
+            if ($parishId > 0 && $this->row($this->database->prepare(
                 "SELECT id FROM {$this->parishes} WHERE id = %d AND status = %s",
                 $parishId, 'active'
             )) === null) {
                 throw new DomainException('Select an active parish.');
             }
             $fields = $this->policy->fields($candidate);
-            $venueId = (int) ($fields['venue_id'] ?? 0);
-            if ($venueId > 0 && $this->row($this->database->prepare(
+            $storedVenueId = (int) ($fields['venue_id'] ?? 0);
+            if ($venueId !== null) {
+                $storedVenueId = $venueId;
+            }
+            if ($storedVenueId > 0 && $parishId > 0 && $this->row($this->database->prepare(
                 "SELECT id FROM {$this->venues} WHERE id = %d AND parish_id = %d",
-                $venueId, $parishId
+                $storedVenueId, $parishId
             )) === null) {
-                throw new DomainException('The existing venue belongs to another parish; resolve the venue first.');
+                // On the resolution route the venue is the thing being fixed, so
+                // say so plainly instead of telling them to do the very thing they
+                // are already doing.
+                throw new DomainException(
+                    $resolveMatch
+                        ? 'That venue belongs to another parish. Choose a venue of the parish you selected, '
+                          . 'or leave the venue blank.'
+                        : 'The existing venue belongs to another parish; resolve the venue first.'
+                );
             }
             $previous = (int) ($candidate['parish_id'] ?? 0);
-            if ($previous === $parishId) {
+            $previousReview = MatchReviewPolicy::requiresManualReview($fields);
+            $unchanged = ($previous === $parishId)
+                && ($venueId === null || $venueId === (int) ($fields['venue_id'] ?? 0))
+                // Resolving something that is not ambiguous has nothing to do, and
+                // writing an audit row claiming a block was cleared that never
+                // existed would be worse than doing nothing.
+                && (! $resolveMatch || ! $previousReview);
+            if ($unchanged) {
                 $this->execute('COMMIT');
                 return false;
             }
-            $fields['parish_id'] = $parishId;
+            if ($parishId > 0) {
+                $fields['parish_id'] = $parishId;
+            } else {
+                unset($fields['parish_id']);
+            }
+            if ($venueId !== null) {
+                if ($venueId > 0) {
+                    $fields['venue_id'] = $venueId;
+                } else {
+                    unset($fields['venue_id']);
+                }
+            }
+            if ($resolveMatch) {
+                unset($fields['match_review_required'], $fields['matched_candidate_id']);
+            }
             $now = $this->timestamp();
-            $previousParish = $candidate['parish_id'] === null
-                ? 'parish_id IS NULL'
-                : 'parish_id = %d';
+            // The parish that was there when the row was locked goes into the
+            // WHERE clause: two people opening the same candidate and resolving it
+            // to different parishes must not both succeed, and the second write
+            // must not claim the first one's parish as its own "from".
+            $previousGuard = $candidate['parish_id'] === null ? 'parish_id IS NULL' : 'parish_id = %d';
+            // A cleared parish is written as a real SQL NULL, not 0: the column
+            // is `bigint unsigned`, so 0 would name a parish that does not
+            // exist. Same reason as {@see updateFields()}.
             $updated = $this->execute($this->database->prepare(
-                "UPDATE {$this->candidates} SET parish_id = %d, fields = %s, updated_at = %s "
-                . "WHERE id = %d AND status = %s AND {$previousParish} AND approved_by IS NULL AND decided_at IS NULL",
-                $parishId, json_encode($fields, JSON_THROW_ON_ERROR), $now,
-                ...($candidate['parish_id'] === null
-                    ? [$id, $candidate['status']]
-                    : [$id, $candidate['status'], (int) $candidate['parish_id']])
+                "UPDATE {$this->candidates} SET parish_id = NULLIF(%s, ''), fields = %s, updated_at = %s "
+                . 'WHERE id = %d AND status = %s AND approved_by IS NULL AND decided_at IS NULL'
+                . " AND {$previousGuard}",
+                $parishId > 0 ? (string) $parishId : '',
+                json_encode($fields, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE),
+                $now,
+                $id,
+                'awaiting_approval',
+                ...($candidate['parish_id'] === null ? [] : [(int) $candidate['parish_id']])
             ));
             if ($updated !== 1) {
                 $this->execute('ROLLBACK');
                 return false;
             }
-            $this->audit($email, 'candidate_parish_assigned', $id, [
+            $this->audit($email, $resolveMatch ? 'candidate_match_resolved' : 'candidate_parish_assigned', $id, [
+                'role' => $reviewer ? 'reviewer' : 'dean',
                 'from_parish_id' => $previous ?: null,
-                'to_parish_id' => $parishId,
+                'to_parish_id' => $parishId > 0 ? $parishId : null,
+                'venue_id' => $venueId,
+                'left_unassigned' => $parishId < 1,
                 'sender_trust_changed' => false,
+                'match_review_cleared' => $resolveMatch ? $previousReview : null,
             ], $now);
             $this->execute('COMMIT');
             return true;
@@ -629,12 +710,14 @@ final class ReviewQueueRepository
                  *
                  * `fields['parish_id']` and the `parish_id` column are two statements of one
                  * fact, and {@see assignParish()} is the only supported way to change the
-                 * fact. Neither candidate editor renders a `parish_id` field, so the
-                 * validator's `values` never carries the key and treating "absent" as
-                 * "clear" wrote the column as SQL NULL on every text correction. A candidate
-                 * with no parish matches no deanery scope predicate, so the editor who fixed
-                 * the title lost sight of the item and so did every other approver — the row
-                 * became unapprovable while still sitting in `awaiting_approval`.
+                  * fact. The wp-admin candidate editor (#61) does render a `parish_id`
+                  * control, but its posted key goes through `updateFields()` only; the
+                  * front-end approval editor (#72) still posts none, so treating "absent"
+                  * as "clear" would write the column as SQL NULL on every ordinary text
+                  * correction there. A candidate with no parish matches no deanery scope
+                  * predicate, so the editor who fixed the title lost sight of the item and
+                  * so did every other approver — the row became unapprovable while still
+                  * sitting in `awaiting_approval`.
                  *
                  * So the key is honoured only when it is actually present. A zero or
                  * negative value is not a parish and would write the same broken NULL, so it

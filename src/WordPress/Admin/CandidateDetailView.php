@@ -34,6 +34,10 @@ final class CandidateDetailView
      *        when the notice had no browser-readable image to show
      * @param bool $canStartManual whether this reviewer may open a blank event to
      *        type in beside the poster
+     * @param bool $needsMatchResolution whether the parser flagged this candidate's
+     *        match as ambiguous, so the reviewer is offered the control that clears
+     *        it (issue #177). Decided by the page from the same policy the publisher
+     *        trusts, never from the rendered markup.
      */
     public function render(
         array $row,
@@ -48,7 +52,8 @@ final class CandidateDetailView
         ?callable $isDownloadable = null,
         ?callable $renderFieldConfidence = null,
         string $posterPanel = '',
-        bool $canStartManual = false
+        bool $canStartManual = false,
+        bool $needsMatchResolution = false
     ): void {
         $id = (int) $row['id'];
         $fields = CandidateFieldSet::decodeFields($row['fields'] ?? null);
@@ -65,6 +70,7 @@ final class CandidateDetailView
                 <a href="<?php echo esc_url(ReviewQueuePage::queueUrl($tab, $search)); ?>">Back to review queue</a>
             </p>
             <?php $this->renderAttemptNotice($attempt, $id); ?>
+            <?php $this->renderMatchResolution($row, $fields, $parishes, $id, $tab, $search, $needsMatchResolution); ?>
             <div class="adct-pi-detail-columns">
                 <div class="adct-pi-detail-main">
                     <?php $this->form->render(
@@ -88,6 +94,83 @@ final class CandidateDetailView
             </div>
             <?php $this->source->render($message, $attachments, $isDownloadable, $canStartManual); ?>
             <?php $this->renderDownloadForms($id); ?>
+        </div>
+        <?php
+    }
+
+    /**
+     * The control that clears an ambiguous match, above the editor (issue #177).
+     *
+     * Its own form, its own action and its own nonce, so pressing Enter in a title
+     * field cannot resolve anything. It sits above the editor rather than in the
+     * side column because it is the one thing standing between this candidate and an
+     * approval, and the reviewer should not have to read a provenance table to find
+     * it.
+     *
+     * The panel is only offered when the candidate actually needs it. Once resolved,
+     * the flag is gone and the panel disappears rather than offering to resolve a
+     * second time.
+     *
+     * @param array<string, mixed> $row
+     * @param array<string, mixed> $fields
+     * @param list<array<string, mixed>> $parishes
+     */
+    private function renderMatchResolution(
+        array $row,
+        array $fields,
+        array $parishes,
+        int $id,
+        string $tab,
+        string $search,
+        bool $needsMatchResolution
+    ): void {
+        if (! $needsMatchResolution) {
+            return;
+        }
+        $current = (int) ($row['parish_id'] ?? 0);
+        $matched = (int) ($fields['matched_candidate_id'] ?? 0);
+        ?>
+        <div class="adct-pi-card adct-pi-match-resolution">
+            <h2>Resolve this match</h2>
+            <div class="notice notice-warning inline"><p><?php echo esc_html(
+                'The parser could not tell what this event refers to, so it cannot be approved until '
+                . 'somebody resolves it here.'
+            ); ?></p></div>
+            <p class="description">
+                <?php echo esc_html($matched > 0
+                    ? 'It most closely resembles event #' . $matched . ' on the list above.'
+                    : 'It resembles another event closely enough that it was not treated as new.'); ?>
+                Choose the parish this event really belongs to, or leave it unassigned for an archdiocese
+                reviewer. Either choice clears the block and is recorded in the history below.
+            </p>
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                <input type="hidden" name="action" value="<?php echo esc_attr(ReviewQueuePage::RESOLVE_MATCH_ACTION); ?>" />
+                <input type="hidden" name="candidate_id" value="<?php echo esc_attr((string) $id); ?>" />
+                <input type="hidden" name="tab" value="<?php echo esc_attr($tab); ?>" />
+                <input type="hidden" name="search" value="<?php echo esc_attr($search); ?>" />
+                <?php wp_nonce_field(ReviewQueuePage::RESOLVE_MATCH_ACTION, ReviewQueuePage::RESOLVE_MATCH_NONCE); ?>
+                <p>
+                    <label for="adct-pi-resolve-parish">Parish</label>
+                    <select name="parish_id" id="adct-pi-resolve-parish">
+                        <option value="">Leave unassigned</option>
+                        <?php foreach ($parishes as $parish) : ?>
+                            <option value="<?php echo esc_attr((string) $parish['id']); ?>"
+                                <?php selected((int) $parish['id'], $current); ?>>
+                                <?php echo esc_html((string) ($parish['name'] ?? '')); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </p>
+                <p>
+                    <label for="adct-pi-resolve-venue">Venue</label>
+                    <input type="number" name="venue_id" id="adct-pi-resolve-venue" min="1" class="small-text"
+                        value="<?php echo esc_attr((string) (int) ($fields['venue_id'] ?? 0)); ?>" />
+                    <span class="description">A venue number belonging to the parish above, or blank for none.</span>
+                </p>
+                <p class="submit">
+                    <button type="submit" class="button button-primary">Resolve this match</button>
+                </p>
+            </form>
         </div>
         <?php
     }
