@@ -228,7 +228,394 @@ namespace {
             throw new \AdctTestRedirect($location);
         }
     }
-}
+
+        /*
+         * ---------------------------------------------------------------------
+         * The media library, for issue #172's promotion copier.
+         *
+         * Every stub below is driven by `$GLOBALS['adct_test_media']` rather than
+         * returning a constant, because the copier's behaviour is entirely in what
+         * it *does* to the filesystem and to the attachment rows, and a
+         * constant-returning stub would let the copier's "undo everything on
+         * failure" path pass without anything ever having been created.
+         *
+         * What each one answers, so the surface test's list is reviewable:
+         *
+         *  - wp_upload_dir          the uploads path, writable or not
+         *  - wp_handle_sideload     "moves" tmp_name to uploads, records the call,
+         *                           can report an error, and can move to a *different*
+         *                           final name than the one offered — which is what
+         *                           real collision handling does and what the
+         *                           copier's unlink-the-moved-path logic needs to be
+         *                           tested against
+         *  - wp_insert_attachment   a new attachment row, or a WP_Error, or 0
+         *  - wp_generate_attachment_metadata  may throw, to test the rollback
+         *  - wp_update_attachment_metadata   records the array, or can throw
+         *  - wp_delete_attachment   removes the row *and* the file, as WordPress does
+         *                           with $force = true
+         *  - get_post               reads back a row created above
+         *  - wp_update_post         changes a row's post_parent, or returns a WP_Error
+         *  - get_post_meta/update_post_meta/delete_post_meta  the attachment/event
+         *                           meta rows. NOT declared here: get_post_meta,
+         *                           update_post_meta, delete_post_meta, get_post and
+         *                           is_wp_error already exist in
+         *                           ADCT\ParishIntake\WordPress\Auth (RevertChangeHandlerTest
+         *                           and WordPressStubs' own Auth block) and a second
+         *                           declaration in the global namespace is not a
+         *                           conflict — but the *global* ones are separate, and
+         *                           WordPressSourceMaterialStore calls the global ones
+         *                           unqualified, so they are declared here. RevertChangeHandlerTest
+         *                           drives its own copies through $GLOBALS['revert_meta'],
+         *                           so the two never share state.
+         */
+
+        if (! function_exists('get_post_meta')) {
+            /**
+             * The single-value form, as the promotion store and the copier's
+             * "remember the parish's filename" call both use. A missing key is an
+             * empty string, which is WordPress's answer and which
+             * SourceMaterialReference::listFromStored() has to treat as "nothing
+             * promoted".
+             */
+            function get_post_meta(int $postId, string $key = '', bool $single = false): mixed
+            {
+                return $GLOBALS['adct_test_media_meta'][(int) $postId][$key] ?? '';
+            }
+        }
+
+        if (! function_exists('update_post_meta')) {
+            function update_post_meta(int $postId, string $key, mixed $value): bool
+            {
+                $GLOBALS['adct_test_media_meta'][(int) $postId][$key] = $value;
+                $GLOBALS['adct_test_meta_writes'][] = [(int) $postId, $key, $value];
+
+                return true;
+            }
+        }
+
+        if (! function_exists('delete_post_meta')) {
+            /**
+             * Records the deletion so a test can prove the promotion store *deletes*
+             * the key rather than writing an empty array. That distinction is the
+             * whole reason a removed promotion leaves no stored value behind.
+             */
+            function delete_post_meta(int $postId, string $key, bool $deleteAll = false): bool
+            {
+                $existed = array_key_exists($key, $GLOBALS['adct_test_media_meta'][(int) $postId] ?? []);
+                unset($GLOBALS['adct_test_media_meta'][(int) $postId][$key]);
+                $GLOBALS['adct_test_meta_deletes'][] = [(int) $postId, $key, $existed];
+
+                return $existed;
+            }
+        }
+
+        if (! function_exists('get_post')) {
+            function get_post(mixed $post = null): mixed
+            {
+                return $GLOBALS['adct_test_media_posts'][(int) $post] ?? null;
+            }
+        }
+
+        if (! function_exists('wp_upload_dir')) {
+            /**
+             * Answers the shape WordPress does, including 'error', because the
+             * copier's refusal path depends on an error being distinguishable from
+             * a missing path.
+             *
+             * @return array<string, mixed>
+             */
+            function wp_upload_dir(string $time = null, bool $createDir = true): array
+            {
+                $state = $GLOBALS['adct_test_media_uploads'] ?? [];
+
+                if (isset($state['error'])) {
+                    return ['error' => $state['error'], 'path' => '', 'url' => '', 'subdir' => ''];
+                }
+
+                $path = $state['path'] ?? (sys_get_temp_dir() . '/adct-test-uploads');
+
+                return [
+                    'path' => $path,
+                    'url' => 'https://adct.example.test/wp-content/uploads/' . basename($path),
+                    'subdir' => '',
+                    'error' => false,
+                ];
+            }
+        }
+
+        if (! function_exists('wp_handle_sideload')) {
+            /**
+             * "Moves" the offered file the way WordPress does: rename it into the
+             * uploads directory under `$GLOBALS['adct_test_media']['sideload_name']`
+             * when set (collision handling), and the offered name otherwise.
+             *
+             * @return array<string, mixed>
+             */
+            function wp_handle_sideload(
+                array &$file,
+                int $postId = 0,
+                            $deprecated = false,
+                array $overrides = []
+            ): array {
+                $state = $GLOBALS['adct_test_media'] ?? [];
+
+                $GLOBALS['adct_test_sideloads'][] = [
+                    'file' => $file,
+                    'post_id' => $postId,
+                    'overrides' => $overrides,
+                ];
+
+                if (isset($state['sideload_error'])) {
+                    return ['error' => $state['sideload_error']];
+                }
+
+                $source = (string) ($file['tmp_name'] ?? '');
+                $directory = (string) ($GLOBALS['adct_test_media_uploads']['path'] ?? sys_get_temp_dir());
+                $name = (string) ($state['sideload_name'] ?? basename($source));
+                $moved = rtrim($directory, '/\\') . '/' . $name;
+
+                if ($source !== '' && is_file($source)) {
+                    @copy($source, $moved);
+                    @unlink($source);
+                } elseif (! isset($state['sideload_no_file'])) {
+                    // Mirror WordPress: no source file means nothing was moved.
+                    return ['error' => 'Specified file failed upload test.'];
+                }
+
+                return [
+                    'file' => $moved,
+                    'url' => 'https://adct.example.test/wp-content/uploads/' . $name,
+                    'type' => $state['sideload_type'] ?? 'application/octet-stream',
+                    'name' => $name,
+                ];
+            }
+        }
+
+        if (! function_exists('wp_insert_attachment')) {
+            /**
+             * Creates an attachment row with a fresh id, or fails in whichever way
+             * `$GLOBALS['adct_test_media']['insert']` asks for: 'wp_error', 0, or
+             * nothing at all (the success case).
+             *
+             * @param array<string, mixed> $args
+             * @param string                $file
+             * @return int|\WP_Error
+             */
+            function wp_insert_attachment(array $args, string $file = '', int $parentPostId = 0, bool $wpError = false)
+            {
+                $state = $GLOBALS['adct_test_media'] ?? [];
+
+                $GLOBALS['adct_test_attachment_inserts'][] = [
+                    'args' => $args,
+                    'file' => $file,
+                    'parent' => $parentPostId,
+                    'wp_error' => $wpError,
+                ];
+
+                if (($state['insert'] ?? null) === 'wp_error') {
+                    return new \WP_Error('insert_error', 'Could not insert attachment.');
+                }
+
+                if (($state['insert'] ?? null) === 0) {
+                    return 0;
+                }
+
+                $id = $GLOBALS['adct_test_media_next_id'] ?? 900;
+                $GLOBALS['adct_test_media_next_id'] = $id + 1;
+
+                $row = new \stdClass();
+                $row->ID = $id;
+                $row->post_parent = (int) ($args['post_parent'] ?? 0);
+                $row->post_mime_type = (string) ($args['post_mime_type'] ?? '');
+                $row->post_title = (string) ($args['post_title'] ?? '');
+                $row->post_status = 'inherit';
+                $row->guid = $GLOBALS['adct_test_media']['guid'] ?? ('https://adct.example.test/wp-content/uploads/' . basename($file));
+                $row->post_type = 'attachment';
+
+                $GLOBALS['adct_test_media_posts'][$id] = $row;
+                $GLOBALS['adct_test_media_files'][$id] = $file;
+
+                return $id;
+            }
+        }
+
+        if (! function_exists('wp_generate_attachment_metadata')) {
+            /**
+             * May throw when asked to, so the copier's rollback of a file that has
+             * already been moved into the uploads directory can be exercised.
+             *
+             * @return array<string, mixed>
+             */
+            function wp_generate_attachment_metadata(int $attachmentId, string $file): array
+            {
+                $GLOBALS['adct_test_metadata_generated'][] = $attachmentId;
+
+                if (($GLOBALS['adct_test_media']['metadata_throws'] ?? false) === true) {
+                    throw new \RuntimeException('Image resizing failed.');
+                }
+
+                return ['file' => basename($file), 'sizes' => []];
+            }
+        }
+
+        if (! function_exists('wp_update_attachment_metadata')) {
+            function wp_update_attachment_metadata(int $attachmentId, array $metadata): bool
+            {
+                $GLOBALS['adct_test_metadata_written'][$attachmentId] = $metadata;
+
+                return true;
+            }
+        }
+
+        if (! function_exists('wp_get_attachment_metadata')) {
+            function wp_get_attachment_metadata(int $attachmentId = 0, bool $unfiltered = false): mixed
+            {
+                return $GLOBALS['adct_test_metadata_written'][(int) $attachmentId] ?? false;
+            }
+        }
+
+        if (! function_exists('wp_delete_attachment')) {
+            /**
+             * WordPress with $force = true removes the row *and* unlinks the file it
+             * names. The copier's rollback depends on that, so the stub does the same
+             * rather than only forgetting the row — a stub that just unset the row
+             * would make the "no orphan file after a failure" test pass for the wrong
+             * reason.
+             */
+            function wp_delete_attachment(int $attachmentId, bool $forceDelete = false): mixed
+            {
+                $GLOBALS['adct_test_attachment_deletes'][] = [$attachmentId, $forceDelete];
+
+                $file = $GLOBALS['adct_test_media_files'][(int) $attachmentId] ?? '';
+
+                if ($forceDelete && $file !== '' && is_file($file)) {
+                    @unlink($file);
+                }
+
+                unset(
+                    $GLOBALS['adct_test_media_posts'][(int) $attachmentId],
+                    $GLOBALS['adct_test_media_files'][(int) $attachmentId],
+                    $GLOBALS['adct_test_metadata_written'][(int) $attachmentId]
+                );
+
+                return true;
+            }
+        }
+
+        if (! function_exists('wp_update_post')) {
+            /**
+             * Only the fields the copier sets are honoured: the promotion path
+             * changes `post_parent` to detach a file from an event. Anything else is
+             * accepted and ignored rather than rejected, so an unrelated caller in
+             * the suite is unaffected.
+             *
+             * @param array<string, mixed> $data
+             * @return int|\WP_Error
+             */
+            function wp_update_post(array $data = [], bool $wpError = false): mixed
+            {
+                $id = (int) ($data['ID'] ?? 0);
+                $GLOBALS['adct_test_post_updates'][] = $data;
+
+                if (($GLOBALS['adct_test_media']['update_error'] ?? false) === true) {
+                    return new \WP_Error('update_error', 'Could not update post.');
+                }
+
+                $row = $GLOBALS['adct_test_media_posts'][$id] ?? null;
+
+                if ($row === null) {
+                    return $wpError ? new \WP_Error('invalid_post', 'Invalid post ID.') : 0;
+                }
+
+                foreach (['post_parent', 'post_title', 'post_status', 'post_content', 'post_excerpt'] as $field) {
+                    if (array_key_exists($field, $data)) {
+                        $row->{$field} = $field === 'post_parent' ? (int) $data[$field] : (string) $data[$field];
+                    }
+                }
+
+                return $id;
+            }
+        }
+
+        if (! function_exists('get_post_thumbnail_id')) {
+            /**
+             * Reads both `$GLOBALS['adct_test_media_thumbnails']` (this file's) and
+             * `$GLOBALS['revert_meta'][...]['_thumbnail_id']` (RevertChangeHandlerTest's),
+             * because phpunit.xml.dist has no bootstrap and every test file is included
+             * before any test runs. Whichever of the two files PHPUnit happens to load
+             * first wins the `function_exists` guard, and a stub that only knew its own
+             * global would silently answer "no thumbnail" for the other file's tests.
+             * Reading both makes the guard order irrelevant.
+             */
+            function get_post_thumbnail_id(int $postId = 0): int
+            {
+                $media = (int) ($GLOBALS['adct_test_media_thumbnails'][(int) $postId] ?? 0);
+                $revert = (int) ($GLOBALS['revert_meta'][(int) $postId]['_thumbnail_id'] ?? 0);
+
+                return $media !== 0 ? $media : $revert;
+            }
+        }
+
+        if (! function_exists('set_post_thumbnail')) {
+            function set_post_thumbnail(int $postId, int $thumbnailId): bool
+            {
+                $GLOBALS['adct_test_media_thumbnails'][(int) $postId] = (int) $thumbnailId;
+                $GLOBALS['revert_meta'][(int) $postId]['_thumbnail_id'] = (int) $thumbnailId;
+
+                return true;
+            }
+        }
+
+        if (! function_exists('delete_post_thumbnail')) {
+            function delete_post_thumbnail(int $postId): bool
+            {
+                unset(
+                    $GLOBALS['adct_test_media_thumbnails'][(int) $postId],
+                    $GLOBALS['revert_meta'][(int) $postId]['_thumbnail_id']
+                );
+
+                return true;
+            }
+        }
+
+        if (! function_exists('is_wp_error')) {
+            function is_wp_error(mixed $thing): bool
+            {
+                return $thing instanceof \WP_Error;
+            }
+        }
+
+        if (! class_exists('WP_Error', false)) {
+            /**
+             * Only as much of WP_Error as the media stubs need: the copier checks
+             * `is_wp_error()` on the results of wp_insert_attachment() and
+             * wp_update_post(), and reads the message. The properties are public so a
+             * test can assert which failure came back.
+             */
+            class WP_Error
+            {
+                /**
+                 * @param array<string, mixed> $data
+                 */
+                public function __construct(
+                    public readonly string $code = '',
+                    public readonly string $message = '',
+                    public readonly array $data = []
+                ) {
+                }
+
+                public function get_error_message(): string
+                {
+                    return $this->message;
+                }
+
+                public function get_error_code(): string
+                {
+                    return $this->code;
+                }
+            }
+        }
+    }
 
 namespace ADCT\ParishIntake\WordPress\Admin {
 

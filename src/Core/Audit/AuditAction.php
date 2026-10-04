@@ -134,6 +134,30 @@ enum AuditAction: string
     case CANDIDATE_CONFIRMATION_RESENT = 'candidate_confirmation_resent';
 
     /**
+     * A person promoted an inbound attachment into the media library as an
+     * event's source material (issue #172).
+     *
+     * Deliberately its own verb rather than an `event_published` detail: a
+     * parish posting a bulletin by email has not consented to that bulletin
+     * becoming world-readable, so "who made this bulletin public" is a separate
+     * question from "who published this event", and it is exactly the question a
+     * POPIA enquiry asks. The details carry the new attachment id, the role and
+     * the parish's own filename.
+     */
+    case SOURCE_MATERIAL_PROMOTED = 'source_material_promoted';
+
+    /**
+     * A person removed an event's source material from the public side
+     * (issue #172).
+     *
+     * Its own verb for the same reason as the promotion above: the file is still
+     * on disk and the raw original is untouched, so the trail must read as a
+     * visibility change rather than a deletion. The details carry the attachment
+     * id that was detached and its former role.
+     */
+    case SOURCE_MATERIAL_REMOVED = 'source_material_removed';
+
+    /**
      * Human labels for the filter dropdown, keyed by action value.
      *
      * @return array<string, string>
@@ -182,6 +206,8 @@ enum AuditAction: string
             self::CANDIDATE_MATCH_RESOLVED => 'Ambiguous match resolved',
             self::APPROVER_NOTIFY_MODE_CHANGED => 'Approver email mode changed',
             self::CANDIDATE_CONFIRMATION_RESENT => 'Confirmation preview resent',
+            self::SOURCE_MATERIAL_PROMOTED => 'Source material published',
+            self::SOURCE_MATERIAL_REMOVED => 'Source material hidden',
         };
     }
 }
