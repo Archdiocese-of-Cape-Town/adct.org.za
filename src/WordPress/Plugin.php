@@ -684,21 +684,21 @@ private ?ReviewQueueRepository $reviewQueue = null;
             $listingGeneration,
             $timezone
         ));
-                // ADR 0008 point 4 pairs Revert with Unpublish in the same notice.
-                // Reverting puts back the fields a change overwrote; it cannot answer
-                // "this event was never ours to publish", which needs the event itself
-                // to come down. Registered as a separate handler rather than a flag on
-                // RevertChangeHandler so the two tokens cannot be confused for one
-                // another: only one of them can be walked back from the trail.
-                $this->actionTokenHandlers->register(new UnpublishEventHandler(
-                    $database,
-                    $approvalRecipients,
-                    $this->mailQueue,
-                    $clock,
-                    $occurrenceMaintenance,
-                    $listingGeneration,
-                    $timezone
-                ));
+        // ADR 0008 point 4 pairs Revert with Unpublish in the same notice.
+        // Reverting puts back the fields a change overwrote; it cannot answer
+        // "this event was never ours to publish", which needs the event itself
+        // to come down. Registered as a separate handler rather than a flag on
+        // RevertChangeHandler so the two tokens cannot be confused for one
+        // another: only one of them can be walked back from the trail.
+        $this->actionTokenHandlers->register(new UnpublishEventHandler(
+            $database,
+            $approvalRecipients,
+            $this->mailQueue,
+            $clock,
+            $occurrenceMaintenance,
+            $listingGeneration,
+            $timezone
+        ));
         // ADR 0007: the magic link that signs a dean in to the front-end
         // approval queue. Registered against LOGIN here so the reservation test
         // can see the purpose and its handler from one place.
