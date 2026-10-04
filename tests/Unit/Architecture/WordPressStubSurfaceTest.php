@@ -57,7 +57,8 @@ final class WordPressStubSurfaceTest extends TestCase
         'StubSurface.php',
         'WordPressAuthDoubles.php',
                 'WordPressCapabilityStubs.php',
-                'WordPressOptionsStubs.php',
+                                'WordPressEventEditorStubs.php',
+                                'WordPressOptionsStubs.php',
         'WordPressStubs.php',
     ];
 
@@ -86,7 +87,8 @@ final class WordPressStubSurfaceTest extends TestCase
                         'ADCT\ParishIntake\WordPress\Admin\esc_url',
                         'ADCT\ParishIntake\WordPress\Admin\esc_url_raw',
                         'ADCT\ParishIntake\WordPress\Admin\sanitize_email',
-                        'ADCT\ParishIntake\WordPress\Admin\sanitize_text_field',
+                                                'ADCT\ParishIntake\WordPress\Admin\sanitize_key',
+                                                'ADCT\ParishIntake\WordPress\Admin\sanitize_text_field',
                         'ADCT\ParishIntake\WordPress\Admin\selected',
                         'ADCT\ParishIntake\WordPress\Admin\wp_unslash',
                     ],
@@ -122,7 +124,12 @@ final class WordPressStubSurfaceTest extends TestCase
                     'ADCT\ParishIntake\WordPress\Approval\user_can',
                     'wp_get_current_user',
                 ],
-                'WordPressOptionsStubs.php' => [
+                                    'WordPressEventEditorStubs.php' => [
+                                        'ADCT\ParishIntake\WordPress\Events\add_meta_box',
+                                        'ADCT\ParishIntake\WordPress\Events\current_user_can',
+                                        'ADCT\ParishIntake\WordPress\Events\remove_meta_box',
+                                    ],
+                                    'WordPressOptionsStubs.php' => [
                     'ADCT\ParishIntake\WordPress\Jobs\add_option',
             'ADCT\ParishIntake\WordPress\Jobs\delete_option',
             'ADCT\ParishIntake\WordPress\Jobs\get_option',
@@ -192,7 +199,8 @@ final class WordPressStubSurfaceTest extends TestCase
         'StubSurface.php' => ['ADCT\ParishIntake\Tests\Support\StubSurface'],
         'WordPressAuthDoubles.php' => ['WP_User'],
                 'WordPressCapabilityStubs.php' => ['WP_User'],
-                'WordPressOptionsStubs.php' => ['FakeWordPressOptionsDatabase'],
+                                'WordPressEventEditorStubs.php' => ['WP_Post'],
+                                'WordPressOptionsStubs.php' => ['FakeWordPressOptionsDatabase'],
                 'WordPressStubs.php' => [
                     'AdctTestNonceRefused',
                     'AdctTestRedirect',

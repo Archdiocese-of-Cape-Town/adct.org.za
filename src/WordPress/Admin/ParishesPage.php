@@ -7,6 +7,7 @@ namespace ADCT\ParishIntake\WordPress\Admin;
 use ADCT\ParishIntake\Core\Approval\ApprovalRoute;
 use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;
 use ADCT\ParishIntake\Core\Audit\AuditAction;
+use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Directory\ContactService;
 use ADCT\ParishIntake\Core\Directory\CsvFormulaGuard;
@@ -48,7 +49,8 @@ final class ParishesPage
         private VenueAdministrationService $venueService,
         private ClockInterface $clock,
         private SourcesPage $sourcesPage,
-        private ?ContactAuditRecorder $audit = null
+        private ?ContactAuditRecorder $audit = null,
+        private ?SubjectAuditPanel $auditPanel = null
     ) {
     }
 
@@ -98,6 +100,12 @@ final class ParishesPage
 
             if ($tab === 'sources') {
                 $this->renderSourcesTab($parish);
+
+                return;
+            }
+
+            if ($tab === 'activity') {
+                $this->renderActivityTab($parish);
 
                 return;
             }
@@ -982,6 +990,62 @@ final class ParishesPage
         <?php
     }
 
+    /**
+     * Everything that has been recorded about this parish's contacts (issue #58).
+     *
+     * The trail is scoped to the parish's own contact rows rather than to the
+     * parish record, and that is the honest scope: the plugin writes no audit
+     * rows with subject type `parish`, because none of the actions issue #58
+     * lists — approving, denying, editing, publishing, verifying or blocking a
+     * contact, and changing a setting — is a change to a parish. What can be
+     * audited about a parish is the people and email addresses attached to it,
+     * and under POPIA that is exactly what has to be traceable.
+     *
+     * Contact ids come from findForParish(), so this stays a single indexed read
+     * per contact against KEY subject (subject_type, subject_id) — no scan of
+     * the audit table and no schema change.
+     *
+     * No extra capability check beyond the screen's own. This tab offers nothing
+     * to do: it renders rows a user who reached this screen could already reach
+     * on the contacts section of the same screen, so a second gate would add a
+     * place to get the answer wrong without adding a control. Denying it to
+     * someone who may edit the contacts would also leave a gap where someone
+     * can change a parish's data but not show what they changed.
+     *
+     * @param array<string, mixed> $parish
+     */
+    private function renderActivityTab(array $parish): void
+    {
+        $parishId = (int) ($parish['id'] ?? 0);
+        $contactIds = array_map(
+            static fn (array $contact): int => (int) ($contact['id'] ?? 0),
+            $this->contacts->findForParish($parishId)
+        );
+        ?>
+        <div class="wrap">
+            <h1>Activity for <?php echo esc_html((string) ($parish['name'] ?? '')); ?></h1>
+            <p><a href="<?php echo esc_url($this->pageUrl([
+                'action' => 'edit',
+                'id' => $parishId,
+            ])); ?>">&larr; Back to parish details</a></p>
+            <?php $this->renderEditTabs($parishId, 'activity'); ?>
+            <p class="description">
+                Who verified, blocked, edited or linked each email address on this parish's
+                contact list, and when. Kept for 24 months and then deleted.
+            </p>
+            <?php if ($this->auditPanel === null) {
+                echo '<p>The audit trail could not be read.</p>';
+            } else {
+                $this->auditPanel->renderMany(
+                    AuditSubjectType::PARISH_CONTACT,
+                    $contactIds,
+                    'Contact activity'
+                );
+            } ?>
+        </div>
+        <?php
+    }
+
     private function renderEditTabs(int $parishId, string $activeTab): void
     {
         ?>
@@ -1000,6 +1064,11 @@ final class ParishesPage
                 'id' => $parishId,
                 'tab' => 'sources',
             ])); ?>">Sources</a>
+            <a class="nav-tab <?php echo $activeTab === 'activity' ? 'nav-tab-active' : ''; ?>" href="<?php echo esc_url($this->pageUrl([
+                'action' => 'edit',
+                'id' => $parishId,
+                'tab' => 'activity',
+            ])); ?>">Activity</a>
         </nav>
         <?php
     }

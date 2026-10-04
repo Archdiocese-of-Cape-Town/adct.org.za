@@ -78,6 +78,7 @@ use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use ADCT\ParishIntake\WordPress\Pdf\PrinsFrankPdfTextExtractor;
 use ADCT\ParishIntake\WordPress\Pdf\WordPressAttachmentExtractionStore;
 use ADCT\ParishIntake\WordPress\Admin\AuditLogPage;
+use ADCT\ParishIntake\WordPress\Admin\SubjectAuditPanel;
 use ADCT\ParishIntake\WordPress\Admin\ScheduledJobsPage;
 use ADCT\ParishIntake\WordPress\Admin\HealthPage;
 use ADCT\ParishIntake\WordPress\Admin\WordPressHelp;
@@ -420,7 +421,11 @@ private ?ReviewQueueRepository $reviewQueue = null;
         // and the screens agree on who the actor is.
         $actorResolver = $auditLog->actorResolver();
         $contactAudit = new ContactAuditRecorder($auditLog, $actorResolver);
-        $this->parserPage = new ParserPage(
+                // One panel, three screens (issue #58). Built here so every screen reads
+                // the audit trail the same way; each host takes it as an optional
+                // collaborator, so none of them breaks when it is absent.
+                $subjectAuditPanel = new SubjectAuditPanel($auditLog, $clock, $timezone);
+                $this->parserPage = new ParserPage(
             $this->schema,
             $this->pipelineFactory,
             new StaticReportGenerator($this->schema),
@@ -485,8 +490,9 @@ private ?ReviewQueueRepository $reviewQueue = null;
             $venueAdministrationService,
             $clock,
             $this->sourcesPage,
-            $contactAudit
-        );
+                        $contactAudit,
+                        $subjectAuditPanel
+                    );
         $this->sendersPage = new SendersPage($contacts, $contactService, $parishes, $contactAudit);
         $this->eventPostType = new EventPostType();
         $listingGeneration = new EventListingGeneration();
@@ -513,8 +519,9 @@ private ?ReviewQueueRepository $reviewQueue = null;
             new EventValidator($timezone, $rruleValidator),
             new RRulePresetMapper($rruleValidator),
             $timezone,
-            $clock
-        );
+                        $clock,
+                        $subjectAuditPanel
+                    );
         $occurrenceMaintenance = new WordPressEventOccurrenceMaintenance(
             $occurrences,
             new OccurrenceExpander($timezone, $rruleValidator),
@@ -561,7 +568,8 @@ private ?ReviewQueueRepository $reviewQueue = null;
                 $this->pluginFile,
                 $this->ocrControl(),
                                 $this->attachmentImageEndpoint,
-                                $this->confirmationResendService()
+                                $this->confirmationResendService(),
+                                $subjectAuditPanel
                             );
         // #72: the same repository and policy behind a front-end page, so a
         // dean is scoped by exactly the same predicate as a reviewer in

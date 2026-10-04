@@ -59,6 +59,9 @@ final class AuditLogPage
     ) {
     }
 
+    /** @var AuditEntryFormatter|null resolved on first render, never in the constructor */
+    private ?AuditEntryFormatter $formatter = null;
+
     public function registerMenu(): void
     {
         add_submenu_page(
@@ -149,96 +152,32 @@ final class AuditLogPage
     {
         ?>
         <tr>
-            <td><?php echo esc_html($this->formatTimestamp($entry->createdAt)); ?></td>
+            <td><?php echo esc_html($this->formatter()->timestamp($entry->createdAt)); ?></td>
             <td><?php echo esc_html($entry->actor); ?></td>
             <td><?php echo esc_html($entry->actionLabel()); ?></td>
             <td><?php echo esc_html($entry->subjectLabelWithId()); ?></td>
-            <td><?php echo esc_html($this->formatDetails($entry)); ?></td>
+            <td><?php echo esc_html($this->formatter()->details($entry)); ?></td>
         </tr>
         <?php
     }
 
     /**
-     * The details column as one line of text.
+     * The row formatter shared with the per-subject panels.
      *
-     * The column holds whatever the write site put there, including text that
-     * came out of a parsed email body, so it is printed as a single escaped
-     * string and never as markup. An entry whose details column is not valid
-     * JSON is shown raw rather than hidden, because a row that cannot be read
-     * is exactly the row someone reading an audit log is looking for.
+     * Built on first use, not in the constructor: this page is constructed
+     * during `plugins_loaded` by check-release-bootstrap.php's plain-PHP boot,
+     * which has no WordPress and no DateTimeZone default to read.
      */
-    private function formatDetails(AuditEntry $entry): string
+    private function formatter(): AuditEntryFormatter
     {
-        if ($entry->details === null || trim($entry->details) === '') {
-            return '—';
-        }
-
-        $decoded = $entry->decoded();
-
-        if ($decoded === null) {
-            return $entry->details;
-        }
-
-        $changed = $decoded['changed'] ?? null;
-
-        if (is_array($changed)) {
-            return $this->formatSettingChanges($changed);
-        }
-
-        $parts = [];
-
-        foreach ($decoded as $key => $value) {
-            $parts[] = $key . ': ' . $this->describeValue($value);
-        }
-
-        return $parts === [] ? '—' : implode(', ', $parts);
+        return $this->formatter ??= new AuditEntryFormatter($this->currentTimeZone());
     }
 
-    /**
-     * @param array<mixed> $changes
-     */
-    private function formatSettingChanges(array $changes): string
+    private function currentTimeZone(): DateTimeZone
     {
-        $parts = [];
+        $zone = function_exists('wp_timezone') ? wp_timezone() : null;
 
-        foreach ($changes as $change) {
-            if (! is_array($change)) {
-                continue;
-            }
-
-            $option = is_scalar($change['option'] ?? null) ? (string) $change['option'] : '';
-            $before = is_scalar($change['before'] ?? null) ? (string) $change['before'] : '';
-            $after = is_scalar($change['after'] ?? null) ? (string) $change['after'] : '';
-
-            if ($option === '') {
-                continue;
-            }
-
-            $parts[] = sprintf('%s: %s → %s', $option, $before, $after);
-        }
-
-        return $parts === [] ? '—' : implode('; ', $parts);
-    }
-
-    private function describeValue(mixed $value): string
-    {
-        if ($value === null) {
-            return 'none';
-        }
-
-        if (is_bool($value)) {
-            return $value ? 'yes' : 'no';
-        }
-
-        if (is_scalar($value)) {
-            return (string) $value;
-        }
-
-        if (is_array($value)) {
-            return sprintf('%d item(s)', count($value));
-        }
-
-        return 'value';
+        return $zone instanceof DateTimeZone ? $zone : $this->timezone;
     }
 
     /**
@@ -478,21 +417,12 @@ final class AuditLogPage
         <?php
     }
 
-    private function formatTimestamp(DateTimeImmutable $moment): string
-    {
-        return $moment
-            ->setTimezone($this->timezone)
-            ->format('d/m/Y H:i');
-    }
-
     private function currentTime(): DateTimeImmutable
     {
         // wp_timezone() is the site's configured zone, which is not necessarily
         // this plugin's. Falling back keeps the window correct either way.
-        $zone = function_exists('wp_timezone') ? wp_timezone() : $this->timezone;
-
         return (new DateTimeImmutable('@' . $this->clock->now()->getTimestamp()))
-            ->setTimezone($zone instanceof DateTimeZone ? $zone : $this->timezone);
+            ->setTimezone($this->currentTimeZone());
     }
 
     private function queryPage(): int

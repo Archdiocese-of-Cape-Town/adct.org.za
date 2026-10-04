@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Admin;
 
+use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Attachments\PreviewableImage;
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendCooldownException;
@@ -133,8 +134,9 @@ final class ReviewQueuePage
         private readonly string $pluginFile = '',
         private readonly ?OcrControl $ocr = null,
         private readonly ?AttachmentImageEndpoint $imageEndpoint = null,
-        private readonly mixed $resendConfirmation = null
-    ) {
+                private readonly mixed $resendConfirmation = null,
+                private readonly ?SubjectAuditPanel $auditPanel = null
+            ) {
     }
 
     /**
@@ -868,9 +870,26 @@ final class ReviewQueuePage
             $unreadable,
             $resend
         );
-        $view->renderAuditTrail($this->queue->history($id));
+        // The audit trail for this candidate, so a reviewer can see who has
+                // already touched it (issue #58).
+                //
+                // This reads through the shared panel rather than ReviewQueueRepository
+                // so that this screen, the event screen and the parish screen cannot
+                // drift apart on what a row looks like or on how the details column
+                // escapes. The panel is optional so a caller that has not wired one
+                // still gets a page; only Plugin.php builds it, and without it the
+                // candidate's own history renders exactly as it did before #58.
+                if ($this->auditPanel !== null) {
+                    $this->auditPanel->render(
+                        AuditSubjectType::EVENT_CANDIDATE,
+                        $id,
+                        'Audit trail'
+                    );
+                } else {
+                    $view->renderAuditTrail($this->queue->history($id));
+                }
 
-                // Issue #176: on the detail path this is the only notice, because that
+                        // Issue #176: on the detail path this is the only notice, because that
                 // branch returns before the list screen's `renderNotice()` above. It is
                 // rendered after the view — the view flushes the audit trail — so the
                 // outcome lands at the top of the card rather than the foot of the page.

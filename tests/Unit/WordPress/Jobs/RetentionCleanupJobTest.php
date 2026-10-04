@@ -203,6 +203,37 @@ final class RetentionCleanupJobTest extends TestCase
         );
     }
 
+    /**
+     * The 24-month audit window is a promise about what is kept, so the
+     * boundary is asserted rather than inferred: a row one second older than
+     * the cutoff goes, a row one second inside it stays. Without this the only
+     * audit coverage is the opt-out path above, which proves nothing is
+     * deleted when the operator has not switched cleanup on — it would still
+     * pass if every cutoff were wrong.
+     */
+    public function testAuditCleanupDeletesOnlyRowsOlderThanTheTwentyFourMonthWindow(): void
+    {
+        $deps = new RetentionTestDependencies();
+        $deps->database->auditRows = [
+            ['id' => 1, 'created_at' => '2024-09-24 22:59:59'],
+            ['id' => 2, 'created_at' => '2024-09-24 23:00:00'],
+            ['id' => 3, 'created_at' => '2024-09-24 23:00:01'],
+            ['id' => 4, 'created_at' => '2026-09-24 23:00:00'],
+        ];
+
+        $job = $this->job($deps, RetentionSettings::fromValues('0', '30', '0', '30', '0', '1'));
+        $result = $job->processNext($this->encodeCheckpoint('audit', 0));
+
+        self::assertInstanceOf(JobStepResult::class, $result);
+        self::assertTrue($result->isComplete());
+        self::assertSame([2, 3, 4], array_column($deps->database->auditRows, 'id'));
+
+        // The test double above re-implements the cutoff in PHP, so the row
+        // assertions alone would survive a wrong operator in the real SQL.
+        // The query the job actually sends is asserted as well.
+        self::assertStringContainsString('WHERE created_at < %s', $deps->database->selects[0]);
+    }
+
     public function testRawCleanupRetriesSafelyWhenTheDatabaseUpdateFails(): void
     {
         $deps = new RetentionTestDependencies();
