@@ -4,11 +4,36 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
     require_once __DIR__ . '/../../../Support/WordPressStubs.php';
+        // The candidate form writes textarea bodies through esc_textarea() and the
+        // resend panel escapes the recipient address, so this namespace needs the
+        // Admin stubs as well as the shared ones.
+    require_once __DIR__ . '/../../../Support/AdminWordPressStubs.php';
 
-    use ADCT\ParishIntake\Core\Auth\Capabilities;
-    use ADCT\ParishIntake\Core\Events\EventValidator;
-    use ADCT\ParishIntake\Core\Ports\ClockInterface;
-    use ADCT\ParishIntake\Core\Ports\PreviewableImageRepositoryInterface;
+        use PHPUnit\Framework\Attributes\DataProvider;
+        use ADCT\ParishIntake\Core\Auth\ActionTokenBinding;
+        use ADCT\ParishIntake\Core\Auth\ActionTokenRecord;
+        use ADCT\ParishIntake\Core\Auth\ActionTokenService;
+        use ADCT\ParishIntake\Core\Auth\Capabilities;
+        use ADCT\ParishIntake\Core\Directory\SenderTrust;
+        use ADCT\ParishIntake\Core\Events\EventValidator;
+        use ADCT\ParishIntake\Core\Mail\ConfirmationEmailBatch;
+        use ADCT\ParishIntake\Core\Mail\ConfirmationEmailCandidate;
+        use ADCT\ParishIntake\Core\Mail\ConfirmationEmailComposer;
+        use ADCT\ParishIntake\Core\Mail\ConfirmationEmailRenderer;
+        use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendCooldownException;
+        use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendService;
+        use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendSlot;
+        use ADCT\ParishIntake\Core\Mail\MailQueueEnqueueResult;
+        use ADCT\ParishIntake\Core\Mail\MailQueueRecord;
+        use ADCT\ParishIntake\Core\Mail\MailQueueStatus;
+        use ADCT\ParishIntake\Core\Mail\OutboundEmail;
+        use ADCT\ParishIntake\Core\Ports\ActionTokenStoreInterface;
+        use ADCT\ParishIntake\Core\Ports\ClockInterface;
+        use ADCT\ParishIntake\Core\Ports\ConfirmationActionLinkProviderInterface;
+        use ADCT\ParishIntake\Core\Ports\ConfirmationEmailResendBookingInterface;
+        use ADCT\ParishIntake\Core\Ports\MailerInterface;
+        use ADCT\ParishIntake\Core\Ports\MailQueueRepositoryInterface;
+        use ADCT\ParishIntake\Core\Ports\PreviewableImageRepositoryInterface;
     use ADCT\ParishIntake\Core\Ports\PublicationStoreInterface;
     use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
         use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
@@ -1245,6 +1270,676 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                     );
                 }
 
+                /**
+         * Issue #176: the resend control on the candidate detail screen.
+         *
+         * The rendered panel is exercised by tests/Integration/CandidateDetailCheck.php
+         * under a real WordPress. What is pinned here is everything a unit test can
+         * decide on its own: the cross-file action/nonce contract, the gates that
+         * make the route safe, and the two screens' refusal to send when the hour
+         * has not passed.
+         */
+        public function testTheResendActionIsTheOneTheHookIsBuiltFrom(): void
+        {
+            self::assertSame(
+                'adct_pi_candidate_resend_confirmation',
+                ReviewQueuePage::RESEND_CONFIRMATION_ACTION,
+                'A cross-file contract: Plugin.php builds the hook from this constant and the form '
+                . 'posts to it. Nothing else notices if the two drift apart.'
+            );
+            self::assertSame(
+                'resend_confirmation_nonce',
+                ReviewQueuePage::RESEND_CONFIRMATION_NONCE,
+                'A cross-file contract: the rendered form and this handler have to name the nonce alike.'
+            );
+        }
+
+        /**
+         * Resending is not saving and not deciding, so it gets its own action and
+         * its own nonce. A shared nonce would let one form be replayed as the
+         * other, and the detail screen carries title and date fields, so a shared
+         * *form* would let Enter in a title field send an email to a parish.
+         */
+        public function testResendingIsNotAModeOnTheSaveOrDecideRoute(): void
+        {
+            foreach ([
+                ReviewQueuePage::SAVE_ACTION,
+                ReviewQueuePage::RESOLVE_MATCH_ACTION,
+                ReviewQueuePage::CREATE_MANUAL_ACTION,
+            ] as $other) {
+                self::assertNotSame(
+                    $other,
+                    ReviewQueuePage::RESEND_CONFIRMATION_ACTION,
+                    'A shared action would let a crafted POST reach the resend through another route.'
+                );
+            }
+
+            self::assertNotSame(
+                ReviewQueuePage::SAVE_NONCE,
+                ReviewQueuePage::RESEND_CONFIRMATION_NONCE,
+                'A shared nonce would let one form be replayed as the other.'
+            );
+            self::assertNotSame(
+                ReviewQueuePage::RESOLVE_MATCH_NONCE,
+                ReviewQueuePage::RESEND_CONFIRMATION_NONCE
+            );
+        }
+
+        public function testTheResendRouteDemandsItsOwnNonceBeforeReadingAnything(): void
+        {
+            $GLOBALS['adct_test_nonce_should_fail'] = true;
+$database = new ManualEntryDatabase();
+$stub = new ResendPageServiceStub();
+            $_POST = ['candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE];
+
+            try {
+                $this->pageWithResend($database, $stub)->handleResendConfirmation();
+            } catch (\AdctTestNonceRefused) {
+                self::assertSame([], $stub->asked, 'A refused nonce must not reach the service.');
+
+                return;
+            }
+
+            self::assertSame(
+                [
+                    ['action' => 'adct_pi_candidate_resend_confirmation', 'name' => 'resend_confirmation_nonce'],
+                ],
+                $GLOBALS['adct_test_nonce_checks'],
+                'The recorded action and name are the whole point of this test: this route must not '
+                . 'reuse the save, resolve or create-manual nonce, or one leaked nonce would open two routes.'
+            );
+        }
+
+        /**
+         * The capability gate runs before the nonce, so a caller without it cannot
+         * even make WordPress ask for a word.
+         */
+        public function testSomeoneWhoCannotReviewCannotResendAConfirmation(): void
+        {
+            $GLOBALS['adct_test_wp_caps'] = [Capabilities::MANAGE_SETTINGS];
+                        $database = new ManualEntryDatabase();
+                        $stub = new ResendPageServiceStub();
+            $_POST = ['candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE];
+
+            try {
+                $this->pageWithResend($database, $stub)->handleResendConfirmation();
+            } catch (\AdctTestWpDie $refused) {
+                self::assertSame(403, $refused->status);
+                self::assertSame([], $stub->asked);
+                self::assertSame(
+                    [],
+                    $GLOBALS['adct_test_nonce_checks'],
+                    'The capability is checked first, so the nonce is never even asked for.'
+                );
+
+                return;
+            }
+
+            self::fail('Reviewing is required to resend a confirmation.');
+        }
+
+        /**
+         * A dean may only resend inside their own scope, and the relationship is
+         * re-resolved on every POST rather than trusted from the form — so a crafted
+         * `candidate_id` cannot email another deanery's parish.
+         */
+        public function testACandidateOutsideTheReviewersScopeCannotBeResent(): void
+        {
+            $database = new ManualEntryDatabase();
+            $database->visible = false;
+            $stub = new ResendPageServiceStub();
+            $_POST = ['candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE];
+
+            try {
+                $this->pageWithResend($database, $stub)->handleResendConfirmation();
+            } catch (\AdctTestWpDie $refused) {
+                self::assertSame(404, $refused->status);
+                self::assertSame([], $stub->asked);
+
+                return;
+            }
+
+            self::fail('An out-of-scope candidate must not be resent.');
+        }
+
+        public function testACandidateIdIsRequiredToResend(): void
+                {
+                    $stub = new ResendPageServiceStub();
+                    $_POST = ['candidate_id' => '0'];
+
+                    try {
+                        $this->pageWithResend(new ManualEntryDatabase(), $stub)->handleResendConfirmation();
+            } catch (\AdctTestWpDie $refused) {
+                self::assertSame(400, $refused->status);
+                self::assertSame([], $stub->asked);
+
+                return;
+            }
+
+            self::fail('A request with no candidate must be refused.');
+        }
+
+        /**
+         * The happy path, stated as the property that matters: the reviewer is sent
+         * back to the same candidate with the outcome in the URL, their tab and
+         * search intact, and the recipient named so they know which parish was
+         * written to.
+         */
+        public function testASuccessfulResendReturnsTheReviewerToTheSameCandidate(): void
+        {
+            $database = new ManualEntryDatabase();
+            $stub = new ResendPageServiceStub();
+            $_POST = [
+                'candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                'tab' => 'low_confidence',
+                'search' => 'retreat',
+            ];
+
+            try {
+                $this->pageWithResend($database, $stub)->handleResendConfirmation();
+            } catch (\AdctTestRedirect) {
+                // wp_safe_redirect() throws here; the request would end instead.
+            }
+
+                        self::assertSame(
+                            [ReviewQueuePageTestIds::SOURCE_CANDIDATE],
+                            $stub->asked
+                        );
+
+            $redirect = $GLOBALS['adct_test_redirect'];
+            self::assertIsString($redirect);
+            self::assertStringContainsString('candidate=' . ReviewQueuePageTestIds::SOURCE_CANDIDATE, $redirect);
+            self::assertStringContainsString('resent=queued', $redirect, 'So the screen can say what happened.');
+            self::assertStringContainsString('tab=low_confidence', $redirect, 'Their tab is kept.');
+            self::assertStringContainsString('search=retreat', $redirect, 'Their search is kept.');
+            self::assertStringContainsString('resent_to=parish%40example.test', $redirect);
+        }
+
+        /**
+         * The cooldown is a redirect and not an error. The reviewer did exactly the
+         * right thing and only the hour is against them, and both times they need
+         * to plan around are carried back in the URL for the notice.
+         */
+        public function testABlockedResendRedirectsWithBothTimesRatherThanErroring(): void
+        {
+            $stub = ResendPageServiceStub::refusingUntil('2026-10-12 10:00:00');
+$database = new ManualEntryDatabase();
+$_POST = ['candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE];
+
+            try {
+                $this->pageWithResend($database, $stub)->handleResendConfirmation();
+            } catch (\AdctTestRedirect) {
+                // Expected.
+            }
+
+            $redirect = $GLOBALS['adct_test_redirect'];
+            self::assertIsString($redirect);
+            self::assertStringContainsString('resent=cooldown', $redirect);
+            self::assertStringContainsString(
+                'resent_at=' . (new \DateTimeImmutable('2026-10-12 09:00:00', new DateTimeZone('Africa/Johannesburg')))->getTimestamp(),
+                $redirect,
+                'When it was last sent, so the reviewer can see the button did work.'
+            );
+            self::assertStringContainsString(
+                'resent_next=' . (new \DateTimeImmutable('2026-10-12 10:00:00', new DateTimeZone('Africa/Johannesburg')))->getTimestamp(),
+                $redirect,
+                'And when they may try again, which is what the cooldown is for.'
+            );
+        }
+
+        public function testAResendTheQueueRefusesIsReportedAsAConflictNotACrash(): void
+        {
+            $stub = ResendPageServiceStub::refusingWith(new \DomainException(
+                'This candidate has no safe email address to resend a confirmation to.'
+            ));
+$database = new ManualEntryDatabase();
+$_POST = ['candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE];
+
+            try {
+                $this->pageWithResend($database, $stub)->handleResendConfirmation();
+            } catch (\AdctTestWpDie $refused) {
+                self::assertSame(409, $refused->status);
+                self::assertStringContainsString('no safe email address', $refused->getMessage());
+
+                return;
+            }
+
+            self::fail('A candidate with no usable recipient must be refused.');
+        }
+
+        /**
+         * Anything unexpected is logged and turned into a plain redirect, so the
+         * reviewer gets their candidate back rather than a stack trace. The success
+         * redirect is issued outside the try precisely so this arm can never catch
+         * it.
+         */
+        public function testAnUnexpectedFailureReturnsTheReviewerToTheirCandidate(): void
+        {
+            $stub = ResendPageServiceStub::refusingWith(new \RuntimeException('The queue is unreachable.'));
+$database = new ManualEntryDatabase();
+$_POST = ['candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE];
+
+            try {
+                $this->pageWithResend($database, $stub)->handleResendConfirmation();
+            } catch (\AdctTestRedirect) {
+                // Expected.
+            }
+
+            $redirect = $GLOBALS['adct_test_redirect'];
+            self::assertIsString($redirect);
+            self::assertStringContainsString('resent=failed', $redirect);
+            self::assertStringContainsString('candidate=' . ReviewQueuePageTestIds::SOURCE_CANDIDATE, $redirect);
+        }
+
+        /**
+         * The cooldown is enforced by the booking, not here. A test that only proved
+         * the page refuses would pass against a handler that duplicated the rule,
+         * which is exactly the arrangement that lets a crafted POST bypass it.
+         */
+        public function testTheHandlerDoesNotKeepItsOwnCooldownAnswer(): void
+        {
+            $stub = new ResendPageServiceStub();
+            $stub->history = new \DateTimeImmutable('2026-10-12 09:59:00', new DateTimeZone('Africa/Johannesburg'));
+$database = new ManualEntryDatabase();
+$_POST = ['candidate_id' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE];
+
+            try {
+                $this->pageWithResend($database, $stub)->handleResendConfirmation();
+            } catch (\AdctTestRedirect) {
+                // Expected.
+            }
+
+            self::assertSame(
+                [ReviewQueuePageTestIds::SOURCE_CANDIDATE],
+                $stub->asked,
+                'The service is asked on every press. Whether the hour has passed is the '
+                . 'booking transaction\'s answer to give, inside the lock.'
+            );
+            self::assertStringContainsString('resent=queued', (string) $GLOBALS['adct_test_redirect']);
+        }
+
+        /**
+         * A resend needs the panel's whole job: a POST form carrying the action,
+         * the nonce and the candidate, for a candidate that has saved fields.
+         */
+        public function testASavedCandidateIsOfferedTheResendControl(): void
+        {
+            $database = new ManualEntryDatabase();
+            $database->sourceFields = json_encode([
+                'title' => 'Fictional event',
+                'match_kind' => 'new',
+            ], JSON_THROW_ON_ERROR);
+
+            $rendered = $this->renderDetailWithResend($database, new ResendPageServiceStub());
+
+            self::assertStringContainsString(
+                            'name="action" value="' . ReviewQueuePage::RESEND_CONFIRMATION_ACTION . '"',
+                            $rendered
+                        );
+                        self::assertStringContainsString(
+                            'name="' . ReviewQueuePage::RESEND_CONFIRMATION_NONCE . '" value=',
+                            $rendered
+                        );
+                        self::assertStringContainsString('method="post"', strtolower($rendered));
+            self::assertStringContainsString(
+                'name="candidate_id" value="' . ReviewQueuePageTestIds::SOURCE_CANDIDATE . '"',
+                $rendered,
+                'The form has to name the candidate it was offered for.'
+            );
+        }
+
+        /**
+         * A resend re-renders from stored fields, so an unsaved candidate has
+         * nothing to send. Offering the button would queue an email built from
+         * whatever happened to be in the form.
+         */
+        public function testACandidateWithNothingSavedIsNotOfferedTheResendControl(): void
+        {
+            $database = new ManualEntryDatabase();
+            $database->sourceFields = '{}';
+
+            $rendered = $this->renderDetailWithResend($database, new ResendPageServiceStub());
+
+            self::assertStringNotContainsString(
+                ReviewQueuePage::RESEND_CONFIRMATION_ACTION,
+                $rendered,
+                'There is nothing to resend until the reviewer saves.'
+            );
+            self::assertStringContainsString(
+                'Save the event details first',
+                $rendered,
+                'And the screen says why, rather than silently omitting a button.'
+            );
+        }
+
+        /**
+         * "Saved" is the requirement, not "editable". A parish most often needs the
+         * preview again after a decision, when the row is no longer editable at
+         * all, and a resend changes nothing on the candidate — so the control has
+         * to survive the decision.
+         */
+        public function testTheResendControlSurvivesTheDecisionThatClosesTheEditor(): void
+        {
+            $database = new ManualEntryDatabase();
+            $database->sourceFields = json_encode([
+                'title' => 'Fictional event',
+                'match_kind' => 'new',
+            ], JSON_THROW_ON_ERROR);
+            $database->sourceStatus = 'published';
+            $database->sourceApprovedBy = 'dean@example.test';
+            $database->sourceDecidedAt = '2026-03-01 09:00:00';
+
+            $rendered = $this->renderDetailWithResend($database, new ResendPageServiceStub());
+
+            self::assertStringContainsString(
+                'already been decided, so its details are read-only',
+                $rendered,
+                'Precondition: the editor really is closed, so a resend cannot be mistaken for an edit.'
+            );
+            self::assertStringNotContainsString('Save changes', $rendered);
+            self::assertStringContainsString(
+                ReviewQueuePage::RESEND_CONFIRMATION_ACTION,
+                $rendered,
+                'A decided candidate still has saved fields and a still-live parish address.'
+            );
+        }
+
+        /**
+         * The panel's greyed-out state is decided by the same clock the cooldown is
+         * enforced on, and both times are named. A button that merely looks disabled
+         * with no reason is the one a reviewer will press twice.
+         */
+        public function testAPanelInsideTheCooldownNamesBothTimes(): void
+        {
+            $database = new ManualEntryDatabase();
+            $database->sourceFields = json_encode([
+                'title' => 'Fictional event',
+                'match_kind' => 'new',
+            ], JSON_THROW_ON_ERROR);
+
+            $stub = new ResendPageServiceStub();
+            $stub->now = new \DateTimeImmutable('2026-10-12 09:30:00', new DateTimeZone('Africa/Johannesburg'));
+            $stub->history = new \DateTimeImmutable('2026-10-12 09:00:00', new DateTimeZone('Africa/Johannesburg'));
+
+            $rendered = $this->renderDetailWithResend($database, $stub);
+
+            self::assertStringContainsString('disabled', $rendered, 'The button is not offered as usable.');
+            self::assertStringContainsString('12/10/2026 09:00', $rendered, 'When it was last sent.');
+            self::assertStringContainsString('12/10/2026 10:00', $rendered, 'And when it may be sent again.');
+        }
+
+        /**
+         * The cooldown notice the handler redirects to. Both times come back in the
+         * query string as integer timestamps and are rendered day-first, because
+         * that is how every other date on this screen is written.
+         */
+        public function testTheCooldownNoticeNamesBothTimesInDayFirstOrder(): void
+        {
+            $_GET = [
+                'candidate' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                'resent' => 'cooldown',
+                'resent_at' => (string) (new \DateTimeImmutable(
+                    '2026-10-12 09:00:00',
+                    new DateTimeZone('Africa/Johannesburg')
+                ))->getTimestamp(),
+                'resent_next' => (string) (new \DateTimeImmutable(
+                    '2026-10-12 10:00:00',
+                    new DateTimeZone('Africa/Johannesburg')
+                ))->getTimestamp(),
+            ];
+
+            $database = new ManualEntryDatabase();
+            $database->sourceFields = json_encode([
+                'title' => 'Fictional event',
+                'match_kind' => 'new',
+            ], JSON_THROW_ON_ERROR);
+
+            $rendered = $this->renderDetailWithResend($database, new ResendPageServiceStub());
+
+                        self::assertStringContainsString('already resent at 12/10/2026 09:00', $rendered);
+            self::assertStringContainsString('again after 12/10/2026 10:00', $rendered);
+        }
+
+                                /**
+                                 * The screen accepts either a ready resend service or a factory for one.
+                                 *
+                                 * `Plugin.php` hands in a factory, because the mail queue and the token
+                                 * service are both built after this page and no constructor may call a
+                                 * WordPress function. A caller that already holds the service — the
+                                 * WordPress integration check builds its own against the real queue table
+                                 * — must not be made to wrap it in a closure just to be accepted.
+                                 */
+                                public function testTheResendControlAcceptsAReadyServiceAsWellAsAFactory(): void
+                                {
+                                    $database = new ManualEntryDatabase();
+                                    $database->sourceFields = json_encode([
+                                        'title' => 'Fictional event',
+                                        'match_kind' => 'new',
+                                    ], JSON_THROW_ON_ERROR);
+
+                                    $stub = new ResendPageServiceStub();
+                                    $attachments = new AttachmentRepository($database);
+                                    $images = new WordPressPreviewableImageRepository($attachments);
+
+                                    $page = new ReviewQueuePage(
+                                        new ReviewQueueRepository($database, new ManualEntryClock()),
+                                        $this->publisher($database),
+                                        attachments: $attachments,
+                                        pluginFile: self::PLUGIN_FILE,
+                                        imageEndpoint: new AttachmentImageEndpoint($images, new ProtectedInboundMailStorage()),
+                                        resendConfirmation: $stub->service($this->queueReflecting($stub))
+                                    );
+
+                                    if (absint($_GET['candidate'] ?? 0) < 1) {
+                                        $_GET['candidate'] = (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE;
+                                    }
+
+                                    $failure = null;
+                                    ob_start();
+
+                                    try {
+                                        $page->renderPage();
+                                    } catch (\Throwable $thrown) {
+                                        $failure = $thrown;
+                                    }
+
+                                    $rendered = (string) ob_get_clean();
+
+                                    if ($failure !== null) {
+                                        throw $failure;
+                                    }
+
+                                    self::assertStringContainsString(
+                                        ReviewQueuePage::RESEND_CONFIRMATION_ACTION,
+                                        $rendered,
+                                        'A service handed in ready must render the control just as a factory does.'
+                                    );
+                                }
+
+        /**
+         * The times arrive in the query string, so they are attacker-reachable. A
+         * value that is not a plain integer must produce a vaguer sentence rather
+         * than a fatal error on an otherwise fine screen.
+                  */
+        #[DataProvider('unreadableTimestamps')]
+        public function testAnUnreadableTimestampDegradesToAVaguerSentence(mixed $value): void
+        {
+            $_GET = [
+                'candidate' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                'resent' => 'cooldown',
+                'resent_at' => $value,
+                'resent_next' => $value,
+            ];
+
+            $database = new ManualEntryDatabase();
+            $database->sourceFields = json_encode([
+                'title' => 'Fictional event',
+                'match_kind' => 'new',
+            ], JSON_THROW_ON_ERROR);
+
+            $rendered = $this->renderDetailWithResend($database, new ResendPageServiceStub());
+
+            self::assertStringContainsString('an earlier time', $rendered);
+            self::assertStringContainsString('an hour later', $rendered);
+        }
+
+        /** @return array<string, array{0: mixed}> */
+        public static function unreadableTimestamps(): array
+        {
+            return [
+                'letters' => ['not-a-time'],
+                'an array' => [['1']],
+                'digits past the range' => ['99999999999999'],
+                'a fractional timestamp' => ['1789.5'],
+                'a hex payload' => ['0x1f'],
+            ];
+        }
+
+        /**
+         * An outcome this build does not know about must not be echoed into the
+         * page, and must not blank the screen either.
+         */
+        public function testAnUnknownOutcomeRendersNoNotice(): void
+        {
+            $_GET = [
+                'candidate' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                'resent' => 'injected',
+            ];
+
+            $database = new ManualEntryDatabase();
+            $database->sourceFields = json_encode([
+                'title' => 'Fictional event',
+                'match_kind' => 'new',
+            ], JSON_THROW_ON_ERROR);
+
+            $rendered = $this->renderDetailWithResend($database, new ResendPageServiceStub());
+
+            self::assertStringNotContainsString('injected', $rendered);
+            self::assertStringContainsString('Fictional event', $rendered, 'The screen itself is unaffected.');
+        }
+
+        /**
+         * The recipient is shown back to the reviewer through `esc_html()`, because
+         * it reaches the page as a query argument.
+         */
+        public function testTheSuccessNoticeEscapesTheRecipientItEchoesBack(): void
+        {
+            $_GET = [
+                'candidate' => (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                'resent' => 'sent',
+                'resent_to' => '"><script>alert(1)</script>',
+            ];
+
+            $database = new ManualEntryDatabase();
+            $database->sourceFields = json_encode([
+                'title' => 'Fictional event',
+                'match_kind' => 'new',
+            ], JSON_THROW_ON_ERROR);
+
+            $rendered = $this->renderDetailWithResend($database, new ResendPageServiceStub());
+
+            self::assertStringNotContainsString('<script>', $rendered);
+        }
+
+        /**
+         * A site with no mail queue cannot resend at all. The screen renders
+         * without the control rather than offering a button that would 400.
+         */
+        public function testTheResendControlIsOmittedWhenThereIsNoMailQueue(): void
+        {
+            $database = new ManualEntryDatabase();
+            $database->sourceFields = json_encode([
+                'title' => 'Fictional event',
+                'match_kind' => 'new',
+            ], JSON_THROW_ON_ERROR);
+
+            $rendered = $this->renderDetailWithResend($database, null);
+
+            self::assertStringNotContainsString(ReviewQueuePage::RESEND_CONFIRMATION_ACTION, $rendered);
+            self::assertStringContainsString('Fictional event', $rendered, 'The rest of the screen is unaffected.');
+        }
+
+        private function renderDetailWithResend(
+            ManualEntryDatabase $database,
+            ?ResendPageServiceStub $stub
+        ): string {
+            // The detail screen is only reached through `?candidate=<id>`, so a
+            // test that only cares about the panel still has to ask for it. Left
+            // to a test that already set it — the notice tests need their own
+            // query arguments to survive.
+            if (absint($_GET['candidate'] ?? 0) < 1) {
+                $_GET['candidate'] = (string) ReviewQueuePageTestIds::SOURCE_CANDIDATE;
+            }
+
+            // Not `return` inside `finally`: that would discard an exception thrown by
+            // `renderPage()` and hand the caller a half-rendered page, which reads
+            // as a missing panel rather than as the fatal that stopped it.
+            ob_start();
+            $failure = null;
+            try {
+                $this->pageWithResend($database, $stub)->renderPage();
+            } catch (\Throwable $thrown) {
+                $failure = $thrown;
+            }
+            $rendered = (string) ob_get_clean();
+
+            if ($failure !== null) {
+                throw $failure;
+            }
+
+            return $rendered;
+        }
+
+        /**
+         * The page with its resend service injected, or without one at all.
+         *
+         * The production resolver is a closure handed in by `Plugin.php`, which is
+         * how this screen avoids depending on the mail queue it may not have.
+         */
+        private function pageWithResend(
+            ManualEntryDatabase $database,
+            ?ResendPageServiceStub $stub
+        ): ReviewQueuePage {
+            $attachments = new AttachmentRepository($database);
+            $images = new WordPressPreviewableImageRepository($attachments);
+
+            return new ReviewQueuePage(
+                new ReviewQueueRepository($database, new ManualEntryClock()),
+                $this->publisher($database),
+                attachments: $attachments,
+                pluginFile: self::PLUGIN_FILE,
+                ocr: new OcrControl('ocr.js', 'ocr.css', 'ocr-settings.js'),
+                imageEndpoint: new AttachmentImageEndpoint($images, new ProtectedInboundMailStorage()),
+                resendConfirmation: $stub === null
+                    ? null
+                    : fn (): ConfirmationEmailResendService => $stub->service(
+                        $this->queueReflecting($stub)
+                    )
+            );
+        }
+
+        /**
+         * The queue as the service sees it after it enqueues.
+         *
+         * Answering from the *same* fake mailer the service writes into is the
+         * point: the service refuses a resend whose queue row it cannot find, so a
+         * read-back pointed at a second mailer would fail every resend. The stub
+         * is read on each call rather than the mailer captured once, because the
+         * stub is what builds that mailer.
+         */
+        private function queueReflecting(ResendPageServiceStub $stub): MailQueueRepositoryInterface
+        {
+            $queue = $this->createMock(MailQueueRepositoryInterface::class);
+            $queue->method('findByRecipientAndGroupKey')->willReturnCallback(
+                static fn (string $recipient, string $groupKey): ?MailQueueRecord => $stub->queuedRowFor(
+                    $recipient,
+                    $groupKey
+                )
+            );
+
+            return $queue;
+        }
+
                 private function renderListing(ManualEntryDatabase $database): string
                 {
                     ob_start();
@@ -1731,6 +2426,232 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
      * The ids the fake database serves, kept out of the test class itself so
      * the fake can name them too.
      */
+    /**
+     * The resend service as this screen sees it: a real service, wired to fakes
+     * that can be told how to behave.
+     *
+     * `ConfirmationEmailResendService` is final and the page takes it by
+     * constructor type, so a subclass would not fit and PHPUnit's mocking of a
+     * final class is not an option either. This holds the fakes instead and
+     * builds the real object around them — which is also the point: the handler
+     * under test is talking to the same service the site runs, not to a stand-in
+     * that could not fail the way the real one does.
+     */
+    final class ResendPageServiceStub
+    {
+        /** Every candidate the service was asked to resend, in order. */
+        public array $asked = [];
+
+        public ?\DateTimeImmutable $now = null;
+
+        /** The last resend the booking reports, if any. */
+        public ?\DateTimeImmutable $history = null;
+
+        /** What the booking refuses with. Null accepts. */
+        public ?\Throwable $refuseWith = null;
+
+        /** What the mail queue reports for whatever was enqueued. */
+        public MailQueueStatus $queueStatus = MailQueueStatus::QUEUED;
+
+        /**
+         * The fake mailer the built service enqueues into.
+         *
+         * Null until {@see service()} builds it. Two mailers would mean the
+         * service writing to one while the queue looks in the other, and the
+         * service's own verification would then refuse every resend as
+         * undeliverable — a fixture fault that looks exactly like a production
+         * bug.
+         */
+        private ?ResendPageMailer $mailer = null;
+
+        /** The queue row for something just enqueued, or null if nothing was. */
+        public function queuedRowFor(string $recipient, string $groupKey): ?MailQueueRecord
+        {
+            return $this->mailer?->rowFor($recipient, $groupKey);
+        }
+
+        public static function refusingUntil(string $retryAfterSast): self
+        {
+            $stub = new self();
+            $zone = new \DateTimeZone('Africa/Johannesburg');
+            $retryAfter = new \DateTimeImmutable($retryAfterSast, $zone);
+            $stub->refuseWith = new ConfirmationEmailResendCooldownException(
+                $retryAfter->modify('-1 hour'),
+                $retryAfter,
+                ReviewQueuePageTestIds::SOURCE_CANDIDATE
+            );
+
+            return $stub;
+        }
+
+        public static function refusingWith(\Throwable $failure): self
+        {
+            $stub = new self();
+            $stub->refuseWith = $failure;
+
+            return $stub;
+        }
+
+        /**
+                 * Build the real service. `$queue` is the queue read-back: a test hands in
+                 * a mock that reports whatever the fake mailer recorded, exactly as the
+                 * Core test does, so this screen is tested against the real enqueue path
+                 * rather than a shortcut past it.
+                 */
+                public function service(MailQueueRepositoryInterface $queue): ConfirmationEmailResendService
+                {
+            $zone = new \DateTimeZone('Africa/Johannesburg');
+            $clock = new ResendPageClock($this->now ?? new \DateTimeImmutable('2026-10-12 09:15:00', $zone));
+                    $this->mailer = new ResendPageMailer($this->queueStatus);
+            $stub = $this;
+
+            return new ConfirmationEmailResendService(
+                $clock,
+                                $this->mailer,
+                new ConfirmationEmailComposer(
+                    new ActionTokenService(new ResendPageTokenStore(), $clock),
+                    new ResendPageLinkProvider(),
+                    new ConfirmationEmailRenderer()
+                ),
+                $queue,
+                new class ($stub) implements ConfirmationEmailResendBookingInterface {
+                    public function __construct(private readonly ResendPageServiceStub $stub)
+                    {
+                    }
+
+                    public function claimResendSlot(
+                        int $candidateId,
+                        string $actor,
+                        \DateTimeImmutable $now,
+                        int $cooldownSeconds
+                    ): ConfirmationEmailResendSlot {
+                        $this->stub->asked[] = $candidateId;
+
+                        if ($this->stub->refuseWith !== null) {
+                            throw $this->stub->refuseWith;
+                        }
+
+                        return new ConfirmationEmailResendSlot($this->batch(), $this->stub->history);
+                    }
+
+                    public function lastResentAt(int $candidateId): ?\DateTimeImmutable
+                    {
+                        return $this->stub->history;
+                    }
+
+                    private function batch(): ConfirmationEmailBatch
+                    {
+                        $zone = new \DateTimeZone('Africa/Johannesburg');
+
+                        return new ConfirmationEmailBatch(
+                            901,
+                            ReviewQueuePageTestIds::MESSAGE,
+                            'parish@example.test',
+                            'St Example Parish',
+                            'Event notice',
+                            new \DateTimeImmutable('2026-10-01 12:00:00', $zone),
+                            null,
+                            SenderTrust::VERIFIED,
+                            SenderTrust::UNKNOWN,
+                            false,
+                            '<original-901@example.test>',
+                            [
+                                new ConfirmationEmailCandidate(
+                                    ReviewQueuePageTestIds::SOURCE_CANDIDATE,
+                                    [
+                                        'title' => 'Fictional event',
+                                        'event_date' => '2026-10-12',
+                                        'event_time' => '18:30',
+                                        'venue' => 'St Example Hall',
+                                        'parish_name' => 'St Example Parish',
+                                        'description' => 'A parish gathering.',
+                                    ],
+                                    [],
+                                    0.91,
+                                    []
+                                ),
+                            ]
+                        );
+                    }
+                },
+                $zone
+            );
+        }
+    }
+
+    final class ResendPageClock implements ClockInterface
+    {
+        public function __construct(private \DateTimeImmutable $current)
+        {
+        }
+
+        public function now(): \DateTimeImmutable
+        {
+            return $this->current;
+        }
+    }
+
+    final class ResendPageMailer implements MailerInterface
+    {
+        /** @var list<OutboundEmail> */
+        public array $emails = [];
+
+        public function __construct(private readonly MailQueueStatus $status)
+        {
+        }
+
+        public function enqueue(OutboundEmail $email): MailQueueEnqueueResult
+        {
+            $this->emails[] = $email;
+
+            return new MailQueueEnqueueResult(16 + count($this->emails), $this->status, false);
+        }
+
+        public function rowFor(string $recipient, string $groupKey): ?MailQueueRecord
+        {
+            foreach ($this->emails as $index => $email) {
+                if ($email->recipient !== $recipient || $email->groupKey !== $groupKey) {
+                    continue;
+                }
+
+                $now = new \DateTimeImmutable('2026-10-12 09:15:00', new \DateTimeZone('Africa/Johannesburg'));
+
+                return new MailQueueRecord(17 + $index, $email, $this->status, 0, $now, $now);
+            }
+
+            return null;
+        }
+    }
+
+    final class ResendPageTokenStore implements ActionTokenStoreInterface
+    {
+        /** @var array<string, ActionTokenRecord> */
+        private array $records = [];
+
+        public function create(ActionTokenRecord $record): void
+        {
+            $this->records[$record->tokenHash] = $record;
+        }
+
+        public function findByHash(string $tokenHash): ?ActionTokenRecord
+        {
+            return $this->records[$tokenHash] ?? null;
+        }
+
+        public function consume(string $tokenHash, ActionTokenBinding $binding, \DateTimeImmutable $now): bool
+        {
+            return false;
+        }
+    }
+
+    final class ResendPageLinkProvider implements ConfirmationActionLinkProviderInterface
+    {
+        public function urlForToken(string $token): string
+        {
+            return 'https://adct.example.test/action?token=' . rawurlencode($token);
+        }
+    }
+
     final class ReviewQueuePageTestIds
     {
         public const SOURCE_CANDIDATE = 7;

@@ -2,6 +2,11 @@
 
 declare(strict_types=1);
 
+use ADCT\ParishIntake\Core\Auth\ActionTokenService;
+use ADCT\ParishIntake\Core\Ingestion\InboundHeaderBlockParser;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailComposer;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailRenderer;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendService;
 use ADCT\ParishIntake\Core\Review\CandidateEditValidator;
 use ADCT\ParishIntake\Core\Review\CandidateFieldSet;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
@@ -10,11 +15,16 @@ use ADCT\ParishIntake\WordPress\Admin\ReviewQueuePage;
 use ADCT\ParishIntake\WordPress\Attachments\AttachmentImageEndpoint;
 use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
 use ADCT\ParishIntake\WordPress\Attachments\WordPressPreviewableImageRepository;
+use ADCT\ParishIntake\WordPress\Auth\WordPressConfirmationActionLinkProvider;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\ParishContactRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ReviewQueueRepository;
+use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
+use ADCT\ParishIntake\WordPress\Database\WordPressMailQueueRepository;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
+use ADCT\ParishIntake\WordPress\Ingestion\WordPressConfirmationEmailResendSource;
 use ADCT\ParishIntake\WordPress\Plugin;
 
 /**
@@ -1406,6 +1416,148 @@ final class CandidateDetailCheck
                 $published[] = $duplicatePublished;
             }
 
+            // --- Resending the confirmation preview (issue #176) -----------------
+            // The panel is offered only for a saved candidate, and it re-renders
+            // the email from the fields as they stand now rather than from what was
+            // on the reviewer's screen when they last saved. So the whole flow is
+            // built here from the real service and the real repository, with a real
+            // queue table, and the only thing asserted is that the mail the parish
+            // would receive describes the candidate as it is today.
+            $resendPage = new ReviewQueuePage(
+                $queue,
+                Plugin::candidatePublisher(),
+                new ReviewQueuePolicy(),
+                $messages,
+                $attachments,
+                $storage,
+                new CandidateEditValidator(),
+                $pluginFile,
+                $ocr,
+                $imageEndpoint,
+                self::resendService($db, $queue, $messages, $storage)
+            );
+
+            $resendDetail = self::openDetailFor($resendPage, $main['candidate']);
+            $check(str_contains($resendDetail, ReviewQueuePage::RESEND_CONFIRMATION_ACTION),
+                'a saved candidate must offer the resend control: a parish that never got the '
+                . 'preview has no way to ask for it again.');
+            $check(str_contains(
+                $resendDetail,
+                wp_create_nonce(ReviewQueuePage::RESEND_CONFIRMATION_ACTION)
+            ), 'the resend control must carry its own nonce.');
+            // "Saved", not "editable", is the requirement: a resend renders the
+            // stored fields and changes nothing, so it stays available after the
+            // decision that closes the editor — which is exactly when a parish
+            // most often needs the preview again.
+            $check(str_contains(self::openDetailFor($resendPage, $decided['candidate']),
+                ReviewQueuePage::RESEND_CONFIRMATION_ACTION),
+                'a decided candidate still has saved fields, so it must still be able to send '
+                . 'the preview again after the editor has closed.');
+
+            $resendPost = [
+                'action' => ReviewQueuePage::RESEND_CONFIRMATION_ACTION,
+                'candidate_id' => (string) $main['candidate'],
+                'tab' => 'awaiting_approval',
+                'search' => 'Fictional',
+                ReviewQueuePage::RESEND_CONFIRMATION_NONCE => wp_create_nonce(
+                    ReviewQueuePage::RESEND_CONFIRMATION_ACTION
+                ),
+            ];
+
+            // The first resend is allowed and queues rather than sends. The
+            // outcome is the queue's own state, so a harness that delivers
+            // immediately reports `sent` rather than `queued`; both mean the
+            // email reached the queue, and only those two do.
+            $queueBefore = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$prefix}mail_queue");
+            $redirect = $redirectFor($resendPage, 'handleResendConfirmation', $resendPost);
+            $check(
+                $redirect !== null
+                    && (str_contains($redirect, 'resent=queued') || str_contains($redirect, 'resent=sent')),
+                'a resend must redirect back to the same candidate with a notice: ' . ($redirect ?? 'no redirect')
+            );
+            $queued = $wpdb->get_row($wpdb->prepare(
+                "SELECT recipient, subject, body_html, group_key FROM {$prefix}mail_queue
+                 WHERE group_key LIKE %s ORDER BY id DESC LIMIT 1",
+                '%confirmation-resend:' . $main['candidate'] . ':%'
+            ), ARRAY_A);
+            $check($queued !== null,
+                'a resend must go through the queue: nothing is sent inline (ADR 0011).');
+            $check($queued !== null && (int) $wpdb->get_var("SELECT COUNT(*) FROM {$prefix}mail_queue")
+                === $queueBefore + 1, 'and it must queue exactly one message.');
+            $check($queued !== null && $queued['recipient'] === $contact,
+                'it must be addressed to the submitter, not to anyone in the archdiocese.');
+            // Read the title back rather than hard-coding it: earlier in this
+            // flow the reviewer renamed the event, so asserting the *seeded*
+            // title would pass for an email rendered from stale values. Reading
+            // the stored title and demanding it in the body is what actually
+            // proves the resend reflects the fields as they stand now.
+            $storedTitle = self::storedTitle($wpdb, $prefix, (int) $main['candidate']);
+            $check($storedTitle !== '', 'the candidate under test must have a stored title to render.');
+            $check($queued !== null && $storedTitle !== ''
+                && str_contains((string) $queued['body_html'], $storedTitle),
+                'the queued email must be rendered from the candidate\'s current stored fields.');
+
+            // The resend is audited, and the audit row names the candidate rather
+            // than the recipient: the queue row already records who was written to.
+            $resends = array_values(array_filter(
+                $queue->history($main['candidate']),
+                static function (array $row): bool {
+                    return $row['action'] === 'candidate_confirmation_resent';
+                }
+            ));
+            $check(count($resends) === 1,
+                'a resend must write exactly one audit row: it is an outbound message to a '
+                . 'parish, so POPIA wants it in the trail even though nothing changed.');
+            $check(($resends[0]['actor'] ?? '') === $reviewer->user_email,
+                'the audit row must name the reviewer who pressed the button, or nobody owns the send.');
+            $resendDetails = json_decode((string) ($resends[0]['details'] ?? ''), true);
+            $check(is_array($resendDetails) && ($resendDetails['role'] ?? null) === 'reviewer'
+                && isset($resendDetails['message_id'], $resendDetails['next_allowed_at']),
+                'the audit row must record what was sent and when another may follow, and must not '
+                . 'copy the parish address into the trail where the queue row already holds it.');
+
+            // The second resend inside the hour is refused by the booking, in the
+            // write path, so a crafted POST cannot get past it either. The queued
+            // count proves nothing extra was written.
+            $queueAfterFirst = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$prefix}mail_queue");
+            $redirect = $redirectFor($resendPage, 'handleResendConfirmation', $resendPost);
+            $check($redirect !== null && str_contains($redirect, 'resent=cooldown'),
+                'a second resend within the hour must be refused, not queued.');
+            $check((int) $wpdb->get_var("SELECT COUNT(*) FROM {$prefix}mail_queue") === $queueAfterFirst,
+                'the refused resend must not queue anything.');
+            $check((int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM {$prefix}audit_log
+                 WHERE subject_type = 'event_candidate' AND subject_id = %d AND action = %s",
+                $main['candidate'],
+                'candidate_confirmation_resent'
+            )) === 1, 'and it must not be audited as though it had happened.');
+
+            // The refusal tells the reviewer when the last one went out and when
+            // they may try again, because "no" on its own is useless to them.
+            $cooldownDetail = self::openDetailFor(
+                $resendPage,
+                $main['candidate'],
+                self::resendQuery($redirect)
+            );
+            $check(str_contains($cooldownDetail, 'was already resent at'),
+                'the cooldown notice must say a resend already went out.');
+            $check(str_contains($cooldownDetail, 'again after'),
+                'and it must say when the reviewer may resend again.');
+            // Both times are formatted the way the whole queue reads them: day
+            // first, in site time. Asserting the exact stamps rather than the
+            // words means a notice that silently fell back to "an earlier time"
+            // would fail here.
+            $cooldownQuery = self::resendQuery($redirect);
+            $jhb = new DateTimeZone('Africa/Johannesburg');
+            $previousAt = (new DateTimeImmutable('@' . (int) ($cooldownQuery['resent_at'] ?? 0)))
+                ->setTimezone($jhb)
+                ->format('d/m/Y H:i');
+            $nextAt = (new DateTimeImmutable('@' . (int) ($cooldownQuery['resent_next'] ?? 0)))
+                ->setTimezone($jhb)
+                ->format('d/m/Y H:i');
+            $check(str_contains($cooldownDetail, $previousAt) && str_contains($cooldownDetail, $nextAt),
+                'and it must name the previous resend and the next-allowed time as real timestamps.');
+
             // --- Reject ------------------------------------------------------------
             $rejectCandidate = $makeCandidate('reject', 'awaiting_approval', $parish, $contact, $rawPath);
             $reject = $validPost;
@@ -1449,10 +1601,12 @@ final class CandidateDetailCheck
                 'the raw-message action must be registered on the installed plugin.');
             $check(has_action('admin_post_adct_pi_candidate_attachment') !== false,
                 'the attachment action must be registered on the installed plugin.');
-                        $check(has_action('admin_post_' . ReviewQueuePage::CREATE_MANUAL_ACTION) !== false,
-                            'the hand-typed-event action must be registered on the installed plugin.');
-                                    $check(has_action('admin_post_' . ReviewQueuePage::RESOLVE_MATCH_ACTION) !== false,
-                                        'the resolve-match action must be registered on the installed plugin.');
+        $check(has_action('admin_post_' . ReviewQueuePage::RESEND_CONFIRMATION_ACTION) !== false,
+            'the resend-confirmation action must be registered on the installed plugin.');
+        $check(has_action('admin_post_' . ReviewQueuePage::CREATE_MANUAL_ACTION) !== false,
+            'the hand-typed-event action must be registered on the installed plugin.');
+        $check(has_action('admin_post_' . ReviewQueuePage::RESOLVE_MATCH_ACTION) !== false,
+            'the resolve-match action must be registered on the installed plugin.');
         } finally {
             $_GET = $originalGet;
             $_POST = $originalPost;
@@ -1465,6 +1619,14 @@ final class CandidateDetailCheck
                 wp_delete_post($postId, true);
             }
             foreach ($inserted as [$messageId, $candidateId]) {
+                // The resend checks queue real mail rows, keyed by candidate, so
+                // they have to go with the candidate that caused them. Leaving one
+                // behind would survive into the next run and, at an hour's
+                // cooldown, into every run after that.
+                $wpdb->query($wpdb->prepare(
+                    "DELETE FROM {$prefix}mail_queue WHERE group_key LIKE %s",
+                    'confirmation-resend:' . $candidateId . ':%'
+                ));
                 $wpdb->delete($prefix . 'audit_log', [
                     'subject_type' => 'event_candidate',
                     'subject_id' => $candidateId,
@@ -1480,9 +1642,9 @@ final class CandidateDetailCheck
             $wpdb->delete($prefix . 'parish_contacts', ['email' => $contact]);
             $wpdb->delete($prefix . 'parish_contacts', ['email' => $foreignContact]);
             $wpdb->delete($prefix . 'deanery_approvers', ['deanery_id' => $deanery]);
-                        $wpdb->delete($prefix . 'venues', ['parish_id' => $parish]);
-                        $wpdb->delete($prefix . 'venues', ['parish_id' => $foreignParish]);
-                        $wpdb->delete($prefix . 'parishes', ['id' => $parish]);
+            $wpdb->delete($prefix . 'venues', ['parish_id' => $parish]);
+            $wpdb->delete($prefix . 'venues', ['parish_id' => $foreignParish]);
+            $wpdb->delete($prefix . 'parishes', ['id' => $parish]);
             $wpdb->delete($prefix . 'parishes', ['id' => $foreignParish]);
             $wpdb->delete($prefix . 'deaneries', ['id' => $deanery]);
             $wpdb->delete($prefix . 'deaneries', ['id' => $foreignDeanery]);
@@ -1490,33 +1652,33 @@ final class CandidateDetailCheck
     }
 
     /**
-         * How many candidates exist, so a refused request can be proved to have
-         * written nothing without depending on which row it would have written.
-         */
-        private static function candidateCount(wpdb $wpdb, string $prefix): int
-        {
-            return (int) $wpdb->get_var("SELECT COUNT(*) FROM {$prefix}event_candidates");
+     * How many candidates exist, so a refused request can be proved to have
+     * written nothing without depending on which row it would have written.
+     */
+    private static function candidateCount(wpdb $wpdb, string $prefix): int
+    {
+        return (int) $wpdb->get_var("SELECT COUNT(*) FROM {$prefix}event_candidates");
+    }
+
+    /**
+     * The `candidate` query argument of a redirect location.
+     *
+     * Parsed rather than read with `parse_url()`, because the harness location
+     * is a relative path and `parse_str()` handles both forms.
+     */
+    private static function queryInt(?string $location, string $key): int
+    {
+        if ($location === null) {
+            return 0;
         }
+        $query = [];
+        parse_str((string) parse_url($location, PHP_URL_QUERY), $query);
 
-        /**
-         * The `candidate` query argument of a redirect location.
-         *
-         * Parsed rather than read with `parse_url()`, because the harness location
-         * is a relative path and `parse_str()` handles both forms.
-         */
-        private static function queryInt(?string $location, string $key): int
-        {
-            if ($location === null) {
-                return 0;
-            }
-            $query = [];
-            parse_str((string) parse_url($location, PHP_URL_QUERY), $query);
+        return (int) ($query[$key] ?? 0);
+    }
 
-            return (int) ($query[$key] ?? 0);
-        }
-
-        /**
-         * A candidate's stored title, read with PHP rather than `JSON_EXTRACT`.
+    /**
+     * A candidate's stored title, read with PHP rather than `JSON_EXTRACT`.
      *
      * MariaDB and MySQL differ over JSON functions in the test harness, so the
      * column is fetched and decoded in PHP instead.
@@ -1563,15 +1725,111 @@ final class CandidateDetailCheck
 
             return $location;
         } catch (Throwable) {
-                    ob_end_clean();
+            ob_end_clean();
 
-                    return null;
-                } finally {
-                    remove_filter('wp_redirect', $capture, 1);
-                }
-                // No redirect: the handler rendered instead, so the check failed.
-                ob_end_clean();
+            return null;
+        } finally {
+            remove_filter('wp_redirect', $capture, 1);
+        }
+        // No redirect: the handler rendered instead, so the check failed.
+        ob_end_clean();
 
-                return null;
+        return null;
+    }
+
+    /**
+     * The resend service, built from the same collaborators `Plugin.php` injects.
+     *
+     * Built here rather than taken from the plugin so the check drives one service
+     * against the real queue table and the real repository, instead of asserting
+     * against a stand-in that would only prove the stand-in works.
+     */
+    private static function resendService(
+        WordPressDatabaseConnection $database,
+        ReviewQueueRepository $queue,
+        InboundMessageRepository $messages,
+        ProtectedInboundMailStorage $storage
+    ): ConfirmationEmailResendService {
+        $timezone = function_exists('wp_timezone')
+            ? wp_timezone()
+            : new DateTimeZone('Africa/Johannesburg');
+        $clock = new SystemClock();
+        $mailQueue = new WordPressMailQueueRepository($database);
+
+        return new ConfirmationEmailResendService(
+            $clock,
+            Plugin::mailer(),
+            new ConfirmationEmailComposer(
+                new ActionTokenService(new WordPressActionTokenStore($database), $clock),
+                new WordPressConfirmationActionLinkProvider(),
+                new ConfirmationEmailRenderer()
+            ),
+            $mailQueue,
+            new WordPressConfirmationEmailResendSource(
+                $database,
+                $queue,
+                new ParishContactRepository($database),
+                $storage,
+                new InboundHeaderBlockParser(),
+                $timezone
+            ),
+            $timezone
+        );
+    }
+
+    /**
+     * The detail screen as one page instance renders it, with the query string the
+     * page carries on a real load.
+     *
+     * Takes the page rather than closing over the shared one, so the resend
+     * checks can use a page that has the service wired and the rest of the file
+     * keeps using the page built without it.
+     */
+    private static function openDetailFor(
+        ReviewQueuePage $page,
+        int $candidateId,
+        array $query = []
+    ): string {
+        $_GET = array_merge([
+            'page' => ReviewQueuePage::PAGE_SLUG,
+            'tab' => 'awaiting_approval',
+            'search' => 'Fictional',
+            'candidate' => (string) $candidateId,
+        ], $query);
+        ob_start();
+        try {
+            $page->renderPage();
+        } finally {
+            $html = (string) ob_get_clean();
+        }
+
+        return $html;
+    }
+
+    /**
+     * The notice arguments a redirect carried, so a check can replay the redirect
+     * as the next page load instead of inventing them.
+     *
+     * The redirect is the only place the times live, so this is also what proves
+     * they survive the trip: a value the notice cannot read back would simply not
+     * appear on the page and the assertion on it would fail.
+     *
+     * @return array<string, string>
+     */
+    private static function resendQuery(?string $location): array
+    {
+        if ($location === null) {
+            return [];
+        }
+        $query = [];
+        parse_str((string) parse_url($location, PHP_URL_QUERY), $query);
+        $notice = [];
+        foreach (['resent', 'resent_at', 'resent_next', 'resent_to'] as $key) {
+            if (isset($query[$key]) && is_string($query[$key])) {
+                $notice[$key] = $query[$key];
+            }
+        }
+
+        return $notice;
     }
 }

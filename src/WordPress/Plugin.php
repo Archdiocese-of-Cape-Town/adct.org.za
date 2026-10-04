@@ -53,17 +53,22 @@ use ADCT\ParishIntake\Core\Mail\MailQueueConfiguration;
 use ADCT\ParishIntake\Core\Mail\MailQueueDispatcher;
 use ADCT\ParishIntake\Core\Mail\MailQueueService;
 use ADCT\ParishIntake\Core\Mail\MailQueueStats;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailComposer;
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailPreviewService;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailRenderer;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendService;
 use ADCT\ParishIntake\Core\Parsing\Ai\NullAiProvider;
 use ADCT\ParishIntake\Core\Parsing\PipelineFactory;
 use ADCT\ParishIntake\Core\Parsing\SectionSkipper;
 use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
 use ADCT\ParishIntake\Core\Ocr\OcrTextEnrichmentService;
 use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
+use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\AiProviderInterface;
 use ADCT\ParishIntake\Core\Ports\HttpClientInterface;
 use ADCT\ParishIntake\Core\Ports\MailboxInterface;
 use ADCT\ParishIntake\Core\Ports\MailerInterface;
+use ADCT\ParishIntake\Core\Ports\MailQueueRepositoryInterface;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
 use ADCT\ParishIntake\Core\Sources\SourceRegistryService;
@@ -184,6 +189,7 @@ use ADCT\ParishIntake\WordPress\Events\PublicIcsFeed;
 use ADCT\ParishIntake\WordPress\Events\PlaceCoordinateLookup;
 use ADCT\ParishIntake\WordPress\Ingestion\ProtectedInboundMailStorage;
 use ADCT\ParishIntake\WordPress\Ingestion\WordPressConfirmationEmailJobSource;
+use ADCT\ParishIntake\WordPress\Ingestion\WordPressConfirmationEmailResendSource;
 use ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance;
 use ADCT\ParishIntake\WordPress\Publishing\WordPressPublicationStore;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
@@ -232,13 +238,86 @@ final class Plugin
 
         return $this->actionTokenEndpoint;
     }
-    private PipelineFactory $pipelineFactory;
+
+            /**
+             * The confirmation resend service for the review screen (issue #176).
+             *
+             * Built on first use rather than in the constructor for two reasons. The mail
+             * queue and the token service are both assembled later than the review screen,
+             * and `wp_timezone()` is a WordPress function, which the release bootstrap
+             * check would hit if this ran during construction.
+             *
+             * Returns null before the mail queue exists, which is the one case the screen
+             * renders without a resend control rather than an error.
+             */
+            private function confirmationResendService(): ?ConfirmationEmailResendService
+            {
+                if (! isset($this->mailQueue, $this->actionTokenService, $this->mailQueueRepository)) {
+                    return null;
+                }
+
+                if ($this->confirmationResendService === null) {
+                    $timezone = function_exists('wp_timezone')
+                        ? wp_timezone()
+                        : new DateTimeZone('Africa/Johannesburg');
+
+                    $this->confirmationResendService = new ConfirmationEmailResendService(
+                        $this->clock,
+                        $this->mailQueue,
+                        new ConfirmationEmailComposer(
+                            $this->actionTokenService,
+                            new WordPressConfirmationActionLinkProvider(),
+                            $this->confirmationEmailRenderer($timezone)
+                        ),
+                        $this->mailQueueRepository,
+                        new WordPressConfirmationEmailResendSource(
+                            $this->database,
+                            $this->reviewQueue(),
+                            $this->parishContacts,
+                            new ProtectedInboundMailStorage(),
+                            new InboundHeaderBlockParser(),
+                            $timezone
+                        ),
+                        $timezone
+                    );
+                }
+
+                return $this->confirmationResendService;
+            }
+
+            /**
+             * The renderer shared by the confirmation preview job and the resend service.
+             *
+             * Shared on purpose: a resend must render the parish's email through exactly
+             * the same code as the original, or the two would drift and a "resend" could
+             * produce a subtly different document from the one the parish already has.
+             */
+            private function confirmationEmailRenderer(DateTimeZone $timezone): ConfirmationEmailRenderer
+            {
+                if ($this->confirmationRenderer === null) {
+                    $this->confirmationRenderer = new ConfirmationEmailRenderer(
+                        $timezone,
+                        $this->confidenceOption(
+                            'adct_parish_intake_field_confidence_threshold',
+                            ConfidenceScoringStage::DEFAULT_FIELD_THRESHOLD
+                        )
+                    );
+                }
+
+                return $this->confirmationRenderer;
+            }
+
+                private PipelineFactory $pipelineFactory;
     private ParserPage $parserPage;
     private HttpClientInterface $httpClient;
     private WordPressJobScheduler $jobScheduler;
     private ScheduledJobsPage $scheduledJobsPage;
     private HealthPage $healthPage;
     private WordPressHelp $adminHelp;
+        private WordPressDatabaseConnection $database;
+        private ParishContactRepository $parishContacts;
+        private ?ClockInterface $clock = null;
+        private ?ConfirmationEmailRenderer $confirmationRenderer = null;
     private HealthAlerts $healthAlerts;
     private MailQueueService $mailQueue;
     private OutboundMailPage $outboundMailPage;
@@ -262,6 +341,8 @@ final class Plugin
      * repository the rest of the plugin writes through.
      */
     private AuditLogRepository $auditLog;
+        private ?MailQueueRepositoryInterface $mailQueueRepository = null;
+        private ?ConfirmationEmailResendService $confirmationResendService = null;
     private ?ReviewQueuePage $reviewQueuePage = null;
 private ?ReviewQueueRepository $reviewQueue = null;
     private ?FrontEndApprovalQueue $frontEndApprovalQueue = null;
@@ -297,11 +378,14 @@ private ?ReviewQueueRepository $reviewQueue = null;
         $this->httpClient = new WordPressHttpClient();
         $clock = new SystemClock();
         $database = new WordPressDatabaseConnection();
+                $this->clock = $clock;
+                $this->database = $database;
         $directoryVersions = new WordPressDirectoryVersionStore($database);
         $parishes = new ParishRepository($database, $directoryVersions);
         $deaneries = new DeaneryRepository($database);
         $approvers = new DeaneryApproverRepository($database);
         $contacts = new ParishContactRepository($database, $directoryVersions);
+                $this->parishContacts = $contacts;
         $venues = new VenueRepository($database, $directoryVersions);
         $sources = new SourceRepository($database);
         $timezone = function_exists('wp_timezone')
@@ -476,8 +560,9 @@ private ?ReviewQueueRepository $reviewQueue = null;
                 new CandidateEditValidator(),
                 $this->pluginFile,
                 $this->ocrControl(),
-                $this->attachmentImageEndpoint
-            );
+                                $this->attachmentImageEndpoint,
+                                $this->confirmationResendService()
+                            );
         // #72: the same repository and policy behind a front-end page, so a
         // dean is scoped by exactly the same predicate as a reviewer in
         // wp-admin (ADR 0008: deans never need wp-admin).
@@ -515,7 +600,8 @@ private ?ReviewQueueRepository $reviewQueue = null;
         $mailQueueConfiguration = self::mailQueueConfiguration();
         $mailRecipientPolicy = new WordPressTestModeRecipientPolicy();
         $mailQueueRepository = new WordPressMailQueueRepository($database);
-        $this->outboundMailPage = new OutboundMailPage($mailQueueRepository);
+                $this->mailQueueRepository = $mailQueueRepository;
+                $this->outboundMailPage = new OutboundMailPage($mailQueueRepository);
         $mailQueueDispatcher = new MailQueueDispatcher(
             $mailQueueRepository,
             new WordPressMailDeliveryAdapter(),
@@ -617,16 +703,10 @@ private ?ReviewQueueRepository $reviewQueue = null;
                 new WordPressConfirmationActionLinkProvider(),
                 $this->mailQueue,
                 $mailQueueRepository,
-                new \ADCT\ParishIntake\Core\Mail\ConfirmationEmailRenderer(
-                    $timezone,
-                    $this->confidenceOption(
-                        'adct_parish_intake_field_confidence_threshold',
-                        ConfidenceScoringStage::DEFAULT_FIELD_THRESHOLD
-                    )
-                )
-            ),
-            $clock
-        );
+                                $this->confirmationEmailRenderer($timezone)
+                            ),
+                            $clock
+                        );
         $mailboxPollingJob = new MailboxPollingJob(
             $mailboxes,
             $sources,
@@ -1181,6 +1261,10 @@ private ?ReviewQueueRepository $reviewQueue = null;
             'admin_post_' . ReviewQueuePage::RESOLVE_MATCH_ACTION,
             [$this->reviewQueuePage, 'handleResolveMatch']
         );
+                    add_action(
+                        'admin_post_' . ReviewQueuePage::RESEND_CONFIRMATION_ACTION,
+                        [$this->reviewQueuePage, 'handleResendConfirmation']
+                    );
         add_action('admin_post_adct_pi_test_mailbox', [$this->mailboxesPage, 'handleTestConnection']);
         add_action(
             'admin_post_adct_pi_create_mailbox_processed_folder',

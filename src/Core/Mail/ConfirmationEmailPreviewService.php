@@ -5,37 +5,44 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Core\Mail;
 
 use ADCT\ParishIntake\Core\Auth\ActionTokenBinding;
-use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 use ADCT\ParishIntake\Core\Auth\ActionTokenService;
 use ADCT\ParishIntake\Core\Directory\SenderTrust;
 use ADCT\ParishIntake\Core\Ingestion\EmailAddressSafety;
 use ADCT\ParishIntake\Core\Ingestion\InboundMailPolicy;
-use ADCT\ParishIntake\Core\Ingestion\InboundMessageRecord;
 use ADCT\ParishIntake\Core\Ports\ConfirmationActionLinkProviderInterface;
 use ADCT\ParishIntake\Core\Ports\MailerInterface;
 use ADCT\ParishIntake\Core\Ports\MailQueueRepositoryInterface;
-use JsonException;
-use RuntimeException;
 use Throwable;
 
+/**
+ * Queues the confirmation preview a freshly parsed message earns, exactly once.
+ *
+ * The email itself is built by {@see ConfirmationEmailComposer}, which the
+ * reviewer-driven resend (issue #176) shares. What stays here is what makes *this*
+ * route idempotent: a stable group key per inbound message, and the reconciliation
+ * of an enqueue that raced another worker. A resend deliberately wants none of
+ * that, which is why the two are separate classes rather than one with a flag.
+ */
 final class ConfirmationEmailPreviewService
 {
-    private const TEMPLATE_FINGERPRINT_VERSION = 'e4.2-confirmation-preview-v1';
-
-    private EmailAddressSafety $addressSafety;
-    private InboundMailPolicy $inboundMailPolicy;
+    private readonly ConfirmationEmailComposer $composer;
 
     public function __construct(
-        private readonly ActionTokenService $tokens,
-        private readonly ConfirmationActionLinkProviderInterface $actionLinks,
+        ActionTokenService $tokens,
+        ConfirmationActionLinkProviderInterface $actionLinks,
         private readonly MailerInterface $mailer,
         private readonly MailQueueRepositoryInterface $queue,
-        private readonly ConfirmationEmailRenderer $renderer,
+        ConfirmationEmailRenderer $renderer,
         ?InboundMailPolicy $inboundMailPolicy = null,
         ?EmailAddressSafety $addressSafety = null
     ) {
-        $this->inboundMailPolicy = $inboundMailPolicy ?? new InboundMailPolicy();
-        $this->addressSafety = $addressSafety ?? new EmailAddressSafety();
+        $this->composer = new ConfirmationEmailComposer(
+            $tokens,
+            $actionLinks,
+            $renderer,
+            $inboundMailPolicy,
+            $addressSafety
+        );
     }
 
     public function enqueuePreview(ConfirmationEmailBatch $batch): ConfirmationEmailResult
@@ -68,7 +75,7 @@ final class ConfirmationEmailPreviewService
             );
         }
 
-        $recipient = $this->confirmationRecipient($batch);
+        $recipient = $this->composer->recipient($batch);
 
         if ($recipient === null) {
             return new ConfirmationEmailResult(
@@ -84,10 +91,9 @@ final class ConfirmationEmailPreviewService
             return $this->resultFromExistingBatch($batch, $existing);
         }
 
-        $threadHeaders = EmailThreadHeaders::fromOriginalMessageId($batch->originalMessageId);
-        $payloadFingerprint = $this->payloadFingerprint($batch, $recipient, $threadHeaders);
-        $links = $this->createActionLinks($batch, $recipient);
-        $content = $this->renderer->render($batch, $links);
+        $threadHeaders = $this->composer->threadHeaders($batch);
+        $payloadFingerprint = $this->composer->payloadFingerprint($batch, $recipient, $threadHeaders);
+        $content = $this->composer->render($batch, $recipient);
         $email = new OutboundEmail(
             $recipient,
             $content->subject,
@@ -153,53 +159,11 @@ final class ConfirmationEmailPreviewService
         return $records[0] ?? null;
     }
 
-    private function confirmationRecipient(ConfirmationEmailBatch $batch): ?string
-    {
-        $message = new InboundMessageRecord(
-            $batch->sourceId,
-            'confirmation:' . $batch->messageId,
-            null,
-            $batch->senderEmail,
-            $batch->senderName,
-            $batch->subject,
-            $batch->receivedAt,
-            null,
-            isAutoReply: $batch->automatedOrList
-        );
-
-        if (! $this->inboundMailPolicy->canSendConfirmation($message)) {
-            return null;
-        }
-
-        return $this->potentialConfirmationRecipient($batch);
-    }
-
-    private function potentialConfirmationRecipient(ConfirmationEmailBatch $batch): ?string
-    {
-        if (! $this->addressSafety->isSafeConfirmationAddress($batch->senderEmail)) {
-            return null;
-        }
-
-        $sender = ActionTokenBinding::normalizeEmailAddress((string) $batch->senderEmail);
-        $replyTo = $batch->replyToEmail;
-
-        if (
-            $replyTo !== null
-            && strcasecmp(trim($replyTo), $sender) !== 0
-            && $batch->replyToTrust === SenderTrust::VERIFIED
-            && $this->addressSafety->isSafeConfirmationAddress($replyTo)
-        ) {
-            return $replyTo;
-        }
-
-        return $sender;
-    }
-
     private function resultFromExistingBatch(
         ConfirmationEmailBatch $batch,
         MailQueueRecord $existing
     ): ConfirmationEmailResult {
-        $recipient = $this->potentialConfirmationRecipient($batch);
+        $recipient = $this->composer->potentialRecipient($batch);
 
         if ($recipient === null) {
             throw new ConfirmationEmailQueueConflictException(
@@ -215,68 +179,12 @@ final class ConfirmationEmailPreviewService
             );
         }
 
-        $threadHeaders = EmailThreadHeaders::fromOriginalMessageId($batch->originalMessageId);
+        $threadHeaders = $this->composer->threadHeaders($batch);
 
         return $this->resultFromExisting(
             $existing,
-            $this->payloadFingerprint($batch, $recipient, $threadHeaders)
+            $this->composer->payloadFingerprint($batch, $recipient, $threadHeaders)
         );
-    }
-
-    private function createActionLinks(
-        ConfirmationEmailBatch $batch,
-        string $recipient
-    ): ConfirmationEmailActionLinks {
-        $candidateLinks = [];
-
-        foreach ($batch->candidates as $candidate) {
-            $candidateLinks[$candidate->id] = [
-                'approve' => $this->issueUrl(
-                    ActionTokenPurpose::CONFIRM,
-                    'event_candidate',
-                    $candidate->id,
-                    $recipient
-                ),
-                'deny' => $this->issueUrl(
-                    ActionTokenPurpose::DENY,
-                    'event_candidate',
-                    $candidate->id,
-                    $recipient
-                ),
-                'edit' => $this->issueUrl(
-                    ActionTokenPurpose::EDIT,
-                    'event_candidate',
-                    $candidate->id,
-                    $recipient
-                ),
-            ];
-        }
-
-        return new ConfirmationEmailActionLinks(
-            $this->issueUrl(
-                ActionTokenPurpose::CONFIRM,
-                'inbound_message',
-                $batch->messageId,
-                $recipient
-            ),
-            $candidateLinks
-        );
-    }
-
-    private function issueUrl(
-        ActionTokenPurpose $purpose,
-        string $subjectType,
-        int $subjectId,
-        string $recipient
-    ): string {
-        $issued = $this->tokens->issue(new ActionTokenBinding(
-            $purpose,
-            $subjectType,
-            $subjectId,
-            $recipient
-        ));
-
-        return $this->actionLinks->urlForToken($issued->token());
     }
 
     private function resultFromExisting(
@@ -329,71 +237,4 @@ final class ConfirmationEmailPreviewService
         };
     }
 
-    private function payloadFingerprint(
-        ConfirmationEmailBatch $batch,
-        string $recipient,
-        ?EmailThreadHeaders $threadHeaders
-    ): string {
-        $candidates = [];
-
-        foreach ($batch->candidates as $candidate) {
-            $candidates[] = [
-                'id' => $candidate->id,
-                'fields' => $this->canonicalize($candidate->fields),
-                'recurrence' => $this->canonicalize($candidate->recurrence),
-                'confidence' => number_format($candidate->confidence, 3, '.', ''),
-                'notes' => $candidate->notes,
-                'match_kind' => $candidate->matchKind,
-                'match_title' => $candidate->matchTitle,
-            ];
-        }
-
-        try {
-            $payload = json_encode([
-                'version' => self::TEMPLATE_FINGERPRINT_VERSION,
-                'message_id' => $batch->messageId,
-                'source_id' => $batch->sourceId,
-                'recipient' => $recipient,
-                'thread_headers' => $threadHeaders?->toJson(),
-                'candidates' => $candidates,
-            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
-        } catch (JsonException $failure) {
-            throw new RuntimeException('The confirmation preview payload could not be fingerprinted.', 0, $failure);
-        }
-
-        return hash('sha256', $payload);
     }
-
-    private function canonicalize(mixed $value): mixed
-    {
-        if (! is_array($value)) {
-            if (
-                $value === null
-                || is_string($value)
-                || is_int($value)
-                || is_float($value)
-                || is_bool($value)
-            ) {
-                return $value;
-            }
-
-            throw new RuntimeException('A confirmation preview field contains an unsupported value.');
-        }
-
-        if (array_is_list($value)) {
-            return array_map(fn (mixed $item): mixed => $this->canonicalize($item), $value);
-        }
-
-        $keys = array_keys($value);
-        usort($keys, static fn (int|string $first, int|string $second): int =>
-            strcmp((string) $first, (string) $second)
-        );
-        $canonical = [];
-
-        foreach ($keys as $key) {
-            $canonical[$key] = $this->canonicalize($value[$key]);
-        }
-
-        return $canonical;
-    }
-}

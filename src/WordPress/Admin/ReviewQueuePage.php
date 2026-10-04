@@ -6,6 +6,9 @@ namespace ADCT\ParishIntake\WordPress\Admin;
 
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Attachments\PreviewableImage;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendCooldownException;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendOutcome;
+use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendService;
 use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
 use ADCT\ParishIntake\Core\Parsing\UnparsedDateTimeCandidate;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
@@ -19,6 +22,8 @@ use ADCT\ParishIntake\WordPress\Attachments\OcrControl;
 use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\InboundMessageRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\ReviewQueueRepository;
+use DateTimeImmutable;
+use DateTimeZone;
 use DomainException;
 use InvalidArgumentException;
 use Throwable;
@@ -62,6 +67,20 @@ final class ReviewQueuePage
     public const RESOLVE_MATCH_NONCE = 'resolve_match_nonce';
 
     /**
+     * The POST action and nonce for resending a confirmation preview
+     * (issue #176).
+     *
+     * Its own action and nonce for the same reason as the two above: this one
+     * sends an email to somebody outside the archdiocese, so it must not be
+     * reachable by pressing Enter in a text field, and it must not be a mode on
+     * a form whose job is editing text. It is also the only action here that
+     * costs mail against the account's 500-per-hour budget, which is why the
+     * view says plainly that it queues rather than sends.
+     */
+    public const RESEND_CONFIRMATION_ACTION = 'adct_pi_candidate_resend_confirmation';
+    public const RESEND_CONFIRMATION_NONCE = 'resend_confirmation_nonce';
+
+    /**
      * One nonce name for both download actions. The file a reviewer is allowed to
      * see is decided by the candidate they came from, not by the button, so
      * there is nothing to vary.
@@ -88,17 +107,20 @@ final class ReviewQueuePage
      * they have seen the phrase and still mean to approve. It is the only way to
      * acknowledge a date that cannot be corrected from the form above, which is why it
      * has a name of its own rather than riding on the save mode.
-          *
-          * Public because `FrontEndApprovalQueue` renders the same checkbox from its own form
-          * and must post the same name, or the dean's acknowledgement would be silently dropped.
-          */
-         public const UNPARSED_DATE_FIELD = 'adct_pi_unparsed_date_acknowledged';
+     *
+     * Public because `FrontEndApprovalQueue` renders the same checkbox from its own form
+    * and must post the same name, or the dean's acknowledgement would be silently dropped.
+    */
+    public const UNPARSED_DATE_FIELD = 'adct_pi_unparsed_date_acknowledged';
 
     /**
      * @param string $pluginFile the plugin's main file, so assets resolve and cache-bust
      * @param OcrControl|null $ocr the shared client-side reader for a poster preview (ADR 0018)
      * @param AttachmentImageEndpoint|null $imageEndpoint builds the nonce-bound URL that
      *        serves one stored poster to an already-authorised reviewer
+     * @param (callable(): ConfirmationEmailResendService)|null $resendConfirmation builds
+     *        the resend service on first use, because it needs the mail queue and the
+     *        token service, which are themselves built after this page
      */
     public function __construct(
         private readonly ReviewQueueRepository $queue,
@@ -110,9 +132,44 @@ final class ReviewQueuePage
         private readonly ?CandidateEditValidator $validator = null,
         private readonly string $pluginFile = '',
         private readonly ?OcrControl $ocr = null,
-        private readonly ?AttachmentImageEndpoint $imageEndpoint = null
+        private readonly ?AttachmentImageEndpoint $imageEndpoint = null,
+        private readonly mixed $resendConfirmation = null
     ) {
     }
+
+    /**
+     * The resend service, resolved on first use.
+     *
+     * Null when the plugin was wired without one. That is not a failure: the
+     * resend panel simply does not render, which is how a fresh install that has
+     * not finished its build order behaves. It is deliberately not an error here,
+     * because {@see renderPage()} must never die on a screen that is otherwise
+     * perfectly usable.
+     */
+    private function resendService(): ?ConfirmationEmailResendService
+    {
+        if ($this->resendConfirmation === null) {
+            return null;
+        }
+
+            // Accepts either a ready service or a factory for one. The factory is what
+            // `Plugin.php` passes, because the mail queue and token service are built
+            // after this page and no constructor may call a WordPress function; a ready
+            // instance is accepted too so a caller that already has one — a check
+            // harness, or a site wiring it by hand — is not forced to wrap it.
+
+            if ($this->resendConfirmation instanceof ConfirmationEmailResendService) {
+                return $this->resendConfirmation;
+            }
+
+            if (! is_callable($this->resendConfirmation)) {
+                return null;
+            }
+
+            $service = ($this->resendConfirmation)();
+
+            return $service instanceof ConfirmationEmailResendService ? $service : null;
+        }
 
     /**
      * Load the detail screen's stylesheet and script, and only on this page.
@@ -787,6 +844,11 @@ final class ReviewQueuePage
             && $this->canResolveMatch($row)
             && $this->policy->requiresMatchResolution($row);
 
+        // Issue #176: the resend panel is offered only for a candidate with saved
+        // fields, because that is all a resend can render from. The cooldown state
+        // is read here purely to explain the button; the service is what decides.
+        $resend = $this->resendPanelState($row);
+
         $view = new CandidateDetailView();
         $view->render(
             $row,
@@ -803,9 +865,205 @@ final class ReviewQueuePage
             $this->posterPanel($poster),
             $editable && $messageId > 0,
             $needsResolution,
-            $unreadable
+            $unreadable,
+            $resend
         );
         $view->renderAuditTrail($this->queue->history($id));
+
+                // Issue #176: on the detail path this is the only notice, because that
+                // branch returns before the list screen's `renderNotice()` above. It is
+                // rendered after the view — the view flushes the audit trail — so the
+                // outcome lands at the top of the card rather than the foot of the page.
+                $this->renderResendNotice();
+            }
+
+    /**
+     * What the resend panel needs to draw itself for this candidate.
+     *
+     * Returned as a plain array rather than a view object so this screen — which
+     * already speaks in arrays from the repository — does not have to learn
+     * another type, and so a candidate with nothing to resend is one empty
+     * array rather than a branch here.
+     *
+     * @param array<string, mixed> $row
+     * @return array{available: bool, reason: string, lastResentAt: ?DateTimeImmutable, nextAllowedAt: ?DateTimeImmutable, now?: DateTimeImmutable}
+     */
+    private function resendPanelState(array $row): array
+    {
+        $unavailable = ['available' => false, 'reason' => '', 'lastResentAt' => null, 'nextAllowedAt' => null];
+        $service = $this->resendService();
+
+        if ($service === null) {
+            $unavailable['reason'] = 'Resending a confirmation is not available on this site.';
+
+            return $unavailable;
+        }
+
+        // "Saved" is the requirement, not "editable": a resend renders stored
+        // fields and changes nothing, so it stays available after a decision,
+        // which is exactly when a parish most often needs the preview again.
+        if ($this->detailsAreUnreadable($row)) {
+            $unavailable['reason'] = 'These event details cannot be read, so there is nothing to send.';
+
+            return $unavailable;
+        }
+
+        $fields = $row['fields'] ?? null;
+        $hasFields = is_string($fields) ? trim($fields) !== '' && trim($fields) !== '{}' : $fields !== null;
+
+        if (! $hasFields || (int) ($row['message_id'] ?? 0) < 1) {
+            $unavailable['reason'] = 'This event has no saved details yet, so there is nothing to send. '
+                . 'Save the event details first, then resend the confirmation.';
+
+            return $unavailable;
+        }
+
+        $id = (int) $row['id'];
+
+        try {
+            $lastResentAt = $service->lastResentAt($id);
+        } catch (Throwable $failure) {
+            error_log(
+                '[ADCT Parish Intake] Could not read the confirmation resend history (' . get_class($failure) . ').'
+            );
+
+            return $unavailable;
+        }
+
+        return [
+            'available' => true,
+            'reason' => '',
+            'lastResentAt' => $lastResentAt,
+            'nextAllowedAt' => $lastResentAt === null
+                ? null
+                : $lastResentAt->modify('+' . ConfirmationEmailResendService::COOLDOWN_SECONDS . ' seconds'),
+                    // Supplied rather than read by the view, so the panel's greyed-out
+                    // state is decided by the same clock the cooldown is enforced on.
+                    'now' => $service->now(),
+                ];
+            }
+
+    /**
+     * The resend outcome, on the detail screen.
+     *
+     * The detail branch of {@see renderPage()} returns before the list screen's
+     * {@see renderNotice()}, so it needs its own. Every value here arrives from
+     * this screen's own redirect and is re-parsed strictly; the recipient is only
+     * ever shown back through `esc_html()`.
+     */
+    private function renderResendNotice(): void
+    {
+        $outcome = $this->text($_GET['resent'] ?? '');
+
+        if ($outcome === '') {
+            return;
+        }
+
+        $timezone = new DateTimeZone('Africa/Johannesburg');
+        $next = $this->resentTimestamp('resent_next', $timezone);
+
+        if ($outcome === 'cooldown') {
+            $previous = $this->resentTimestamp('resent_at', $timezone);
+            ?>
+            <div class="notice notice-warning inline"><p><?php echo esc_html(sprintf(
+                'The confirmation preview for this event was already resent at %s. You may resend it again after %s.',
+                $previous?->format('d/m/Y H:i') ?? 'an earlier time',
+                $next?->format('d/m/Y H:i') ?? 'an hour later'
+            )); ?></p></div>
+            <?php
+            return;
+        }
+
+        if ($outcome === 'failed') {
+            ?>
+            <div class="notice notice-error inline"><p><?php echo esc_html(
+                'The confirmation preview could not be sent. Check the mail queue for details; the event itself '
+                . 'is unchanged and nothing has been published.'
+            ); ?></p></div>
+            <?php
+            return;
+        }
+
+        $sent = self::resendOutcome($outcome);
+
+        if ($sent === null) {
+            return;
+        }
+
+        $recipient = sanitize_email($this->text($_GET['resent_to'] ?? ''));
+        $when = $this->resentTimestamp('resent_at', $timezone);
+        $tail = $next === null
+            ? ''
+            : sprintf(' The next resend may be sent after %s.', $next->format('d/m/Y H:i'));
+
+        if ($sent === ConfirmationEmailResendOutcome::SUPPRESSED) {
+            $message = 'Test mode is on, so the confirmation preview was not sent. '
+                . 'Nothing was emailed and the event is unchanged.';
+        } elseif ($sent === ConfirmationEmailResendOutcome::FAILED) {
+            $message = 'The confirmation preview could not be delivered. Check the mail queue for details.';
+        } elseif ($sent === ConfirmationEmailResendOutcome::QUEUED) {
+            $message = sprintf(
+                'The confirmation preview was queued for %s%s. It goes out with the next mail batch.',
+                $recipient,
+                $when === null ? '' : ' at ' . $when->format('d/m/Y H:i')
+            ) . $tail;
+        } else {
+            $message = sprintf(
+                'The confirmation preview was sent to %s%s.',
+                $recipient,
+                $when === null ? '' : ' at ' . $when->format('d/m/Y H:i')
+            ) . $tail;
+        }
+
+        $class = match ($sent) {
+            ConfirmationEmailResendOutcome::SUPPRESSED,
+            ConfirmationEmailResendOutcome::FAILED => 'notice-warning',
+            default => 'notice-success',
+        };
+        ?>
+        <div class="notice <?php echo esc_attr($class); ?> inline"><p><?php echo esc_html($message); ?></p></div>
+        <?php
+    }
+
+    /**
+     * The outcome named in a query argument, or null when it names none.
+     *
+     * Matched case-insensitively so the redirect can carry a lower-cased name
+     * alongside its own `cooldown` and `failed` sentinels. A pure enum has no
+     * `tryFrom()`, so the lookup is a loop over the known cases: an unknown name
+     * must produce no notice at all rather than a fatal or an echoed guess.
+     */
+    private static function resendOutcome(string $name): ?ConfirmationEmailResendOutcome
+    {
+        $wanted = strtoupper($name);
+
+        foreach (ConfirmationEmailResendOutcome::cases() as $case) {
+            if ($case->name === $wanted) {
+                return $case;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * A timestamp carried back in a query argument, as an instant in the site's
+     * timezone.
+     *
+     * Returns null for anything that is not a plain integer timestamp. The
+     * arguments are attacker-reachable and are only ever a courtesy for the
+     * notice, so an unreadable one must produce a vaguer sentence rather than a
+     * fatal error on a screen that is otherwise fine.
+     */
+    private function resentTimestamp(string $key, DateTimeZone $timezone): ?DateTimeImmutable
+    {
+        $raw = $this->text($_GET[$key] ?? '');
+
+        if ($raw === '' || preg_match('/\A-?\d{1,11}\z/D', $raw) !== 1) {
+            return null;
+        }
+
+        return (new DateTimeImmutable('@' . (int) $raw))->setTimezone($timezone);
     }
 
     /**
@@ -1346,6 +1604,99 @@ final class ReviewQueuePage
         ));
         exit;
     }
+    /**
+     * Queue a fresh copy of this candidate's confirmation preview for the parish.
+     *
+     * The cooldown is *not* checked here. It is checked by the booking the service
+     * calls, inside the transaction that writes the audit row, which is the only
+     * place a hand-crafted POST cannot get past. This handler only has to make
+     * sure the request is legitimate and tell the reviewer what happened.
+     */
+    public function handleResendConfirmation(): void
+    {
+        [$userId, $email, $reviewer] = $this->identity();
+        check_admin_referer(self::RESEND_CONFIRMATION_ACTION, self::RESEND_CONFIRMATION_NONCE);
+
+        $id = absint($this->text($_POST['candidate_id'] ?? '0'));
+        $tab = $this->tab($this->text($_POST['tab'] ?? 'awaiting_approval'));
+        $search = substr(sanitize_text_field($this->text($_POST['search'] ?? '')), 0, 100);
+        if ($id < 1) {
+            wp_die(esc_html('That candidate is not valid.'), '', ['response' => 400]);
+        }
+
+        $service = $this->resendService();
+
+        if ($service === null) {
+            wp_die(esc_html('Resending a confirmation is not available on this site.'), '', [
+                'response' => 400,
+            ]);
+        }
+
+        // Re-resolved on every POST, never trusted from the form: a dean can only
+        // resend for a candidate in their own scope, exactly as when editing it.
+        $row = $this->scopedCandidate($id, $userId, $email, $reviewer);
+        if ($row === null) {
+            wp_die(esc_html('This candidate is not in your review queue.'), '', ['response' => 404]);
+        }
+
+        try {
+            $result = $service->resend($id, $email);
+        } catch (ConfirmationEmailResendCooldownException $failure) {
+            // Not a 409 and not an error: the reviewer did exactly the right thing
+            // and only the hour is against them. Say when, and say when they may
+            // come back, then put them back on the same candidate.
+            wp_safe_redirect(add_query_arg(
+                [
+                    'candidate' => $id,
+                    'tab' => $tab,
+                    'search' => $search,
+                    'resent' => 'cooldown',
+                    'resent_at' => $failure->lastResentAt->getTimestamp(),
+                    'resent_next' => $failure->retryAfter->getTimestamp(),
+                ],
+                self::queueUrl($tab, $search)
+            ));
+            exit;
+        } catch (DomainException $failure) {
+            wp_die(esc_html($failure->getMessage()), '', ['response' => 409]);
+        } catch (Throwable $failure) {
+            error_log('[ADCT Parish Intake] Confirmation resend failed: ' . $failure->getMessage());
+            wp_safe_redirect(add_query_arg(
+                [
+                    'candidate' => $id,
+                    'tab' => $tab,
+                    'search' => $search,
+                    'resent' => 'failed',
+                ],
+                self::queueUrl($tab, $search)
+            ));
+            exit;
+        }
+
+        // Outside the try, so a success redirect can never become a 500.
+        //
+        // The notice is rebuilt from these values rather than stashed in a
+        // transient, so it cannot outlive the redirect or be read by anyone but
+        // the reviewer who just pressed the button on this candidate. They are
+        // all re-parsed strictly on the way back in, and escaped on the way out.
+        wp_safe_redirect(add_query_arg(
+            [
+                'candidate' => $id,
+                'tab' => $tab,
+                'search' => $search,
+                // Lower-cased to match the sentinels the notice uses for its own two
+                    // outcomes, so one query argument carries one shape rather
+                    // than a mix of `cooldown` and `QUEUED`.
+                    'resent' => strtolower($result->outcome->name),
+                'resent_at' => $result->sentAt->getTimestamp(),
+                'resent_next' => $result->nextAllowedAt->getTimestamp(),
+                'resent_to' => $result->recipient,
+            ],
+            self::queueUrl($tab, $search)
+        ));
+        exit;
+    }
+
     /**
      * The candidate, but only if this reviewer is allowed to see it.
      *

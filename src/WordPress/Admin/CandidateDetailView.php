@@ -8,6 +8,8 @@ use ADCT\ParishIntake\Core\Parsing\UnparsedDateTimeCandidate;
 use ADCT\ParishIntake\Core\Review\CandidateEditResult;
 use ADCT\ParishIntake\Core\Review\CandidateFieldSet;
 use ADCT\ParishIntake\WordPress\Database\Repository\ReviewQueueRepository;
+use DateTimeImmutable;
+use DateTimeZone;
 
 /**
  * The single-candidate detail screen: what the parish sent, every field the
@@ -44,6 +46,10 @@ final class CandidateDetailView
      *        a row nobody can reach — but it is told plainly, because a screen that quietly
      *        offers no match control and no approval looks exactly like a screen with
      *        nothing wrong (issue #177).
+     * @param array{available: bool, reason: string, lastResentAt: ?DateTimeImmutable, nextAllowedAt: ?DateTimeImmutable, now?: DateTimeImmutable} $resend
+     *        whether this saved candidate can have its confirmation preview resent, and
+     *        when it last was (issue #176). An empty array means "no service", which
+     *        renders nothing at all.
      */
     public function render(
         array $row,
@@ -60,7 +66,8 @@ final class CandidateDetailView
         string $posterPanel = '',
         bool $canStartManual = false,
         bool $needsMatchResolution = false,
-        bool $detailsUnreadable = false
+        bool $detailsUnreadable = false,
+        array $resend = []
     ): void {
         $id = (int) $row['id'];
         $fields = CandidateFieldSet::decodeFields($row['fields'] ?? null);
@@ -79,6 +86,7 @@ final class CandidateDetailView
             <?php $this->renderAttemptNotice($attempt, $id); ?>
             <?php $this->renderUnreadableNotice($id, $detailsUnreadable); ?>
             <?php $this->renderMatchResolution($row, $fields, $parishes, $id, $tab, $search, $needsMatchResolution); ?>
+            <?php $this->renderResendConfirmation($id, $tab, $search, $resend); ?>
             <div class="adct-pi-detail-columns">
                 <div class="adct-pi-detail-main">
                     <?php $this->form->render(
@@ -183,6 +191,84 @@ final class CandidateDetailView
                     <button type="submit" class="button button-primary">Resolve this match</button>
                 </p>
             </form>
+        </div>
+        <?php
+    }
+
+    /**
+     * The control that resends the confirmation preview to the parish (issue #176).
+     *
+     * Its own form, action and nonce, for the same reason the match panel has its
+     * own: this one puts an email in front of somebody outside the archdiocese,
+     * so it must not be something a stray Enter in a text field can trigger.
+     *
+     * The panel never renders for a candidate with nothing saved, because there is
+     * nothing to render *from* — the email is built from the current stored
+     * fields, not from what is on this screen.
+     *
+     * The button being disabled inside the cooldown is presentation only. The
+     * service refuses a second resend in the same hour regardless of what was
+     * posted, so the guard cannot be bypassed by hand-crafting the POST; this
+     * exists so the reviewer is not invited to press something that will bounce.
+     *
+     * @param array{available: bool, reason: string, lastResentAt: ?DateTimeImmutable, nextAllowedAt: ?DateTimeImmutable, now?: DateTimeImmutable} $resend
+     */
+    private function renderResendConfirmation(int $id, string $tab, string $search, array $resend): void
+    {
+        if ($resend === []) {
+            return;
+        }
+
+        $timezone = new DateTimeZone('Africa/Johannesburg');
+        $lastResentAt = $resend['lastResentAt'] ?? null;
+        $nextAllowedAt = $resend['nextAllowedAt'] ?? null;
+                $now = $resend['now'] ?? null;
+                        $waiting = $nextAllowedAt !== null
+                            && ($now === null || $nextAllowedAt->getTimestamp() > $now->getTimestamp());
+        ?>
+        <div class="adct-pi-card adct-pi-resend-confirmation">
+            <h2>Confirmation preview</h2>
+            <?php if (($resend['available'] ?? false) !== true) : ?>
+                <p class="description"><?php echo esc_html((string) $resend['reason']); ?></p>
+            <?php else : ?>
+                <p class="description">
+                    The parish received a preview of this event when it arrived. Resending re-sends the
+                    preview as it stands <strong>now</strong>, using the details saved above, and any
+                    links in the older email stop working.
+                </p>
+                <?php if ($lastResentAt !== null) : ?>
+                    <p class="description"><?php echo esc_html(sprintf(
+                        'Last resent %s.',
+                        $lastResentAt->setTimezone($timezone)->format('d/m/Y H:i')
+                    )); ?></p>
+                <?php endif; ?>
+                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                    <input type="hidden" name="action" value="<?php echo esc_attr(ReviewQueuePage::RESEND_CONFIRMATION_ACTION); ?>" />
+                    <input type="hidden" name="candidate_id" value="<?php echo esc_attr((string) $id); ?>" />
+                    <input type="hidden" name="tab" value="<?php echo esc_attr($tab); ?>" />
+                    <input type="hidden" name="search" value="<?php echo esc_attr($search); ?>" />
+                    <?php wp_nonce_field(
+                        ReviewQueuePage::RESEND_CONFIRMATION_ACTION,
+                        ReviewQueuePage::RESEND_CONFIRMATION_NONCE
+                    ); ?>
+                    <p class="submit">
+                        <button type="submit" class="button" <?php echo $waiting ? 'disabled="disabled"' : ''; ?>>
+                            <?php echo $waiting ? 'aria-disabled="true"' : ''; ?>>
+                            <?php echo esc_html($waiting ? 'Resend unavailable right now' : 'Resend confirmation'); ?>
+                        </button>
+                    </p>
+                </form>
+                <?php if ($waiting && $nextAllowedAt !== null) : ?>
+                    <p class="description"><?php echo esc_html(sprintf(
+                        'A confirmation can only be resent once an hour, to keep within the email limits. '
+                        . 'The last one was sent at %s; you may resend again after %s.',
+                        $lastResentAt !== null
+                            ? $lastResentAt->setTimezone($timezone)->format('d/m/Y H:i')
+                            : 'an earlier time',
+                        $nextAllowedAt->setTimezone($timezone)->format('d/m/Y H:i')
+                    )); ?></p>
+                <?php endif; ?>
+            <?php endif; ?>
         </div>
         <?php
     }
