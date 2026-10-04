@@ -28,7 +28,7 @@ use DateTimeZone;
  * - **The unpublish row is a diff too.** `UnpublishEventHandler` writes a trail
  *   row holding the state that was live, exactly so that this class can say what
   *   an approver would lose by clicking the link. The `status` and
-  *   `status_flag` rows carry that.
+  * `status_flag` rows carry that.
  * - **A missing side is not a change.** WordPress returns `''` for absent
  *   metadata, so an absent value and an empty string must read as the same
  *   "nothing", or every field gains a spurious "set" line the first time it is
@@ -74,7 +74,7 @@ final class ChangeDiff
      */
     private const FIELDS = [
             'title' => ['Title', ['title']],
-            'published_status' => ['Published status', ['status']],
+                    'published_status' => ['Published status', ['status']],
         'status_flag' => ['Event status', ['meta', 'status_flag']],
         'start' => ['Starts', ['meta', 'start_local']],
         'end' => ['Ends', ['meta', 'end_local']],
@@ -82,7 +82,7 @@ final class ChangeDiff
         'repeats' => ['Repeats', ['meta', 'rrule']],
         'parish' => ['Parish', ['meta', 'parish_id']],
         'venue' => ['Venue', ['meta', 'venue_id']],
-            'content' => ['Description', ['content']],
+                'content' => ['Description', ['content']],
         'featured' => ['Featured', ['meta', 'featured']],
         'featured_image' => ['Featured image', ['featured_image_id']],
         'event_type' => ['Event type', ['event_type_term_ids']],
