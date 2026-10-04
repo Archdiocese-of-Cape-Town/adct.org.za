@@ -15,8 +15,16 @@ if (! is_file($pluginFile)) {
     exit(1);
 }
 
+// adct-parish-intake.php requires vendor-prefixed/autoload.php unconditionally, so
+// this guard has to run before the bootstrap is required: without it the require
+// fatals on the missing file and none of the assertions below ever run. The message
+// therefore has to name the build step that produces vendor-prefixed/ (composer
+// strauss, run by scripts/build-release.sh), not the file it emits, so that a
+// failure points at the step to run rather than at a file to hunt for.
 if (! is_file($pluginDirectory . DIRECTORY_SEPARATOR . 'vendor-prefixed' . DIRECTORY_SEPARATOR . 'autoload.php')) {
-    fwrite(STDERR, "Prefixed dependency autoloader is missing.\n");
+    fwrite(STDERR, "Prefixed dependencies are missing: this directory has not been through the dependency prefixing step.\n");
+    fwrite(STDERR, "vendor-prefixed/autoload.php is produced by the composer strauss prefixing step in scripts/build-release.sh.\n");
+    fwrite(STDERR, "Run that build (or 'composer install --no-dev' plus 'COMPOSER_VENDOR_DIR=vendor-prefixed php <strauss.phar>') before this check.\n");
     exit(1);
 }
 
