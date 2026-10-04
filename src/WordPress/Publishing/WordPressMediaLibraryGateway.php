@@ -9,7 +9,7 @@ use RuntimeException;
 
 /**
  * The only place in the plugin that copies a file into the media library
- * (#172, ADR 0024).
+ * (#172, ADR 0025).
  *
  * `wp_handle_sideload()` is the right call for a file that is already on this
  * server: it needs no HTTP upload, and it runs the same type, size and

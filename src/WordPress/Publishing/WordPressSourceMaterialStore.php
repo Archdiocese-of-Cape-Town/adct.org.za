@@ -20,7 +20,7 @@ use Throwable;
 
 /**
  * The WordPress adapter behind SourceMaterialStoreInterface (issue #172,
- * ADR 0024).
+ * ADR 0025).
  *
  * Three properties of this class are the feature, and each is asserted by a
  * test that a plausible shortcut would break:
@@ -180,7 +180,7 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
         // The attachment stays in the library and the file stays on disk. A
         // removal is a visibility change; the media library's own delete keeps
         // its own audit trail, and the bytes have to survive an intake
-        // retention sweep (ADR 0024).
+        // retention sweep (ADR 0025).
         $this->writeAuditRow(
             $eventId,
             new SourceAttachment(

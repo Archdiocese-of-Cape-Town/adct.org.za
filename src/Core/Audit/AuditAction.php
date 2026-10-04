@@ -135,7 +135,7 @@ enum AuditAction: string
 
     /**
          * A person chose to make an event's source material publicly viewable
-         * (issue #172, ADR 0024).
+         * (issue #172, ADR 0025).
          *
          * Under POPIA this is the row that answers "who made this bulletin public",
          * so it names the acting user, the event, and the intake attachment that was
@@ -143,7 +143,7 @@ enum AuditAction: string
          * event and making the parish's poster world-readable are two different
          * acts, by two different people, at two different moments, and a trail that
          * filed the second under the first would claim the material was made public
-         * by whoever happened to approve the event — which is exactly what ADR 0024
+         * by whoever happened to approve the event — which is exactly what ADR 0025
          * forbids happening automatically.
          *
          * The details carry the generated stored name, never a path derived from

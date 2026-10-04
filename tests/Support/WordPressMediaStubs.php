@@ -67,7 +67,7 @@ namespace {
     if (! function_exists('wp_handle_sideload')) {
         /**
          * WordPress uses the `name` in `$file` as the client's original filename
-         * and derives the stored name from it (ADR 0024). That is exactly why
+         * and derives the stored name from it (ADR 0025). That is exactly why
          * the gateway has to be handed a plugin-generated name, and exactly
          * why this stub records the array unchanged.
          */

@@ -678,7 +678,7 @@ final class EventEditor
    *
    * A failure is reported and nothing else changes. The copy runs outside any
    * transaction precisely so a broken filesystem cannot unpublish the event
-   * (ADR 0024).
+   * (ADR 0025).
    */
     public function handlePromoteSourceMaterial(): void
     {

@@ -10,7 +10,7 @@ use InvalidArgumentException;
 
 /**
  * The event post's own record of what it publishes, and the featured image
- * beside it (issue #172, ADR 0024).
+ * beside it (issue #172, ADR 0025).
  *
  * This is the only reader of `source_attachment_ids` outside the store itself,
  * and the front end reaches it only through SourceMaterialStoreInterface::forEvent().

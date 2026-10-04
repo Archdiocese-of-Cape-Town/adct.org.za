@@ -8,7 +8,7 @@ use ADCT\ParishIntake\Core\Publishing\SourceAttachment;
 use DomainException;
 
 /**
- * Records an event's promoted source material (issue #172, ADR 0024).
+ * Records an event's promoted source material (issue #172, ADR 0025).
  *
  * The port is deliberately narrow and deliberately has no "publish a candidate"
  * method on it. That absence is the whole of the no-auto-promotion guarantee:

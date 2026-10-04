@@ -23,7 +23,7 @@ use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
 /**
- * The WordPress adapter behind SourceMaterialStoreInterface (#172, ADR 0024).
+ * The WordPress adapter behind SourceMaterialStoreInterface (#172, ADR 0025).
  *
  * Four of these tests are the ones the design turns on, and each is written so
  * that a plausible-looking shortcut breaks it rather than merely changing an
