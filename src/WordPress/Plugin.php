@@ -490,8 +490,8 @@ private ?ReviewQueueRepository $reviewQueue = null;
             $venueAdministrationService,
             $clock,
             $this->sourcesPage,
-                        $contactAudit,
-                        $subjectAuditPanel
+            $contactAudit,
+            $subjectAuditPanel
                     );
         $this->sendersPage = new SendersPage($contacts, $contactService, $parishes, $contactAudit);
         $this->eventPostType = new EventPostType();
@@ -519,9 +519,9 @@ private ?ReviewQueueRepository $reviewQueue = null;
             new EventValidator($timezone, $rruleValidator),
             new RRulePresetMapper($rruleValidator),
             $timezone,
-                        $clock,
-                        $subjectAuditPanel
-                    );
+            $clock,
+            $subjectAuditPanel
+        );
         $occurrenceMaintenance = new WordPressEventOccurrenceMaintenance(
             $occurrences,
             new OccurrenceExpander($timezone, $rruleValidator),
@@ -567,10 +567,10 @@ private ?ReviewQueueRepository $reviewQueue = null;
                 new CandidateEditValidator(),
                 $this->pluginFile,
                 $this->ocrControl(),
-                                $this->attachmentImageEndpoint,
-                                $this->confirmationResendService(),
-                                $subjectAuditPanel
-                            );
+                $this->attachmentImageEndpoint,
+                $this->confirmationResendService(),
+                $subjectAuditPanel
+            );
         // #72: the same repository and policy behind a front-end page, so a
         // dean is scoped by exactly the same predicate as a reviewer in
         // wp-admin (ADR 0008: deans never need wp-admin).
