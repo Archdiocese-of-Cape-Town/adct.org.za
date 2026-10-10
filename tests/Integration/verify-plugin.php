@@ -5728,6 +5728,8 @@ require_once __DIR__ . '/AuditLogCheck.php';
 AuditLogCheck::run($fail);
 require_once __DIR__ . '/OcrImageCheck.php';
 OcrImageCheck::run($fail, $pluginFile);
+require_once __DIR__ . '/SourceMaterialCheck.php';
+SourceMaterialCheck::run($fail, $firstParishId);
 
 foreach (['administrator', 'editor'] as $roleName) {
     $role = get_role($roleName);

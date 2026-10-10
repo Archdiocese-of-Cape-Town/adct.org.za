@@ -6,6 +6,8 @@ namespace ADCT\ParishIntake\WordPress\Events;
 
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Parsing\EventTypeClassifier;
+use ADCT\ParishIntake\Core\Publishing\SourceAttachment;
+use ADCT\ParishIntake\WordPress\Publishing\WordPressEventMeta;
 use RuntimeException;
 
 final class EventPostType
@@ -310,7 +312,18 @@ final class EventPostType
                 'sanitize_callback' => [self::class, 'sanitizeContact'],
                 'auth_callback' => $editorAccess,
             ],
-        ];
+                        // The ordered promotion record (issue #172). Never exposed in REST:
+                                    // the only writers are the promotion controls, and a REST write would
+                                    // be a third way in that nobody would think to guard.
+                                    WordPressEventMeta::META_KEY => [
+                                        'type' => 'array',
+                                        'single' => true,
+                                        'default' => [],
+                                        'show_in_rest' => false,
+                                        'sanitize_callback' => [self::class, 'sanitizeSourceAttachmentIds'],
+                                        'auth_callback' => $editorAccess,
+                                    ],
+                                ];
 
         foreach ($definitions as $metaKey => $definition) {
             register_post_meta(self::POST_TYPE, $metaKey, $definition);
@@ -383,6 +396,58 @@ final class EventPostType
                 ? sanitize_text_field((string) $value['phone'])
                 : '',
         ];
+    }
+
+    /**
+     * Keep only the parts of a promotion record that mean something.
+     *
+     * This runs on every write, including one made outside the plugin, so it is
+     * the last chance to stop a hand-edited or replayed meta array from
+     * carrying a role nobody recognises, a non-positive id, or a filename long
+     * enough to be a problem on the public page. An entry that cannot be read
+     * is dropped rather than rejected: the rest of the event's material is
+     * still worth showing.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public static function sanitizeSourceAttachmentIds(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $entries = [];
+        foreach ($value as $entry) {
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            $mediaId = $entry['media_id'] ?? null;
+            $attachmentId = $entry['attachment_id'] ?? null;
+            $role = $entry['role'] ?? null;
+            $filename = $entry['original_filename'] ?? '';
+            if (! is_scalar($mediaId) || ! is_numeric($mediaId) || (int) $mediaId < 1) {
+                continue;
+            }
+            if (! is_scalar($attachmentId) || ! is_numeric($attachmentId) || (int) $attachmentId < 1) {
+                continue;
+            }
+            if (! is_string($role) || ! in_array($role, SourceAttachment::ROLES, true)) {
+                continue;
+            }
+            if (! is_string($filename)) {
+                continue;
+            }
+
+            $entries[] = [
+                'media_id' => (int) $mediaId,
+                'role' => $role,
+                'original_filename' => sanitize_text_field($filename),
+                'attachment_id' => (int) $attachmentId,
+            ];
+        }
+
+        return $entries;
     }
 
     private function upgrade(): void

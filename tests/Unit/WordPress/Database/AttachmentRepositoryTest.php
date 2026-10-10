@@ -185,7 +185,100 @@ final class AttachmentRepositoryTest extends TestCase
 
             self::assertStringEndsWith('ORDER BY id ASC', $query);
         }
-    }
+
+                /**
+                 * #172: the review queue offers a promote control per attachment, so it
+                 * needs to know which of a message's attachments are eligible. Eligibility
+                 * is the promotable set -- browser-readable images plus the bulletin PDF
+                 * -- and NOT the storage allowlist. HEIC and HEIF are stored, so an
+                 * operator can open them, but no browser renders them, so promoting one
+                 * would publish a link that is broken for every visitor who clicks it.
+                 *
+                 * The query names each type literally rather than matching a LIKE on
+                 * `image/%`, precisely so that adding a storable-but-unrenderable type to
+                 * AttachmentStoragePolicy cannot silently widen what can be published.
+                 */
+                public function testPromotableAttachmentsCoverTheBrowserReadableTypesAndTheBulletin(): void
+                {
+                    $database = new RecordingAttachmentDatabase();
+                    $database->results = [
+                        ['id' => 5, 'message_id' => 7, 'filename' => 'october.pdf', 'mime_type' => 'application/pdf',
+                            'size_bytes' => 120, 'storage_path' => 'inbound/a.pdf', 'status' => 'stored'],
+                    ];
+
+                    $rows = (new AttachmentRepository($database))->findPromotableForMessage(7);
+
+                    $query = (string) ($database->preparedArguments[0]['query'] ?? '');
+                    $arguments = $database->preparedArguments[0]['arguments'] ?? [];
+
+                    self::assertSame(7, $arguments[0] ?? null);
+                    self::assertSame(
+                        ['image/jpeg', 'image/png', 'image/webp', 'application/pdf', ''],
+                        array_slice($arguments, 1, 5),
+                        'only the four browser-readable types, then the empty-storage-path guard'
+                    );
+                    foreach (['image/heic', 'image/heif', 'image/%', 'image/*'] as $notPromotable) {
+                        self::assertNotContains(
+                            $notPromotable,
+                            $arguments,
+                            'a storable but unrenderable type must not be promotable'
+                        );
+                    }
+                    self::assertStringContainsString('storage_path IS NOT NULL', $query);
+                    self::assertStringContainsString('storage_path <> %s', $query);
+                    self::assertStringEndsWith('ORDER BY id ASC', $query);
+                    self::assertSame(
+                        substr_count($query, '%s') + substr_count($query, '%d'),
+                        count($arguments),
+                        'every placeholder needs exactly one argument'
+                    );
+                    self::assertSame('october.pdf', $rows[0]['filename'] ?? null);
+                }
+
+                public function testPromotableAttachmentsAskForTheFieldsAReviewerNeeds(): void
+                {
+                    $database = new RecordingAttachmentDatabase();
+
+                    (new AttachmentRepository($database))->findPromotableForMessage(3);
+
+                    $query = (string) ($database->preparedArguments[0]['query'] ?? '');
+                    foreach ([
+                        'id', 'message_id', 'filename', 'mime_type', 'size_bytes', 'storage_path', 'status',
+                    ] as $column) {
+                        self::assertMatchesRegularExpression(
+                            '/\b' . $column . '\b/',
+                            $query,
+                            sprintf('the promote control needs %s', $column)
+                        );
+                    }
+                    self::assertStringNotContainsString('extracted_text', $query);
+                    self::assertStringNotContainsString('content_hash', $query);
+                }
+
+                public function testPromotableAttachmentsRejectAnImpossibleMessageId(): void
+                {
+                    $this->expectException(\InvalidArgumentException::class);
+
+                    (new AttachmentRepository(new RecordingAttachmentDatabase()))->findPromotableForMessage(0);
+                }
+
+                public function testThePromotableQueryIsSafeOnBothMySqlAndMariaDb(): void
+                {
+                    $database = new RecordingAttachmentDatabase();
+
+                    (new AttachmentRepository($database))->findPromotableForMessage(3);
+
+                    $query = (string) ($database->preparedArguments[0]['query'] ?? '');
+
+                    foreach (['REGEXP', 'JSON_', '->>', 'GROUP_CONCAT', 'ON DUPLICATE', 'WINDOW '] as $unsupported) {
+                        self::assertStringNotContainsString(
+                            $unsupported,
+                            $query,
+                            sprintf('%s is not portable across MySQL 8 and MariaDB 10.11', $unsupported)
+                        );
+                    }
+                }
+            }
 
 final class RecordingAttachmentDatabase implements DatabaseConnectionInterface
 {

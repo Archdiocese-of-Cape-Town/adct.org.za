@@ -134,7 +134,36 @@ enum AuditAction: string
     case CANDIDATE_CONFIRMATION_RESENT = 'candidate_confirmation_resent';
 
     /**
-     * Human labels for the filter dropdown, keyed by action value.
+         * A person chose to make an event's source material publicly viewable
+         * (issue #172, ADR 0025).
+         *
+         * Under POPIA this is the row that answers "who made this bulletin public",
+         * so it names the acting user, the event, and the intake attachment that was
+         * copied. It is separate from `event_published` on purpose: publishing an
+         * event and making the parish's poster world-readable are two different
+         * acts, by two different people, at two different moments, and a trail that
+         * filed the second under the first would claim the material was made public
+         * by whoever happened to approve the event — which is exactly what ADR 0025
+         * forbids happening automatically.
+         *
+         * The details carry the generated stored name, never a path derived from
+         * the parish's filename.
+         */
+        case SOURCE_MATERIAL_PROMOTED = 'source_material_promoted';
+
+        /**
+         * A person took an event's source material back out of public view.
+         *
+         * Its own verb rather than a flag on the promotion: removal is a visibility
+         * change and not a deletion (the stored file stays and the promotion can be
+         * repeated), so a reader of the trail needs to be able to tell "was made
+         * public and then was not" from "was never public". Filing both under one
+         * value would make the last state of every document ambiguous.
+         */
+        case SOURCE_MATERIAL_REMOVED = 'source_material_removed';
+
+        /**
+         * Human labels for the filter dropdown, keyed by action value.
      *
      * @return array<string, string>
      */
@@ -182,6 +211,8 @@ enum AuditAction: string
             self::CANDIDATE_MATCH_RESOLVED => 'Ambiguous match resolved',
             self::APPROVER_NOTIFY_MODE_CHANGED => 'Approver email mode changed',
             self::CANDIDATE_CONFIRMATION_RESENT => 'Confirmation preview resent',
-        };
+                        self::SOURCE_MATERIAL_PROMOTED => 'Source material published with event',
+                        self::SOURCE_MATERIAL_REMOVED => 'Source material taken off the event',
+                    };
     }
 }

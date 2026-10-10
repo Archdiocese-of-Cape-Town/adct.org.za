@@ -50,6 +50,10 @@ final class CandidateDetailView
      *        whether this saved candidate can have its confirmation preview resent, and
      *        when it last was (issue #176). An empty array means "no service", which
      *        renders nothing at all.
+     * @param bool $canPromote whether this reviewer may publish an attachment's
+     *        source material with the event (issue #172). False renders no offer and
+     *        no form, so the default is "nothing is promoted" rather than "something
+     *        might be".
      */
     public function render(
         array $row,
@@ -67,7 +71,8 @@ final class CandidateDetailView
         bool $canStartManual = false,
         bool $needsMatchResolution = false,
         bool $detailsUnreadable = false,
-        array $resend = []
+        array $resend = [],
+        bool $canPromote = false
     ): void {
         $id = (int) $row['id'];
         $fields = CandidateFieldSet::decodeFields($row['fields'] ?? null);
@@ -112,8 +117,8 @@ final class CandidateDetailView
                     <?php $this->renderProvenance($row); ?>
                 </div>
             </div>
-            <?php $this->source->render($message, $attachments, $isDownloadable, $canStartManual); ?>
-            <?php $this->renderDownloadForms($id); ?>
+            <?php $this->source->render($message, $attachments, $isDownloadable, $canStartManual, $canPromote); ?>
+            <?php $this->renderDownloadForms($id, $canPromote); ?>
         </div>
         <?php
     }
@@ -403,7 +408,7 @@ final class CandidateDetailView
      * candidate the reviewer opened, which is what the handlers check the request
      * against.
      */
-    private function renderDownloadForms(int $candidateId): void
+    private function renderDownloadForms(int $candidateId, bool $canPromote): void
     {
         ?>
         <form id="adct-pi-raw-message-form" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
@@ -420,6 +425,16 @@ final class CandidateDetailView
             <input type="hidden" name="action" value="<?php echo esc_attr(ReviewQueuePage::CREATE_MANUAL_ACTION); ?>" />
             <input type="hidden" name="candidate" value="<?php echo esc_attr((string) $candidateId); ?>" ?>
             <?php wp_nonce_field(ReviewQueuePage::CREATE_MANUAL_ACTION, ReviewQueuePage::CREATE_MANUAL_NONCE); ?>
+        </form>
+        <?php
+        if (! $canPromote) {
+            return;
+        }
+        ?>
+        <form id="<?php echo esc_attr(CandidateSourceFiles::PROMOTE_FORM); ?>" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+            <input type="hidden" name="action" value="<?php echo esc_attr(ReviewQueuePage::PROMOTE_SOURCE_ACTION); ?>" />
+            <input type="hidden" name="candidate" value="<?php echo esc_attr((string) $candidateId); ?>" />
+            <?php wp_nonce_field(ReviewQueuePage::PROMOTE_SOURCE_ACTION, ReviewQueuePage::PROMOTE_SOURCE_NONCE); ?>
         </form>
         <?php
     }

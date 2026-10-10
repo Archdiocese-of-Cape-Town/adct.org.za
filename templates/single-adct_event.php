@@ -47,6 +47,28 @@ $venue = $event['venue'];
             <?php echo $event['description_html']; ?>
         </div>
 
+                <?php if ($event['source_material'] !== []) : ?>
+                    <section class="adct-event__source" aria-label="Source material">
+                        <h2>Source material</h2>
+                        <p class="adct-event__source-intro">
+                            The material this notice came from, as published by the parish.
+                        </p>
+                        <ul class="adct-event__source-list">
+                            <?php foreach ($event['source_material'] as $source) : ?>
+                                <li class="adct-event__source-item adct-event__source-item--<?php echo esc_attr($source['role']); ?>">
+                                    <a
+                                        class="adct-event__source-link"
+                                        href="<?php echo esc_url($source['url']); ?>"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                    ><?php echo esc_html($source['filename']); ?></a>
+                                    <span class="adct-event__source-role"><?php echo esc_html($source['role_label']); ?></span>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </section>
+                <?php endif; ?>
+
         <section class="adct-event__actions" aria-label="Calendar options">
             <a class="button" href="<?php echo esc_url($event['calendar_url']); ?>">Download ICS</a>
             <?php if ($event['google_calendar_url'] !== null) : ?>

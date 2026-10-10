@@ -200,7 +200,7 @@ Browser OCR writes nothing here (ADR 0018). tesseract.js runs in the reviewer's 
 | message_id | FK (nullable for manual/portal entries) |
 | block_index | zero-based position of the source block in the message (a bulletin can yield several candidates) |
 | parish_id | best guess or known |
-| fields | JSON: title, description, start, end, all_day, parish_id, venue_id / venue_text, venue coordinates, contact, event_type, featured, image attachment id, and the trimmed source snippet (maximum 2,000 characters) |
+| fields | JSON: title, description, start, end, all_day, parish_id, venue_id / venue_text, venue coordinates, contact, event_type, featured, and the trimmed source snippet (maximum 2,000 characters). **No attachment id lives here.** A promoted media id is recorded on the event post (see [Promoted source material](#promoted-source-material)), because it does not exist until a human promotes something |
 | field_confidence | JSON: per-field evidence and scoring (see below) |
 | recurrence | JSON: normalized supported RRULE, human-readable source phrase, RRULE parts, and optional `ambiguous` / `anchor_inferred` flags |
 | confidence | 0–1 |
@@ -266,6 +266,25 @@ The private post meta `_adct_pi_featured_override` records that an editor explic
 
 A post type (rather than only custom tables) gives WordPress revisions, search, REST, theme templates and editor familiarity for admins.
 
+#### Promoted source material
+
+An event's link to the poster or bulletin it came from is **not a column**. It is two things written together, both on the `adct_event` post ([#172](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/172), [ADR 0025](decisions/0025-promotion-is-explicit-and-the-media-library-copy-is-the-source-material.md)):
+
+| Where | What | Why |
+|---|---|---|
+| `post_parent` of the media attachment | the event post's id | Ownership, and the relationship WordPress itself already understands |
+| `source_attachment_ids` post meta | ordered list of `{"media_id": int, "role": "poster"\|"bulletin"\|"document", "original_filename": string, "attachment_id": int}` | Role and display order, which `post_parent` cannot express |
+
+`post_parent` records *that* a file belongs to an event. It cannot record *which* of three files is the poster — a bulletin PDF parented to an event and its poster image parented to the same event are indistinguishable to WordPress — so the ordered meta key carries the role. Both are written on promotion and cleared together on removal, and the front end reads **only** the meta key. A broad `get_children()` over the event would render whatever happened to be attached, promoted or not, so it is never used ([ADR 0025](decisions/0025-promotion-is-explicit-and-the-media-library-copy-is-the-source-material.md) decision 6).
+
+The `poster` role is the only one that calls `set_post_thumbnail()`, which is what fills the existing `<figure class="adct-event__poster">` in `templates/single-adct_event.php` and the JSON-LD `image` in `PublicEventPage::jsonLd()`.
+
+The media copy is a real file in `wp-content/uploads`, named `adct-source-<hex>.<ext>` by the plugin. `original_filename` is the parish-supplied name kept as **display text only**: no path component of the stored file derives from it, and it is escaped on every render. Parish filenames are attacker-controlled and land in a web-servable directory.
+
+Promotion and removal are both audited — see the audit-log section for the action names. Removal detaches the item, clears the featured-image role and **leaves the stored file alone**; re-promoting restores it. A media-library copy is exempt from intake retention, because once promoted it is a site asset on a public page rather than inbox ephemera; the exemption is structural, because `ProtectedInboundMailStorage` only accepts a 64-hex-character name and the copy is `adct-source-…` in a different directory.
+
+No migration accompanies this: `source_attachment_ids` is post meta on an existing post type, and attribution reuses `adct_pi_audit_log`. The schema version is unchanged.
+
 ### `adct_pi_occurrences`
 `event_id`, `start_utc`, `end_utc`, `start_local_date`, `parish_id` (nullable), `event_type_term_id`, `latitude`, `longitude`, `is_cancelled`, `created_at`, `updated_at`. Only published events have rows. Manual editor and REST saves replace an event's rows immediately; status changes away from Published and deletion remove them. The daily job re-expands published events for the inclusive local-date window from today through the same date next year. A leap-day end boundary clamps to February 28. The occurrence expander keeps DTSTART as the first RRULE instance and counts it once even if it does not match the filters; COUNT is applied before EXDATE, RDATE does not consume COUNT or inherit UNTIL, and EXDATE removes a matching RRULE or RDATE start. These semantics are provisional. A row's end is exclusive for all-day events (the next local midnight); timed events retain their duration on each generated start. Parish and venue coordinates are copied for filtering, with venue coordinates preferred and parish coordinates as fallback; both coordinates are NULL when the event has no location. An archdiocese-wide event has `parish_id = NULL`. The lowest assigned event-type term ID is stored when more than one term is assigned. Cancelled events retain their occurrence dates with `is_cancelled = 1`; postponed events retain their dates with `is_cancelled = 0`, and their status remains on `adct_event`. Event replacement is transactional, so failed inserts roll back the deletion and preserve prior rows. All public listing queries read from this table.
 
@@ -322,7 +341,12 @@ path and a screen over rows that were already being written.
 `actor` holds the acting person's **email address** (or `system`), not a user ID.
 `subject_type` is one of `event_candidate`, `event_change`, `parish_contact`,
 `parish`, `event`, `settings` or `approval_preference`; `subject_id` is the row
-ID in that table, or `0` for `settings`. `approval_preference` is the exception
+ID in that table, or `0` for `settings`. `source_material_promoted` and
+`source_material_removed` are the POPIA answer to "who made this bulletin
+public": the actor is the person who pressed the control, the subject is the
+event, and `details` names the media id, role and intake attachment id. There is
+no row for material that was never promoted, which is correct — nothing was made
+public. `approval_preference` is the exception
 the name has to carry: its `subject_id` is a **WordPress user ID**, because #169
 gives an approver's own preference change a subject and the change is not about
 one assignment row. `details` is a JSON object written by the caller and is never
@@ -344,6 +368,8 @@ filter dropdown and the tests cannot drift apart:
 | `change_reverted` | event change | `RevertChangeHandler` |
 | `approver_notify_mode_changed` | approval preference | `NotifyModeChangeHandler`, in the save transaction |
 | `event_published` | event | `WordPressPublicationStore`, in the publish transaction |
+| `source_material_promoted` | event | `WordPressSourceMaterialStore`, at promotion time, naming the media id, role and intake attachment id |
+| `source_material_removed` | event | `WordPressSourceMaterialStore`, on removal, naming the same three values |
 | `contact_verified`, `contact_blocked`, `contact_unblocked`, `contact_linked`, `contact_confirmed`, `contact_edited`, `contact_removed` | parish contact | `ContactAuditRecorder` on the senders screen |
 | `settings_updated` | settings | `SettingsAuditRecorder` |
 
@@ -449,6 +475,7 @@ The listing cache generation is a random, option-backed `adct_pi_event_listing_g
 ## Retention (POPIA)
 
 - Raw `.eml` files and attachments: opt-in; the configured day limit defaults to **365 days** after receipt. Extracted candidates and published events stay.
+- **Promoted media copies are exempt.** A copy made at promotion time is a site asset on a public page, not inbox ephemera, so deleting the private original after the retention window must not break or unpublish it. The exemption is structural rather than a flag: `WordPressRetentionStore` can only delete through `ProtectedInboundMailStorage`, which accepts exactly one shape of name — 64 hex characters plus a known extension — while a promoted copy is named `adct-source-…` and lives in `wp-content/uploads` rather than the private inbound directory. `PromotedMediaRetentionTest` puts real files in real directories, promotes one for real, runs the real retention store over the same message, and then checks the public file is still there and the event still points at it.
 - Processed-folder mail: opt-in; only exact plugin-move receipts matching source, mailbox identity, Processed folder and destination UIDVALIDITY are eligible. Existing or otherwise untracked messages are never pruned by this job.
 - Action tokens: deleted 30 days after expiry.
 - Bulletin sections with personal information (Mass intentions, sick lists, finances) are skipped by the parser and never copied into candidates, events or AI prompts ([E3.7](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/74)).

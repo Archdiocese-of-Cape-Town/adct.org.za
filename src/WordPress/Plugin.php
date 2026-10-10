@@ -198,6 +198,10 @@ use ADCT\ParishIntake\WordPress\Ingestion\WordPressConfirmationEmailJobSource;
 use ADCT\ParishIntake\WordPress\Ingestion\WordPressConfirmationEmailResendSource;
 use ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance;
 use ADCT\ParishIntake\WordPress\Publishing\WordPressPublicationStore;
+use ADCT\ParishIntake\WordPress\Publishing\WordPressSourceMaterialStore;
+use ADCT\ParishIntake\WordPress\Publishing\WordPressMediaLibraryGateway;
+use ADCT\ParishIntake\WordPress\Publishing\WordPressEventMeta;
+use ADCT\ParishIntake\WordPress\Audit\WordPressActorResolver;
 use ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver;
 use DateTimeZone;
 
@@ -339,6 +343,13 @@ final class Plugin
     private PublicEventListing $publicEventListing;
     private PublicEventPage $publicEventPage;
     private PublicIcsFeed $publicIcsFeed;
+
+    /**
+     * Issue #172. Held as a property rather than a local so the three screens
+     * that may promote share exactly one store, and so nothing else can be
+     * handed one by accident.
+     */
+    private WordPressSourceMaterialStore $sourceMaterialStore;
     private MailboxesPage $mailboxesPage;
     private InboundMessagesPage $inboundMessagesPage;
     private AuditLogPage $auditLogPage;
@@ -511,23 +522,39 @@ private ?ReviewQueueRepository $reviewQueue = null;
             new SuburbResolver(new PlaceCoordinateLookup($database))
         );
         $this->publicIcsFeed = new PublicIcsFeed($clock, $listingGeneration, new IcsCalendar());
-        $this->publicEventPage = new PublicEventPage(
-            $clock,
-            $timezone,
-            $parishes,
-            $venues,
-            $occurrences,
-            $pluginFile
-        );
-        $this->eventEditor = new EventEditor(
-            $parishes,
-            $venues,
-            new EventValidator($timezone, $rruleValidator),
-            new RRulePresetMapper($rruleValidator),
-            $timezone,
-            $clock,
-            $subjectAuditPanel
-        );
+                // Issue #172: the one place a media-library copy of a parish bulletin or
+                // poster is ever made. It is built here, held for three callers, and is
+                // deliberately NOT given to CandidatePublisher -- publishing an event and
+                // making its source material public are two separate human decisions.
+                $this->sourceMaterialStore = new WordPressSourceMaterialStore(
+                    $attachmentRepository,
+                    new ProtectedInboundMailStorage(),
+                    new WordPressMediaLibraryGateway(),
+                    new WordPressEventMeta(),
+                    new WordPressActorResolver(),
+                    $auditLog
+                );
+                $this->publicEventPage = new PublicEventPage(
+                    $clock,
+                    $timezone,
+                    $parishes,
+                    $venues,
+                    $occurrences,
+                    $pluginFile,
+                    $this->sourceMaterialStore
+                );
+                $this->eventEditor = new EventEditor(
+                    $parishes,
+                    $venues,
+                    new EventValidator($timezone, $rruleValidator),
+                    new RRulePresetMapper($rruleValidator),
+                    $timezone,
+                    $clock,
+                    $subjectAuditPanel,
+                    $this->sourceMaterialStore,
+                    $attachmentRepository,
+                    new WordPressCandidateSourceMessage(new EventCandidateRepository($database))
+                );
         // ADR 0008 point 4 promises approvers a before/after summary; the change
         // notice mail carries it, and this box is the second place it has to be
         // readable -- a dean answering "what did this event look like before you
@@ -590,8 +617,9 @@ private ?ReviewQueueRepository $reviewQueue = null;
                 $this->ocrControl(),
                 $this->attachmentImageEndpoint,
                 $this->confirmationResendService(),
-                $subjectAuditPanel
-            );
+                                $subjectAuditPanel,
+                                $this->sourceMaterialStore
+                            );
         // #72: the same repository and policy behind a front-end page, so a
         // dean is scoped by exactly the same predicate as a reviewer in
         // wp-admin (ADR 0008: deans never need wp-admin).
@@ -1310,6 +1338,22 @@ private ?ReviewQueueRepository $reviewQueue = null;
             'admin_post_adct_pi_candidate_attachment',
             [$this->reviewQueuePage, 'handleAttachment']
         );
+                // Issue #172. Three actions and three nonces, deliberately NOT one.
+                // The review queue control is a single-candidate form so it cannot be
+                // forged by carrying a bulk form's nonce, and it defaults to nothing
+                // promoted.
+                add_action(
+                    ReviewQueuePage::PROMOTE_SOURCE_ACTION,
+                    [$this->reviewQueuePage, 'handlePromoteSource']
+                );
+                add_action(
+                    EventEditor::PROMOTE_SOURCE_MATERIAL_ACTION,
+                    [$this->eventEditor, 'handlePromoteSourceMaterial']
+                );
+                add_action(
+                    EventEditor::REMOVE_SOURCE_MATERIAL_ACTION,
+                    [$this->eventEditor, 'handleRemoveSourceMaterial']
+                );
         add_action(
             'admin_post_' . ReviewQueuePage::CREATE_MANUAL_ACTION,
             [$this->reviewQueuePage, 'handleCreateManual']

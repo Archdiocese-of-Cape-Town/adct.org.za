@@ -13,7 +13,9 @@ use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendService;
 use ADCT\ParishIntake\Core\Parsing\Stages\ConfidenceScoringStage;
 use ADCT\ParishIntake\Core\Parsing\UnparsedDateTimeCandidate;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageReaderInterface;
+use ADCT\ParishIntake\Core\Ports\SourceMaterialStoreInterface;
 use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
+use ADCT\ParishIntake\Core\Publishing\SourceAttachment;
 use ADCT\ParishIntake\Core\Review\CandidateEditResult;
 use ADCT\ParishIntake\Core\Review\CandidateEditValidator;
 use ADCT\ParishIntake\Core\Review\CandidateFieldSet;
@@ -88,6 +90,22 @@ final class ReviewQueuePage
      */
     public const SOURCE_NONCE = 'source_nonce';
 
+    /**
+     * Promoting an attachment's source material is its own POST action with its
+     * own nonce, deliberately not a mode on the bulk review form (issue #172).
+     *
+     * The review form is submitted by every reviewer who saves or approves, and
+     * its nonce is carried in the same markup as the review buttons. Folding
+     * promotion into it would mean the thing that makes a parish's bulletin
+     * public is one field away from the thing that approves an event, so a
+     * mis-built or bulk form could carry its nonce across. A separate action
+     * and a separate nonce name mean a request forged against any other screen
+     * on this plugin arrives here with no valid nonce and is refused before a
+     * single field of it is read.
+     */
+    public const PROMOTE_SOURCE_ACTION = 'adct_pi_candidate_promote_source';
+    public const PROMOTE_SOURCE_NONCE = 'promote_source_nonce';
+
     /** Serving a stored file is bounded so a large poster cannot exhaust the 90 s limit. */
     private const MAX_DOWNLOAD_BYTES = 10485760;
 
@@ -135,9 +153,10 @@ final class ReviewQueuePage
         private readonly ?OcrControl $ocr = null,
         private readonly ?AttachmentImageEndpoint $imageEndpoint = null,
                 private readonly mixed $resendConfirmation = null,
-                private readonly ?SubjectAuditPanel $auditPanel = null
-            ) {
-    }
+                                private readonly ?SubjectAuditPanel $auditPanel = null,
+                                private readonly ?SourceMaterialStoreInterface $sourceMaterial = null
+                            ) {
+                    }
 
     /**
      * The resend service, resolved on first use.
@@ -851,6 +870,12 @@ final class ReviewQueuePage
         // is read here purely to explain the button; the service is what decides.
         $resend = $this->resendPanelState($row);
 
+        // Issue #172: source material is only ever offered to someone who could
+        // have published the event in the first place, and only when a store was
+        // wired. A site without the adapter renders no offer at all rather than an
+        // offer that would be refused on submit.
+        $canPromote = $this->canPromoteSource($row);
+
         $view = new CandidateDetailView();
         $view->render(
             $row,
@@ -868,7 +893,8 @@ final class ReviewQueuePage
             $editable && $messageId > 0,
             $needsResolution,
             $unreadable,
-            $resend
+            $resend,
+            $canPromote
         );
         // The audit trail for this candidate, so a reviewer can see who has
                 // already touched it (issue #58).
@@ -894,7 +920,87 @@ final class ReviewQueuePage
                 // rendered after the view — the view flushes the audit trail — so the
                 // outcome lands at the top of the card rather than the foot of the page.
                 $this->renderResendNotice();
+                $this->renderPromoteNotice();
             }
+
+    /**
+     * Whether this reviewer may be offered source material for this candidate.
+     *
+     * Three conditions, all of them about the row rather than the file: the store
+     * must be wired at all, the candidate must name an event it was published
+     * from, and that event must name the candidate back. The file's own
+     * promotability is decided per row by {@see SourceAttachment::isPromotableMimeType()},
+     * so an unrenderable file needs no special case here.
+     *
+     * This deliberately does not ask {@see canEdit()}. That answers "may this
+     * candidate's details still be changed", which is false for exactly the
+     * candidates a promotion is for — once the event exists the candidate is
+     * `published`, and `canEdit()` has already said no. Gating on it would make
+     * the offer permanently unreachable.
+     *
+     * The two-sided check mirrors {@see handlePromoteSource()}: the offer is only
+     * made where the POST would be accepted, so a reviewer is never shown a button
+     * that then refuses them. The row was already scoped to this reviewer by the
+     * time this is asked, which is the other half of that guarantee.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function canPromoteSource(array $row): bool
+    {
+        if ($this->sourceMaterial === null) {
+            return false;
+        }
+
+        $eventId = (int) ($row['match_event_id'] ?? 0);
+
+        return $eventId > 0 && $this->eventSourceCandidate($eventId) === (int) ($row['id'] ?? 0);
+    }
+
+    /**
+     * Which candidate an event was published from.
+     *
+     * @return int|null null when the event carries no `source_candidate_id`, which is
+     *         the same "not published from here" answer the route gives.
+     */
+    private function eventSourceCandidate(int $eventId): ?int
+    {
+        try {
+            $value = get_post_meta($eventId, 'source_candidate_id', true);
+        } catch (Throwable $failure) {
+            error_log(
+                '[ADCT Parish Intake] Could not read the source candidate for event ' . $eventId
+                . ' (' . get_class($failure) . ').'
+            );
+
+            return null;
+        }
+
+        $id = absint(is_scalar($value) ? (string) $value : '');
+
+        return $id > 0 ? $id : null;
+    }
+
+    /**
+     * The outcome of a source-material promotion, on the detail screen.
+     *
+     * Like {@see renderResendNotice()} this detail branch returns before the list
+     * screen's notice, and it needs its own. The value arrives from this screen's
+     * own redirect and is compared against a fixed pair, so nothing the request
+     * carries is ever echoed back.
+     */
+    private function renderPromoteNotice(): void
+    {
+        $promoted = $this->text($_GET['promoted'] ?? '');
+
+        if ($promoted !== '1') {
+            return;
+        }
+        ?>
+        <div class="notice notice-success inline"><p><?php echo esc_html(
+            'The file is now published with the event. It appears on the public event page as its source material.'
+        ); ?></p></div>
+        <?php
+    }
 
     /**
      * What the resend panel needs to draw itself for this candidate.
@@ -1456,7 +1562,110 @@ final class ReviewQueuePage
     }
 
     /**
-     * A stored attachment row, when it is one this plugin still holds.
+         * Make one attachment's source material viewable on the event it became.
+         *
+         * This is the only place in the plugin where a parish's own file is copied
+         * into the uploads directory, and it does nothing but that: no attachment
+         * is ever promoted by publishing, by parsing, or by opening a screen. The
+         * reviewer chooses the file and the role, and this route refuses anything
+         * they could not have arrived at legitimately (issue #172).
+         *
+         * The order of the checks is the security order. The nonce is verified
+         * before a single field of the request is read, so a replayed or forged
+         * request cannot reach the ownership test below it, let alone the store.
+         * The candidate, not the request, decides the message; the message decides
+         * which attachments belong to it; and the event comes from the candidate
+         * row rather than from a posted id, so a crafted POST cannot attach
+         * somebody else's bulletin to an event and record it in the reviewer's
+         * name.
+         *
+         * A failure here leaves the published event exactly as it was. Promotion
+         * is not part of publication and is not inside its transaction, so a
+         * broken filesystem cannot unpublish anything (issue #172).
+         */
+        public function handlePromoteSource(): void
+        {
+            [$userId, $email, $reviewer] = $this->identity();
+            check_admin_referer(self::PROMOTE_SOURCE_ACTION, self::PROMOTE_SOURCE_NONCE);
+
+            $candidateId = absint($this->text($_POST['candidate'] ?? '0'));
+            $attachmentId = absint($this->text($_POST['attachment_id'] ?? '0'));
+            $role = $this->text($_POST['role'] ?? '');
+            $tab = $this->tab($this->text($_POST['tab'] ?? 'awaiting_approval'));
+            $search = substr(sanitize_text_field($this->text($_POST['search'] ?? '')), 0, 100);
+
+            if ($candidateId < 1 || $attachmentId < 1) {
+                wp_die(esc_html('That request is not valid.'), '', ['response' => 400]);
+            }
+            // A role the plugin does not define is refused rather than coerced. A
+            // default here would silently turn a crafted value into a real one.
+            if (! in_array($role, SourceAttachment::ROLES, true)) {
+                wp_die(esc_html('That file cannot be published in the role requested.'), '', ['response' => 400]);
+            }
+
+            $candidate = $this->scopedCandidate($candidateId, $userId, $email, $reviewer);
+            if ($candidate === null) {
+                wp_die(esc_html('This candidate is not in your review queue.'), '', ['response' => 404]);
+            }
+
+            $eventId = (int) ($candidate['match_event_id'] ?? 0);
+            if ($eventId < 1) {
+                wp_die(esc_html('This candidate has not been published yet.'), '', ['response' => 409]);
+            }
+
+            // The candidate row says which event; the event says which candidate.
+            // Requiring both to agree means a candidate row cannot be pointed at an
+            // event that some other candidate published.
+            if ((string) get_post_meta($eventId, 'source_candidate_id', true) !== (string) $candidateId) {
+                wp_die(esc_html('That event did not come from this candidate.'), '', ['response' => 409]);
+            }
+
+            $messageId = $this->queue->findMessageOf($candidateId);
+            $attachment = $this->attachmentRecord($attachmentId);
+            if ($attachment === null || $messageId !== (int) ($attachment['message_id'] ?? 0)) {
+                wp_die(esc_html('That file is not attached to this email.'), '', ['response' => 404]);
+            }
+
+            // Refused as unpublishable rather than as missing: a 404 would tell a
+            // dean their bulletin had been deleted, which is both wrong and alarming.
+            $mimeType = strtolower(trim((string) ($attachment['mime_type'] ?? '')));
+            if (! SourceAttachment::isPromotableMimeType($mimeType)) {
+                wp_die(
+                    esc_html(sprintf('A file of type %s cannot be published with an event.', $mimeType)),
+                    '',
+                    ['response' => 422]
+                );
+            }
+
+            if ($this->sourceMaterial === null) {
+                wp_die(esc_html('Source material cannot be published on this site.'), '', ['response' => 409]);
+            }
+
+            try {
+                $this->sourceMaterial->promote($eventId, $attachmentId, $role);
+            } catch (DomainException $failure) {
+                wp_die(esc_html($failure->getMessage()), '', ['response' => 409]);
+            } catch (Throwable $failure) {
+                error_log('[ADCT Parish Intake] Source material promotion failed: ' . $failure->getMessage());
+                wp_die(esc_html('That file could not be published with the event. Try again in a moment.'), '', [
+                    'response' => 500,
+                ]);
+            }
+
+            wp_safe_redirect(add_query_arg(
+                [
+                    'candidate' => $candidateId,
+                    'tab' => $tab,
+                    'search' => $search,
+                    'promoted' => 1,
+                ],
+                self::queueUrl($tab, $search)
+            ));
+            exit;
+        }
+
+        /**
+         * A stored attachment row, when it is one this plugin still holds.
      *
      * Null means "no such stored attachment", which is what the callers above
      * turn into a 404. Deliberately returns the row rather than a file path: the

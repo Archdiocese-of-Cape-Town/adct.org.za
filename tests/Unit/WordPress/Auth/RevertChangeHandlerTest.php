@@ -30,31 +30,6 @@ require_once __DIR__ . '/../../../Support/WordPressCapabilityStubs.php';
         }
     }
 
-    if (! function_exists('get_post_thumbnail_id')) {
-        function get_post_thumbnail_id(int $postId): int
-        {
-            return (int) ($GLOBALS['revert_meta'][(int) $postId]['_thumbnail_id'] ?? 0);
-        }
-    }
-
-    if (! function_exists('set_post_thumbnail')) {
-        function set_post_thumbnail(int $postId, int $thumbnailId): bool
-        {
-            $GLOBALS['revert_meta'][(int) $postId]['_thumbnail_id'] = $thumbnailId;
-
-            return true;
-        }
-    }
-
-    if (! function_exists('delete_post_thumbnail')) {
-        function delete_post_thumbnail(int $postId): bool
-        {
-            unset($GLOBALS['revert_meta'][(int) $postId]['_thumbnail_id']);
-
-            return true;
-        }
-    }
-
     if (! function_exists('wp_get_object_terms')) {
         function wp_get_object_terms(int $postId, string $taxonomy, array $args = []): mixed
         {
@@ -153,6 +128,43 @@ namespace ADCT\ParishIntake\WordPress\Auth {
     function delete_post_meta(int $postId, string $key, bool $deleteAll = false): bool
     {
         unset($GLOBALS['revert_meta'][(int) $postId][$key]);
+
+        return true;
+    }
+
+    /**
+     * The thumbnail calls live in this namespace rather than in the global
+     * block above on purpose.
+     *
+     * `phpunit.xml.dist` has no bootstrap file, so every test file is included
+     * before any test runs and the first declaration of a global function name
+     * is the one every other file gets. A global `set_post_thumbnail()` here
+     * would win the `function_exists` race against
+     * tests/Support/WordPressMediaStubs.php for #172's source-material tests --
+     * this file sorts first -- and those tests would then assert against
+     * `revert_meta` instead of the store they seeded, which is exactly the kind
+     * of vacuous green the suite exists to prevent.
+     *
+     * Declaring them here keeps both suites honest: RevertChangeHandler.php is
+     * itself in ADCT\ParishIntake\WordPress\Auth, so PHP resolves this copy
+     * first and the global copy is only reached if this one is somehow absent.
+     * The behaviour is unchanged; only the resolution order is.
+     */
+    function get_post_thumbnail_id(int $postId): int
+    {
+        return (int) ($GLOBALS['revert_meta'][(int) $postId]['_thumbnail_id'] ?? 0);
+    }
+
+    function set_post_thumbnail(int $postId, int $thumbnailId): bool
+    {
+        $GLOBALS['revert_meta'][(int) $postId]['_thumbnail_id'] = $thumbnailId;
+
+        return true;
+    }
+
+    function delete_post_thumbnail(int $postId): bool
+    {
+        unset($GLOBALS['revert_meta'][(int) $postId]['_thumbnail_id']);
 
         return true;
     }
