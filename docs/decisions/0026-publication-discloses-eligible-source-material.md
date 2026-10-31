@@ -37,8 +37,8 @@ art only; this change builds on the interfaces merged in #251.
 - Isolate copying from the publication transaction. A per-event database
   advisory lock in the source store serializes automatic copying and manual
   add/removal without waiting in a web request. The publication store delegates
-  without acquiring a second lock; same-connection reentrant mutation is refused,
-  while a lock on another event does not interfere.
+  without holding a second lock during copying; same-connection reentrant
+  mutation is refused, while a lock on another event does not interfere.
   Contention reports an already-published event needing retry. Check the current
   source candidate after obtaining the lock so a superseded attempt does not
   copy stale material. Release the connection-scoped lock after processing.
@@ -70,6 +70,15 @@ art only; this change builds on the interfaces merged in #251.
   copies with no marker. Featured-image deletion is checked before dropping
   the source reference. A refused metadata or audit write reports failure and
   restores the prior source/featured-image state so the removal can be retried.
+  A candidate updating an existing event acquires that event's advisory lock
+  before changing the event inside its database transaction. It commits and
+  releases the lock before the source store reacquires it for filesystem work.
+  A newer update cannot supersede the candidate while copying is in flight;
+  contention refuses the uncommitted update explicitly for retry. If another
+  update wins between commit and copying, the locked source-candidate check
+  skips the older copy. No filesystem I/O joins the transaction.
+  Failed event updates roll back before releasing the lock, allowing a later
+  retry without leaving an uncommitted candidate or blocking source mutations.
 
 ## Consequences and remaining assumptions
 

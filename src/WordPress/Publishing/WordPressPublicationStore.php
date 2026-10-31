@@ -42,6 +42,8 @@ final class WordPressPublicationStore implements PublicationStoreInterface
         $this->execute('START TRANSACTION');
         $eventId = null;
         $committed = false;
+        $sourceLock = new SourceMaterialLock($this->database);
+        $sourceLockedEvent = null;
 
         try {
             $table = $this->database->prefix() . 'adct_pi_event_candidates';
@@ -59,6 +61,10 @@ final class WordPressPublicationStore implements PublicationStoreInterface
             }
             $eventId = $publication->eventId;
             if ($eventId !== null) {
+                if ($row['status'] !== 'published') {
+                    $sourceLock->acquire($eventId);
+                    $sourceLockedEvent = $eventId;
+                }
                 $posts = $this->database->prefix() . 'posts';
                 $lockedEvent = $this->row($this->database->prepare(
                     "SELECT ID FROM {$posts} WHERE ID = %d FOR UPDATE",
@@ -227,6 +233,11 @@ final class WordPressPublicationStore implements PublicationStoreInterface
             }
             $this->execute('COMMIT');
             $committed = true;
+            if ($sourceLockedEvent !== null) {
+                $lockedEventId = $sourceLockedEvent;
+                $sourceLockedEvent = null;
+                $sourceLock->release($lockedEventId);
+            }
             return $this->afterCommit($eventId, $row, $publication->actor);
         } catch (Throwable $failure) {
             if ($committed) {
@@ -253,6 +264,10 @@ final class WordPressPublicationStore implements PublicationStoreInterface
                 }
             }
             throw $failure;
+        } finally {
+            if ($sourceLockedEvent !== null) {
+                $sourceLock->release($sourceLockedEvent);
+            }
         }
     }
 

@@ -193,7 +193,6 @@ final class AutomaticSourceMaterialCheck
 
             $generation = new EventListingGeneration();
             $before = $generation->current();
-            $candidateId = $make('reviewer', 'update', $eventId);
             $blockingDatabase = new wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
             $lock = substr('adct-source-' . hash('sha256', $wpdb->prefix . ':' . $eventId), 0, 64);
             if ((int) $blockingDatabase->get_var($blockingDatabase->prepare('SELECT GET_LOCK(%s, 0)', $lock)) !== 1) {
@@ -282,8 +281,22 @@ final class AutomaticSourceMaterialCheck
             $posterToRemove = $store->forEvent($eventId)[0]->mediaId;
             $interleavingAttempted = false;
             $interleavingBlocked = 0;
+            $copyingCandidate = $make('reviewer', 'update', $eventId, $laterMessage);
+            $newerCandidate = $make('reviewer', 'update', $eventId, $messageId);
+            $secondPublication = new \ADCT\ParishIntake\WordPress\Publishing\WordPressPublicationStore(
+                $contendingConnection, new EventCandidateRepository($contendingConnection),
+                new \ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance(
+                    new \ADCT\ParishIntake\WordPress\Database\Repository\OccurrenceRepository($contendingConnection),
+                    new \ADCT\ParishIntake\Core\Events\OccurrenceExpander(new DateTimeZone('Africa/Johannesburg')),
+                    new SystemClock()
+                ),
+                new EventListingGeneration(), new SystemClock(), new DateTimeZone('Africa/Johannesburg')
+            );
+            $supersessionBlocked = false;
+            $supersessionFailure = null;
             $interleave = static function (array $file) use (
-                $contendingStore, $eventId, $failedId, $posterToRemove, &$interleavingAttempted, &$interleavingBlocked
+                $contendingStore, $eventId, $failedId, $posterToRemove, &$interleavingAttempted, &$interleavingBlocked,
+                $secondPublication, $contendingDatabase, $newerCandidate, $date, &$supersessionBlocked, &$supersessionFailure
             ): array {
                 if ($interleavingAttempted) {
                     return $file;
@@ -303,15 +316,40 @@ final class AutomaticSourceMaterialCheck
                         }
                     }
                 }
+                global $wpdb;
+                $primaryDatabase = $wpdb;
+                $wpdb = $contendingDatabase;
+                try {
+                    $secondPublication->publish($newerCandidate, static fn () => new \ADCT\ParishIntake\Core\Publishing\Publication(
+                        $newerCandidate, $eventId, 'update', 'reviewer@example.test',
+                        'Synthetic newer source event', 'Synthetic newer details.',
+                        new \ADCT\ParishIntake\Core\Events\EventDetails(
+                            null, null, $date . 'T09:00', null, false, null, [], [], false, 'scheduled', $newerCandidate,
+                            ['name' => '', 'email' => '', 'phone' => '']
+                        ), null
+                    ));
+                } catch (DomainException $failure) {
+                    $supersessionBlocked = str_contains($failure->getMessage(), 'already running');
+                    $supersessionFailure = $failure->getMessage();
+                } catch (RuntimeException $failure) {
+                    $supersessionFailure = $failure->getMessage();
+                } finally {
+                    $wpdb = $primaryDatabase;
+                    clean_post_cache($eventId);
+                }
                 return $file;
             };
             add_filter('wp_handle_sideload_prefilter', $interleave);
             try {
-                Plugin::candidatePublisher()->publish($make('reviewer', 'update', $eventId, $laterMessage));
+                Plugin::candidatePublisher()->publish($copyingCandidate);
             } finally {
                 remove_filter('wp_handle_sideload_prefilter', $interleave);
             }
             $mediaIds = array_merge($mediaIds, array_map(static fn ($source): int => $source->mediaId, $store->forEvent($eventId)));
+            if (! $supersessionBlocked || (int) get_post_meta($eventId, 'source_candidate_id', true) !== $copyingCandidate) {
+                $fail('A newer candidate superseded an event while older source copying was in flight. '
+                    . ($supersessionFailure ?? 'The newer transaction committed.'));
+            }
             if (! $interleavingAttempted || $interleavingBlocked !== 2 || count($store->forEvent($eventId)) !== 2) {
                 $fail('In-flight automatic copying allowed a concurrent add/removal from another database connection.');
             }
@@ -345,6 +383,29 @@ final class AutomaticSourceMaterialCheck
                 || get_post_meta($eventId, WordPressSourceMaterialStore::ERROR_META, true) !== []
                 || WordPressSourceMaterialStore::failureRecords($eventId) !== []) {
                 $fail('Manual recovery did not restore only the earlier failed file and clear its warning.');
+            }
+            $refuseCandidate = static function ($check, int $postId, string $key, $value) use ($eventId, $newerCandidate) {
+                return $postId === $eventId && $key === 'source_candidate_id' && (int) $value === $newerCandidate
+                    ? false : $check;
+            };
+            $updateFailure = null;
+            add_filter('update_post_metadata', $refuseCandidate, 10, 4);
+            try {
+                Plugin::candidatePublisher()->publish($newerCandidate);
+            } catch (RuntimeException $failure) {
+                $updateFailure = $failure;
+            } finally {
+                remove_filter('update_post_metadata', $refuseCandidate, 10);
+            }
+            $sourceLockName = substr('adct-source-' . hash('sha256', $wpdb->prefix . ':' . $eventId), 0, 64);
+            if ($updateFailure === null || ! str_contains($updateFailure->getMessage(), 'source_candidate_id')
+                || (int) get_post_meta($eventId, 'source_candidate_id', true) !== $copyingCandidate
+                || $contendingDatabase->get_var($contendingDatabase->prepare('SELECT IS_USED_LOCK(%s)', $sourceLockName)) !== null) {
+                $fail('A refused event update failed to roll back its candidate or release its source lock.');
+            }
+            Plugin::candidatePublisher()->publish($newerCandidate);
+            if ((int) get_post_meta($eventId, 'source_candidate_id', true) !== $newerCandidate) {
+                $fail('A candidate refused during source copying could not be retried after the lock released.');
             }
         } finally {
             foreach (array_unique($mediaIds) as $id) {

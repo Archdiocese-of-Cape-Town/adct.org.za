@@ -18,6 +18,16 @@ final class SourceMaterialLock
 
     public function run(int $eventId, callable $mutation): mixed
     {
+        $this->acquire($eventId);
+        try {
+            return $mutation();
+        } finally {
+            $this->release($eventId);
+        }
+    }
+
+    public function acquire(int $eventId): void
+    {
         $name = substr('adct-source-' . hash('sha256', $this->database->prefix() . ':' . $eventId), 0, 64);
         if (isset($this->active[$name])) {
             throw new DomainException('Source material changes are already running for this event. Try again in a moment.');
@@ -43,15 +53,21 @@ final class SourceMaterialLock
         $this->active[$name] = true;
         try {
             clean_post_cache($eventId);
-            return $mutation();
-        } finally {
-            unset($this->active[$name]);
-            $this->database->clearLastError();
-            $result = $this->database->getRow($this->database->prepare('SELECT RELEASE_LOCK(%s) AS released', $name));
-            if ($this->database->lastError() !== '' || (int) ($result['released'] ?? 0) !== 1) {
-                throw new RuntimeException('The source material lock could not be released.');
-            }
-            clean_post_cache($eventId);
+        } catch (\Throwable $failure) {
+            $this->release($eventId);
+            throw $failure;
         }
+    }
+
+    public function release(int $eventId): void
+    {
+        $name = substr('adct-source-' . hash('sha256', $this->database->prefix() . ':' . $eventId), 0, 64);
+        unset($this->active[$name]);
+        $this->database->clearLastError();
+        $result = $this->database->getRow($this->database->prepare('SELECT RELEASE_LOCK(%s) AS released', $name));
+        if ($this->database->lastError() !== '' || (int) ($result['released'] ?? 0) !== 1) {
+            throw new RuntimeException('The source material lock could not be released.');
+        }
+        clean_post_cache($eventId);
     }
 }
