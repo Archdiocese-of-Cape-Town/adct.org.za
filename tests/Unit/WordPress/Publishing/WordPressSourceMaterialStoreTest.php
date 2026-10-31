@@ -880,26 +880,11 @@ final class WordPressSourceMaterialStoreTest extends TestCase
                 }
 
     /**
-     * The WordPress half of the same guarantee.
-     *
-     * The test above proves the Core cannot promote. It says nothing about
-     * `WordPressPublicationStore::publish()`, which is where an auto-promotion
-     * would actually be written: it is the one place that knows the event id at
-     * the moment an event first exists, it already writes post meta, and
-     * `set_post_thumbnail()` would be a one-line addition right beside it.
-     *
-     * So the publication store is read directly. The call list is the whole
-     * vocabulary a promotion would need -- the copy, the featured image, the
-     * media query, the role meta, and the name of this feature -- and none of
-     * them may appear. `WordPressPublicationStore` is not constructed with a
-     * source material store, which `testThePublicationStoreIsNotEvenWiredToOne`
-     * covers separately by checking the constructor.
-     *
-     * This was added after mutation: adding an auto-promotion to `publish()`
-     * turned the rest of this file green, so the guarantee was asserted in one
-     * layer and silently absent in the other.
+     * Issue #252 changes the disclosure policy at the owner's direction.
+     * Publication may trigger the adapter after commit, but may not inline
+     * filesystem work into the publication transaction.
      */
-    public function testThePublicationStoreNeverPromotesAnAttachment(): void
+    public function testThePublicationStoreDelegatesCopyingRatherThanPerformingFileIo(): void
     {
         $source = (string) file_get_contents(
         __DIR__ . '/../../../../src/WordPress/Publishing/WordPressPublicationStore.php'
@@ -911,17 +896,13 @@ final class WordPressSourceMaterialStoreTest extends TestCase
             'set_post_thumbnail',
             'has_post_thumbnail',
             'source_attachment_ids',
-            'SourceMaterial',
-            'promote',
             'sideload',
         ] as $forbidden) {
             self::assertStringNotContainsString(
                 $forbidden,
                 $source,
                 sprintf(
-                    'WordPressPublicationStore::publish() may not contain "%s": promotion is an '
-                    . 'explicit human decision (ADR 0025), and publish() is where an automatic one '
-                    . 'would be written by accident.',
+                    'WordPressPublicationStore must delegate "%s" to the source-material adapter.',
                     $forbidden
                 )
             );
@@ -929,10 +910,9 @@ final class WordPressSourceMaterialStoreTest extends TestCase
     }
 
     /**
-     * The structural half of the guarantee above: the publication store is not
-     * even handed a collaborator that could copy a file.
+     * Publication receives the high-level store, not its filesystem machinery.
      */
-    public function testThePublicationStoreIsNotEvenWiredToOne(): void
+    public function testThePublicationStoreDoesNotAcceptLowLevelCopyCollaborators(): void
     {
         $source = (string) file_get_contents(
         __DIR__ . '/../../../../src/WordPress/Publishing/WordPressPublicationStore.php'
@@ -946,7 +926,6 @@ final class WordPressSourceMaterialStoreTest extends TestCase
             'MediaLibraryGatewayInterface',
             'IntakeAttachmentReaderInterface',
             'WordPressMediaLibraryGateway',
-            'WordPressSourceMaterialStore',
         ] as $forbidden) {
             self::assertStringNotContainsString(
                 $forbidden,
