@@ -557,7 +557,7 @@ final class ApprovalNoticeJobTest extends TestCase
      */
     public function testAMissingNameSaysSoRatherThanLeavingAGap(): void
     {
-        foreach (['', '   ', "\r\n\t"] as $absent) {
+        foreach (['', '   ', "\r\n\t", 'parish-office@example.test'] as $absent) {
             $job = $this->runJobForApprover(
                 Approver::NOTIFY_EACH,
                 'dean-office@example.test',

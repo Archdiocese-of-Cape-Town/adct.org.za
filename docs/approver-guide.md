@@ -33,6 +33,12 @@ anything on your behalf.
      sick list?
 4. If it is all correct, press **Approve**. If it is not, press **Edit**.
 
+Approval emails, reminders and the decision page show the submitter's email
+address and, when supplied, their display name. A display name is not proof of
+identity: check the address and heed any unknown-sender or reported DMARC
+warnings on the decision page before approving. A name that only repeats the
+address is shown as no separate name.
+
 ## Correcting an event before approving it
 
 **Edit** opens a form with the title, date, time and description. You can

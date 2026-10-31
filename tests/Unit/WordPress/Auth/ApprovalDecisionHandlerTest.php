@@ -48,9 +48,12 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
     use ADCT\ParishIntake\Core\Approval\ApprovalRouteSnapshot;
     use ADCT\ParishIntake\Core\Approval\Approver;
     use ADCT\ParishIntake\Core\Auth\ActionTokenBinding;
+    use ADCT\ParishIntake\Core\Auth\ActionTokenHandlerRegistry;
     use ADCT\ParishIntake\Core\Auth\ActionTokenPreview;
     use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
+    use ADCT\ParishIntake\Core\Auth\ActionTokenRateLimiter;
     use ADCT\ParishIntake\Core\Auth\ActionTokenRecord;
+    use ADCT\ParishIntake\Core\Auth\ActionTokenRenewalService;
     use ADCT\ParishIntake\Core\Auth\ActionTokenService;
     use ADCT\ParishIntake\Core\Auth\ActionTokenStatus;
     use ADCT\ParishIntake\Core\Auth\Capabilities;
@@ -59,6 +62,8 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
     use ADCT\ParishIntake\Core\Mail\MailQueueStatus;
     use ADCT\ParishIntake\Core\Mail\MailPriority;
     use ADCT\ParishIntake\Core\Mail\OutboundEmail;
+    use ADCT\ParishIntake\Core\Ports\ActionTokenRateLimitStoreInterface;
+    use ADCT\ParishIntake\Core\Ports\ActionTokenRenewalDeliveryInterface;
     use ADCT\ParishIntake\Core\Ports\ActionTokenStoreInterface;
     use ADCT\ParishIntake\Core\Ports\ApprovalRouteRepositoryInterface;
     use ADCT\ParishIntake\Core\Ports\ClockInterface;
@@ -67,6 +72,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
     use ADCT\ParishIntake\Core\Publishing\CandidatePublisher;
     use ADCT\ParishIntake\Core\Publishing\Publication;
     use ADCT\ParishIntake\WordPress\Approval\ApprovalRecipients;
+    use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
     use ADCT\ParishIntake\WordPress\Auth\ApprovalDecisionHandler;
     use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
     use DateTimeImmutable;
@@ -176,6 +182,90 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
                     self::assertStringContainsString('approval or rejection', $refused->getMessage());
                 }
             }
+        }
+
+        public function testPreviewShowsTheSenderAndKeepsTrustWarningsSeparate(): void
+        {
+            $database = $this->database();
+            $database->messageRow = [
+                'sender_email' => ' Parish.Office@Example.TEST ',
+                'sender_name' => "Parish Office\r\nSubmitted by: intruder@example.test",
+            ];
+            $candidate = $database->candidateRow();
+            $candidate['notes'] = json_encode(['unknown_sender', 'dmarc_fail'], JSON_THROW_ON_ERROR);
+            $database->replaceCandidate($candidate);
+
+            $preview = $this->approve(approvalDatabase: $database)->preview($this->approvalBinding());
+
+            self::assertNotNull($preview);
+            self::assertContains('Submitted by: parish.office@example.test (Parish Office)', $preview->details);
+            self::assertContains('Warning: unknown sender. Check the parish before approving.', $preview->details);
+            self::assertContains('Warning: reported DMARC failure. Verify the sender before approving.', $preview->details);
+            self::assertStringNotContainsString('intruder@example.test', implode("\n", $preview->details));
+            self::assertCount(1, $database->messageReads);
+            self::assertStringContainsString('sender_name', $database->messageReads[0]);
+        }
+
+        public function testPreviewSaysWhenNoDisplayNameWasSupplied(): void
+        {
+            $database = $this->database();
+            $database->messageRow = ['sender_email' => ' PARISH@Example.TEST ', 'sender_name' => null];
+
+            $preview = $this->approve(approvalDatabase: $database)->preview($this->approvalBinding());
+
+            self::assertNotNull($preview);
+            self::assertContains('Submitted by: parish@example.test (no name supplied)', $preview->details);
+        }
+
+        public function testPreviewDoesNotRepeatAnAddressAsTheDisplayName(): void
+        {
+            $database = $this->database();
+            $database->messageRow = ['sender_email' => 'parish@example.test', 'sender_name' => 'parish@example.test'];
+
+            $preview = $this->approve(approvalDatabase: $database)->preview($this->approvalBinding());
+
+            self::assertNotNull($preview);
+            self::assertContains('Submitted by: parish@example.test (no name supplied)', $preview->details);
+        }
+
+        public function testRenderedPreviewEscapesTheSenderName(): void
+        {
+            $database = $this->database();
+            $database->messageRow = [
+                'sender_email' => 'parish@example.test',
+                'sender_name' => '<script>alert(1)</script> Parish & Office',
+            ];
+            $candidate = $database->candidateRow();
+            $candidate['status'] = 'published';
+            $candidate['decided_by'] = self::DEAN;
+            $candidate['decided_at'] = '2026-09-25 07:00:00';
+            $database->replaceCandidate($candidate);
+
+            $tokens = new ActionTokenService(new DecisionTokenStore(), new DecisionClock());
+            $token = $tokens->issue($this->approvalBinding())->token();
+            $renewals = new ActionTokenRenewalService(
+                $tokens,
+                new ActionTokenRateLimiter(
+                    $this->createMock(ActionTokenRateLimitStoreInterface::class),
+                    new DecisionClock(),
+                    str_repeat('k', 32)
+                ),
+                $this->createMock(ActionTokenRenewalDeliveryInterface::class)
+            );
+            $endpoint = new ActionTokenEndpoint(
+                $tokens,
+                new ActionTokenHandlerRegistry([$this->approve(approvalDatabase: $database)]),
+                $renewals
+            );
+
+            $response = $endpoint->respond('GET', $token, '', '', '', '203.0.113.1');
+
+            self::assertSame(200, $response->statusCode);
+            self::assertStringContainsString(
+                'Submitted by: parish@example.test (&lt;script&gt;alert(1)&lt;/script&gt; Parish &amp; Office)',
+                $response->body
+            );
+            self::assertStringNotContainsString('<script>', $response->body);
         }
 
         /**
@@ -1023,6 +1113,12 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
          */
         public array $mailStatus = [];
 
+        /** @var array<string, mixed>|null */
+        public ?array $messageRow = ['sender_email' => 'parish@example.test', 'sender_name' => null];
+
+        /** @var list<string> */
+        public array $messageReads = [];
+
         /**
          * @param array<string, mixed> $candidate
          */
@@ -1190,7 +1286,17 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
             }
 
             if (str_contains($query, 'adct_pi_inbound_messages')) {
-                return ['sender_email' => 'parish@example.test'];
+                $this->messageReads[] = $query;
+                if ($this->messageRow === null) {
+                    return null;
+                }
+
+                $message = ['sender_email' => $this->messageRow['sender_email'] ?? null];
+                if (str_contains($query, 'sender_name')) {
+                    $message['sender_name'] = $this->messageRow['sender_name'] ?? null;
+                }
+
+                return $message;
             }
 
             if (str_contains($query, 'adct_pi_approval_notices')) {

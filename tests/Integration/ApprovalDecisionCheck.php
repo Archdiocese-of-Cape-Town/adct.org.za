@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver;
+use ADCT\ParishIntake\Core\Approval\ApprovalReminderSettings;
 use ADCT\ParishIntake\Core\Auth\ActionTokenBinding;
 use ADCT\ParishIntake\Core\Auth\ActionTokenHandlerRegistry;
 use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
@@ -10,8 +11,10 @@ use ADCT\ParishIntake\Core\Auth\ActionTokenRateLimiter;
 use ADCT\ParishIntake\Core\Auth\ActionTokenRenewalService;
 use ADCT\ParishIntake\Core\Auth\ActionTokenService;
 use ADCT\ParishIntake\Core\Auth\ActionTokenStatus;
+use ADCT\ParishIntake\Core\Ingestion\RawMessageInspector;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalNoticeJob;
+use ADCT\ParishIntake\WordPress\Approval\ApprovalReminderJob;
 use ADCT\ParishIntake\WordPress\Approval\ApprovalRecipients;
 use ADCT\ParishIntake\WordPress\Approval\ReviewerNotificationPreference;
 use ADCT\ParishIntake\WordPress\Auth\ActionTokenEndpoint;
@@ -21,6 +24,7 @@ use ADCT\ParishIntake\WordPress\Auth\NotifyModeChangeHandler;
 use ADCT\ParishIntake\WordPress\Auth\WordPressActionTokenRenewalDelivery;
 use ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\DeaneryApproverRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\FollowUpRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenRateLimitStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressActionTokenStore;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
@@ -97,15 +101,22 @@ final class ApprovalDecisionCheck
         [$reviewerId, $reviewerEmail] = $makeUser('approval-reviewer', 'adct_pi_intake_reviewer');
         $insert('deanery_approvers', [
             'deanery_id' => $deanery, 'wp_user_id' => $deanId, 'email' => $deanEmail,
-            'active' => 1, 'notify_mode' => 'each', 'created_at' => $now, 'updated_at' => $now,
+            'active' => 1, 'notify_mode' => 'each', 'reminders_enabled' => 1,
+            'created_at' => $now, 'updated_at' => $now,
         ]);
         $submitter = 'submitter-' . $suffix . '@example.test';
-        $candidate = static function (string $label, int $parishId, array $notes = [], array $extraFields = []) use (
+        $candidate = static function (
+            string $label,
+            int $parishId,
+            array $notes = [],
+            array $extraFields = [],
+            ?string $senderName = null
+        ) use (
             $insert, $now, $date, $submitter, $suffix, &$candidates, &$messages
         ): int {
             $messageId = $insert('inbound_messages', [
                 'source_id' => 1, 'external_id' => 'approval-' . $label . '-' . $suffix,
-                'sender_email' => $submitter, 'received_at' => $now, 'status' => 'parsed',
+                'sender_email' => $submitter, 'sender_name' => $senderName, 'received_at' => $now, 'status' => 'parsed',
                 'created_at' => $now, 'updated_at' => $now,
             ]);
             $messages[] = $messageId;
@@ -184,8 +195,20 @@ final class ApprovalDecisionCheck
             return [$get, $post];
         };
         try {
-            $first = $candidate('first', $parish, ['unknown_sender']);
-            $second = $candidate('second', $parish);
+            $first = $candidate(
+                'first',
+                $parish,
+                ['unknown_sender', 'dmarc_fail'],
+                [],
+                '<script>alert(1)</script> Parish & Office'
+            );
+            $addressOnlySender = (new RawMessageInspector())->inspect(
+                "From: {$submitter}\r\nSubject: Fictional notice\r\n\r\nAn invented notice.",
+                new DateTimeImmutable('2026-09-25T04:00:00+00:00')
+            );
+            $check($addressOnlySender->senderEmail === $submitter,
+                'the address-only fixture must exercise the actual intake parser.');
+            $second = $candidate('second', $parish, [], [], $addressOnlySender->senderName);
             $job->beginRun();
             $job->processNext((string) ($first - 1));
             [$deanMail, $deanLinks] = $tokensFor($first, $deanEmail);
@@ -228,7 +251,84 @@ final class ApprovalDecisionCheck
                 && str_contains($deanMail['body_text'], (new DateTimeImmutable($date))->format('j F Y'))
                 && str_contains($deanMail['body_text'], $submitter),
                 'one grouped, priority-2 email per active dean and reviewer must show trust and sender.');
-            $check($endpoint->respond('GET', $deanApprove, '', '', '', '203.0.113.90')->statusCode === 200
+            $identityText = 'Submitted by: ' . $submitter . ' (<script>alert(1)</script> Parish & Office)';
+            $identityHtml = 'Submitted by: ' . $submitter
+                . ' (&lt;script&gt;alert(1)&lt;/script&gt; Parish &amp; Office)';
+            $check(str_contains($deanMail['body_text'], $identityText)
+                && str_contains($deanMail['body_html'], $identityHtml)
+                && ! str_contains($deanMail['body_html'], '<script>'),
+                'the notice must show the sender literally in text and escaped in HTML.');
+            $check(str_contains($deanMail['body_text'], 'Submitted by: ' . $submitter . ' (no name supplied)')
+                && str_contains($deanMail['body_html'], 'Submitted by: ' . $submitter . ' (no name supplied)'),
+                'an address-only header must not appear as a separate name in the notice.');
+
+            $deanPreview = $endpoint->respond('GET', $deanApprove, '', '', '', '203.0.113.90');
+            $check($deanPreview->statusCode === 200
+                && str_contains($deanPreview->body, $identityHtml)
+                && ! str_contains($deanPreview->body, '<script>')
+                && str_contains($deanPreview->body, 'unknown sender')
+                && str_contains($deanPreview->body, 'DMARC failure'),
+                'the decision page must escape the same sender and retain both trust warnings.');
+            $missingNamePreview = $endpoint->respond('GET', $reviewReject, '', '', '', '203.0.113.90');
+            $check(str_contains($missingNamePreview->body, 'Submitted by: ' . $submitter . ' (no name supplied)'),
+                'the decision page must identify a missing sender name.');
+
+            $wpdb->update(
+                $base . 'event_candidates',
+                ['updated_at' => '2026-09-20 04:00:00'],
+                ['id' => $first]
+            );
+            $reminders = new ApprovalReminderJob(
+                $db,
+                $recipients,
+                $tokens,
+                Plugin::mailer(),
+                $queue,
+                new FollowUpRepository($db, $clock),
+                $clock,
+                static fn (): ApprovalReminderSettings => new ApprovalReminderSettings(true, 3)
+            );
+            $reminders->processNext((string) ($first - 1));
+            $reminderKey = 'approval-reminder:' . $first . ':' . substr(hash('sha256', $deanEmail), 0, 24);
+            $reminderMail = $wpdb->get_row($wpdb->prepare(
+                "SELECT body_text, body_html FROM {$base}mail_queue WHERE recipient = %s AND group_key = %s",
+                $deanEmail,
+                $reminderKey
+            ), ARRAY_A);
+            $check(is_array($reminderMail)
+                && str_contains($reminderMail['body_text'], $identityText)
+                && str_contains($reminderMail['body_html'], $identityHtml)
+                && ! str_contains($reminderMail['body_html'], '<script>'),
+                'the reminder must show the same sender literally in text and escaped in HTML.');
+
+            foreach ([
+                ['pending-match-reminder', ['matched_candidate_id' => 987], 'new'],
+                ['manual-review-reminder', ['match_review_required' => true], 'new'],
+                ['matched-event-reminder', [], 'update'],
+                ['duplicate-reminder', [], 'duplicate'],
+            ] as [$label, $matchFields, $matchKind]) {
+                $held = $candidate($label, $parish, [], $matchFields);
+                $updated = $wpdb->update(
+                    $base . 'event_candidates',
+                    ['updated_at' => '2026-09-20 04:00:00', 'match_kind' => $matchKind],
+                    ['id' => $held]
+                );
+                $step = $reminders->processNext((string) ($held - 1));
+                $heldMail = (int) $wpdb->get_var($wpdb->prepare(
+                    "SELECT COUNT(*) FROM {$base}mail_queue WHERE group_key LIKE %s",
+                    $wpdb->esc_like('approval-reminder:' . $held . ':') . '%'
+                ));
+                $heldTokens = (int) $wpdb->get_var($wpdb->prepare(
+                    "SELECT COUNT(*) FROM {$base}action_tokens WHERE subject_type = %s AND subject_id = %d",
+                    'event_candidate',
+                    $held
+                ));
+                $check($updated === 1 && $step?->checkpoint() === (string) $held
+                    && $heldMail === 0 && $heldTokens === 0,
+                    'a candidate needing match review must advance without a reminder or action tokens.');
+            }
+
+            $check($deanPreview->statusCode === 200
                 && $wpdb->get_var($wpdb->prepare(
                     "SELECT status FROM {$base}event_candidates WHERE id = %d", $first
                 )) === 'awaiting_approval', 'GET must not approve.');
@@ -622,6 +722,15 @@ final class ApprovalDecisionCheck
                 foreach (['approval-live:' . $id, 'approval-rejected:' . $id] as $group) {
                     $wpdb->delete($base . 'mail_queue', ['group_key' => $group]);
                 }
+                $wpdb->query($wpdb->prepare(
+                    "DELETE FROM {$base}mail_queue WHERE group_key LIKE %s",
+                    $wpdb->esc_like('approval-reminder:' . $id . ':') . '%'
+                ));
+                $wpdb->delete($base . 'follow_ups', [
+                    'parish_id' => $parish,
+                    'kind' => 'approval_reminder',
+                    'note' => 'candidate ' . $id,
+                ]);
                 $wpdb->delete($base . 'approval_notices', ['candidate_id' => $id]);
                 $wpdb->delete($base . 'action_tokens', ['subject_type' => 'event_candidate', 'subject_id' => $id]);
                 $wpdb->delete($base . 'audit_log', ['subject_type' => 'event_candidate', 'subject_id' => $id]);
