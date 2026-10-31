@@ -46,6 +46,86 @@ final class InboundMessageProcessingJobTest extends TestCase
 {
     private const MESSAGE_ID = 41;
 
+    #[DataProvider('missedEventCases')]
+    public function testSkippedEventWarningSurvivesIntakeWithoutInventingCandidates(bool $mixed, bool $list = false): void
+    {
+        $fixture = $this->fixture(new DirectorySnapshot([], [], []));
+        $fixture['messages']->add($this->message(isAutoReply: $list));
+        $raw = file_get_contents(__DIR__ . '/../../../fixtures/emails/unheaded-event-after-intentions.eml');
+        self::assertIsString($raw);
+        if ($list) {
+            $raw = "List-Id: Fictional parish notices <notices.example.test>\r\nPrecedence: list\r\n" . $raw;
+        }
+        if ($mixed) {
+            $raw .= "\n\nCOMMUNITY EVENTS\nPlease join the community supper on 12 October 2026 at 18:30 at Example Hall.\n";
+        }
+        $fixture['storage']->files['private-message.eml'] = $raw;
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame($list && ! $mixed ? 'ignored' : 'parsed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        $expectedNote = ($list && ! $mixed
+            ? 'This automated or mailing-list message did not contain an event to review. '
+            : '') . 'Parser warning: 1 possible event notice(s) may have been missed after a private section. '
+            . 'Check the original email; skipped text is not shown.';
+        self::assertSame($expectedNote, $fixture['messages']->errors[self::MESSAGE_ID]);
+        self::assertLessThanOrEqual(65535, strlen($expectedNote));
+        self::assertCount($mixed ? 1 : 0, $fixture['candidates']->candidates[self::MESSAGE_ID] ?? []);
+        self::assertStringNotContainsString(
+            'Fictional Person Alpha',
+            json_encode($fixture['candidates']->candidates, JSON_THROW_ON_ERROR)
+                . $fixture['messages']->errors[self::MESSAGE_ID]
+        );
+        self::assertSame([], $fixture['failureLogger']->failures);
+        self::assertStringNotContainsString('Parish braai', $fixture['messages']->errors[self::MESSAGE_ID]);
+
+        // An interrupted retry refreshes the warning without duplicating drafts.
+        $fixture['messages']->statuses[self::MESSAGE_ID] = 'extracting';
+        $fixture['job']->processNext(null);
+        self::assertCount($mixed ? 1 : 0, $fixture['candidates']->candidates[self::MESSAGE_ID] ?? []);
+        self::assertSame($expectedNote, $fixture['messages']->errors[self::MESSAGE_ID]);
+
+        $fixture['messages']->statuses[self::MESSAGE_ID] = 'extracting';
+        $fixture['storage']->files['private-message.eml'] = $this->validEmail();
+        $fixture['job']->processNext(null);
+        self::assertNull($fixture['messages']->errors[self::MESSAGE_ID]);
+        self::assertCount(1, $fixture['candidates']->candidates[self::MESSAGE_ID]);
+    }
+
+    public static function missedEventCases(): array
+    {
+        return [
+            'zero candidates' => [false],
+            'mixed candidates' => [true],
+            'list zero candidates' => [false, true],
+            'list mixed candidates' => [true, true],
+        ];
+    }
+
+    public function testWarningWriteFailureRemainsFailedAndDoesNotExposePrivateDiagnostics(): void
+    {
+        $fixture = $this->fixture(new DirectorySnapshot([], [], []));
+        $fixture['messages']->add($this->message());
+        $raw = file_get_contents(__DIR__ . '/../../../fixtures/emails/unheaded-event-after-intentions.eml');
+        self::assertIsString($raw);
+        $fixture['storage']->files['private-message.eml'] = $raw;
+        $fixture['messages']->parsedFailure = new RuntimeException('Fictional Person Alpha');
+
+        $fixture['job']->processNext(null);
+
+        self::assertSame('failed', $fixture['messages']->statuses[self::MESSAGE_ID]);
+        self::assertSame(
+            'An unexpected processing error occurred. Reprocess the message, and contact support if this continues.',
+            $fixture['messages']->errors[self::MESSAGE_ID]
+        );
+        self::assertCount(1, $fixture['failureLogger']->failures);
+        self::assertStringNotContainsString(
+            'Fictional Person Alpha',
+            json_encode($fixture['failureLogger']->failures, JSON_THROW_ON_ERROR)
+        );
+        self::assertSame([], $fixture['candidates']->candidates[self::MESSAGE_ID]);
+    }
+
     public function testFailedMessageCanBeReprocessedFromTheSameStoredFile(): void
     {
         $fixture = $this->fixture(new DirectorySnapshot([], [], []));
@@ -747,6 +827,8 @@ final class InboundMessageProcessingJobTest extends TestCase
 
 final class ProcessingMessageStore implements InboundMessageProcessingStoreInterface
 {
+    public ?Throwable $parsedFailure = null;
+
     /** @var array<int, InboundMessageProcessingRecord> */
     public array $records = [];
 
@@ -811,14 +893,18 @@ final class ProcessingMessageStore implements InboundMessageProcessingStoreInter
         return true;
     }
 
-    public function markParsed(int $messageId, string $bodyText, string $timestamp): bool
+    public function markParsed(int $messageId, string $bodyText, string $timestamp, ?string $operatorNote = null): bool
     {
+        if ($this->parsedFailure !== null) {
+            throw $this->parsedFailure;
+        }
+
         if (($this->statuses[$messageId] ?? null) !== 'extracting') {
             return false;
         }
 
         $this->statuses[$messageId] = 'parsed';
-        $this->errors[$messageId] = null;
+        $this->errors[$messageId] = $operatorNote;
         $this->bodies[$messageId] = $bodyText;
 
         return true;
