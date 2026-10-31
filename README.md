@@ -34,7 +34,7 @@ Build `dist/adct-parish-intake.zip`:
 docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
 ```
 
-For installed-ZIP WordPress tests, install Node.js and run `npm ci`, then `npm run test:integration`. Local runs **leave their isolated containers running**; use a unique `WP_ENV_HOME` and ports alongside other environments. See the [development guide](docs/development.md).
+For installed-ZIP WordPress tests, install Node.js **22.13 or newer** and run `npm ci`, then `npm run test:integration`. Local runs **leave their isolated containers running**; use a unique `WP_ENV_HOME` and ports alongside other environments. See the [development guide](docs/development.md).
 
 ## What is still pending
 

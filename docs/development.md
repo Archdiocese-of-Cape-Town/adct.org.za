@@ -21,7 +21,7 @@ docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c "vendor/bin/phpunit &
 # Lint every PHP file
 docker run --rm -v "${PWD}:/app" -w /app php:8.2-cli sh -c 'find src tests -name "*.php" -print0 | xargs -0 -n1 php -l > /dev/null && php -l adct-parish-intake.php && php -l uninstall.php && echo lint-ok'
 
-# WordPress integration tests (requires Node.js/npm and Docker Desktop)
+# WordPress integration tests (requires Node.js >=22.13, npm, and Docker Desktop)
 npm ci
 docker run --rm -v "${PWD}:/app" -w /app composer:2 sh scripts/build-release.sh
 npm run test:integration
