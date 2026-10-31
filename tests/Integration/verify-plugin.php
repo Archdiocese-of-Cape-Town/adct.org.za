@@ -4814,6 +4814,119 @@ $processingStorage->delete($reprocessRawPath);
 $wpdb->delete($candidateTable, ['message_id' => $reprocessMessageId], ['%d']);
 $wpdb->delete($attachmentsTable, ['message_id' => $reprocessMessageId], ['%d']);
 $wpdb->delete($inboundTable, ['id' => $reprocessMessageId], ['%d']);
+
+$missedEventRaw = file_get_contents(
+    WP_CONTENT_DIR . '/test-harness-fixtures/emails/unheaded-event-after-intentions.eml'
+);
+if (! is_string($missedEventRaw)) {
+    $fail('The fictional missed-event fixture could not be read.');
+}
+$missedEventWarning = 'Parser warning: 1 possible event notice(s) may have been missed after a private section. '
+    . 'Check the original email; skipped text is not shown.';
+$missedEventMailAttempts = 0;
+$missedEventMailGuard = static function ($return, $attributes) use (&$missedEventMailAttempts): bool {
+    ++$missedEventMailAttempts;
+    return true;
+};
+$missedEventMailCount = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$mailQueueTable}");
+$missedEventTokenCount = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$confirmationActionTokenTable}");
+$missedEventPostCount = (int) $wpdb->get_var($wpdb->prepare(
+    "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_type = %s",
+    'adct_event'
+));
+add_filter('pre_wp_mail', $missedEventMailGuard, 10, 2);
+try {
+    foreach ([[false, false], [true, false], [false, true], [true, true]] as [$mixed, $list]) {
+        $raw = ($list ? "List-Id: Fictional parish notices <notices.example.test>\r\nPrecedence: list\r\n" : '')
+            . $missedEventRaw . ($mixed
+            ? "\n\nCOMMUNITY EVENTS\nPlease join the community supper on 12 October 2026 at 18:30 at Example Hall.\n"
+            : '');
+        $rawPath = $processingStorage->storeRawMessage($raw);
+        $stored = $inboundMessageStore->store(new InboundMessageRecord(
+            $mailboxSource->id,
+            '<missed-event-' . bin2hex(random_bytes(8)) . '@example.test>',
+            hash('sha256', $raw),
+            'events@example.test',
+            'Fictional Intake Sender',
+            $mixed ? 'Fictional mixed notice' : 'Fictional zero-candidate notice',
+            new DateTimeImmutable('2026-09-25T04:00:00+00:00'),
+            $rawPath,
+            [],
+            InboundMessageRecord::STATUS_RECEIVED,
+            null,
+            $list
+        ), $integrationTimestamp);
+        if ($stored->duplicate) {
+            $fail('The fictional missed-event message unexpectedly matched a stored message.');
+        }
+        $processingJob->prioritizeMessageIds([$stored->messageId]);
+        try {
+            $run = $processingRunner->run($processingJob, true);
+        } finally {
+            $processingJob->clearPrioritizedMessageIds();
+        }
+        $row = $wpdb->get_row($wpdb->prepare(
+            "SELECT status, error, raw_path, body_text FROM {$inboundTable} WHERE id = %d",
+            $stored->messageId
+        ), ARRAY_A);
+        $candidates = $wpdb->get_results($wpdb->prepare(
+            "SELECT id, status, fields, notes FROM {$candidateTable} WHERE message_id = %d",
+            $stored->messageId
+        ), ARRAY_A);
+        if (
+            $run->status->value !== 'completed'
+            || ! is_array($row)
+            || $row['status'] !== ($list && ! $mixed ? 'ignored' : 'parsed')
+            || $row['error'] !== $missedEventWarning
+            || $row['raw_path'] !== $rawPath
+            || ($list && ! $mixed
+                ? $row['body_text'] !== null
+                : strpos((string) $row['body_text'], 'Fictional Person Alpha') === false)
+            || count($candidates) !== ($mixed ? 1 : 0)
+            || ($mixed && $candidates[0]['status'] !== 'draft')
+            || strpos(wp_json_encode($candidates), 'Fictional Person Alpha') !== false
+            || strpos(wp_json_encode($candidates), 'Parish braai') !== false
+        ) {
+            $fail('Ordinary intake lost its count-only warning, invented an event or leaked skipped text.');
+        }
+        $originalGet = $_GET;
+        $_GET = ['page' => $inboxPageSlug, 'status' => $list && ! $mixed ? 'ignored' : 'parsed'];
+        ob_start();
+        try {
+            do_action($inboxPageHook);
+        } finally {
+            $inboxHtml = (string) ob_get_clean();
+            $_GET = $originalGet;
+        }
+        if (
+            strpos($inboxHtml, $missedEventWarning) === false
+            || strpos($inboxHtml, $mixed ? 'Fictional mixed notice' : 'Fictional zero-candidate notice') === false
+            || strpos($inboxHtml, 'Fictional Person Alpha') !== false
+            || strpos($inboxHtml, 'Parish braai') !== false
+            || strpos($inboxHtml, $rawPath) !== false
+            || ($list && strpos($inboxHtml, 'Automated or mailing-list message') === false)
+        ) {
+            $fail('The real Inbox did not show the warning privately for the missed-event message.');
+        }
+        $processingStorage->delete($rawPath);
+        $wpdb->delete($candidateTable, ['message_id' => $stored->messageId], ['%d']);
+        $wpdb->delete($inboundTable, ['id' => $stored->messageId], ['%d']);
+    }
+} finally {
+    remove_filter('pre_wp_mail', $missedEventMailGuard, 10);
+}
+if (
+    $missedEventMailAttempts !== 0
+    || $missedEventMailCount !== (int) $wpdb->get_var("SELECT COUNT(*) FROM {$mailQueueTable}")
+    || $missedEventTokenCount !== (int) $wpdb->get_var("SELECT COUNT(*) FROM {$confirmationActionTokenTable}")
+    || $missedEventPostCount !== (int) $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_type = %s",
+        'adct_event'
+    ))
+    || $pollCheckpointBeforeProcessing !== $jobStateStore->load('poll_mailboxes')->checkpoint
+) {
+    $fail('Missed-event intake sent mail, queued confirmation, published an event or changed the mailbox checkpoint.');
+}
 delete_option('adct_pi_job_state_process_inbound_messages');
 
 if ($wpdb->query($wpdb->prepare(
