@@ -16,7 +16,8 @@ interface InboundMessageProcessingStoreInterface
 
     public function markExtracting(int $messageId, string $timestamp): bool;
 
-    public function markParsed(int $messageId, string $bodyText, string $timestamp): bool;
+    /** The optional operator note must contain only safe, text-free parser diagnostics. */
+    public function markParsed(int $messageId, string $bodyText, string $timestamp, ?string $operatorNote = null): bool;
 
     public function markIgnored(int $messageId, string $reason, string $timestamp): bool;
 
