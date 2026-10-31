@@ -66,7 +66,7 @@ The build validates the zip by unpacking it, checking its contents (including th
 
 Strauss prefixes the dependency packages under `vendor-prefixed/`, but it does **not** rewrite `use` statements in our own `src/`. A hard `use PrinsFrank\PdfParser\PdfParser;` therefore compiles in development and throws `Error: Class not found` in every release, where the class exists only as `ADCT\ParishIntake\Dependencies\PrinsFrank\PdfParser\PdfParser`. Issue [#239](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/239) shipped exactly that: every PDF failed, and the adapter's catch-all reported it as `The file could not be read as a PDF.` — blaming the file instead of the code.
 
-Resolve dependency classes **by string, probing the unprefixed name first and the prefixed name second**, as `Core\Ingestion\MimeMessageParser` and `Core\Ingestion\RawMessageInspector` already do:
+Resolve dependency classes **by string**, never with a hard `use` statement. The MIME parser is resolved once by `Core\Ingestion\MimeParserClassResolver`, which prefers the prefixed class used by releases and keeps the unprefixed class as a development-only fallback. The PDF adapter below retains its own development-first order:
 
 ```php
 private const PDF_PARSER_CLASSES = [
@@ -77,7 +77,7 @@ private const PDF_PARSER_CLASSES = [
 $parserClass = $this->resolveClass(self::PDF_PARSER_CLASSES);
 ```
 
-Unprefixed first keeps development working against plain `vendor/`. In `@param` and `@return` docblocks, describe these as `object` or `string` — there is no class to name at compile time. See [ADR 0024](decisions/0024-runtime-resolution-of-prefixed-dependency-classes.md).
+The MIME parser's unprefixed fallback keeps development working against plain `vendor/`; the release guard verifies the prefixed class and rejects an unprefixed dependency copy. In `@param` and `@return` docblocks, describe dynamically resolved dependencies as `object` or `string` — there is no class to name at compile time. See [ADR 0024](decisions/0024-runtime-resolution-of-prefixed-dependency-classes.md).
 
 `scripts/check-release-bootstrap.php` enforces this two ways, and both run in CI on every PR:
 
