@@ -127,9 +127,9 @@ final class WordPressInboundMessageStore implements
         return $this->messages->markExtracting($messageId, $timestamp);
     }
 
-    public function markParsed(int $messageId, string $bodyText, string $timestamp): bool
+    public function markParsed(int $messageId, string $bodyText, string $timestamp, ?string $operatorNote = null): bool
     {
-        return $this->messages->markParsed($messageId, $bodyText, $timestamp);
+        return $this->messages->markParsed($messageId, $bodyText, $timestamp, $operatorNote);
     }
 
     public function markFailed(int $messageId, string $reason, string $timestamp): bool
