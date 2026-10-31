@@ -3700,26 +3700,79 @@ if (
     $fail('The archdiocese-wide Add source form is missing its type-aware poll-interval default.');
 }
 
-$emailIntervalDefault = Source::defaultPollIntervalMinutesForNewSource(SourceType::EMAIL, null);
-$icsIntervalDefault = Source::defaultPollIntervalMinutesForNewSource(SourceType::ICS, null);
-$newEmailSource = $sourceRegistry->save(new Source(
-    0,
-    null,
-    SourceType::EMAIL,
-    'new-email-source-default@example.test',
-    SourceRole::MONITORED,
-    SourceStatus::ACTIVE,
-    $emailIntervalDefault
-));
-$newIcsSource = $sourceRegistry->save(new Source(
-    0,
-    null,
-    SourceType::ICS,
-    'https://example.test/default-calendar.ics',
-    SourceRole::MONITORED,
-    SourceStatus::ACTIVE,
-    $icsIntervalDefault
-));
+$invokeIntakeSaveHandler = static function (
+    string $action,
+    string $nonceAction,
+    string $nonceField,
+    array $fields
+) use ($fail): void {
+    $originalPost = $_POST;
+    $originalRequest = $_REQUEST;
+    $originalUserId = get_current_user_id();
+    $administrators = get_users(['role' => 'administrator', 'number' => 1]);
+    if ($administrators === []) {
+        $fail('The intake handler checks require an isolated administrator account.');
+    }
+    wp_set_current_user($administrators[0]->ID);
+    $redirectReached = new RuntimeException('Intake handler test reached its redirect.');
+    $nonceVerified = false;
+    $checkNonce = static function (string $checkedAction, int|false $result) use (
+        $nonceAction,
+        &$nonceVerified
+    ): void {
+        if ($checkedAction === $nonceAction && $result !== false) {
+            $nonceVerified = true;
+        }
+    };
+    $interceptRedirect = static function () use ($redirectReached): never {
+        throw $redirectReached;
+    };
+    add_action('check_admin_referer', $checkNonce, 10, 2);
+    add_filter('wp_redirect', $interceptRedirect);
+    $_POST = array_merge($fields, [
+        'action' => $action,
+        $nonceField => wp_create_nonce($nonceAction),
+    ]);
+    $_REQUEST = $_POST;
+    try {
+        try {
+            do_action('admin_post_' . $action);
+            $fail('The intake save handler did not reach its success redirect.');
+        } catch (RuntimeException $failure) {
+            if ($failure !== $redirectReached) {
+                throw $failure;
+            }
+        }
+        if (! $nonceVerified) {
+            $fail('The intake save handler did not verify its nonce.');
+        }
+    } finally {
+        remove_filter('wp_redirect', $interceptRedirect);
+        remove_action('check_admin_referer', $checkNonce, 10);
+        $_POST = $originalPost;
+        $_REQUEST = $originalRequest;
+        wp_set_current_user($originalUserId);
+    }
+};
+
+$invokeIntakeSaveHandler('adct_pi_save_source', 'adct_pi_source_save_0_0', 'source_nonce', [
+    'source_id' => '0',
+    'parish_id' => '0',
+    'type' => SourceType::EMAIL,
+    'identifier' => 'new-email-source-default@example.test',
+    'role' => SourceRole::MONITORED,
+    'status' => SourceStatus::ACTIVE,
+    'poll_interval_minutes' => '',
+]);
+$invokeIntakeSaveHandler('adct_pi_save_source', 'adct_pi_source_save_0_0', 'source_nonce', [
+    'source_id' => '0',
+    'parish_id' => '0',
+    'type' => SourceType::ICS,
+    'identifier' => 'https://example.test/default-calendar.ics',
+    'role' => SourceRole::MONITORED,
+    'status' => SourceStatus::ACTIVE,
+    'poll_interval_minutes' => '',
+]);
 $existingDailySource = $sourceRegistry->save(new Source(
     0,
     null,
@@ -3729,15 +3782,31 @@ $existingDailySource = $sourceRegistry->save(new Source(
     SourceStatus::ACTIVE,
     Source::DEFAULT_POLL_INTERVAL_MINUTES
 ));
-$persistedEmailDefault = $sourceRepository->findSource($newEmailSource->id);
-$persistedIcsDefault = $sourceRepository->findSource($newIcsSource->id);
+$invokeIntakeSaveHandler(
+    'adct_pi_save_source',
+    'adct_pi_source_save_0_' . $existingDailySource->id,
+    'source_nonce',
+    [
+        'source_id' => (string) $existingDailySource->id,
+        'parish_id' => '0',
+        'type' => SourceType::EMAIL,
+        'identifier' => $existingDailySource->identifier,
+        'role' => SourceRole::MONITORED,
+        'status' => SourceStatus::ACTIVE,
+        'poll_interval_minutes' => '1440',
+    ]
+);
+$persistedEmailDefault = $sourceRepository->findGlobalEmailSource('new-email-source-default@example.test');
+$defaultIcsRows = $sourceRepository->findForAdmin([
+    'type' => SourceType::ICS,
+    'search' => 'https://example.test/default-calendar.ics',
+], 20, 0);
 $persistedDailySource = $sourceRepository->findSource($existingDailySource->id);
 
 if (
-    $emailIntervalDefault !== Source::DEFAULT_MAILBOX_POLL_INTERVAL_MINUTES
-    || $icsIntervalDefault !== Source::DEFAULT_POLL_INTERVAL_MINUTES
-    || $persistedEmailDefault?->pollIntervalMinutes !== Source::DEFAULT_MAILBOX_POLL_INTERVAL_MINUTES
-    || $persistedIcsDefault?->pollIntervalMinutes !== Source::DEFAULT_POLL_INTERVAL_MINUTES
+    $persistedEmailDefault?->pollIntervalMinutes !== Source::DEFAULT_MAILBOX_POLL_INTERVAL_MINUTES
+    || $defaultIcsRows === []
+    || (int) $defaultIcsRows[0]['poll_interval_minutes'] !== Source::DEFAULT_POLL_INTERVAL_MINUTES
     || $persistedDailySource?->pollIntervalMinutes !== Source::DEFAULT_POLL_INTERVAL_MINUTES
 ) {
     $fail('Saving new email and non-email sources did not apply the correct defaults or preserve the explicit daily interval.');
@@ -3802,26 +3871,10 @@ if (
 }
 
 $mailboxEmail = 'intake-mailbox-integration@example.test';
-$mailboxSource = $sourceRepository->findGlobalEmailSource($mailboxEmail);
-$mailboxSource = $sourceRegistry->save(new Source(
-    $mailboxSource?->id ?? 0,
-    null,
-    SourceType::EMAIL,
-    $mailboxEmail,
-    SourceRole::OFFICIAL,
-    $mailboxSource?->status ?? SourceStatus::ACTIVE,
-    $mailboxSource?->pollIntervalMinutes
-        ?? Source::defaultPollIntervalMinutesForNewSource(SourceType::EMAIL, null),
-    $mailboxSource?->lastCheckedAt,
-    $mailboxSource?->lastSuccessAt,
-    $mailboxSource?->lastItemAt,
-    $mailboxSource?->consecutiveFailures ?? 0,
-    $mailboxSource?->lastError
-));
 $mailboxDatabase = new WordPressDatabaseConnection();
 $mailboxRepository = new MailboxRepository($mailboxDatabase);
-$existingMailbox = $mailboxRepository->findMailboxBySourceId($mailboxSource->id);
-$mailboxSettings = (new MailboxSettingsValidator())->validate([
+$invokeIntakeSaveHandler('adct_pi_save_mailbox', 'adct_pi_mailbox_save_0', 'mailbox_nonce', [
+    'mailbox_id' => '0',
     'label' => 'Integration mailbox',
     'host' => 'imap.example.test',
     'port' => '993',
@@ -3831,11 +3884,17 @@ $mailboxSettings = (new MailboxSettingsValidator())->validate([
     'processed_folder' => 'Processed-Integration',
     'max_message_size_mb' => '15',
     'active' => '1',
-], $existingMailbox?->id ?? 0, $mailboxSource->id)->withIdentity(
-    $existingMailbox?->id ?? 0,
-    $mailboxSource->id
-);
-$savedMailbox = $mailboxRepository->saveMailbox($mailboxSettings, '2026-09-25 00:00:00');
+    'password' => '',
+]);
+$mailboxSource = $sourceRepository->findGlobalEmailSource($mailboxEmail);
+if ($mailboxSource === null) {
+    $fail('The mailbox save handler did not create its email source.');
+}
+$savedMailbox = $mailboxRepository->findMailboxBySourceId($mailboxSource->id);
+if ($savedMailbox === null) {
+    $fail('The mailbox save handler did not persist the new mailbox.');
+}
+$mailboxSettings = $savedMailbox;
 $persistedMailbox = $mailboxRepository->findMailboxById($savedMailbox->id);
 $persistedMailboxSource = $sourceRepository->findSource($savedMailbox->sourceId);
 
@@ -3852,6 +3911,49 @@ if (
     || $persistedMailboxSource->pollIntervalMinutes !== Source::DEFAULT_MAILBOX_POLL_INTERVAL_MINUTES
 ) {
     $fail('Mailbox settings did not persist with their ten-minute archdiocese-wide email source.');
+}
+
+$dailyMailboxFields = [
+    'mailbox_id' => '0',
+    'label' => 'Daily interval integration mailbox',
+    'host' => 'imap.example.test',
+    'port' => '993',
+    'encryption' => 'ssl',
+    'username' => $existingDailySource->identifier,
+    'inbox_folder' => 'INBOX',
+    'processed_folder' => 'Processed-Daily',
+    'max_message_size_mb' => '15',
+    'active' => '1',
+    'password' => '',
+];
+$invokeIntakeSaveHandler(
+    'adct_pi_save_mailbox',
+    'adct_pi_mailbox_save_0',
+    'mailbox_nonce',
+    $dailyMailboxFields
+);
+$dailyMailbox = $mailboxRepository->findMailboxBySourceId($existingDailySource->id);
+if (
+    $dailyMailbox === null
+    || $sourceRepository->findSource($existingDailySource->id)?->pollIntervalMinutes !== 1440
+) {
+    $fail('Adding a mailbox to an existing source did not preserve its explicit daily interval.');
+}
+$dailyMailboxFields['mailbox_id'] = (string) $dailyMailbox->id;
+$dailyMailboxFields['label'] = 'Edited daily interval integration mailbox';
+$invokeIntakeSaveHandler(
+    'adct_pi_save_mailbox',
+    'adct_pi_mailbox_save_' . $dailyMailbox->id,
+    'mailbox_nonce',
+    $dailyMailboxFields
+);
+$editedDailyMailbox = $mailboxRepository->findMailboxById($dailyMailbox->id);
+if (
+    $editedDailyMailbox?->label !== $dailyMailboxFields['label']
+    || $editedDailyMailbox?->sourceId !== $existingDailySource->id
+    || $sourceRepository->findSource($existingDailySource->id)?->pollIntervalMinutes !== 1440
+) {
+    $fail('Editing an existing mailbox changed its source identity or explicitly configured daily interval.');
 }
 
 $activeMailboxIds = array_map(

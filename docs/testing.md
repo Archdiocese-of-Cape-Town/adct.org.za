@@ -206,6 +206,15 @@ a real bulletin into a test site.
    trigger opportunities every 5–10 minutes but does not bypass either source interval or failure backoff;
    without it, the two-hour cron backstop can delay the next run ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
 
+The installed-ZIP checks execute the registered, capability- and nonce-protected
+source and mailbox save handlers with synthetic `example.test` data: blank global
+email and ICS intervals, an existing explicit daily interval, a new mailbox, and
+new/edited mailboxes linked to an existing daily source. They intercept only the
+success redirect to keep the test process alive; validation, nonce checks and
+database writes use the installed plugin. Passwords stay blank and these setup
+checks do not connect to IMAP or send mail. `SourcesPageTest` separately verifies
+that an invalid type with a blank interval returns a controlled 400 without saving.
+
 **Step 3 — confirm, route to dean and reviewers, dean approves**
 
 1. From the secretary's address, mail the intake mailbox **two events in one notice**: one once-off and one

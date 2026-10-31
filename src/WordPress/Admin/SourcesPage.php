@@ -306,11 +306,13 @@ final class SourcesPage
             }
 
             $interval = (int) $intervalText;
-        } else {
-            $interval = Source::defaultPollIntervalMinutesForNewSource($type, $parishId);
         }
 
         try {
+            if ($intervalText === '') {
+                $interval = Source::defaultPollIntervalMinutesForNewSource($type, $parishId);
+            }
+
             $source = new Source(
                 $sourceId,
                 $parishId,
