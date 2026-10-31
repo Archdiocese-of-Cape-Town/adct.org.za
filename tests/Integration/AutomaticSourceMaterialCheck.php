@@ -287,11 +287,32 @@ final class AutomaticSourceMaterialCheck
             if ($earlierErrors === [] || get_post_meta($eventId, WordPressSourceMaterialStore::ERROR_META, true) !== $earlierErrors) {
                 $fail('A later message erased the earlier failed source and its recovery warning.');
             }
+            $refuseCleanup = static function ($check, int $postId, string $key, $value) use ($eventId) {
+                return $postId === $eventId && $key === WordPressSourceMaterialStore::ERROR_META && $value === []
+                    ? false : $check;
+            };
+            $cleanupFailure = null;
+            add_filter('update_post_metadata', $refuseCleanup, 10, 4);
+            try {
+                $store->promote($eventId, $failedId, 'bulletin');
+            } catch (RuntimeException $failure) {
+                $cleanupFailure = $failure;
+            } finally {
+                remove_filter('update_post_metadata', $refuseCleanup, 10);
+                $mediaIds = array_merge($mediaIds, array_map(static fn ($source): int => $source->mediaId, $store->forEvent($eventId)));
+            }
+            if ($cleanupFailure === null || ! str_contains($cleanupFailure->getMessage(), 'recovery')
+                || get_post_meta($eventId, WordPressSourceMaterialStore::ERROR_META, true) !== $earlierErrors
+                || count($store->forEvent($eventId)) !== 3) {
+                $fail('A recovery cleanup write failure was silent, split the record or removed the public copy.');
+            }
+            $beforeRetryIds = array_map(static fn ($source): int => $source->mediaId, $store->forEvent($eventId));
             $recovered = $store->promote($eventId, $failedId, 'bulletin');
             $mediaIds[] = $recovered->mediaId;
-            if (count($store->forEvent($eventId)) !== 3
+            if ($beforeRetryIds !== array_map(static fn ($source): int => $source->mediaId, $store->forEvent($eventId))
+                || count($store->forEvent($eventId)) !== 3
                 || get_post_meta($eventId, WordPressSourceMaterialStore::ERROR_META, true) !== []
-                || get_post_meta($eventId, WordPressSourceMaterialStore::RECOVERY_META, true) !== []) {
+                || WordPressSourceMaterialStore::failureRecords($eventId) !== []) {
                 $fail('Manual recovery did not restore only the earlier failed file and clear its warning.');
             }
         } finally {

@@ -802,6 +802,22 @@ private function withNothingPromoted(): void
     $GLOBALS['adct_publishing_meta'][self::EVENT]['source_attachment_ids'] = json_encode([]);
 }
 
+    public function testAnAlreadyCopiedFileWithAFailedCleanupStillOffersTheRecoveryControl(): void
+    {
+        $this->givenProvenance(self::MESSAGE, [[
+            'id' => self::ATTACHMENT, 'filename' => 'parish-poster.png', 'mime_type' => 'image/png',
+        ]]);
+        $GLOBALS['adct_publishing_meta'][self::EVENT][\ADCT\ParishIntake\WordPress\Publishing\WordPressSourceMaterialStore::ERROR_META] = [
+            self::ATTACHMENT => [
+                'warning' => 'Earlier source copy failed.', 'message_id' => self::MESSAGE, 'candidate_id' => self::CANDIDATE,
+            ],
+        ];
+        $markup = $this->renderBox($this->editor());
+        self::assertStringContainsString('name="attachment_id"', $markup);
+        self::assertStringContainsString('<option value="' . self::ATTACHMENT . '">', $markup);
+        self::assertStringContainsString('Earlier source copy failed.', $markup);
+    }
+
     public function testAnEarlierFailedFileRemainsVisibleAndAuthorizedForManualRecovery(): void
     {
         $this->withNothingPromoted();

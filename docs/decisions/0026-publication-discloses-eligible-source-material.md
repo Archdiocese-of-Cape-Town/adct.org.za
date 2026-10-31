@@ -61,6 +61,11 @@ art only; this change builds on the interfaces merged in #251.
   the editor verifies those against the candidate lookup and stored file row
   before offering it or accepting a recovery POST. A warning alone is not
   attachment authorization. Only recovery of that file clears its warning.
+  Warning and provenance are one checked metadata record, not separately
+  written keys. A failed write leaves the prior complete record and reports
+  failure explicitly. If the public copy succeeded but cleanup failed, retry
+  clears the retained record without making another copy or undoing publication.
+  The previous split layout remains readable for data-preserving transition.
 
 ## Consequences and remaining assumptions
 

@@ -204,6 +204,11 @@ box with its warning and recovery option; the new email does not dismiss it.
 Choose the earlier file and **Publish with this event** to recover it.
 If another source change is running, wait briefly and retry. A repeated stale
 add of an already-published file is refused rather than making a duplicate.
+If a recovery-record save fails, the operation reports it explicitly. A file
+that was successfully copied remains public; retry clears its retained warning
+without copying it again.
+The file remains in the recovery selector while that warning needs cleanup,
+even if its public copy is already listed above.
 
 Removal hides the file from this event, but does not delete the media-library
 asset or revoke a URL already shared publicly. Public copies survive intake

@@ -274,10 +274,13 @@ attachments on the source message (#252,
 The candidate still holds no media id: the public copy does not exist until
 publication. Private `_adct_pi_source_material_attachment_<intake id>` post meta
 records successful copies even after removal, preventing retry resurrection.
-`_adct_pi_source_material_errors` stores per-attachment operator warnings.
-`_adct_pi_source_material_recovery` records each failed attachment's source
-message and candidate IDs. Both are private event metadata, retained across
-publication from other messages and cleared for that file only after recovery.
+`_adct_pi_source_material_errors` stores one private, per-attachment recovery
+record containing `warning`, `message_id` and `candidate_id`. One checked
+metadata write saves or clears the entire record; a warning cannot persist
+without its provenance due to a second failed write. Records survive publication
+from other messages and are cleared for that file only after recovery.
+The former split `_adct_pi_source_material_recovery` layout is read compatibly;
+the next successful save writes the combined layout without dropping failures.
 The editor rechecks the recorded message/candidate and attachment row before
 offering a historical file. All source-list mutations share the per-event
 advisory lock; no schema or public REST field is added for this state.

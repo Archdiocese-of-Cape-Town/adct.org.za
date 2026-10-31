@@ -510,10 +510,10 @@ final class EventEditor
         <div id="adct-event-source-material-box">
             <p>Eligible files from the source email are published automatically with the event.
                 Use these controls to remove a file or retry a failed copy.</p>
-            <?php $sourceErrors = get_post_meta($eventId, \ADCT\ParishIntake\WordPress\Publishing\WordPressSourceMaterialStore::ERROR_META, true); ?>
-            <?php if (is_array($sourceErrors) && $sourceErrors !== []) : ?>
+            <?php $sourceErrors = \ADCT\ParishIntake\WordPress\Publishing\WordPressSourceMaterialStore::failureRecords($eventId); ?>
+            <?php if ($sourceErrors !== []) : ?>
                 <div class="notice notice-warning inline"><p>
-                    <?php echo esc_html(implode(' ', array_filter($sourceErrors, 'is_string'))); ?>
+                    <?php echo esc_html(implode(' ', array_column($sourceErrors, 'warning'))); ?>
                 </p></div>
             <?php endif; ?>
             <?php if ($promoted === []) : ?>
@@ -643,24 +643,18 @@ final class EventEditor
         $unavailable = [];
 
         $files = $messageId === null ? [] : $this->attachments->findPromotableForMessage($messageId);
-        $errors = get_post_meta($eventId, \ADCT\ParishIntake\WordPress\Publishing\WordPressSourceMaterialStore::ERROR_META, true);
-        $recovery = get_post_meta($eventId, \ADCT\ParishIntake\WordPress\Publishing\WordPressSourceMaterialStore::RECOVERY_META, true);
-        if (is_array($errors) && is_array($recovery)) {
-            foreach ($recovery as $id => $provenance) {
-                if (! isset($errors[$id]) || ! is_array($provenance)) {
-                    continue;
-                }
-                $sourceCandidate = (int) ($provenance['candidate_id'] ?? 0);
-                $sourceMessage = (int) ($provenance['message_id'] ?? 0);
-                if ((int) $id < 1 || $sourceCandidate < 1 || $sourceMessage < 1
-                    || $this->candidates->sourceMessageIdForCandidate($sourceCandidate) !== $sourceMessage) {
-                    continue;
-                }
-                $file = $this->attachments->findStoredById((int) $id);
-                if ($file !== null && (int) ($file['message_id'] ?? 0) === $sourceMessage
-                    && trim((string) ($file['storage_path'] ?? '')) !== '') {
-                    $files[] = $file;
-                }
+        $recovery = \ADCT\ParishIntake\WordPress\Publishing\WordPressSourceMaterialStore::failureRecords($eventId);
+        foreach ($recovery as $id => $provenance) {
+            $sourceCandidate = (int) ($provenance['candidate_id'] ?? 0);
+            $sourceMessage = (int) ($provenance['message_id'] ?? 0);
+            if ((int) $id < 1 || $sourceCandidate < 1 || $sourceMessage < 1
+                || $this->candidates->sourceMessageIdForCandidate($sourceCandidate) !== $sourceMessage) {
+                continue;
+            }
+            $file = $this->attachments->findStoredById((int) $id);
+            if ($file !== null && (int) ($file['message_id'] ?? 0) === $sourceMessage
+                && trim((string) ($file['storage_path'] ?? '')) !== '') {
+                $files[] = $file;
             }
         }
         $seen = [];
@@ -668,7 +662,8 @@ final class EventEditor
             $id = (int) ($attachment['id'] ?? 0);
             $filename = (string) ($attachment['filename'] ?? '');
 
-            if ($id < 1 || $filename === '' || isset($seen[$id]) || in_array($id, $alreadyPublished, true)) {
+            if ($id < 1 || $filename === '' || isset($seen[$id])
+                || (in_array($id, $alreadyPublished, true) && ! isset($recovery[$id]))) {
                 continue;
             }
             $seen[$id] = true;

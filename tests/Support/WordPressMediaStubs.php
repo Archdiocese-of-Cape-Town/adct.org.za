@@ -271,6 +271,10 @@ namespace {
     if (! function_exists('update_post_meta')) {
         function update_post_meta(int $postId, string $key, mixed $value, mixed $prevValue = ''): bool
         {
+            if (($GLOBALS['adct_test_source_meta_failures'][$key] ?? 0) > 0) {
+                --$GLOBALS['adct_test_source_meta_failures'][$key];
+                return false;
+            }
             $unslash = static function (mixed $item) use (&$unslash): mixed {
                 if (is_array($item)) {
                     return array_map($unslash, $item);

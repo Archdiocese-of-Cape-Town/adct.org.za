@@ -64,6 +64,7 @@ final class WordPressSourceMaterialStoreTest extends TestCase
     'adct_test_children_queries',
     'adct_publishing_meta',
     'adct_publishing_featured',
+    'adct_test_source_meta_failures',
     ];
 
     /**
@@ -1146,6 +1147,115 @@ final class WordPressSourceMaterialStoreTest extends TestCase
             self::assertSame($first->mediaId, $store->forEvent(42)[0]->mediaId);
         }
 
+            public function testATransientProvenanceWriteFailureCannotLeaveAnOrphanWarning(): void
+            {
+                update_post_meta(42, 'source_candidate_id', 12);
+                $store = $this->store([7 => $this->row(7, 'failed.pdf', 'application/pdf', 'pdf')]);
+                $GLOBALS['adct_test_sideload_error'] = 'Synthetic copy refusal';
+                $GLOBALS['adct_test_source_meta_failures'][WordPressSourceMaterialStore::RECOVERY_META] = 1;
+                try {
+                    $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+                } catch (RuntimeException) {
+                }
+                $warnings = get_post_meta(42, WordPressSourceMaterialStore::ERROR_META, true);
+                self::assertSame(3, $warnings[7]['message_id']);
+                self::assertSame(12, $warnings[7]['candidate_id']);
+                self::assertStringContainsString('could not be published', $warnings[7]['warning']);
+                self::assertSame(1, $GLOBALS['adct_test_source_meta_failures'][WordPressSourceMaterialStore::RECOVERY_META],
+                    'No second provenance write may split a persisted failure record.');
+            }
+
+            public function testManualRecoveryReportsACleanupWriteFailureAndKeepsItsRecoveryRecord(): void
+            {
+                update_post_meta(42, 'source_candidate_id', 12);
+                $store = $this->store([7 => $this->row(7, 'failed.pdf', 'application/pdf', 'pdf')]);
+                $GLOBALS['adct_test_sideload_error'] = 'Synthetic copy refusal';
+                $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+                $before = get_post_meta(42, WordPressSourceMaterialStore::ERROR_META, true);
+                $GLOBALS['adct_test_sideload_error'] = '';
+                $GLOBALS['adct_test_source_meta_failures'][WordPressSourceMaterialStore::ERROR_META] = 1;
+                $reported = null;
+                try {
+                    $store->promote(42, 7, 'bulletin');
+                } catch (RuntimeException $failure) {
+                    $reported = $failure;
+                }
+                self::assertInstanceOf(RuntimeException::class, $reported, 'A failed recovery cleanup write must be reported.');
+                self::assertStringContainsString('recovery', $reported->getMessage());
+                self::assertSame($before, get_post_meta(42, WordPressSourceMaterialStore::ERROR_META, true));
+                self::assertCount(1, $store->forEvent(42), 'Cleanup failure must not roll back the public copy.');
+                $copies = count($GLOBALS['adct_test_sideloads']);
+                $mediaId = $store->forEvent(42)[0]->mediaId;
+                $retried = $store->promote(42, 7, 'bulletin');
+                self::assertSame($mediaId, $retried->mediaId);
+                self::assertCount($copies, $GLOBALS['adct_test_sideloads'], 'Retry must only clear the record, not copy again.');
+                self::assertSame([], WordPressSourceMaterialStore::failureRecords(42));
+            }
+
+    public function testAFailedCanonicalWritePreservesEarlierWarningAndProvenanceAcrossLaterPublication(): void
+    {
+        update_post_meta(42, 'source_candidate_id', 12);
+        $store = $this->store([
+            7 => $this->row(7, 'earlier.pdf', 'application/pdf', 'pdf'),
+            8 => array_replace($this->row(8, 'later.jpg', 'image/jpeg'), ['message_id' => 4]),
+        ]);
+        $GLOBALS['adct_test_sideload_error'] = 'Synthetic copy refusal';
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        $before = WordPressSourceMaterialStore::failureRecords(42);
+        $GLOBALS['adct_test_sideload_error'] = '';
+        $GLOBALS['adct_test_source_meta_failures'][WordPressSourceMaterialStore::ERROR_META] = 1;
+        $reported = null;
+        try {
+            $store->promote(42, 7, 'bulletin');
+        } catch (RuntimeException $failure) {
+            $reported = $failure;
+        }
+        self::assertInstanceOf(RuntimeException::class, $reported);
+        self::assertSame($before, WordPressSourceMaterialStore::failureRecords(42));
+        $store->publishForEvent(42, 4, 'reviewer@example.test', 12);
+        self::assertSame($before, WordPressSourceMaterialStore::failureRecords(42),
+            'A different message must retain the complete earlier recovery record.');
+        $store->promote(42, 7, 'bulletin');
+        self::assertSame([], WordPressSourceMaterialStore::failureRecords(42));
+    }
+
+    public function testAFailedPublicationRecordWriteReportsFailureWithoutSplittingExistingState(): void
+    {
+        update_post_meta(42, 'source_candidate_id', 12);
+        $store = $this->store([7 => $this->row(7, 'failed.pdf', 'application/pdf', 'pdf')]);
+        $GLOBALS['adct_test_sideload_error'] = 'Synthetic copy refusal';
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        $before = get_post_meta(42, WordPressSourceMaterialStore::ERROR_META, true);
+        $GLOBALS['adct_test_sideload_error'] = '';
+        $GLOBALS['adct_test_source_meta_failures'][WordPressSourceMaterialStore::ERROR_META] = 1;
+        $reported = null;
+        try {
+            $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        } catch (RuntimeException $failure) {
+            $reported = $failure;
+        }
+        self::assertInstanceOf(RuntimeException::class, $reported);
+        self::assertSame($before, get_post_meta(42, WordPressSourceMaterialStore::ERROR_META, true));
+        self::assertCount(1, $store->forEvent(42));
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        self::assertSame([], WordPressSourceMaterialStore::failureRecords(42));
+        self::assertCount(2, $GLOBALS['adct_test_sideloads'], 'Only the original failed copy and successful repair were attempted.');
+    }
+
+    public function testLegacySplitFailureRecordsRemainRecoverableAndUpgradeWithoutDataLoss(): void
+    {
+        update_post_meta(42, WordPressSourceMaterialStore::ERROR_META, [7 => 'Earlier source failed.']);
+        update_post_meta(42, WordPressSourceMaterialStore::RECOVERY_META, [
+            7 => ['message_id' => 3, 'candidate_id' => 12],
+        ]);
+        self::assertSame([
+            7 => ['warning' => 'Earlier source failed.', 'message_id' => 3, 'candidate_id' => 12],
+        ], WordPressSourceMaterialStore::failureRecords(42));
+        $store = $this->store([7 => $this->row(7, 'failed.pdf', 'application/pdf', 'pdf')]);
+        $store->promote(42, 7, 'bulletin');
+        self::assertSame([], WordPressSourceMaterialStore::failureRecords(42));
+        self::assertSame([], get_post_meta(42, WordPressSourceMaterialStore::ERROR_META, true));
+    }
         public function testLockRejectsNestedSameEventWithoutBlockingAnotherEventAndReleasesOnFailure(): void
         {
             $database = new \ADCT\ParishIntake\Tests\Support\SourceMaterialLockDatabase();

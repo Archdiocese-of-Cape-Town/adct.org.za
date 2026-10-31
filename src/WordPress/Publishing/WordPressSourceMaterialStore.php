@@ -102,10 +102,22 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
         return $this->lock->run($eventId, function () use ($eventId, $attachmentId, $role): SourceAttachment {
             foreach ($this->forEvent($eventId) as $source) {
                 if ($source->attachmentId === $attachmentId) {
+                    $failures = self::failureRecords($eventId);
+                    if (isset($failures[$attachmentId])) {
+                        unset($failures[$attachmentId]);
+                        $this->saveFailureRecords($eventId, $failures);
+                        return $source;
+                    }
                     throw new DomainException('That file is already published with this event.');
                 }
             }
-            return $this->promoteWithActor($eventId, $attachmentId, $role, $this->actorResolver->actor());
+            $source = $this->promoteWithActor($eventId, $attachmentId, $role, $this->actorResolver->actor());
+            $failures = self::failureRecords($eventId);
+            if (isset($failures[$attachmentId])) {
+                unset($failures[$attachmentId]);
+                $this->saveFailureRecords($eventId, $failures);
+            }
+            return $source;
         });
     }
 
@@ -128,10 +140,7 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
 
     private function publishUnlocked(int $eventId, int $messageId, string $actor, int $candidateId): void
     {
-        $errors = get_post_meta($eventId, self::ERROR_META, true);
-        $errors = is_array($errors) ? $errors : [];
-        $recovery = get_post_meta($eventId, self::RECOVERY_META, true);
-        $recovery = is_array($recovery) ? $recovery : [];
+        $failures = self::failureRecords($eventId);
         foreach ($this->attachments->findPromotableForMessage($messageId) as $row) {
             $id = (int) $row['id'];
             $mime = (string) $row['mime_type'];
@@ -141,12 +150,12 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
             // History survives removal: a cache repair must not undo a human's
             // decision, even when the same message supplied several candidates.
             if (get_post_meta($eventId, self::HISTORY_PREFIX . $id, true) !== '') {
-                unset($errors[$id], $recovery[$id]);
+                unset($failures[$id]);
                 continue;
             }
             $sources = $this->forEvent($eventId);
             if (array_filter($sources, static fn (SourceAttachment $source): bool => $source->attachmentId === $id)) {
-                unset($errors[$id], $recovery[$id]);
+                unset($failures[$id]);
                 continue;
             }
             $role = SourceAttachment::defaultRoleFor($mime);
@@ -155,23 +164,53 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
             }
             try {
                 $this->promoteWithActor($eventId, $id, $role, $actor, $candidateId);
-                unset($errors[$id], $recovery[$id]);
+                unset($failures[$id]);
             } catch (Throwable $failure) {
-                $errors[$id] = 'Source file ' . $id . ' could not be published. Retry from the event editor.';
-                $recovery[$id] = ['message_id' => $messageId, 'candidate_id' => $candidateId];
+                $failures[$id] = [
+                    'warning' => 'Source file ' . $id . ' could not be published. Retry from the event editor.',
+                    'message_id' => $messageId,
+                    'candidate_id' => $candidateId,
+                ];
                 error_log(sprintf(
                     'ADCT Parish Intake: source publication failed for event %d, candidate %d, attachment %d (%s).',
                     $eventId, $candidateId, $id, $failure::class
                 ));
             }
         }
-        update_post_meta($eventId, self::ERROR_META, $errors);
-        if (get_post_meta($eventId, self::ERROR_META, true) !== $errors) {
-            throw new \RuntimeException('Source publication errors could not be recorded for event ' . $eventId . '.');
+        $this->saveFailureRecords($eventId, $failures);
+    }
+
+    /**
+     * @return array<int, array{warning: string, message_id: int, candidate_id: int}>
+     */
+    public static function failureRecords(int $eventId): array
+    {
+        $stored = get_post_meta($eventId, self::ERROR_META, true);
+        $legacy = get_post_meta($eventId, self::RECOVERY_META, true);
+        $records = [];
+        foreach (is_array($stored) ? $stored : [] as $id => $record) {
+            // Read the former split layout without discarding persistent failures.
+            if (is_string($record)) {
+                $record = ['warning' => $record] + (is_array($legacy[$id] ?? null) ? $legacy[$id] : []);
+            }
+            if ((int) $id > 0 && is_array($record) && is_string($record['warning'] ?? null)) {
+                $records[(int) $id] = [
+                    'warning' => $record['warning'],
+                    'message_id' => (int) ($record['message_id'] ?? 0),
+                    'candidate_id' => (int) ($record['candidate_id'] ?? 0),
+                ];
+            }
         }
-        update_post_meta($eventId, self::RECOVERY_META, $recovery);
-        if (get_post_meta($eventId, self::RECOVERY_META, true) !== $recovery) {
-            throw new \RuntimeException('Source recovery provenance could not be recorded for event ' . $eventId . '.');
+        return $records;
+    }
+
+    private function saveFailureRecords(int $eventId, array $records): void
+    {
+        update_post_meta($eventId, self::ERROR_META, wp_slash($records));
+        if (get_post_meta($eventId, self::ERROR_META, true) !== $records) {
+            throw new \RuntimeException(
+                'The event source recovery record could not be saved. Publication is unchanged; retry the operation.'
+            );
         }
     }
 
@@ -252,16 +291,6 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
             throw $failure;
         }
 
-        $errors = get_post_meta($eventId, self::ERROR_META, true);
-        if (is_array($errors) && isset($errors[$attachmentId])) {
-            unset($errors[$attachmentId]);
-            update_post_meta($eventId, self::ERROR_META, $errors);
-        }
-        $recovery = get_post_meta($eventId, self::RECOVERY_META, true);
-        if (is_array($recovery) && isset($recovery[$attachmentId])) {
-            unset($recovery[$attachmentId]);
-            update_post_meta($eventId, self::RECOVERY_META, $recovery);
-        }
         return $source;
     }
 
