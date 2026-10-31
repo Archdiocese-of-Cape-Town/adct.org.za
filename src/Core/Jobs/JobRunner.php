@@ -55,6 +55,25 @@ final class JobRunner
         ?int $itemBudget = null,
         string $trigger = 'internal'
     ): JobRunResult {
+        $result = $this->runJob($job, $force, $timeBudgetSeconds, $itemBudget, $trigger);
+
+        if ($job instanceof MailboxPollingJob
+            && ! in_array($result->status, [JobRunStatus::LOCKED, JobRunStatus::NOT_DUE], true)) {
+            return new JobRunResult(
+                $result->status, $result->itemsProcessed, $result->errorMessage, $job->summary()
+            );
+        }
+
+        return $result;
+    }
+
+    private function runJob(
+        JobInterface $job,
+        bool $force,
+        ?int $timeBudgetSeconds,
+        ?int $itemBudget,
+        string $trigger
+    ): JobRunResult {
         $jobId = $job->id();
         $this->assertJobId($jobId);
 
@@ -76,7 +95,9 @@ final class JobRunner
         }
 
         try {
-            if ($job instanceof JobRunLifecycleInterface) {
+            if ($job instanceof MailboxPollingJob) {
+                $job->beginRun($force && $trigger === 'manual');
+            } elseif ($job instanceof JobRunLifecycleInterface) {
                 $job->beginRun();
             }
 

@@ -8,6 +8,7 @@ use ADCT\ParishIntake\Core\Admin\AdminGuideLinks;
 use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Jobs\JobRunStatus;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
+use ADCT\ParishIntake\Core\Jobs\MailboxPollingSummary;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\JobStateStoreInterface;
 use ADCT\ParishIntake\Core\Mail\MailQueueService;
@@ -66,17 +67,21 @@ final class HealthPage
         }
         check_admin_referer(self::ACTION);
         $results = [];
+        $mailboxSummary = null;
         foreach (['poll_mailboxes', 'process_inbound_messages', 'send_mail'] as $id) {
             $job = $this->scheduler->findJob($id);
             if ($job === null) {
                 wp_die('An intake job is not registered.', '', ['response' => 500]);
             }
-            $results[] = $this->runner->run($job, true, 25, 100, 'manual')->status->value;
+            $result = $this->runner->run($job, true, 25, 100, 'manual');
+            $results[] = $result->status->value;
+            $mailboxSummary ??= $result->mailboxSummary;
         }
         $this->alerts->check();
         wp_safe_redirect(add_query_arg([
             'page' => self::SLUG,
             'checked' => implode(',', $results),
+            'mailbox_summary' => $mailboxSummary?->toQueryValue(),
         ], admin_url('admin.php')));
         exit;
     }
@@ -122,7 +127,8 @@ final class HealthPage
             <?php if (isset($_GET['checked']) && is_string($_GET['checked'])) :
                 $results = explode(',', sanitize_text_field(wp_unslash($_GET['checked'])));
                 $labels = [];
-                foreach (['Mailbox check', 'Saved-message parsing', 'Outbound email'] as $index => $label) {
+                $mailboxSummary = MailboxPollingSummary::fromQueryValue($_GET['mailbox_summary'] ?? null);
+                foreach (['Mailbox batch', 'Saved-message parsing', 'Outbound email'] as $index => $label) {
                     $status = JobRunStatus::tryFrom($results[$index] ?? '');
                     if ($status !== null) {
                         $labels[] = $label . ': ' . str_replace('_', ' ', $status->value);
@@ -130,8 +136,10 @@ final class HealthPage
                 }
                 ?>
                 <?php if (count($labels) === 3) : ?>
-                    <div class="notice <?php echo esc_attr(in_array('failed', $results, true) ? 'notice-error' : 'notice-info'); ?>">
-                        <p>Check now results: <?php echo esc_html(implode('; ', $labels)); ?>. Review the jobs and queues below.</p>
+                    <div class="notice <?php echo esc_attr(in_array('failed', $results, true) || ($mailboxSummary?->failed ?? 0) > 0 ? 'notice-error' : 'notice-info'); ?>">
+                        <p>Check now results: <?php echo esc_html(implode('; ', $labels)); ?>.
+                            <?php echo esc_html($mailboxSummary?->message() ?? 'No mailbox outcome was recorded; a completed batch alone does not confirm that a mailbox was checked.'); ?>
+                            Review the jobs and queues below.</p>
                     </div>
                 <?php endif; ?>
             <?php endif; ?>
@@ -141,7 +149,7 @@ final class HealthPage
                     <?php wp_nonce_field(self::ACTION); ?>
                     <button type="submit" class="button button-primary">Check now</button>
                 </form>
-                <p>Checks mailboxes, processes saved messages and sends queued email in three limited batches (up to 25 seconds each). It does not wait for the next cron run.</p>
+                <p>Checks active email mailboxes without waiting for their normal source interval, processes saved messages and sends queued email in three limited batches (up to 25 seconds each). Retry backoff, disabled/manual sources, locks and checkpoints still apply.</p>
             <?php endif; ?>
             <h2>Background jobs</h2>
             <p><a href="<?php echo esc_url(AdminGuideLinks::operator('keep-scheduled-jobs-running')); ?>">What to do if a job fails</a></p>

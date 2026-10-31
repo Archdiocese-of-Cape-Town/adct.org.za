@@ -8,6 +8,7 @@ use ADCT\ParishIntake\Core\Auth\Capabilities;
 use ADCT\ParishIntake\Core\Jobs\JobInterface;
 use ADCT\ParishIntake\Core\Jobs\JobRunStatus;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
+use ADCT\ParishIntake\Core\Jobs\MailboxPollingSummary;
 use ADCT\ParishIntake\Core\Ports\JobStateStoreInterface;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 use DateTimeImmutable;
@@ -75,6 +76,7 @@ final class ScheduledJobsPage
             'page' => self::PAGE_SLUG,
             'adct_pi_job_id' => $jobId,
             'adct_pi_job_result' => $result->status->value,
+            'mailbox_summary' => $result->mailboxSummary?->toQueryValue(),
         ], admin_url('admin.php'));
 
         wp_safe_redirect($redirect);
@@ -96,6 +98,7 @@ final class ScheduledJobsPage
             <h1>Parish Intake Scheduled Jobs</h1>
             <p>Jobs run in batches with a time limit, an item limit, and a saved checkpoint.<?php if ($canRunJobs) : ?> Use <strong>Run now</strong> to start a job immediately.<?php endif; ?></p>
             <p>The framework heartbeat is only a scheduling check; it does not read mail, process events, or send email.</p>
+            <p>Running mailbox polling manually bypasses the normal source interval, but not retry backoff, disabled/manual sources, locks or batch limits.</p>
 
             <?php if ($jobs === []) : ?>
                 <p>No scheduled jobs are registered.</p>
@@ -210,6 +213,19 @@ final class ScheduledJobsPage
             JobRunStatus::FAILED->value => ['notice-error', 'The job failed. See Last error for details.'],
         ];
         [$class, $message] = $notices[$status->value];
+
+        if ($jobId === 'poll_mailboxes') {
+            $summary = MailboxPollingSummary::fromQueryValue($_GET['mailbox_summary'] ?? null);
+            if ($status === JobRunStatus::COMPLETED) {
+                $message = 'The mailbox batch finished.';
+                $class = 'notice-info';
+            }
+            $message .= ' ' . ($summary?->message()
+                ?? 'No mailbox outcome was recorded; a completed batch alone does not confirm that a mailbox was checked.');
+            if (($summary?->failed ?? 0) > 0) {
+                $class = 'notice-error';
+            }
+        }
 
         return ['class' => $class, 'message' => $message];
     }

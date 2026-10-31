@@ -17,6 +17,11 @@ use ADCT\ParishIntake\Core\Ingestion\MessageContentHasher;
 use ADCT\ParishIntake\Core\Ingestion\RawMailMessage;
 use ADCT\ParishIntake\Core\Ingestion\RawMessageInspector;
 use ADCT\ParishIntake\Core\Jobs\JobStepResult;
+use ADCT\ParishIntake\Core\Jobs\JobRunner;
+use ADCT\ParishIntake\Core\Jobs\JobRunStatus;
+use ADCT\ParishIntake\Core\Ports\JobLockInterface;
+use ADCT\ParishIntake\Core\Ports\JobStateStoreInterface;
+use ADCT\ParishIntake\Core\Jobs\JobState;
 use ADCT\ParishIntake\Core\Jobs\MailboxPollingJob;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Ports\InboundMailStorageInterface;
@@ -39,6 +44,126 @@ use RuntimeException;
 final class MailboxPollingJobTest extends TestCase
 {
     public const SOURCE_ID = 17;
+
+    public function testDeliberateManualRunChecksRecentlySuccessfulMailboxButCronStillWaits(): void
+    {
+        $server = new PollingMailboxServer();
+        $fixture = $this->fixture($server, settings: $this->settings(lastCheckedAt: '2026-09-25 02:59:00'));
+        $fixture['checkpoints']->checkpoints[self::SOURCE_ID] = new MailboxCheckpoint(12345, 0, true);
+        $runner = $this->runner();
+
+        $cron = $runner->run($fixture['job'], true, trigger: 'cron');
+        self::assertSame(0, $server->connectionCount);
+        self::assertSame(1, $cron->mailboxSummary?->interval);
+
+        $manual = $runner->run($fixture['job'], true, trigger: 'manual');
+        self::assertSame(1, $server->connectionCount);
+        self::assertSame(1, $manual->mailboxSummary?->successful);
+        self::assertSame(0, $manual->mailboxSummary?->failed);
+
+        $runner->run($fixture['job'], true, trigger: 'cron');
+        self::assertSame(1, $server->connectionCount, 'Manual polling mode must not leak into a later cron run.');
+    }
+
+    public function testManualRunReportsBackoffWithoutConnectingOrChangingCheckpoint(): void
+    {
+        $server = new PollingMailboxServer();
+        $fixture = $this->fixture($server, settings: $this->settings(
+            lastCheckedAt: '2026-09-25 02:59:00', consecutiveFailures: 1
+        ));
+        $checkpoint = new MailboxCheckpoint(12345, 7);
+        $fixture['checkpoints']->checkpoints[self::SOURCE_ID] = $checkpoint;
+        $result = $this->runner()->run($fixture['job'], true, trigger: 'manual');
+
+        self::assertSame(0, $server->connectionCount);
+        self::assertSame($checkpoint, $fixture['checkpoints']->checkpoints[self::SOURCE_ID]);
+        self::assertSame(1, $result->mailboxSummary?->backoff);
+        self::assertSame(0, $result->mailboxSummary?->successful);
+    }
+
+    public function testManualRunReportsFailedAndMissingMailboxesTruthfully(): void
+    {
+        $server = new PollingMailboxServer();
+        $server->failNextSearch = true;
+        $fixture = $this->fixture($server);
+        $result = $this->runner()->run($fixture['job'], true, trigger: 'manual');
+        self::assertSame(1, $result->mailboxSummary?->failed);
+        self::assertSame(0, $result->mailboxSummary?->successful);
+        self::assertSame(1, $fixture['health']->state?->consecutiveFailures);
+
+        $empty = $this->fixture(new PollingMailboxServer(), settingsList: []);
+        $result = $this->runner()->run($empty['job'], true, trigger: 'manual');
+        self::assertSame(0, $result->mailboxSummary?->total);
+        self::assertStringContainsString('No active email mailboxes', $result->mailboxSummary?->message() ?? '');
+    }
+
+    public function testManualRunKeepsItemBudgetAndReportsUnreachedSources(): void
+    {
+        $server = new PollingMailboxServer();
+        $fixture = $this->fixture($server, settingsList: [$this->settings(), $this->settings(sourceId: 18)]);
+        $result = $this->runner()->run($fixture['job'], true, itemBudget: 1, trigger: 'manual');
+
+        self::assertSame(JobRunStatus::ITEM_BUDGET_REACHED, $result->status);
+        self::assertSame(1, $server->connectionCount);
+        self::assertSame(1, $result->mailboxSummary?->pending);
+    }
+
+    private function runner(): JobRunner
+    {
+        $lock = $this->createMock(JobLockInterface::class);
+        $lock->method('acquire')->willReturn('synthetic-lock');
+        $lock->method('isHeldBy')->willReturn(true);
+        $states = $this->createMock(JobStateStoreInterface::class);
+        $states->method('load')->willReturn(new JobState());
+
+        return new JobRunner($lock, $states, new PollingClock());
+    }
+
+    public function testManualPollAfterBackoffExpiresChecksTheMailbox(): void
+    {
+        $server = new PollingMailboxServer();
+        $fixture = $this->fixture($server, settings: $this->settings(
+            lastCheckedAt: '2026-09-25 02:50:00', consecutiveFailures: 1
+        ));
+        $result = $this->runner()->run($fixture['job'], true, trigger: 'manual');
+        self::assertSame(1, $server->connectionCount);
+        self::assertSame(1, $result->mailboxSummary?->successful);
+        self::assertSame(0, $fixture['health']->state?->consecutiveFailures);
+    }
+
+    public function testLockedManualRunDoesNotReusePreviousMailboxSummary(): void
+    {
+        $server = new PollingMailboxServer();
+        $fixture = $this->fixture($server);
+        $this->runner()->run($fixture['job'], true, trigger: 'manual');
+        $lock = $this->createMock(JobLockInterface::class);
+        $lock->method('acquire')->willReturn(null);
+        $states = $this->createMock(JobStateStoreInterface::class);
+        $states->expects(self::never())->method('load');
+        $result = (new JobRunner($lock, $states, new PollingClock()))
+            ->run($fixture['job'], true, trigger: 'manual');
+        self::assertSame(JobRunStatus::LOCKED, $result->status);
+        self::assertNull($result->mailboxSummary);
+        self::assertSame(1, $server->connectionCount);
+    }
+
+    public function testManualPollPreservesUidCheckpointAndResumesAfterItemLimit(): void
+    {
+        $server = new PollingMailboxServer();
+        $server->inbox[8] = $this->rawMessage('manual-eight@example.test', 'First new message.');
+        $server->inbox[9] = $this->rawMessage('manual-nine@example.test', 'Second new message.');
+        $fixture = $this->fixture($server, settings: $this->settings(lastCheckedAt: '2026-09-25 02:59:00'));
+        $fixture['checkpoints']->checkpoints[self::SOURCE_ID] = new MailboxCheckpoint(12345, 7, true);
+        $result = $this->runner()->run($fixture['job'], true, itemBudget: 1, trigger: 'manual');
+        self::assertSame(JobRunStatus::ITEM_BUDGET_REACHED, $result->status);
+        self::assertSame(8, $fixture['checkpoints']->checkpoints[self::SOURCE_ID]->lastUid);
+        self::assertSame(1, $result->mailboxSummary?->pending);
+
+        $this->runner()->run($fixture['job'], true, trigger: 'manual');
+        self::assertSame(9, $fixture['checkpoints']->checkpoints[self::SOURCE_ID]->lastUid);
+        self::assertTrue($fixture['checkpoints']->checkpoints[self::SOURCE_ID]->scanComplete);
+        self::assertCount(2, $fixture['messages']->records);
+    }
 
     public function testResendsWithDifferentMessageIdsAreDeduplicatedByNormalisedContent(): void
     {

@@ -55,3 +55,5 @@ foreach ([
 if (! str_contains($healthHtml, 'name="_wpnonce"')) {
     $fail('The Check now form has no nonce.');
 }
+
+require WP_CONTENT_DIR . '/test-harness/ManualMailboxCheck.php';

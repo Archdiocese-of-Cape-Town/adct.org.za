@@ -15,7 +15,8 @@ final class JobRunResult
     public function __construct(
         JobRunStatus $status,
         int $itemsProcessed,
-        ?string $errorMessage = null
+        ?string $errorMessage = null,
+        public readonly ?MailboxPollingSummary $mailboxSummary = null
     ) {
         if ($itemsProcessed < 0) {
             throw new InvalidArgumentException('The processed item count cannot be negative.');

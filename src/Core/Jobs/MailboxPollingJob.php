@@ -70,6 +70,18 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
     /** @var array<int, MailboxCheckpoint|null> */
     private array $runCheckpoints = [];
 
+    private bool $manualPoll = false;
+    private bool $mailboxListLoaded = false;
+
+    /** @var array<int, true> */
+    private array $activeSources = [];
+
+    /** @var array<int, true> */
+    private array $checkedSources = [];
+
+    /** @var array<int, true> */
+    private array $backoffSources = [];
+
     /**
      * @param callable(MailboxSettings): string $passwordResolver
      * @param callable(MailboxSettings, string): MailboxInterface $mailboxFactory
@@ -98,6 +110,7 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
         $mailboxes = $this->mailboxes->findActiveMailboxes();
 
         if ($mailboxes === []) {
+            $this->mailboxListLoaded = true;
             return null;
         }
 
@@ -113,9 +126,11 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
             }
 
             $mailboxesBySource[$settings->sourceId] = $settings;
+            $this->activeSources[$settings->sourceId] = true;
         }
 
         $sourceIds = array_keys($mailboxesBySource);
+        $this->mailboxListLoaded = true;
         sort($sourceIds, SORT_NUMERIC);
         $cursor = MailboxPollingCursor::fromJson($checkpoint);
         $sourceId = $cursor->nextSourceId($sourceIds);
@@ -139,7 +154,7 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
         return JobStepResult::continueAt($cursor->toJson());
     }
 
-    public function beginRun(): void
+    public function beginRun(bool $manualPoll = false): void
     {
         $this->searchedUids = [];
         $this->attemptedUids = [];
@@ -149,6 +164,28 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
         $this->notDueSources = [];
         $this->stoppedSources = [];
         $this->runCheckpoints = [];
+        $this->manualPoll = $manualPoll;
+        $this->mailboxListLoaded = false;
+        $this->activeSources = [];
+        $this->checkedSources = [];
+        $this->backoffSources = [];
+    }
+
+    public function summary(): ?MailboxPollingSummary
+    {
+        if (! $this->mailboxListLoaded) {
+            return null;
+        }
+        $failed = count($this->sourcesWithFailures);
+        $checked = count(array_diff_key($this->checkedSources, $this->sourcesWithFailures));
+        $backoff = count($this->backoffSources);
+        $interval = count($this->notDueSources) - $backoff;
+        $total = count($this->activeSources);
+
+        return new MailboxPollingSummary(
+            $total, $checked, $failed, $backoff, $interval,
+            $total - $checked - $failed - $backoff - $interval
+        );
     }
 
     private function pollMailbox(MailboxSettings $settings): bool
@@ -272,6 +309,9 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
 
         if ($didWork || $checkedWithoutWork) {
             $this->recordSuccessfulPoll($settings->sourceId, $itemAt);
+            if ($checkedWithoutWork) {
+                $this->checkedSources[$settings->sourceId] = true;
+            }
         }
 
         return $didWork;
@@ -302,6 +342,9 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
         }
 
         if ($settings->consecutiveFailures === 0) {
+            if ($this->manualPoll) {
+                return true;
+            }
             $checkpoint = $this->findCheckpointForRun($settings->sourceId);
 
             if ($checkpoint !== null && ! $checkpoint->scanComplete) {
@@ -315,7 +358,12 @@ final class MailboxPollingJob extends AbstractJob implements JobRunLifecycleInte
 
         $elapsedSeconds = $this->clock->now()->getTimestamp() - $lastCheckedAt->getTimestamp();
 
-        return $elapsedSeconds >= $delayMinutes * 60;
+        $due = $elapsedSeconds >= $delayMinutes * 60;
+        if (! $due && $settings->consecutiveFailures > 0) {
+            $this->backoffSources[$settings->sourceId] = true;
+        }
+
+        return $due;
     }
 
     private function retryDelayMinutes(int $consecutiveFailures): int
