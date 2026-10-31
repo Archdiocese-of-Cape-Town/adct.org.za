@@ -34,7 +34,7 @@ final class MimeParserClassResolverTest extends TestCase
     {
         $coreDirectory = dirname(__DIR__, 4) . DIRECTORY_SEPARATOR . 'src' . DIRECTORY_SEPARATOR . 'Core';
         $resolverFiles = [];
-        $consumerCalls = 0;
+        $classListDeclarations = 0;
 
         foreach (new RecursiveIteratorIterator(
             new RecursiveDirectoryIterator($coreDirectory, FilesystemIterator::SKIP_DOTS)
@@ -44,16 +44,19 @@ final class MimeParserClassResolverTest extends TestCase
             }
 
             $source = (string) file_get_contents($sourceFile->getPathname());
+            $classListDeclarations += preg_match_all('/private const MIME_PARSER_CLASSES\\b/', $source);
 
             if (preg_match('/\\bfinal\\s+class\\s+MimeParserClassResolver\\b/', $source) === 1) {
                 $resolverFiles[] = $sourceFile->getPathname();
             }
-
-            $consumerCalls += preg_match_all('/MimeParserClassResolver::resolve\\(\\)/', $source);
         }
 
+        self::assertSame(
+            1,
+            $classListDeclarations,
+            'The MIME parser class list must have one definition across Core.'
+        );
         self::assertCount(1, $resolverFiles, 'The MIME parser resolver class must have one definition in Core.');
-        self::assertSame(2, $consumerCalls, 'Both MIME parser consumers must use the shared resolver.');
 
         $resolverSource = (string) file_get_contents($resolverFiles[0]);
         self::assertSame(
@@ -66,5 +69,19 @@ final class MimeParserClassResolverTest extends TestCase
             preg_match_all('/public static function resolve\\s*\\(/', $resolverSource),
             'The MIME parser resolver must define its own entry point once.'
         );
+
+        foreach ([
+            'MimeMessageParser.php',
+            'RawMessageInspector.php',
+        ] as $consumerFile) {
+            $consumerSource = (string) file_get_contents(
+                $coreDirectory . DIRECTORY_SEPARATOR . 'Ingestion' . DIRECTORY_SEPARATOR . $consumerFile
+            );
+            self::assertSame(
+                1,
+                preg_match_all('/MimeParserClassResolver::resolve\\(\\)/', $consumerSource),
+                $consumerFile . ' must call the shared MIME parser resolver.'
+            );
+        }
     }
 }
