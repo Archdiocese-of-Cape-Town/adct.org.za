@@ -257,13 +257,13 @@ final class InboundMessageRepository extends AbstractRepository
         );
     }
 
-    public function markParsed(int $messageId, string $bodyText, string $timestamp): bool
+    public function markParsed(int $messageId, string $bodyText, string $timestamp, ?string $operatorNote = null): bool
     {
         return $this->transitionStatus(
             $messageId,
             [InboundMessageRecord::STATUS_EXTRACTING],
             InboundMessageRecord::STATUS_PARSED,
-            null,
+            $operatorNote,
             $bodyText,
             $timestamp
         );
