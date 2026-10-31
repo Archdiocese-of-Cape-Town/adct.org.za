@@ -522,10 +522,7 @@ private ?ReviewQueueRepository $reviewQueue = null;
             new SuburbResolver(new PlaceCoordinateLookup($database))
         );
         $this->publicIcsFeed = new PublicIcsFeed($clock, $listingGeneration, new IcsCalendar());
-                // Issue #172: the one place a media-library copy of a parish bulletin or
-                // poster is ever made. It is built here, held for three callers, and is
-                // deliberately NOT given to CandidatePublisher -- publishing an event and
-                // making its source material public are two separate human decisions.
+                // Source copying stays in the WordPress adapter, after publication commits.
                 $this->sourceMaterialStore = new WordPressSourceMaterialStore(
                     $attachmentRepository,
                     new ProtectedInboundMailStorage(),
@@ -578,7 +575,8 @@ private ?ReviewQueueRepository $reviewQueue = null;
                 $listingGeneration,
                 $clock,
                 $timezone,
-                $auditLog
+                $auditLog,
+                $this->sourceMaterialStore
             ),
             new EventValidator($timezone, $rruleValidator),
             // Issue #200 asks whether a verified contact may publish a change or whether

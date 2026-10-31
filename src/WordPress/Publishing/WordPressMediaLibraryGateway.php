@@ -6,6 +6,7 @@ namespace ADCT\ParishIntake\WordPress\Publishing;
 
 use ADCT\ParishIntake\Core\Ports\MediaLibraryGatewayInterface;
 use RuntimeException;
+use Throwable;
 
 /**
  * The only place in the plugin that copies a file into the media library
@@ -26,20 +27,37 @@ use RuntimeException;
  * wraps publication in a transaction, and a rollback cannot undo a file write,
  * so the copy is confined to this adapter and the caller is expected to handle a
  * failure as "the event is published but has no source material" rather than as
- * "roll the publication back". The one thing folded back inside is the
- * `post_parent` re-parenting, which `WordPressEventMeta` does and which is
- * cheap to undo.
+ * "roll the publication back". The source store records parentage, ordered
+ * metadata and the audit trail after the copy, also outside that transaction.
  */
 final class WordPressMediaLibraryGateway implements MediaLibraryGatewayInterface
 {
     public function sideload(array $file, array $overrides): array
     {
+        if (defined('ABSPATH')) {
+            if (! function_exists('wp_handle_sideload')) {
+                require_once ABSPATH . 'wp-admin/includes/file.php';
+            }
+            if (! function_exists('wp_generate_attachment_metadata')) {
+                require_once ABSPATH . 'wp-admin/includes/image.php';
+            }
+        }
         $name = (string) ($file['name'] ?? '');
         $source = (string) ($file['tmp_name'] ?? '');
         if ($name === '' || $source === '') {
             throw new RuntimeException('The promotion cannot name the file it is copying.');
         }
 
+        $temporary = tempnam(sys_get_temp_dir(), 'adct-source-');
+        if ($temporary === false) {
+            throw new RuntimeException('A temporary source-material copy could not be created.');
+        }
+        if (! copy($source, $temporary)) {
+            unlink($temporary);
+            throw new RuntimeException('The intake file could not be copied for publication.');
+        }
+
+        // WordPress moves a sideload's input; never give it the private original.
         // `wp_handle_sideload()` declares its first parameter by reference
                 // (`&$file`), because it writes back the stored name it settled on. An
                 // array literal cannot be passed by reference, so this is a local
@@ -49,13 +67,19 @@ final class WordPressMediaLibraryGateway implements MediaLibraryGatewayInterface
                 // accepts the literal happily and the mistake becomes invisible.
                 $upload = [
                     'name' => $name,
-                    'tmp_name' => $source,
+                    'tmp_name' => $temporary,
                     'size' => (int) ($file['size'] ?? 0),
                     'type' => (string) ($overrides['test_type'] ?? ''),
                     'error' => 0,
                 ];
 
-                $result = wp_handle_sideload($upload, $overrides);
+        try {
+            $result = wp_handle_sideload($upload, $overrides);
+        } finally {
+            if (is_file($temporary)) {
+                unlink($temporary);
+            }
+        }
 
         if (isset($result['error'])) {
             throw new RuntimeException('The media library refused the copy: ' . (string) $result['error']);
@@ -103,10 +127,17 @@ final class WordPressMediaLibraryGateway implements MediaLibraryGatewayInterface
         // has no dimensions to render a poster with. A PDF has no image metadata
         // and returns an empty array, which is a success -- the bulletin is
         // still promoted and still linked to the event.
-        $metadata = wp_generate_attachment_metadata($mediaId, $storedFile);
-
-        if (is_array($metadata) && $metadata !== []) {
-            wp_update_attachment_metadata($mediaId, $metadata);
+        try {
+            $metadata = wp_generate_attachment_metadata($mediaId, $storedFile);
+            if (is_array($metadata) && $metadata !== []) {
+                wp_update_attachment_metadata($mediaId, $metadata);
+            }
+        } catch (Throwable $failure) {
+            wp_delete_attachment($mediaId, true);
+            if (is_file($storedFile)) {
+                wp_delete_file($storedFile);
+            }
+            throw new RuntimeException('Source attachment metadata could not be generated.', 0, $failure);
         }
 
         return [

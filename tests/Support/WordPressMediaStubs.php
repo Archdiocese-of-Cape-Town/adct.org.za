@@ -99,7 +99,7 @@ namespace {
             if (empty($GLOBALS['adct_test_empty_file'])) {
                 $source = (string) ($file['tmp_name'] ?? '');
                 if ($source !== '' && is_file($source)) {
-                    copy($source, $stored);
+                    rename($source, $stored);
                 } else {
                     file_put_contents($stored, 'adct-test-upload');
                 }
@@ -128,7 +128,7 @@ namespace {
          * global so a test can prove the type was supplied rather than left to
          * WordPress to guess from a parish filename.
          */
-        function wp_check_filetype_and_ext(string $file, string $filename, array $mimes = null): array
+        function wp_check_filetype_and_ext(string $file, string $filename, ?array $mimes = null): array
         {
             return [
                 'ext' => (string) pathinfo($filename, PATHINFO_EXTENSION),
@@ -175,6 +175,9 @@ namespace {
     if (! function_exists('wp_generate_attachment_metadata')) {
         function wp_generate_attachment_metadata(int $attachmentId, string $file): array
         {
+            if (! empty($GLOBALS['adct_test_metadata_error'])) {
+                throw new RuntimeException('Synthetic metadata failure.');
+            }
             return (array) ($GLOBALS['adct_test_generated_metadata'] ?? ['width' => 600, 'height' => 800]);
         }
     }
@@ -249,10 +252,26 @@ namespace {
         }
     }
 
+    if (! function_exists('wp_slash')) {
+        function wp_slash(mixed $value): mixed
+        {
+            if (is_array($value)) {
+                return array_map('wp_slash', $value);
+            }
+            return is_string($value) ? addslashes($value) : $value;
+        }
+    }
+
     if (! function_exists('update_post_meta')) {
         function update_post_meta(int $postId, string $key, mixed $value, mixed $prevValue = ''): bool
         {
-            $GLOBALS['adct_publishing_meta'][(int) $postId][$key] = $value;
+            $unslash = static function (mixed $item) use (&$unslash): mixed {
+                if (is_array($item)) {
+                    return array_map($unslash, $item);
+                }
+                return is_string($item) ? stripslashes($item) : $item;
+            };
+            $GLOBALS['adct_publishing_meta'][(int) $postId][$key] = $unslash($value);
 
             return true;
         }

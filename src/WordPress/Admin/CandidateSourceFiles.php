@@ -40,9 +40,9 @@ final class CandidateSourceFiles
      * @param bool $canPromote whether to offer publishing a stored file *with*
      *        the event (issue #172). False renders no control at all rather than
      *        a disabled one, so no button on the screen looks live and is not.
-     *        Nothing is ever promoted without this being pressed: the offer is a
-     *        button, and the promotion is a separate POST with its own action
-     *        and nonce, well away from the review/publish form.
+     *        This is a manual recovery control; publication copies eligible
+     *        source files automatically. Manual add keeps its separate POST,
+     *        action and nonce.
      */
     public function render(
         ?array $message,
@@ -56,6 +56,7 @@ final class CandidateSourceFiles
         <p class="description">
             This is what the parish sent. Check the notice against the details before approving:
             the parser can only read what it was given.
+            Eligible posters and PDFs will be published with the event automatically.
         </p>
         <?php $this->renderMessage($message); ?>
         <h3>Attachments (<?php echo esc_html((string) count($attachments)); ?>)</h3>

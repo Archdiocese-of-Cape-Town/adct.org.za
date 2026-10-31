@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Events;
 
 require_once __DIR__ . '/../../../Support/WordPressMediaStubs.php';
+require_once __DIR__ . '/../../../Support/WordPressEventEditorStubs.php';
+require_once __DIR__ . '/../../../Support/WordPressStubs.php';
 require_once __DIR__ . '/../../../Support/WordPressPublicEventStubs.php';
 
 use ADCT\ParishIntake\Core\Ports\ClockInterface;

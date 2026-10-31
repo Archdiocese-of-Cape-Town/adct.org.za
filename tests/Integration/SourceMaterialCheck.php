@@ -17,7 +17,7 @@ use ADCT\ParishIntake\WordPress\Publishing\WordPressSourceMaterialStore;
 /**
  * Promotion against a real WordPress runtime (#172).
  *
- * The unit suite proves the decisions: that nothing publishes an attachment, that
+ * The unit suite proves the decisions: that copies go through the source store, that
  * the stored name carries no part of the parish's, that the front end reads only
  * the ordered meta. Every one of those runs against stubs, so they prove what
  * this code asks WordPress to do, not what WordPress does with the request. This
@@ -224,7 +224,7 @@ final class SourceMaterialCheck
             // untouched by it and still renderable afterwards.
             $bulletinFile = get_attached_file($bulletin->mediaId);
 
-            self::runRetentionSweep($wpdb, $storage);
+            self::runRetentionSweep($wpdb, $storage, array_values($attachmentIds));
 
             if (! is_file((string) $bulletinFile)) {
                 $fail('Retention deleted the promoted copy in the media library.');
@@ -618,7 +618,7 @@ final class SourceMaterialCheck
      * precisely what lets the private original be reclaimed without breaking the
      * public event.
      */
-    private static function runRetentionSweep($wpdb, ProtectedInboundMailStorage $storage): void
+    private static function runRetentionSweep($wpdb, ProtectedInboundMailStorage $storage, array $attachmentIds): void
     {
         $messages = $wpdb->prefix . 'adct_pi_inbound_messages';
         $attachments = $wpdb->prefix . 'adct_pi_attachments';
@@ -637,17 +637,13 @@ final class SourceMaterialCheck
         ]);
         $messageId = (int) $wpdb->insert_id;
 
-        $path = $storage->storeAttachment('%PDF-1.4 expired', 'pdf');
-        $wpdb->insert($attachments, [
-            'message_id' => $messageId,
-            'filename' => 'expired bulletin.pdf',
-            'mime_type' => 'application/pdf',
-            'storage_path' => $path,
-            'size_bytes' => 16,
-            'created_at' => $now,
-            'updated_at' => $now,
-        ]);
-        $expiredAttachmentId = (int) $wpdb->insert_id;
+        // Sweep the exact originals that were copied, not a different fixture
+        // whose deletion says nothing about those public copies.
+        foreach ($attachmentIds as $attachmentId) {
+            if ($wpdb->update($attachments, ['message_id' => $messageId], ['id' => $attachmentId]) !== 1) {
+                throw new RuntimeException('The promoted original could not be linked to the retention fixture.');
+            }
+        }
 
         $store = new WordPressRetentionStore(new WordPressDatabaseConnection($wpdb), $storage);
 
@@ -656,7 +652,6 @@ final class SourceMaterialCheck
         $store->removeExpiredMessageFiles($messageId, $now);
         $store->removeExpiredMessageFiles($messageId, $now);
 
-        $wpdb->delete($attachments, ['id' => $expiredAttachmentId]);
         $wpdb->delete($messages, ['id' => $messageId]);
     }
 }

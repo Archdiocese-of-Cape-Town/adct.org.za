@@ -200,7 +200,7 @@ Browser OCR writes nothing here (ADR 0018). tesseract.js runs in the reviewer's 
 | message_id | FK (nullable for manual/portal entries) |
 | block_index | zero-based position of the source block in the message (a bulletin can yield several candidates) |
 | parish_id | best guess or known |
-| fields | JSON: title, description, start, end, all_day, parish_id, venue_id / venue_text, venue coordinates, contact, event_type, featured, and the trimmed source snippet (maximum 2,000 characters). **No attachment id lives here.** A promoted media id is recorded on the event post (see [Promoted source material](#promoted-source-material)), because it does not exist until a human promotes something |
+| fields | JSON: title, description, start, end, all_day, parish_id, venue_id / venue_text, venue coordinates, contact, event_type, featured, and the trimmed source snippet (maximum 2,000 characters). **No attachment id lives here.** A promoted media id is recorded on the event post (see [Promoted source material](#promoted-source-material)), because the public copy does not exist until publication or manual recovery |
 | field_confidence | JSON: per-field evidence and scoring (see below) |
 | recurrence | JSON: normalized supported RRULE, human-readable source phrase, RRULE parts, and optional `ambiguous` / `anchor_inferred` flags |
 | confidence | 0–1 |
@@ -267,6 +267,16 @@ The private post meta `_adct_pi_featured_override` records that an editor explic
 A post type (rather than only custom tables) gives WordPress revisions, search, REST, theme templates and editor familiarity for admins.
 
 #### Promoted source material
+
+Publication now creates these copies automatically after commit for eligible
+attachments on the source message (#252,
+[proposed ADR 0026](decisions/0026-publication-discloses-eligible-source-material.md)).
+The candidate still holds no media id: the public copy does not exist until
+publication. Private `_adct_pi_source_material_attachment_<intake id>` post meta
+records successful copies even after removal, preventing retry resurrection.
+`_adct_pi_source_material_errors` stores per-attachment operator warnings.
+Automatic promotion audit details add `candidate_id` and `automatic: true`,
+attributed to the recorded approver. No table or schema version changes.
 
 An event's link to the poster or bulletin it came from is **not a column**. It is two things written together, both on the `adct_event` post ([#172](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/172), [ADR 0025](decisions/0025-promotion-is-explicit-and-the-media-library-copy-is-the-source-material.md)):
 

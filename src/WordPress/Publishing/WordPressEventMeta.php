@@ -75,11 +75,13 @@ final class WordPressEventMeta implements StoredAttachmentEventMetaInterface
             // material", and storing it as an empty array keeps a stale list
             // from surviving a removal.
             update_post_meta($postId, self::META_KEY, []);
+            $this->assertSaved($postId, []);
 
             return;
         }
 
-        update_post_meta($postId, self::META_KEY, $sanitised);
+        update_post_meta($postId, self::META_KEY, wp_slash($sanitised));
+        $this->assertSaved($postId, $sanitised);
     }
 
     public function setFeaturedImage(int $postId, int $mediaId): void
@@ -88,6 +90,9 @@ final class WordPressEventMeta implements StoredAttachmentEventMetaInterface
         $this->assertMediaId($mediaId);
 
         set_post_thumbnail($postId, $mediaId);
+        if (get_post_thumbnail_id($postId) !== $mediaId) {
+            throw new \RuntimeException('The source poster could not be set as the featured image.');
+        }
     }
 
     public function clearFeaturedImage(int $postId, int $mediaId): void
@@ -158,6 +163,14 @@ final class WordPressEventMeta implements StoredAttachmentEventMetaInterface
     {
         if ($postId < 1) {
             throw new InvalidArgumentException('A post id must be positive.');
+        }
+
+    }
+
+    private function assertSaved(int $postId, array $entries): void
+    {
+        if (get_post_meta($postId, self::META_KEY, true) !== $entries) {
+            throw new \RuntimeException('The event source material could not be saved.');
         }
     }
 

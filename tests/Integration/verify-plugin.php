@@ -5704,6 +5704,8 @@ if ($secondApproverUser instanceof WP_User && in_array('deanery_approver', $seco
 
 require_once __DIR__ . '/PublicationCheck.php';
 PublicationCheck::run($fail);
+require_once __DIR__ . '/AutomaticSourceMaterialCheck.php';
+AutomaticSourceMaterialCheck::run($fail);
 
 require_once __DIR__ . '/SingleEventPageCheck.php';
 SingleEventPageCheck::run($fail, $firstParishId, $occurrenceType, $occurrenceVenue);

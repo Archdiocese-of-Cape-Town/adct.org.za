@@ -508,6 +508,14 @@ final class EventEditor
         [$offer, $unavailable] = $this->partitionOffer($eventId, $alreadyPublished);
         ?>
         <div id="adct-event-source-material-box">
+            <p>Eligible files from the source email are published automatically with the event.
+                Use these controls to remove a file or retry a failed copy.</p>
+            <?php $sourceErrors = get_post_meta($eventId, \ADCT\ParishIntake\WordPress\Publishing\WordPressSourceMaterialStore::ERROR_META, true); ?>
+            <?php if (is_array($sourceErrors) && $sourceErrors !== []) : ?>
+                <div class="notice notice-warning inline"><p>
+                    <?php echo esc_html(implode(' ', array_filter($sourceErrors, 'is_string'))); ?>
+                </p></div>
+            <?php endif; ?>
             <?php if ($promoted === []) : ?>
                 <p class="adct-event-source-material__empty">
                     Nothing has been published with this event yet.

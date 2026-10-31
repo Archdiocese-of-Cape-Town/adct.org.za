@@ -25,10 +25,8 @@ use Throwable;
  * Three properties of this class are the feature, and each is asserted by a
  * test that a plausible shortcut would break:
  *
- *  - Nothing here is reached by publishing. CandidatePublisher never receives a
- *    store, and the port it implements has no publish method, so publishing an
- *    event cannot copy its bulletin. Promotion is a separate call, made from a
- *    separate screen, behind a separate nonce.
+ *  - Publication reaches this adapter only after commit (issue #252). Manual
+ *    recovery and removal keep their separate capability and nonce checks.
  *  - The stored name is generated here and nowhere else. Parish filenames are
  *    attacker-controlled and a stored name is a path component, so the name
  *    handed to the media library is
@@ -48,6 +46,9 @@ use Throwable;
  */
 final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
 {
+    public const ERROR_META = '_adct_pi_source_material_errors';
+    private const HISTORY_PREFIX = '_adct_pi_source_material_attachment_';
+
     /**
      * The stored name's shape, recorded as one string rather than assembled at
      * the call site so a reviewer can check the whole format in one place.
@@ -95,6 +96,62 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
 
     public function promote(int $eventId, int $attachmentId, string $role): SourceAttachment
     {
+        return $this->promoteWithActor($eventId, $attachmentId, $role, $this->actorResolver->actor());
+    }
+
+    public function publishForEvent(int $eventId, int $messageId, string $actor, int $candidateId): void
+    {
+        $this->assertPositive($eventId, 'An event id must be positive.');
+        $this->assertPositive($messageId, 'A message id must be positive.');
+        $this->assertPositive($candidateId, 'A candidate id must be positive.');
+        if (trim($actor) === '') {
+            throw new InvalidArgumentException('Automatic source publication needs the recorded approver.');
+        }
+
+        $errors = [];
+        foreach ($this->attachments->findPromotableForMessage($messageId) as $row) {
+            $id = (int) $row['id'];
+            $mime = (string) $row['mime_type'];
+            if (! SourceAttachment::isPromotableMimeType($mime)) {
+                continue;
+            }
+            // History survives removal: a cache repair must not undo a human's
+            // decision, even when the same message supplied several candidates.
+            if (get_post_meta($eventId, self::HISTORY_PREFIX . $id, true) !== '') {
+                continue;
+            }
+            $sources = $this->forEvent($eventId);
+            if (array_filter($sources, static fn (SourceAttachment $source): bool => $source->attachmentId === $id)) {
+                continue;
+            }
+            $role = SourceAttachment::defaultRoleFor($mime);
+            if ($role === SourceAttachment::ROLE_POSTER && get_post_thumbnail_id($eventId) > 0) {
+                $role = SourceAttachment::ROLE_DOCUMENT;
+            }
+            try {
+                $this->promoteWithActor($eventId, $id, $role, $actor, $candidateId);
+            } catch (Throwable $failure) {
+                $errors[$id] = 'Source file ' . $id . ' could not be published. Retry from the event editor.';
+                error_log(sprintf(
+                    'ADCT Parish Intake: source publication failed for event %d, candidate %d, attachment %d (%s).',
+                    $eventId, $candidateId, $id, $failure::class
+                ));
+            }
+        }
+        update_post_meta($eventId, self::ERROR_META, $errors);
+        if (get_post_meta($eventId, self::ERROR_META, true) !== $errors) {
+            throw new \RuntimeException('Source publication errors could not be recorded for event ' . $eventId . '.');
+        }
+    }
+
+    private function promoteWithActor(
+        int $eventId,
+        int $attachmentId,
+        string $role,
+        string $actor,
+        ?int $candidateId = null
+    ): SourceAttachment
+    {
         $this->assertPositive($eventId, 'An event id must be positive.');
         $this->assertPositive($attachmentId, 'An attachment id must be positive.');
 
@@ -121,6 +178,9 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
         }
 
         $existing = $this->eventMeta->readSourceAttachmentIds($eventId);
+        $previousThumbnail = get_post_thumbnail_id($eventId);
+        $historyKey = self::HISTORY_PREFIX . $attachmentId;
+        $previousHistory = get_post_meta($eventId, $historyKey, true);
         $storedName = $this->storedName($eventId, $attachmentId, $mimeType);
         $filename = (string) ($row['filename'] ?? '');
 
@@ -137,15 +197,35 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
 
         try {
             $source = new SourceAttachment($attachmentId, $copy['id'], $role, $filename);
-            $this->attach($eventId, $source, $existing, $storedName);
+            $this->attach($eventId, $source, $existing, $storedName, $actor, $candidateId);
         } catch (Throwable $failure) {
             // The bytes are on disk with nothing pointing at them, which is the
             // orphan the design forbids. Undo the copy so a retry starts clean.
-            $this->discard($copy['file']);
+            try {
+                $this->eventMeta->writeSourceAttachmentIds($eventId, $existing);
+                if ($previousThumbnail > 0) {
+                    $this->eventMeta->setFeaturedImage($eventId, $previousThumbnail);
+                } else {
+                    $this->eventMeta->clearFeaturedImage($eventId, $copy['id']);
+                }
+                if ($previousHistory === '') {
+                    delete_post_meta($eventId, $historyKey);
+                } else {
+                    update_post_meta($eventId, $historyKey, $previousHistory);
+                }
+            } finally {
+                wp_delete_attachment($copy['id'], true);
+                $this->discard($copy['file']);
+            }
 
             throw $failure;
         }
 
+        $errors = get_post_meta($eventId, self::ERROR_META, true);
+        if (is_array($errors) && isset($errors[$attachmentId])) {
+            unset($errors[$attachmentId]);
+            update_post_meta($eventId, self::ERROR_META, $errors);
+        }
         return $source;
     }
 
@@ -171,6 +251,7 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
             throw new DomainException('That item is not published with this event.');
         }
 
+        update_post_meta($eventId, self::HISTORY_PREFIX . (int) $removed['attachment_id'], $mediaId);
         $this->eventMeta->writeSourceAttachmentIds($eventId, $kept);
 
         if ((string) $removed['role'] === SourceAttachment::ROLE_POSTER) {
@@ -226,7 +307,14 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
      *
      * @param list<array<string, mixed>> $existing
      */
-    private function attach(int $eventId, SourceAttachment $source, array $existing, string $storedName): void
+    private function attach(
+        int $eventId,
+        SourceAttachment $source,
+        array $existing,
+        string $storedName,
+        string $actor,
+        ?int $candidateId
+    ): void
     {
         $entries = [];
         foreach ($existing as $entry) {
@@ -249,13 +337,21 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
         $entries[] = $source->toMetaEntry();
 
         $this->eventMeta->writeSourceAttachmentIds($eventId, $entries);
-        wp_update_post(['ID' => $source->mediaId, 'post_parent' => $eventId]);
+        $parented = wp_update_post(['ID' => $source->mediaId, 'post_parent' => $eventId], true);
+        if (! is_int($parented) || $parented !== $source->mediaId) {
+            throw new \RuntimeException('The source material could not be parented to the event.');
+        }
 
         if ($source->isPoster()) {
             $this->eventMeta->setFeaturedImage($eventId, $source->mediaId);
         }
 
-        $this->writeAuditRow($eventId, $source, true, $storedName);
+        $historyKey = self::HISTORY_PREFIX . $source->attachmentId;
+        update_post_meta($eventId, $historyKey, $source->mediaId);
+        if ((int) get_post_meta($eventId, $historyKey, true) !== $source->mediaId) {
+            throw new \RuntimeException('The source publication history could not be saved.');
+        }
+        $this->writeAuditRow($eventId, $source, true, $storedName, $actor, $candidateId);
     }
 
     /**
@@ -284,6 +380,10 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
         if (! is_file($sourceFile)) {
             throw new DomainException('The stored intake file for this attachment is unavailable.');
         }
+        $actualSize = filesize($sourceFile);
+        if ($actualSize === false || $actualSize < 1 || $actualSize > self::MAX_UPLOAD_BYTES) {
+            throw new DomainException('The stored source file is empty or exceeds the publication size limit.');
+        }
 
         try {
             return $this->media->sideload(
@@ -294,7 +394,7 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
                     // generated from ids and the declared type.
                     'name' => $storedName,
                     'tmp_name' => $sourceFile,
-                    'size' => $size > 0 ? $size : (int) (filesize($sourceFile) ?: 0),
+                    'size' => $actualSize,
                     'type' => $mimeType,
                     'error' => 0,
                 ],
@@ -367,7 +467,8 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
             return;
         }
 
-        if (wp_delete_file($file) !== true) {
+        wp_delete_file($file);
+        if (is_file($file)) {
             error_log(sprintf('ADCT Parish Intake: could not remove the half-promoted copy at %s.', $file));
         }
     }
@@ -376,7 +477,9 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
         int $eventId,
         SourceAttachment $source,
         bool $promoted,
-        ?string $storedName
+        ?string $storedName,
+        ?string $actor = null,
+        ?int $candidateId = null
     ): void {
         $details = [
             'attachment_id' => $source->attachmentId,
@@ -388,9 +491,13 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
         if ($storedName !== null) {
             $details['stored_name'] = $storedName;
         }
+        if ($candidateId !== null) {
+            $details['candidate_id'] = $candidateId;
+            $details['automatic'] = true;
+        }
 
         $this->audit->write(
-            $this->actorResolver->actor(),
+            $actor ?? $this->actorResolver->actor(),
             $promoted ? AuditAction::SOURCE_MATERIAL_PROMOTED : AuditAction::SOURCE_MATERIAL_REMOVED,
             AuditSubjectType::EVENT,
             $eventId,

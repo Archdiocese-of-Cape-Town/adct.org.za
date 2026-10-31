@@ -442,7 +442,7 @@ final class EventPostType
             $entries[] = [
                 'media_id' => (int) $mediaId,
                 'role' => $role,
-                'original_filename' => sanitize_text_field($filename),
+                'original_filename' => mb_substr($filename, 0, 255),
                 'attachment_id' => (int) $attachmentId,
             ];
         }

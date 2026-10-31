@@ -11,8 +11,8 @@ use DomainException;
  *
  * This is the whole of #172's promotion state: an event post, an ordered list of
  * these, and nothing else. There is deliberately no "pending promotion" state and
- * no path, because a media-library copy exists only once a person has asked for
- * one (ADR 0025). Anything that has not been promoted has no object here and no
+ * no path, because a media-library copy exists only after publication or manual
+ * recovery (proposed ADR 0026). Anything not copied has no object here and no
  * route to a public page.
  *
  * `originalFilename` is parish-supplied and therefore untrusted. It is carried

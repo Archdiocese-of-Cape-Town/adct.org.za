@@ -186,6 +186,26 @@ Occurrences use the inclusive site-local date window from today through the same
 
 The status flag is separate from WordPress's Draft/Published post status: it records Scheduled, Cancelled or Postponed. Publishing an event makes the post public; changing it away from Published or deleting it removes its occurrence rows. Cancelled occurrences remain stored and are marked cancelled; postponed occurrences remain stored and are not marked cancelled, while the event's Postponed status remains available for display. If occurrence rebuilding fails, the previous rows are preserved; the REST save reports an error, or the event editor shows an admin notice with a retry/contact instruction. A failed REST create has still saved the event and its error includes the event ID; update that saved event instead of repeating the create request. Contact name, email and phone are private event metadata, available only to users who can edit the event and never exposed by the public REST API. The starter event types (Social, Spiritual, Formation, Liturgy/Mass, Youth, Outreach, Fundraising, Meeting, Pilgrimage and Other) are **provisional**. Administrators and Editors can manage terms under **Events → Event Types**; event editors can assign existing terms. Edit a type's **Classification keywords** there, one word or phrase per line (up to 25 phrases, at most 100 bytes each and 3 KB total). A blank list disables automatic matching for that type; new custom types can have keywords too. The next parsed message uses the edited list without a deployment. The parser compares whole words/phrases in each event's cleaned title and body, weights title matches twice, and chooses a unique highest-scoring type. Ties and no match use Other with low *type* confidence (0.2); general parser confidence remains independent. Keyword matches are not copied into public event descriptions or diagnostic notes. Review the proposed type before approval: automatic types are assigned to new events, but subsequent automatically typed updates do not replace a type already chosen on the event. If several types are assigned, the occurrence row stores the lowest term ID for index compatibility; public listing filters match any assigned type.
 
+### Source posters and bulletins
+
+Publishing an approved email-derived event also publishes its eligible PDF,
+JPEG, PNG and WebP attachments. No second promotion step is needed. The first
+image becomes the poster if no featured image is already selected; other
+images appear as source-document links. HEIC/HEIF and the original email are
+not published. Review the whole notice before approving, including attachments.
+
+Open the event's **Source material** box to remove a file or retry a failed
+copy. A copy failure does not unpublish the event, and a warning identifies
+the file requiring recovery. Republishing the same candidate repairs failed
+copies without duplicating successful ones or restoring files you removed.
+Manual re-add is still available if the private original remains stored.
+
+Removal hides the file from this event, but does not delete the media-library
+asset or revoke a URL already shared publicly. Public copies survive intake
+retention. Contact the site owner when actual media deletion is required.
+The disclosure and public-asset retention assumptions are recorded in
+[proposed ADR 0026](decisions/0026-publication-discloses-eligible-source-material.md).
+
 ### Undoing a change
 
 Whoever is notified about a change to an event is emailed a **change notice**

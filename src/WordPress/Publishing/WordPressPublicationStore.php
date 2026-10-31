@@ -32,7 +32,8 @@ final class WordPressPublicationStore implements PublicationStoreInterface
         private EventListingGeneration $listingGeneration,
         private ClockInterface $clock,
         private DateTimeZone $timezone,
-        private ?AuditWriter $audit = null
+        private ?AuditWriter $audit = null,
+        private ?WordPressSourceMaterialStore $sourceMaterial = null
     ) {
     }
 
@@ -73,7 +74,7 @@ final class WordPressPublicationStore implements PublicationStoreInterface
                 if ($eventId !== null && (int) get_post_meta($eventId, 'source_candidate_id', true) === $candidateId) {
                     $this->execute('COMMIT');
                     $committed = true;
-                    return $this->afterCommit($eventId);
+                    return $this->afterCommit($eventId, $row, $publication->actor);
                 }
                 throw new DomainException('The candidate was already published to another event.');
             }
@@ -226,12 +227,13 @@ final class WordPressPublicationStore implements PublicationStoreInterface
             }
             $this->execute('COMMIT');
             $committed = true;
-            return $this->afterCommit($eventId);
+            return $this->afterCommit($eventId, $row, $publication->actor);
         } catch (Throwable $failure) {
             if ($committed) {
                 throw new RuntimeException(
-                    'Event ' . $eventId . ' was committed, but its listing cache could not be refreshed. '
-                    . 'Retry publishing candidate ' . $candidateId . ' to repair the cache generation.',
+                    'Event ' . $eventId . ' was committed, but post-publication work failed: '
+                    . $failure->getMessage() . ' Retry publishing candidate ' . $candidateId
+                    . ' to repair its source material or listing cache.',
                     0,
                     $failure
                 );
@@ -254,10 +256,46 @@ final class WordPressPublicationStore implements PublicationStoreInterface
         }
     }
 
-    private function afterCommit(int $eventId): int
+    /** @param array<string, mixed> $row */
+    private function afterCommit(int $eventId, array $row, string $actor): int
     {
-        clean_post_cache($eventId);
-        $this->listingGeneration->bump();
+        try {
+            $messageId = (int) ($row['message_id'] ?? 0);
+            if ($messageId > 0 && $this->sourceMaterial !== null) {
+                $lock = 'adct-source-' . hash('sha256', $this->database->prefix() . ':' . $eventId);
+                $lock = substr($lock, 0, 64);
+                $locked = false;
+                try {
+                    $result = $this->row($this->database->prepare('SELECT GET_LOCK(%s, 0) AS acquired', $lock));
+                    if ((int) ($result['acquired'] ?? 0) !== 1) {
+                        throw new RuntimeException('Source publication is already running for this event.');
+                    }
+                    $locked = true;
+                    clean_post_cache($eventId);
+                    if ((int) get_post_meta($eventId, 'source_candidate_id', true) === (int) $row['id']) {
+                        $this->sourceMaterial->publishForEvent($eventId, $messageId, $actor, (int) $row['id']);
+                    }
+                } catch (Throwable $failure) {
+                    error_log(sprintf(
+                        'ADCT Parish Intake: source publication failed for event %d (%s).',
+                        $eventId, $failure::class
+                    ));
+                    throw new RuntimeException(
+                        'Event ' . $eventId . ' is published, but source material could not be processed. '
+                        . 'Retry publishing candidate ' . (int) $row['id'] . '.',
+                        0,
+                        $failure
+                    );
+                } finally {
+                    if ($locked) {
+                        $this->row($this->database->prepare('SELECT RELEASE_LOCK(%s) AS released', $lock));
+                    }
+                }
+            }
+        } finally {
+            clean_post_cache($eventId);
+            $this->listingGeneration->bump();
+        }
         return $eventId;
     }
 

@@ -59,6 +59,7 @@ final class WordPressSourceMaterialStoreTest extends TestCase
     'adct_test_media_next_id',
     'adct_test_sideload_type',
     'adct_test_generated_metadata',
+    'adct_test_metadata_error',
     'adct_test_children_queries',
     'adct_publishing_meta',
     'adct_publishing_featured',
@@ -143,6 +144,139 @@ final class WordPressSourceMaterialStoreTest extends TestCase
         self::assertSame(42, (int) ($post['post_parent'] ?? 0), 'the copy is parented to the event');
         self::assertSame('image/jpeg', (string) ($post['post_mime_type'] ?? ''));
         }
+
+    public function testPublicationCopiesEveryEligibleFileAndAttributesTheRecordedApprover(): void
+    {
+        $store = $this->store([
+            7 => $this->row(7, 'poster.jpg', 'image/jpeg'),
+            8 => $this->row(8, 'second.png', 'image/png'),
+            9 => $this->row(9, 'bulletin.pdf', 'application/pdf'),
+            10 => $this->row(10, 'phone.heic', 'image/heic'),
+        ], $audit = new RecordingAuditWriter());
+
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+
+        self::assertSame(['poster', 'document', 'bulletin'], array_map(
+            static fn (SourceAttachment $source): string => $source->role,
+            $store->forEvent(42)
+        ));
+        self::assertSame(901, get_post_thumbnail_id(42));
+        self::assertCount(3, $GLOBALS['adct_test_sideloads']);
+        self::assertSame('reviewer@example.test', $audit->rows[0]['actor']);
+        self::assertSame(12, $audit->rows[0]['details']['candidate_id']);
+        self::assertTrue($audit->rows[0]['details']['automatic']);
+        self::assertFileExists($this->intakeDir . '/' . str_repeat('a', 64) . '.jpg');
+    }
+
+    public function testPublicationRetryDoesNotCopyAgainOrRestoreAnExplicitRemoval(): void
+    {
+        $store = $this->store([7 => $this->row(7, 'poster.jpg', 'image/jpeg')]);
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        $store->remove(42, 901);
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+
+        self::assertCount(1, $GLOBALS['adct_test_sideloads']);
+        self::assertSame([], $store->forEvent(42));
+        self::assertSame(0, get_post_thumbnail_id(42));
+    }
+
+    public function testCopyFailureIsVisibleAndRetryRepairsItWithoutDuplicatingSuccessfulFiles(): void
+    {
+        $store = $this->store([
+            7 => $this->row(7, 'poster.jpg', 'image/jpeg'),
+            8 => array_replace($this->row(8, 'missing.pdf', 'application/pdf'), ['storage_path' => str_repeat('b', 64) . '.pdf']),
+        ]);
+        unlink($this->intakeDir . '/' . str_repeat('b', 64) . '.pdf');
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+
+        self::assertCount(1, $store->forEvent(42));
+        self::assertArrayHasKey(8, get_post_meta(42, WordPressSourceMaterialStore::ERROR_META, true));
+        file_put_contents($this->intakeDir . '/' . str_repeat('b', 64) . '.pdf', 'synthetic PDF');
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+
+        self::assertCount(2, $store->forEvent(42));
+        self::assertCount(2, $GLOBALS['adct_test_sideloads']);
+        self::assertSame([], get_post_meta(42, WordPressSourceMaterialStore::ERROR_META, true));
+    }
+
+    public function testPublicationWithoutAttachmentsDoesNotCopyAnything(): void
+    {
+        $store = $this->store([]);
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        self::assertSame([], $store->forEvent(42));
+        self::assertSame([], $GLOBALS['adct_test_sideloads']);
+    }
+
+    public function testAnAuditFailureRestoresThePreviousStateAndRemovesTheUnauditedCopy(): void
+    {
+        $store = $this->store(
+            [7 => $this->row(7, 'poster.jpg', 'image/jpeg')],
+            $audit = new RecordingAuditWriter()
+        );
+        $audit->fail = true;
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        self::assertSame([], $store->forEvent(42));
+        self::assertSame(0, get_post_thumbnail_id(42));
+        self::assertSame([], glob($this->uploadsDir . '/*'));
+        self::assertSame([901], $GLOBALS['adct_test_media_deleted']);
+
+        $audit->fail = false;
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        self::assertCount(1, $store->forEvent(42));
+        self::assertCount(1, $audit->rows);
+    }
+
+    public function testAFailedFirstAttachmentDoesNotPreventTheNextFileFromPublishing(): void
+    {
+        $store = $this->store([
+            7 => array_replace($this->row(7, 'missing.jpg', 'image/jpeg'), ['storage_path' => str_repeat('b', 64) . '.jpg']),
+            8 => $this->row(8, 'bulletin.pdf', 'application/pdf'),
+        ]);
+        unlink($this->intakeDir . '/' . str_repeat('b', 64) . '.jpg');
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        self::assertSame(8, $store->forEvent(42)[0]->attachmentId);
+        self::assertArrayHasKey(7, get_post_meta(42, WordPressSourceMaterialStore::ERROR_META, true));
+    }
+
+    public function testMetadataFailureRemovesTheCopyAndKeepsTheOriginalForRetry(): void
+    {
+        $store = $this->store([7 => $this->row(7, 'poster.jpg', 'image/jpeg')]);
+        $GLOBALS['adct_test_metadata_error'] = true;
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        self::assertSame([], glob($this->uploadsDir . '/*'));
+        self::assertSame([], $GLOBALS['adct_test_media_posts']);
+        self::assertFileExists($this->intakeDir . '/' . str_repeat('a', 64) . '.jpg');
+        $GLOBALS['adct_test_metadata_error'] = false;
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        self::assertCount(1, $store->forEvent(42));
+    }
+
+    public function testActualSizeIsCheckedEvenWhenTheIntakeRowClaimsASmallFile(): void
+    {
+        $store = $this->store([7 => $this->row(7, 'poster.jpg', 'image/jpeg')]);
+        $file = fopen($this->intakeDir . '/' . str_repeat('a', 64) . '.jpg', 'wb');
+        self::assertIsResource($file);
+        ftruncate($file, 20971521);
+        fclose($file);
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        self::assertSame([], $GLOBALS['adct_test_sideloads']);
+        self::assertArrayHasKey(7, get_post_meta(42, WordPressSourceMaterialStore::ERROR_META, true));
+    }
+
+    public function testRegisteredMetaSanitizerPreservesDisplayOnlyFilenames(): void
+    {
+        $entry = (new SourceAttachment(7, 901, 'bulletin', '<script>bulletin</script>\\notice.pdf'))->toMetaEntry();
+        self::assertSame([$entry], \ADCT\ParishIntake\WordPress\Events\EventPostType::sanitizeSourceAttachmentIds([$entry]));
+    }
+
+    public function testWordPressMetaUnslashingDoesNotChangeTheSubmittedFilename(): void
+    {
+        $filename = '..\\..\\<script>notice</script>.pdf';
+        $store = $this->store([7 => $this->row(7, $filename, 'application/pdf')]);
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        self::assertSame($filename, $store->forEvent(42)[0]->originalFilename);
+    }
 
     /**
      * The gateway hands `wp_handle_sideload()` an upload array.
@@ -1046,6 +1180,7 @@ final class RecordingAuditWriter implements AuditWriter
      * @var list<array{actor: string, action: AuditAction, subjectType: string, subjectId: int, details: array<string, mixed>}>
      */
 public array $rows = [];
+public bool $fail = false;
 
 public function write(
 string $actor,
@@ -1054,6 +1189,9 @@ string $subjectType,
 int $subjectId,
 array $details
 ): int {
+    if ($this->fail) {
+        throw new RuntimeException('Synthetic audit failure.');
+    }
     $this->rows[] = [
     'actor' => $actor,
     'action' => $action,

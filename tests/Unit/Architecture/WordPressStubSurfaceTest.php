@@ -163,6 +163,7 @@ final class WordPressStubSurfaceTest extends TestCase
                                                                             'wp_get_attachment_url',
                                                                             'wp_handle_sideload',
                                                                             'wp_insert_attachment',
+                                                                            'wp_slash',
                                                                             'wp_update_attachment_metadata',
                                                                             'wp_update_post',
                                                                         ],
