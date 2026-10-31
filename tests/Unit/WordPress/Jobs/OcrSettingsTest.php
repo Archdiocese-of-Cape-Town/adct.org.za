@@ -24,9 +24,9 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Jobs {
         }
 
         #[DataProvider('acceptedTruthyValues')]
-        public function testAnExplicitOptInIsHonoured(mixed $submitted): void
+        public function testAnExplicitOptInCannotEnableServerSideOcr(mixed $submitted): void
         {
-            self::assertTrue(OcrSettings::fromValues($submitted, '20')->isEnabled());
+            self::assertFalse(OcrSettings::fromValues($submitted, '20')->isEnabled());
         }
 
         /**
@@ -101,7 +101,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Jobs {
         {
             $settings = OcrSettings::fromValues('1', $submitted);
 
-            self::assertTrue($settings->isEnabled());
+            self::assertFalse($settings->isEnabled());
             self::assertNotNull($settings->configurationError());
             self::assertStringContainsString('daily call limit', (string) $settings->configurationError());
         }
@@ -128,7 +128,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Jobs {
 
             $settings = OcrSettings::current();
 
-            self::assertTrue($settings->isEnabled());
+            self::assertFalse($settings->isEnabled());
             self::assertSame(5, $settings->dailyCallLimit());
         }
 

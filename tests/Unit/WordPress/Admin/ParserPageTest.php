@@ -245,7 +245,6 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
     use ADCT\ParishIntake\WordPress\Database\Repository\AttachmentRepository;
     use ADCT\ParishIntake\WordPress\Database\Schema;
     use ADCT\ParishIntake\WordPress\Export\StaticReportGenerator;
-        use ADCT\ParishIntake\WordPress\Ocr\OcrSpaceProvider;
     use ADCT\ParishIntake\WordPress\Jobs\OcrSettings;
     use ADCT\ParishIntake\WordPress\Jobs\RetentionSettings;
     use PHPUnit\Framework\TestCase;
@@ -416,67 +415,17 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             );
         }
 
-        /**
-         * A settings form posts every field on every save, so this is the
-         * "nothing changed" baseline the audit tests compare against. The
-         * section keywords are the sanitised defaults, because a submitted
-         * list is merged over the defaults rather than replacing them, and a
-         * baseline that differs from what would be stored would look like a
-         * change on every save.
-         *
-         * @return array<string, string|array<string, string>>
-         */
-        public function testTheOcrOptInIsOffUntilAnAdministratorTurnsItOn(): void
+        public function testASettingsRequestCannotEnableOcrOrChangeItsSavedConfiguration(): void
         {
-            self::assertSame('0', $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION]);
+            $ocrKeyOption = SecretRegistry::optionName(SecretRegistry::OCR_API_KEY);
+            $GLOBALS['parser_page_options'][$ocrKeyOption] = 'K811-retained';
+            $GLOBALS['wpdb']->rows = $GLOBALS['parser_page_options'];
 
             $_POST = $this->settingsPost();
             $_POST['ocr_enabled'] = '1';
-
-            $audit = new RecordingAuditWriter();
-            $this->page(audit: $audit)->maybeHandleSettings();
-
-            self::assertSame('1', $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION]);
-            self::assertCount(1, $audit->rows);
-            $options = array_column($audit->rows[0]['details']['changed'], 'option', 'option');
-            self::assertArrayHasKey(OcrSettings::ENABLED_OPTION, $options);
-        }
-
-        public function testUncheckingTheOcrOptInWritesItOffRatherThanLeavingItOn(): void
-        {
-            // An unchecked checkbox is not submitted at all, so the handler has
-            // to read absence as "off" or a revoke would silently do nothing.
-            $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION] = '1';
-
-            $_POST = $this->settingsPost();
-
-            $audit = new RecordingAuditWriter();
-            $this->page(audit: $audit)->maybeHandleSettings();
-
-            self::assertSame('0', $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION]);
-            self::assertCount(1, $audit->rows);
-        }
-
-        public function testTheOcrDailyCallLimitIsStoredAndAudited(): void
-        {
-            $_POST = $this->settingsPost();
             $_POST['ocr_daily_call_limit'] = '3';
-
-            $audit = new RecordingAuditWriter();
-            $this->page(audit: $audit)->maybeHandleSettings();
-
-            self::assertSame('3', $GLOBALS['parser_page_options'][OcrSettings::DAILY_CALL_LIMIT_OPTION]);
-            self::assertArrayHasKey(
-                OcrSettings::DAILY_CALL_LIMIT_OPTION,
-                array_column($audit->rows[0]['details']['changed'], 'option', 'option')
-            );
-        }
-
-        public function testAnUnusableOcrLimitLeavesEverySettingUnchanged(): void
-        {
-            $_POST = $this->settingsPost();
-            $_POST['ocr_enabled'] = '1';
-            $_POST['ocr_daily_call_limit'] = '0';
+            $_POST['ocr_api_key'] = 'K811-forged';
+            $_POST['remove_ocr_api_key'] = '1';
             $_POST['ai_provider'] = 'openrouter';
 
             $page = $this->page();
@@ -486,93 +435,31 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             self::assertSame('none', $GLOBALS['parser_page_options']['adct_parish_intake_ai_provider']);
             self::assertSame('0', $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION]);
             self::assertSame(
-                'Poster OCR is enabled, but the daily call limit must be a whole number between '
-                . OcrSettings::MIN_DAILY_CALL_LIMIT . ' and ' . OcrSettings::MAX_DAILY_CALL_LIMIT . '.',
-                $this->privateProperty($page, 'settingsSaveError')
-            );
-        }
-
-        public function testAnOcrLimitThatIsMerelyUnusableIsIgnoredWhenOcrStaysOff(): void
-        {
-            // Switching OCR off must never be blocked by a bad cap field: the
-            // operator's way out of the feature has to keep working.
-            $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION] = '1';
-            $_POST = $this->settingsPost();
-            $_POST['ocr_daily_call_limit'] = 'not a number';
-
-            $audit = new RecordingAuditWriter();
-            $this->page(audit: $audit)->maybeHandleSettings();
-
-            self::assertSame('0', $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION]);
-            self::assertSame(
                 (string) OcrSettings::DEFAULT_DAILY_CALL_LIMIT,
                 $GLOBALS['parser_page_options'][OcrSettings::DAILY_CALL_LIMIT_OPTION]
             );
-            self::assertCount(1, $audit->rows);
+            self::assertSame('K811-retained', $GLOBALS['parser_page_options'][$ocrKeyOption]);
+            self::assertStringContainsString(
+                'Automatic server-side poster OCR is unavailable',
+                (string) $this->privateProperty($page, 'settingsSaveError')
+            );
         }
 
-        public function testASavedOcrApiKeyIsNeverEchoedIntoTheAuditRow(): void
+        public function testSavingOtherSettingsPreservesPreviouslySavedOcrOptionsAndKey(): void
         {
+            $ocrKeyOption = SecretRegistry::optionName(SecretRegistry::OCR_API_KEY);
+            $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION] = '1';
+            $GLOBALS['parser_page_options'][OcrSettings::DAILY_CALL_LIMIT_OPTION] = '7';
+            $GLOBALS['parser_page_options'][$ocrKeyOption] = 'K811-retained';
+            $GLOBALS['wpdb']->rows = $GLOBALS['parser_page_options'];
             $_POST = $this->settingsPost();
-            $_POST['ocr_enabled'] = '1';
-            $_POST['ocr_api_key'] = 'K811-do-not-log-ocr';
 
-            $audit = new RecordingAuditWriter();
-            $this->page(audit: $audit)->maybeHandleSettings();
+            $this->page()->maybeHandleSettings();
 
-            self::assertCount(1, $audit->rows);
-            self::assertStringNotContainsString(
-                'K811-do-not-log-ocr',
-                json_encode($audit->rows[0]['details'], JSON_THROW_ON_ERROR)
-            );
-            self::assertSame(
-                'K811-do-not-log-ocr',
-                $GLOBALS['parser_page_options'][SecretRegistry::optionName(SecretRegistry::OCR_API_KEY)]
-            );
+            self::assertSame('1', $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION]);
+            self::assertSame('7', $GLOBALS['parser_page_options'][OcrSettings::DAILY_CALL_LIMIT_OPTION]);
+            self::assertSame('K811-retained', $GLOBALS['parser_page_options'][$ocrKeyOption]);
         }
-
-        public function testRemovingTheOcrApiKeyIsRecordedAsRemovalRatherThanSilently(): void
-        {
-            $GLOBALS['parser_page_options'][SecretRegistry::optionName(SecretRegistry::OCR_API_KEY)] = 'K811-old';
-
-            $_POST = $this->settingsPost();
-            $_POST['remove_ocr_api_key'] = '1';
-
-            $audit = new RecordingAuditWriter();
-            $this->page(audit: $audit)->maybeHandleSettings();
-
-            $option = SecretRegistry::optionName(SecretRegistry::OCR_API_KEY);
-            self::assertArrayNotHasKey($option, $GLOBALS['parser_page_options']);
-            self::assertCount(1, $audit->rows);
-            self::assertStringNotContainsString(
-                'K811-old',
-                json_encode($audit->rows[0]['details'], JSON_THROW_ON_ERROR)
-            );
-        }
-
-        public function testAnOcrKeyIsNotStoredWhileOneIsDefinedInWpConfig(): void
-        {
-                    // A wp-config.php constant cannot be defined and then undefined
-                    // inside one PHP process, so the constant path is exercised in its
-                    // own process by tests/Integration/verify-plugin.php. What matters
-                    // here is the writable half: a submitted key is stored, and nothing
-                    // about it reaches the audit row.
-                    $_POST = $this->settingsPost();
-                    $_POST['ocr_enabled'] = '1';
-                    $_POST['ocr_api_key'] = 'K811-writable';
-
-                    $audit = new RecordingAuditWriter();
-                    $this->page(audit: $audit)->maybeHandleSettings();
-
-                    self::assertSame(
-                        'K811-writable',
-                        $GLOBALS['parser_page_options'][SecretRegistry::optionName(SecretRegistry::OCR_API_KEY)]
-                    );
-                    self::assertStringNotContainsString(
-                        'K811-writable',
-                        json_encode($audit->rows[0]['details'], JSON_THROW_ON_ERROR)
-                    );
-                }
 
         public function testAnUnreadablePosterLookupFailureIsLoggedWithoutExposingDatabaseDetails(): void
         {
@@ -623,8 +510,10 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             }
         }
 
-        public function testTheSettingsPageExplainsWhatPosterOcrSendsOffTheSite(): void
+        public function testTheSettingsPageExplainsThatAutomaticPosterOcrIsUnavailable(): void
         {
+            $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION] = '1';
+
             ob_start();
             try {
                 $this->page()->renderSettingsPage();
@@ -632,71 +521,16 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                 $html = (string) ob_get_clean();
             }
 
-            self::assertStringContainsString('name="ocr_enabled"', $html);
-            self::assertStringContainsString('name="ocr_daily_call_limit"', $html);
-            self::assertStringContainsString('name="ocr_api_key" value=""', $html);
-            self::assertStringContainsString(OcrSpaceProvider::PROVIDER_NAME, $html);
-            // The egress note has to say what is NOT sent, or an operator
-            // cannot make the POPIA decision the opt-in exists to force.
-            self::assertStringContainsString('the image attachment itself and nothing else', $html);
-            self::assertStringContainsString('never sent with it', $html);
-            self::assertStringContainsString('never shown again', $html);
-        }
-
-        public function testTheSettingsPageSaysPosterOcrIsOffByDefault(): void
-        {
-            ob_start();
-            try {
-                $this->page()->renderSettingsPage();
-            } finally {
-                $html = (string) ob_get_clean();
-            }
-
-            self::assertStringContainsString('off by default', $html);
-            self::assertStringNotContainsString('name="ocr_enabled" value="1" checked', $html);
-        }
-
-        public function testTheSettingsPageNeverEchoesASavedOcrKey(): void
-        {
-            $html = $this->renderSettings(storedKeys: [SecretRegistry::OCR_API_KEY => 'K811-never-shown']);
-
-            // The field stays empty and the key appears nowhere, so the secret never
-            // reaches the page HTML or the admin DOM.
-            self::assertStringNotContainsString('K811-never-shown', $html);
-            self::assertStringContainsString('name="ocr_api_key" value=""', $html);
-            // A saved key is never re-pasted over by the paste prompt.
-            self::assertStringNotContainsString($this->ocrKeyPrompt(), $html);
-        }
-
-        public function testTheSettingsPageOffersToRemoveASavedOcrKey(): void
-        {
-            $html = $this->renderSettings(storedKeys: [SecretRegistry::OCR_API_KEY => 'K811-saved']);
-
-            // Without this control a saved key can only be removed by editing the
-            // database, which is exactly what the no-WP-CLI rule rules out.
-            self::assertStringContainsString('A key is saved. Leave blank to keep it.', $html);
-            self::assertStringContainsString('name="remove_ocr_api_key"', $html);
-        }
-
-        public function testTheSettingsPagePromptsForAOcrKeyWhenNoneIsSaved(): void
-        {
-            $html = $this->renderSettings();
-
-            self::assertStringContainsString($this->ocrKeyPrompt(), $html);
-            self::assertStringNotContainsString('name="remove_ocr_api_key"', $html);
-        }
-
-        /**
-         * The OCR row's "paste a key" prompt.
-         *
-         * Distinct from the AI key prompt directly above it, which reads "Paste a
-         * valid API key" and does not name the provider. Asserting on the bare
-         * phrase "Paste a valid" therefore passes for the wrong row.
-         */
-        private function ocrKeyPrompt(): string
-        {
-            return 'Paste a valid ' . \ADCT\ParishIntake\WordPress\Ocr\OcrSpaceProvider::PROVIDER_NAME
-                . ' key only when you need to add or replace it.';
+            self::assertStringContainsString('Automatic server-side poster OCR is unavailable', $html);
+            self::assertStringContainsString('Any previously saved OCR setting or API key is retained but not used', $html);
+            self::assertStringContainsString('on-demand browser OCR', $html);
+            self::assertStringContainsString('manual entry', $html);
+            self::assertStringNotContainsString('name="ocr_enabled"', $html);
+            self::assertStringNotContainsString('name="ocr_daily_call_limit"', $html);
+            self::assertStringNotContainsString('name="ocr_api_key"', $html);
+            self::assertStringNotContainsString('api.ocr.space', $html);
+            self::assertStringNotContainsString('Turn it on', $html);
+            self::assertStringNotContainsString('off by default', $html);
         }
 
         /**
