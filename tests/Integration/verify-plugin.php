@@ -14,6 +14,11 @@ use ADCT\ParishIntake\Core\Directory\Venue;
 use ADCT\ParishIntake\Core\Directory\VenueAdministrationService;
 use ADCT\ParishIntake\Core\Directory\VenueDirectoryImporter;
 use ADCT\ParishIntake\Core\Directory\VenueLookup;
+use ADCT\ParishIntake\Core\Events\EventValidator;
+use ADCT\ParishIntake\Core\Events\OccurrenceExpander;
+use ADCT\ParishIntake\Core\Events\OccurrenceWindow;
+use ADCT\ParishIntake\Core\Events\RRulePresetMapper;
+use ADCT\ParishIntake\Core\Events\RRuleValidator;
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxEncryption;
 use ADCT\ParishIntake\Core\Ingestion\AuthenticationResult;
 use ADCT\ParishIntake\Core\Ingestion\AuthenticationResults;
@@ -36,6 +41,7 @@ use ADCT\ParishIntake\Core\Mail\ConfirmationEmailPreviewService;
 use ADCT\ParishIntake\Core\Mail\ConfirmationEmailRenderer;
 use ADCT\ParishIntake\Core\Mail\OutboundEmail;
 use ADCT\ParishIntake\Core\Ports\DirectorySnapshotProviderInterface;
+use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Security\SecretRegistry;
 use ADCT\ParishIntake\Core\Sources\Source;
 use ADCT\ParishIntake\Core\Sources\SourceHealthRecorder;
@@ -56,6 +62,7 @@ use ADCT\ParishIntake\WordPress\Database\Repository\ParishRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\MailboxRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\SourceRepository;
 use ADCT\ParishIntake\WordPress\Database\Repository\VenueRepository;
+use ADCT\ParishIntake\WordPress\Database\Repository\OccurrenceRepository;
 use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use ADCT\ParishIntake\WordPress\Database\WordPressMailQueueRepository;
 use ADCT\ParishIntake\WordPress\Admin\OutboundMailPage;
@@ -68,6 +75,7 @@ use ADCT\ParishIntake\WordPress\Directory\WordPressDirectoryVersionStore;
 use ADCT\ParishIntake\WordPress\Change\ChangeHistoryBox;
 use ADCT\ParishIntake\WordPress\Events\EventEditor;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
+use ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance;
 use ADCT\ParishIntake\WordPress\Mail\WordPressMailDeliveryAdapter;
 use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeRecipientPolicy;
 use ADCT\ParishIntake\WordPress\Mail\WordPressTestModeSettings;
@@ -2498,8 +2506,55 @@ $previousEventScreen = get_current_screen();
 $previousEventGet = $_GET;
 $previousMainQuery = $GLOBALS['wp_the_query'] ?? null;
 $legacyFeaturedValue = false;
+$eventFilterClock = new class implements ClockInterface {
+    public DateTimeImmutable $instant;
+
+    public function __construct()
+    {
+        $this->instant = new DateTimeImmutable('2026-10-10T14:00:01Z');
+    }
+
+    public function now(): DateTimeImmutable
+    {
+        return $this->instant;
+    }
+};
+$eventFilterTimezone = new DateTimeZone('Africa/Johannesburg');
+$eventFilterEditor = new EventEditor(
+    $parishRepository,
+    $venueRepository,
+    new EventValidator($eventFilterTimezone),
+    new RRulePresetMapper(),
+    $eventFilterTimezone,
+    $eventFilterClock
+);
+$eventFilterMaintenance = new WordPressEventOccurrenceMaintenance(
+    new OccurrenceRepository(new WordPressDatabaseConnection()),
+    new OccurrenceExpander($eventFilterTimezone, new RRuleValidator()),
+    $eventFilterClock
+);
+$originalNextDateFilters = [];
+foreach ($GLOBALS['wp_filter']['posts_where']->callbacks ?? [] as $callbacks) {
+    foreach ($callbacks as $callback) {
+        $handler = $callback['function'];
+        if (is_array($handler) && $handler[0] instanceof EventEditor && $handler[1] === 'filterNextDateWhere') {
+            $originalNextDateFilters[] = $handler;
+        }
+    }
+}
+if (count($originalNextDateFilters) !== 1) {
+    $fail('The event next-date SQL filter was not registered exactly once.');
+}
+$originalNextDateFilter = $originalNextDateFilters[0];
+remove_filter('posts_where', $originalNextDateFilter, 10);
+add_filter('posts_where', [$eventFilterEditor, 'filterNextDateWhere'], 10, 2);
 set_current_screen('edit-adct_event');
 try {
+    $eventFilterMaintenance->rebuildEvent($eventPostId, OccurrenceWindow::fromLocalDates(
+        '2026-10-10',
+        '2026-12-31',
+        $eventFilterTimezone
+    ));
     if (! is_admin()) {
         $fail('The event admin list filter test could not enter an admin screen.');
     }
@@ -2516,10 +2571,11 @@ try {
     };
     $nextEventDate = $wpdb->get_var($wpdb->prepare(
         "SELECT start_local_date FROM {$wpdb->prefix}adct_pi_occurrences "
-        . 'WHERE event_id = %d ORDER BY start_utc ASC LIMIT 1',
-        $eventPostId
+        . 'WHERE event_id = %d AND start_utc >= %s ORDER BY start_utc ASC LIMIT 1',
+        $eventPostId,
+        $eventFilterClock->now()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s')
     ));
-    if (! is_string($nextEventDate)
+    if ($nextEventDate !== '2026-11-13'
         || ! in_array($eventPostId, $matchingEventIds([
             'adct_pi_parish' => (string) $firstParishId,
             'adct_pi_next' => $nextEventDate,
@@ -2558,6 +2614,12 @@ try {
         $fail('The featured admin filter omitted a published event stored with explicit false metadata.');
     }
 } finally {
+    remove_filter('posts_where', [$eventFilterEditor, 'filterNextDateWhere'], 10);
+    add_filter('posts_where', $originalNextDateFilter, 10, 2);
+    $eventFilterMaintenance->rebuildEvent($eventPostId, OccurrenceWindow::rollingTwelveMonths(
+        $clock->now(),
+        $eventFilterTimezone
+    ));
     if ($legacyFeaturedValue) {
         update_post_meta($eventPostId, 'featured', true);
     }
