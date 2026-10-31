@@ -4,6 +4,8 @@
   "scripts": {
     "test:integration": "npm run test:integration-config && npm run test:assets && node scripts/test-integration.mjs",
     "test:assets": "node --test tests/Node/ocr-settings.test.mjs tests/Node/ocr-target.test.mjs",
+    "fixtures:check": "node scripts/check-pdf-fixtures.mjs",
+    "test:fixtures": "node --test tests/Node/pdf-fixtures.test.mjs",
     "test:integration-config": "node --test scripts/test-integration-config.test.mjs tests/Node/wp-env-home.test.mjs"
   },
   "devDependencies": {
