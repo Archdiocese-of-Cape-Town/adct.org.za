@@ -21,6 +21,7 @@ use ADCT\ParishIntake\WordPress\Approval\ApprovalNoticeJob;
 use ADCT\ParishIntake\WordPress\Approval\FrontEndApprovalQueue;
 use ADCT\ParishIntake\WordPress\Auth\NotifyModeChangeHandler;
 use ADCT\ParishIntake\WordPress\Jobs\HealthAlerts;
+use ADCT\ParishIntake\WordPress\Jobs\OcrSettings;
 use ADCT\ParishIntake\WordPress\Plugin;
 use PHPUnit\Framework\TestCase;
 
@@ -349,6 +350,39 @@ final class AdminGuideClaimsTest extends TestCase
     $label . ': the guide states "' . $asWritten[0] . '" to "' . $asWritten[1]
     . '" in "' . $sentence . '", but the code uses ' . $floor . ' to ' . $ceiling . '.'
     );
+    }
+    }
+
+    public function testTheSettingsAndGuideDoNotPromiseUnavailableServerOcrControlsOrLimits(): void
+    {
+    $screen = self::methodBody(
+    'src/WordPress/Admin/ParserPage.php',
+    'public function renderSettingsPage()'
+    );
+    $guide = self::guide(self::OPERATOR_GUIDE);
+
+    self::assertStringContainsString(
+    'Automatic server-side poster OCR is unavailable and cannot be enabled.',
+    $screen
+    );
+    foreach ([
+    'name="ocr_enabled"',
+    'name="ocr_daily_call_limit"',
+    'name="ocr_api_key"',
+    'min="<?php echo esc_attr((string) OcrSettings::MIN_DAILY_CALL_LIMIT); ?>"',
+    'max="<?php echo esc_attr((string) OcrSettings::MAX_DAILY_CALL_LIMIT); ?>"',
+    ] as $unavailableControl) {
+    self::assertStringNotContainsString($unavailableControl, $screen);
+    }
+
+    self::assertStringContainsString('**Proposed**, not approved', $guide);
+    self::assertStringContainsString('Automatic server-side poster OCR cannot be enabled', $guide);
+    foreach ([
+    'At most 3 posters per email are sent',
+    'the whole message shares a 30-second budget',
+    'how many posters a day may be read, 20 by default',
+    ] as $unavailableLimitClaim) {
+    self::assertStringNotContainsString($unavailableLimitClaim, $guide);
     }
     }
 

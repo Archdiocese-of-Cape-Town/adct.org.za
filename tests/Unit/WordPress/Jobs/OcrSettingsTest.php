@@ -18,15 +18,21 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Jobs {
             new_options_database();
         }
 
-        public function testOcrIsOffUntilSomeoneTurnsItOn(): void
+        public function testOcrIsUnavailableEvenWhenTheSettingIsOff(): void
         {
-            self::assertFalse(OcrSettings::fromValues('0', '20')->isEnabled());
+            $settings = OcrSettings::fromValues('0', '20');
+
+            self::assertFalse($settings->isEnabled());
+            self::assertFalse($settings->isConfiguredEnabled());
         }
 
         #[DataProvider('acceptedTruthyValues')]
-        public function testAnExplicitOptInCannotEnableServerSideOcr(mixed $submitted): void
+        public function testEveryPreviouslyAcceptedOptInValueRemainsRecognizedButUnavailable(mixed $submitted): void
         {
-            self::assertFalse(OcrSettings::fromValues($submitted, '20')->isEnabled());
+            $settings = OcrSettings::fromValues($submitted, '20');
+
+            self::assertFalse($settings->isEnabled());
+            self::assertTrue($settings->isConfiguredEnabled());
         }
 
         /**
@@ -44,7 +50,10 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Jobs {
         #[DataProvider('rejectedTruthyValues')]
         public function testAnythingElseLeavesOcrOff(mixed $submitted): void
         {
-            self::assertFalse(OcrSettings::fromValues($submitted, '20')->isEnabled());
+            $settings = OcrSettings::fromValues($submitted, '20');
+
+            self::assertFalse($settings->isEnabled());
+            self::assertFalse($settings->isConfiguredEnabled());
         }
 
         /**
@@ -68,9 +77,13 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Jobs {
             );
         }
 
-        public function testAStoredCapIsRead(): void
+        public function testALegacyStoredCapIsReadWithoutEnablingOcr(): void
         {
-            self::assertSame(7, OcrSettings::fromValues('1', '7')->dailyCallLimit());
+            $settings = OcrSettings::fromValues('1', '7');
+
+            self::assertSame(7, $settings->dailyCallLimit());
+            self::assertFalse($settings->isEnabled());
+            self::assertTrue($settings->isConfiguredEnabled());
         }
 
         #[DataProvider('unusableCaps')]
@@ -97,26 +110,25 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Jobs {
         }
 
         #[DataProvider('unusableCaps')]
-        public function testEnablingOcrWithAnUnusableCapIsAConfigurationError(mixed $submitted): void
+        public function testLegacyUnusableCapRemainsDiagnosableButCannotEnableOcr(mixed $submitted): void
         {
             $settings = OcrSettings::fromValues('1', $submitted);
 
             self::assertFalse($settings->isEnabled());
+            self::assertTrue($settings->isConfiguredEnabled());
             self::assertNotNull($settings->configurationError());
             self::assertStringContainsString('daily call limit', (string) $settings->configurationError());
         }
 
-        public function testTheCapBoundariesAreAccepted(): void
+        public function testLegacyCapBoundariesRemainReadableWithoutEnablingOcr(): void
         {
-            self::assertSame(
-                OcrSettings::MIN_DAILY_CALL_LIMIT,
-                OcrSettings::fromValues('1', (string) OcrSettings::MIN_DAILY_CALL_LIMIT)->dailyCallLimit()
-            );
-            self::assertSame(
-                OcrSettings::MAX_DAILY_CALL_LIMIT,
-                OcrSettings::fromValues('1', (string) OcrSettings::MAX_DAILY_CALL_LIMIT)->dailyCallLimit()
-            );
-            self::assertNull(OcrSettings::fromValues('1', (string) OcrSettings::MAX_DAILY_CALL_LIMIT)->configurationError());
+            foreach ([OcrSettings::MIN_DAILY_CALL_LIMIT, OcrSettings::MAX_DAILY_CALL_LIMIT] as $limit) {
+                $settings = OcrSettings::fromValues('1', (string) $limit);
+
+                self::assertSame($limit, $settings->dailyCallLimit());
+                self::assertFalse($settings->isEnabled());
+                self::assertNull($settings->configurationError());
+            }
         }
 
         public function testCurrentReadsTheStoredOptions(): void
@@ -129,6 +141,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Jobs {
             $settings = OcrSettings::current();
 
             self::assertFalse($settings->isEnabled());
+            self::assertTrue($settings->isConfiguredEnabled());
             self::assertSame(5, $settings->dailyCallLimit());
         }
 

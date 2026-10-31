@@ -428,10 +428,12 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             $_POST['remove_ocr_api_key'] = '1';
             $_POST['ai_provider'] = 'openrouter';
 
-            $page = $this->page();
+            $audit = new RecordingAuditWriter();
+            $page = $this->page(audit: $audit);
             $page->maybeHandleSettings();
 
             self::assertSame([], $GLOBALS['parser_page_updates']);
+            self::assertSame([], $audit->rows);
             self::assertSame('none', $GLOBALS['parser_page_options']['adct_parish_intake_ai_provider']);
             self::assertSame('0', $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION]);
             self::assertSame(
@@ -466,12 +468,53 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             $GLOBALS['parser_page_options'][$ocrKeyOption] = 'K811-retained';
             $GLOBALS['wpdb']->rows = $GLOBALS['parser_page_options'];
             $_POST = $this->settingsPost();
+            $_POST['ai_provider'] = 'openrouter';
 
-            $this->page()->maybeHandleSettings();
+            $audit = new RecordingAuditWriter();
+            $this->page(audit: $audit)->maybeHandleSettings();
 
             self::assertSame('1', $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION]);
             self::assertSame('7', $GLOBALS['parser_page_options'][OcrSettings::DAILY_CALL_LIMIT_OPTION]);
             self::assertSame('K811-retained', $GLOBALS['parser_page_options'][$ocrKeyOption]);
+            self::assertSame('openrouter', $GLOBALS['parser_page_options']['adct_parish_intake_ai_provider']);
+            self::assertCount(1, $audit->rows);
+            self::assertStringNotContainsString(
+                'K811-retained',
+                json_encode($audit->rows[0]['details'], JSON_THROW_ON_ERROR)
+            );
+            self::assertStringNotContainsString(
+                $ocrKeyOption,
+                json_encode($audit->rows[0]['details'], JSON_THROW_ON_ERROR)
+            );
+        }
+
+        public function testCraftedOcrKeyRemovalAndCapFieldsAreIgnoredWithoutAnEnableFlag(): void
+        {
+            $ocrKeyOption = SecretRegistry::optionName(SecretRegistry::OCR_API_KEY);
+            $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION] = '1';
+            $GLOBALS['parser_page_options'][OcrSettings::DAILY_CALL_LIMIT_OPTION] = '7';
+            $GLOBALS['parser_page_options'][$ocrKeyOption] = 'K811-retained';
+            $GLOBALS['wpdb']->rows = $GLOBALS['parser_page_options'];
+
+            $_POST = $this->settingsPost();
+            unset($_POST['ocr_enabled']);
+            $_POST['ocr_daily_call_limit'] = '999';
+            $_POST['ocr_api_key'] = 'K811-forged';
+            $_POST['remove_ocr_api_key'] = '1';
+            $_POST['ai_provider'] = 'openrouter';
+
+            $audit = new RecordingAuditWriter();
+            $this->page(audit: $audit)->maybeHandleSettings();
+
+            self::assertSame('1', $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION]);
+            self::assertSame('7', $GLOBALS['parser_page_options'][OcrSettings::DAILY_CALL_LIMIT_OPTION]);
+            self::assertSame('K811-retained', $GLOBALS['parser_page_options'][$ocrKeyOption]);
+            self::assertSame('openrouter', $GLOBALS['parser_page_options']['adct_parish_intake_ai_provider']);
+            self::assertCount(1, $audit->rows);
+            $auditDetails = json_encode($audit->rows[0]['details'], JSON_THROW_ON_ERROR);
+            self::assertStringNotContainsString('K811-retained', $auditDetails);
+            self::assertStringNotContainsString('K811-forged', $auditDetails);
+            self::assertStringNotContainsString($ocrKeyOption, $auditDetails);
         }
 
         public function testAnUnreadablePosterLookupFailureIsLoggedWithoutExposingDatabaseDetails(): void
@@ -527,12 +570,8 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
         {
             $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION] = '1';
 
-            ob_start();
-            try {
-                $this->page()->renderSettingsPage();
-            } finally {
-                $html = (string) ob_get_clean();
-            }
+            $ocrKeyOption = SecretRegistry::optionName(SecretRegistry::OCR_API_KEY);
+            $html = $this->renderSettings([$ocrKeyOption => 'K811-never-render']);
 
             self::assertStringContainsString('Automatic server-side poster OCR is unavailable', $html);
             self::assertStringContainsString('Any previously saved OCR setting or API key is retained but not used', $html);
@@ -541,6 +580,8 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             self::assertStringNotContainsString('name="ocr_enabled"', $html);
             self::assertStringNotContainsString('name="ocr_daily_call_limit"', $html);
             self::assertStringNotContainsString('name="ocr_api_key"', $html);
+            self::assertStringNotContainsString('name="remove_ocr_api_key"', $html);
+            self::assertStringNotContainsString('K811-never-render', $html);
             self::assertStringNotContainsString('api.ocr.space', $html);
             self::assertStringNotContainsString('Turn it on', $html);
         }
@@ -603,7 +644,6 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                 'section_keywords' => SectionSkipper::defaultKeywordLists(),
                 'retention_raw_days' => (string) RetentionSettings::DEFAULT_RAW_DAYS,
                 'retention_processed_days' => (string) RetentionSettings::DEFAULT_PROCESSED_DAYS,
-                                'ocr_daily_call_limit' => (string) OcrSettings::DEFAULT_DAILY_CALL_LIMIT,
                             ];
 
             // The four retention checkboxes are absent on purpose. An unchecked

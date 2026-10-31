@@ -1622,6 +1622,22 @@ if (
 }
 
 $_POST['ai_provider'] = 'openrouter';
+$_POST['ocr_daily_call_limit'] = '999';
+$_POST['ocr_api_key'] = 'K123456789-forged-without-opt-in-DO-NOT-ECHO-654';
+$_POST['remove_ocr_api_key'] = '1';
+$_REQUEST = $_POST;
+do_action('admin_init');
+
+if (
+    get_option('adct_pi_ocr_enabled') !== '1'
+    || get_option('adct_pi_ocr_daily_call_limit') !== '7'
+    || get_option('adct_parish_intake_ocr_api_key') !== $storedTestOcrKey
+    || get_option('adct_parish_intake_ai_provider') !== 'openrouter'
+) {
+    $fail('OCR key/removal/cap fields without an enable flag changed saved OCR data or blocked a legitimate setting.');
+}
+
+$_POST['ai_provider'] = 'none';
 $_POST['ocr_enabled'] = '1';
 $_POST['ocr_daily_call_limit'] = '3';
 $_POST['ocr_api_key'] = 'K123456789-forged-DO-NOT-ECHO-654';
@@ -1633,7 +1649,7 @@ if (
     get_option('adct_pi_ocr_enabled') !== '1'
     || get_option('adct_pi_ocr_daily_call_limit') !== '7'
     || get_option('adct_parish_intake_ocr_api_key') !== $storedTestOcrKey
-    || get_option('adct_parish_intake_ai_provider') !== 'none'
+    || get_option('adct_parish_intake_ai_provider') !== 'openrouter'
 ) {
     $fail('A crafted OCR activation request changed OCR configuration, a saved key or unrelated Settings.');
 }
