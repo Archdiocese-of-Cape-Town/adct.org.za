@@ -98,6 +98,38 @@ if (is_plugin_active($pluginBasename)) {
     $fail('The integration environment must start with the release plugin inactive.');
 }
 
+$storedTestOcrKey = 'K123456789-ocr-test-DO-NOT-ECHO-789';
+$missingOcrOption = new stdClass();
+$originalOcrOptions = [];
+foreach ([
+    'adct_pi_ocr_enabled' => '1',
+    'adct_pi_ocr_daily_call_limit' => '7',
+    'adct_parish_intake_ocr_api_key' => $storedTestOcrKey,
+] as $option => $value) {
+    $originalOcrOptions[$option] = get_option($option, $missingOcrOption);
+}
+register_shutdown_function(static function () use ($originalOcrOptions, $missingOcrOption): void {
+    foreach ($originalOcrOptions as $option => $value) {
+        if ($value === $missingOcrOption) {
+            delete_option($option);
+        } else {
+            update_option($option, $value);
+        }
+    }
+});
+
+// Persist the legacy opt-in before activate_plugin() constructs the actual Plugin scheduler.
+update_option('adct_pi_ocr_enabled', '1');
+update_option('adct_pi_ocr_daily_call_limit', '7');
+update_option('adct_parish_intake_ocr_api_key', $storedTestOcrKey);
+if (
+    get_option('adct_pi_ocr_enabled') !== '1'
+    || get_option('adct_pi_ocr_daily_call_limit') !== '7'
+    || get_option('adct_parish_intake_ocr_api_key') !== $storedTestOcrKey
+) {
+    $fail('The legacy OCR options and synthetic key were not saved before Plugin construction.');
+}
+
 delete_option('adct_pi_test_mode');
 delete_option('adct_pi_test_allowlist');
 
@@ -1558,10 +1590,13 @@ if (
 }
 
 // Legacy server OCR options and secrets stay untouched while the feature is unapproved.
-$storedTestOcrKey = 'K123456789-ocr-test-DO-NOT-ECHO-789';
-update_option('adct_parish_intake_ocr_api_key', $storedTestOcrKey);
-update_option('adct_pi_ocr_enabled', '1');
-update_option('adct_pi_ocr_daily_call_limit', '7');
+if (
+    get_option('adct_parish_intake_ocr_api_key') !== $storedTestOcrKey
+    || get_option('adct_pi_ocr_enabled') !== '1'
+    || get_option('adct_pi_ocr_daily_call_limit') !== '7'
+) {
+    $fail('Plugin activation changed the retained legacy OCR configuration.');
+}
 
 // The test constant and database key are synthetic; no OCR request is made.
 $constantTestOcrKey = 'K123456789-ocr-constant-DO-NOT-ECHO-321';
@@ -4749,7 +4784,6 @@ if ($pluginOcrStoredMessage->duplicate) {
     $fail('The synthetic Plugin-wired OCR regression message unexpectedly matched an existing row.');
 }
 
-update_option(OcrSettings::ENABLED_OPTION, '1');
 if (
     get_option(OcrSettings::ENABLED_OPTION) !== '1'
     || get_option('adct_parish_intake_ocr_api_key') !== $storedTestOcrKey
@@ -4791,6 +4825,10 @@ $providerRequests = array_values(array_filter(
     static fn (string $url): bool => str_contains($url, 'api.ocr.space/parse/image')
 ));
 
+if ($providerRequests !== []) {
+    $fail('The Plugin-wired inbound job attempted an external OCR request; the HTTP interceptor blocked it.');
+}
+
 if (
     $pluginWiredRun->status->value !== 'completed'
     || ! is_array($pluginOcrMessageRow)
@@ -4801,7 +4839,6 @@ if (
     || ! is_array($pluginOcrAttachmentRow)
     || $pluginOcrAttachmentRow['status'] !== AttachmentStoragePolicy::STATUS_PENDING
     || $pluginOcrAttachmentRow['extraction_method'] !== 'none'
-    || $providerRequests !== []
 ) {
     $fail('The Plugin-wired inbound job did not preserve manual poster fallback without contacting OCR.space.');
 }
