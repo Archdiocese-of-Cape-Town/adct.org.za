@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { runCLI } from '@wp-playground/cli';
+
+const projectRequire = createRequire(import.meta.url);
+let runCLI;
+try {
+  const envRequire = createRequire(projectRequire.resolve('@wordpress/env'));
+  ({ runCLI } = envRequire('@wp-playground/cli'));
+} catch (error) {
+  throw new Error('The Playground smoke requires the CLI supplied by @wordpress/env 12. Run npm ci with the approved dependency lockfile.', { cause: error });
+}
+assert.equal(typeof runCLI, 'function', 'The wp-env Playground dependency must expose the public runCLI API.');
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const blueprint = JSON.parse(readFileSync(new URL('../.github/playground/blueprint.json', import.meta.url)));

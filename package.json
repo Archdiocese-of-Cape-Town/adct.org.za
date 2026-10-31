@@ -8,7 +8,6 @@
     "test:integration-config": "node --test scripts/test-integration-config.test.mjs tests/Node/wp-env-home.test.mjs"
   },
   "devDependencies": {
-    "@wp-playground/cli": "3.1.61",
     "@wordpress/env": "10.17.0"
   }
 }
