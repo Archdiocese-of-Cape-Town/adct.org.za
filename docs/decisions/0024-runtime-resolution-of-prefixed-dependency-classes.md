@@ -11,7 +11,7 @@ Issue [#239](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/239)
 Two things let it ship. The build was green because `scripts/check-release-bootstrap.php` only asserted that prefixed classes *load*; a classmap that loads is a classmap that loads whether or not any adapter can reach it. And the failure mode was invisible because a catch-all `Throwable` collapsed a namespace-resolution bug into a user-facing "bad file" message. The same pattern was already handled correctly elsewhere — `src/Core/Ingestion/MimeMessageParser.php` and `src/Core/Ingestion/RawMessageInspector.php` resolve `MailMimeParser` by string — so the PDF adapter was the outlier, not the rule.
 
 ## Decision
-- Our own source must not `use`, instantiate, catch or type-hint a dependency class through its unprefixed namespace. Resolve such a class **by string at runtime**, probing the unprefixed name first and the prefixed name second:
+- Our own source must not `use`, instantiate, catch or type-hint a dependency class through its unprefixed namespace. Resolve such a class **by string at runtime** rather than with a hard import. The lookup order depends on the dependency's development and release requirements. The MIME parser's prefixed release class is authoritative, so its shared resolver probes that name first and retains the unprefixed name only as a development fallback. For example, the PDF adapter retains its development-first lookup:
 
   ```php
   private const PDF_PARSER_CLASSES = [

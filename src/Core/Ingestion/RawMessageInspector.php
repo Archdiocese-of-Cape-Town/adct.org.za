@@ -29,11 +29,6 @@ final class RawMessageInspector
         'Authentication-Results',
     ];
 
-    private const MIME_PARSER_CLASSES = [
-        'ZBateson\\MailMimeParser\\MailMimeParser',
-        'ADCT\\ParishIntake\\Dependencies\\ZBateson\\MailMimeParser\\MailMimeParser',
-    ];
-
     private AutomatedMailDetector $automatedMailDetector;
     private AuthenticationResultsParser $authenticationResultsParser;
 
@@ -47,7 +42,7 @@ final class RawMessageInspector
 
     public function inspect(string $rawMessage, DateTimeImmutable $fallbackReceivedAt): InspectedInboundMail
     {
-        $parserClass = $this->mimeParserClass();
+        $parserClass = MimeParserClassResolver::resolve();
         $mimeMessage = (new $parserClass())->parse($rawMessage, false);
         $attachments = [];
         $headers = [];
@@ -135,17 +130,6 @@ final class RawMessageInspector
         }
 
         return array_values(array_unique($contentTypes));
-    }
-
-    private function mimeParserClass(): string
-    {
-        foreach (self::MIME_PARSER_CLASSES as $class) {
-            if (class_exists($class)) {
-                return $class;
-            }
-        }
-
-        throw new RuntimeException('The configured MIME parser dependency is not available.');
     }
 
     /**
