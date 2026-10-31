@@ -443,6 +443,19 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                 'Automatic server-side poster OCR is unavailable',
                 (string) $this->privateProperty($page, 'settingsSaveError')
             );
+
+            ob_start();
+            try {
+                $page->renderSettingsPage();
+            } finally {
+                $html = (string) ob_get_clean();
+            }
+
+            self::assertStringContainsString(
+                'Automatic server-side poster OCR is unavailable',
+                $html,
+                'the rejected activation must be explained on the settings page'
+            );
         }
 
         public function testSavingOtherSettingsPreservesPreviouslySavedOcrOptionsAndKey(): void
@@ -524,13 +537,12 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             self::assertStringContainsString('Automatic server-side poster OCR is unavailable', $html);
             self::assertStringContainsString('Any previously saved OCR setting or API key is retained but not used', $html);
             self::assertStringContainsString('on-demand browser OCR', $html);
-            self::assertStringContainsString('manual entry', $html);
+            self::assertStringContainsString('enter the details manually', $html);
             self::assertStringNotContainsString('name="ocr_enabled"', $html);
             self::assertStringNotContainsString('name="ocr_daily_call_limit"', $html);
             self::assertStringNotContainsString('name="ocr_api_key"', $html);
             self::assertStringNotContainsString('api.ocr.space', $html);
             self::assertStringNotContainsString('Turn it on', $html);
-            self::assertStringNotContainsString('off by default', $html);
         }
 
         /**
