@@ -17,7 +17,7 @@ declare(strict_types=1);
  *
  * Drive them through these globals:
  *
- *     $GLOBALS['adct_test_meta_boxes']   array<string, array{title: string, screen: string}>
+ *     $GLOBALS['adct_test_meta_boxes']   array<string, array{title: string, screen: string, callback: callable, context: string, priority: string}>
  *     $GLOBALS['adct_test_post_caps']    bool    may the acting user edit this post?
  */
 namespace {
@@ -145,6 +145,7 @@ namespace {
         ): void {
             $GLOBALS['adct_test_meta_boxes'][$id] = [
                 'title' => $title,
+                'callback' => $callback,
                     'screen' => $screen,
                     'context' => $context,
                     'priority' => $priority,

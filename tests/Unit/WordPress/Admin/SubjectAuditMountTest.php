@@ -221,10 +221,24 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
 
             self::assertArrayHasKey('adct_event_audit', $GLOBALS['adct_test_meta_boxes']);
             self::assertSame('Audit trail', $GLOBALS['adct_test_meta_boxes']['adct_event_audit']['title']);
+            self::assertSame('adct_event', $GLOBALS['adct_test_meta_boxes']['adct_event_audit']['screen']);
+            self::assertSame('normal', $GLOBALS['adct_test_meta_boxes']['adct_event_audit']['context']);
+            self::assertSame('low', $GLOBALS['adct_test_meta_boxes']['adct_event_audit']['priority']);
+            self::assertSame(
+                [$editor, 'renderAuditMetaBox'],
+                $GLOBALS['adct_test_meta_boxes']['adct_event_audit']['callback']
+            );
 
-            $markup = $this->renderAuditBox($editor);
+            ob_start();
+            try {
+                ($GLOBALS['adct_test_meta_boxes']['adct_event_audit']['callback'])(new \WP_Post(77));
+            } finally {
+                $markup = (string) ob_get_clean();
+            }
 
             self::assertStringContainsString('Event published', $markup);
+            self::assertStringNotContainsString('<form', $markup);
+            self::assertStringNotContainsString('nonce', $markup);
             self::assertCount(1, $reader->queries);
             self::assertSame(AuditSubjectType::EVENT, $reader->queries[0]->subjectType);
             self::assertSame(77, $reader->queries[0]->subjectId);
@@ -234,10 +248,12 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
         {
             $GLOBALS['adct_test_meta_boxes'] = [];
 
-            $this->editorWithoutPanel()->registerMetaBox();
+            $editor = $this->editorWithoutPanel();
+            $editor->registerMetaBox();
 
             self::assertArrayNotHasKey('adct_event_audit', $GLOBALS['adct_test_meta_boxes']);
             self::assertArrayHasKey('adct_event_details', $GLOBALS['adct_test_meta_boxes']);
+            self::assertSame('', $this->renderAuditBox($editor));
         }
 
         public function testTheAuditBoxIsEmptyForSomebodyWhoCannotEditTheEvent(): void

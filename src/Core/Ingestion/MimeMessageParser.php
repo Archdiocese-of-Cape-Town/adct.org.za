@@ -9,15 +9,9 @@ use ADCT\ParishIntake\Core\Parsing\Input\Message;
 use ADCT\ParishIntake\Core\Support\EmailTextCleaner;
 use ADCT\ParishIntake\Core\Support\HtmlToTextConverter;
 use DateTimeImmutable;
-use RuntimeException;
 
 final class MimeMessageParser
 {
-    private const MIME_PARSER_CLASSES = [
-        'ZBateson\\MailMimeParser\\MailMimeParser',
-        'ADCT\\ParishIntake\\Dependencies\\ZBateson\\MailMimeParser\\MailMimeParser',
-    ];
-
     private const RETAINED_HEADERS = [
         'Date',
         'Message-ID',
@@ -41,7 +35,7 @@ final class MimeMessageParser
 
     public function parse(string $rawMessage, ?string $sourceIdentifier = null): Message
     {
-        $parserClass = $this->mimeParserClass();
+        $parserClass = MimeParserClassResolver::resolve();
         $mimeMessage = (new $parserClass())->parse($rawMessage, false);
         $subject = trim((string) $mimeMessage->getSubject());
         [$senderName, $senderEmail] = $this->sender($mimeMessage);
@@ -88,17 +82,6 @@ final class MimeMessageParser
             $cleaned->getOriginalSubject(),
             $htmlDerived
         );
-    }
-
-    private function mimeParserClass(): string
-    {
-        foreach (self::MIME_PARSER_CLASSES as $class) {
-            if (class_exists($class)) {
-                return $class;
-            }
-        }
-
-        throw new RuntimeException('The configured MIME parser dependency is not available.');
     }
 
     /**

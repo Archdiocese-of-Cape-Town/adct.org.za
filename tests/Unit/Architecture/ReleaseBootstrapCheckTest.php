@@ -176,6 +176,10 @@ final class ReleaseBootstrapCheckTest extends TestCase
     {
         return [
             'php-di container' => ['DI\\Container', self::DEPENDENCIES_PREFIX . 'DI\\Container'],
+            'MIME parser' => [
+                'ZBateson\\MailMimeParser\\MailMimeParser',
+                self::DEPENDENCIES_PREFIX . 'ZBateson\\MailMimeParser\\MailMimeParser',
+            ],
             'laravel serializable closure' => [
                 'Laravel\\SerializableClosure\\SerializableClosure',
                 self::DEPENDENCIES_PREFIX . 'Laravel\\SerializableClosure\\SerializableClosure',
@@ -238,6 +242,42 @@ final class ReleaseBootstrapCheckTest extends TestCase
             'Unprefixed dependency class loaded from the release: DI\\Container',
             $result['stderr'],
             'The leak assertion must fire for a class reached through a classmap entry.'
+        );
+    }
+
+    public function testItFailsBeforeParsingWhenThePrefixedMimeParserDoesNotLoad(): void
+    {
+        $fixture = $this->createPrefixedFixture();
+        $unprefixedClass = 'ZBateson\\MailMimeParser\\MailMimeParser';
+        $prefixedClass = self::DEPENDENCIES_PREFIX . $unprefixedClass;
+        $source = $this->within(
+            $fixture . '/vendor-prefixed/autoload.php',
+            $this->packageFor($unprefixedClass)
+        );
+
+        self::assertFileExists($source, 'The package fixture must contain the prefixed MIME parser.');
+        self::assertNotFalse(
+            file_put_contents($source, "<?php\n\n// Test mutation: the prefixed parser is missing.\n"),
+            'Could not remove the MIME parser class from its packaged fixture.'
+        );
+
+        $result = $this->runCheck($fixture);
+
+        self::assertSame(
+            1,
+            $result['exit'],
+            "A release missing its prefixed MIME parser must fail the guard.\n"
+            . 'stdout: ' . $result['stdout'] . "\nstderr: " . $result['stderr']
+        );
+        self::assertStringContainsString(
+            "Prefixed dependency class did not load from the release: {$prefixedClass}",
+            $result['stderr'],
+            'The guard must report the missing prefixed parser before the smoke parse runs.'
+        );
+        self::assertStringNotContainsString(
+            'The configured MIME parser dependency is not available.',
+            $result['stderr'],
+            'A late parse failure means the release guard did not probe the prefixed parser.'
         );
     }
 

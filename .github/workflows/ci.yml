@@ -72,6 +72,9 @@ jobs:
       - name: Run asset tests
         run: npm run test:assets
 
+      - name: Verify PDF fixture bytes and safety checks
+        run: npm run fixtures:check && npm run test:fixtures
+
   wordpress-integration:
     name: WordPress integration (PHP 8.2)
     runs-on: ubuntu-latest
