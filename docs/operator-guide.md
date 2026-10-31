@@ -499,6 +499,8 @@ Both controls change only what is on screen. Neither is remembered between page 
 
 The background OCR design in [ADR 0021](decisions/0021-opt-in-server-side-queue-ocr.md) is **Proposed**, not approved. Automatic server-side poster OCR cannot be enabled, and incoming-mail processing does not send images to OCR.space. This remains true if an older installation has the setting enabled or has an OCR API key configured. Existing OCR settings and secrets are retained but ignored; saving other settings does not change them.
 
+To delete an obsolete database key, use **Remove saved OCR API key** on the Settings page. This separate, authorised action removes only that key and records its removal without recording the secret. It does not enable OCR or change other settings. If an OCR key is also set in `wp-config.php`, ask the website administrator to remove that constant; the button cannot change it. No key-entry or OCR-activation control is available.
+
 Image-only messages still follow the normal intake path and remain available for manual entry. Use the explicitly clicked **Read text from image** browser control described above when a reviewer is present, or enter the event details by hand. Browser OCR keeps its extracted text in the browser and does not send it back to the site.
 
 ### Configure keys and password constants

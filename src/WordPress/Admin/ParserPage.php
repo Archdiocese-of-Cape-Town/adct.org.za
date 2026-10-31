@@ -59,6 +59,7 @@ final class ParserPage
     private HttpClientInterface $httpClient;
     private AiCallGateInterface $aiGate;
     private bool $settingsSaveSucceeded = false;
+    private bool $ocrKeyRemovalSucceeded = false;
     private ?string $settingsSaveError = null;
     private ?AttachmentRepository $attachments;
 
@@ -350,13 +351,19 @@ final class ParserPage
             return;
         }
 
-        if (! isset($_POST['adct_parish_intake_settings_nonce'], $_POST['adct_parish_intake_save_settings'])) {
+        $removeOcrKey = ($_POST['adct_parish_intake_remove_saved_ocr_key'] ?? null) === '1';
+        if (! $removeOcrKey && ! isset($_POST['adct_parish_intake_settings_nonce'], $_POST['adct_parish_intake_save_settings'])) {
             return;
         }
 
-        check_admin_referer('adct_parish_intake_save_settings', 'adct_parish_intake_settings_nonce');
+        if ($removeOcrKey) {
+            check_admin_referer('adct_parish_intake_remove_saved_ocr_key', 'adct_parish_intake_remove_ocr_key_nonce');
+        } else {
+            check_admin_referer('adct_parish_intake_save_settings', 'adct_parish_intake_settings_nonce');
+        }
 
         $this->settingsSaveSucceeded = false;
+        $this->ocrKeyRemovalSucceeded = false;
         $this->settingsSaveError = null;
 
         $submittedOcrSettings = OcrSettings::fromValues(
@@ -367,6 +374,30 @@ final class ParserPage
         if ($submittedOcrSettings->isConfiguredEnabled()) {
             $this->settingsSaveError = OcrSettings::UNAVAILABLE_MESSAGE
                 . ' Previously saved OCR settings and API keys have not been changed.';
+
+            return;
+        }
+
+        if ($removeOcrKey) {
+            $option = SecretRegistry::optionName(SecretRegistry::OCR_API_KEY);
+            $savedKey = get_option($option);
+            if ($savedKey === false) {
+                $this->settingsSaveError = 'No saved OCR API key was found.';
+
+                return;
+            }
+
+            if (! delete_option($option)) {
+                $this->settingsSaveError = 'The saved OCR API key could not be removed. Please try again.';
+                error_log('[ADCT Parish Intake] The saved OCR API key could not be removed.');
+
+                return;
+            }
+
+            $recorder = $this->settingsRecorder();
+            $recorder->recordRemoval($option, $savedKey);
+            $this->recordSettingsAudit($recorder);
+            $this->ocrKeyRemovalSucceeded = true;
 
             return;
         }
@@ -587,6 +618,8 @@ final class ParserPage
 
             <?php if ($this->settingsSaveError !== null) : ?>
                 <div class="notice notice-error"><p><?php echo esc_html($this->settingsSaveError); ?></p></div>
+            <?php elseif ($this->ocrKeyRemovalSucceeded) : ?>
+                <div class="notice notice-success is-dismissible"><p>Saved OCR API key removed. Automatic server-side poster OCR remains unavailable.</p></div>
             <?php elseif ($this->settingsSaveSucceeded) : ?>
                 <div class="notice notice-success is-dismissible"><p>Settings saved.</p></div>
             <?php endif; ?>
@@ -800,6 +833,18 @@ final class ParserPage
                 </p>
                 <?php submit_button('Save settings'); ?>
             </form>
+
+            <?php if ($settings['ocr_api_key_is_saved']) : ?>
+                <h2>Remove an obsolete OCR API key</h2>
+                <p>A database OCR API key is saved but is not used. Removing it changes only the saved key, not other settings, and does not enable server-side OCR.</p>
+                <?php if ($settings['ocr_api_key_is_constant']) : ?>
+                    <p class="description">An OCR key is also set in wp-config.php. This action cannot remove that constant; ask the website administrator to remove it from wp-config.php.</p>
+                <?php endif; ?>
+                <form method="post">
+                    <?php wp_nonce_field('adct_parish_intake_remove_saved_ocr_key', 'adct_parish_intake_remove_ocr_key_nonce'); ?>
+                    <button class="button" type="submit" name="adct_parish_intake_remove_saved_ocr_key" value="1">Remove saved OCR API key</button>
+                </form>
+            <?php endif; ?>
 
             <h2>Email inbox processing</h2>
             <p>Configure mailbox connections under <strong>Parish Intake → Mailboxes</strong>. Stored messages appear in <strong>Parish Intake → Inbox</strong> with their processing status and any action needed.</p>
@@ -1045,6 +1090,8 @@ final class ParserPage
             'ai_base_url' => $this->configuredBaseUrl(),
             'openrouter_api_key_is_constant' => $secretLookup->isConstantConfigured(SecretRegistry::AI_API_KEY),
             'openrouter_api_key_is_saved' => $secretLookup->hasStoredOption(SecretRegistry::AI_API_KEY),
+            'ocr_api_key_is_constant' => $secretLookup->isConstantConfigured(SecretRegistry::OCR_API_KEY),
+            'ocr_api_key_is_saved' => $secretLookup->hasStoredOption(SecretRegistry::OCR_API_KEY),
             'ai_threshold' => (float) get_option('adct_parish_intake_ai_threshold', '0.55'),
             'confidence_threshold' => $this->confidenceSetting('confidence_threshold'),
             'field_confidence_threshold' => $this->confidenceSetting('field_confidence_threshold'),

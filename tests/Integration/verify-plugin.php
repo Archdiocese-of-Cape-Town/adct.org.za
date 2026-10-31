@@ -1626,6 +1626,9 @@ if (
     || strpos($ocrSettingsHtml, 'name="ocr_daily_call_limit"') !== false
     || strpos($ocrSettingsHtml, 'name="ocr_api_key"') !== false
     || strpos($ocrSettingsHtml, 'name="remove_ocr_api_key"') !== false
+    || strpos($ocrSettingsHtml, 'name="adct_parish_intake_remove_saved_ocr_key"') === false
+    || strpos($ocrSettingsHtml, 'name="adct_parish_intake_remove_ocr_key_nonce"') === false
+    || strpos($ocrSettingsHtml, 'This action cannot remove that constant') === false
     || strpos($ocrSettingsHtml, $storedTestOcrKey) !== false
     || strpos($ocrSettingsHtml, $constantTestOcrKey) !== false
     || strpos($ocrSettingsHtml, 'api.ocr.space') !== false
@@ -4841,6 +4844,144 @@ if (
     || $pluginOcrAttachmentRow['extraction_method'] !== 'none'
 ) {
     $fail('The Plugin-wired inbound job did not preserve manual poster fallback without contacting OCR.space.');
+}
+
+$ocrRemovalPreviousPost = $_POST;
+$ocrRemovalPreviousRequest = $_REQUEST;
+$ocrRemovalPreviousGet = $_GET;
+$ocrRemovalUserId = get_current_user_id();
+$ocrRemovalPreviousScreen = $GLOBALS['current_screen'] ?? null;
+set_current_screen('dashboard');
+wp_set_current_user($administrators[0]->ID);
+$ocrRemovalAuditTable = $wpdb->prefix . 'adct_pi_audit_log';
+$ocrRemovalAuditStart = (int) $wpdb->get_var("SELECT COALESCE(MAX(id), 0) FROM {$ocrRemovalAuditTable}");
+$ocrRemovalSettingsBefore = [
+    get_option('adct_pi_ocr_enabled'),
+    get_option('adct_pi_ocr_daily_call_limit'),
+    get_option('adct_parish_intake_ai_provider'),
+];
+$ocrRemovalPost = [
+    'adct_parish_intake_remove_saved_ocr_key' => '1',
+    'adct_parish_intake_remove_ocr_key_nonce' => wp_create_nonce('adct_parish_intake_remove_saved_ocr_key'),
+];
+$assertOcrKeyPreserved = static function () use ($storedTestOcrKey, $fail): void {
+    if (get_option('adct_parish_intake_ocr_api_key') !== $storedTestOcrKey) {
+        $fail('An unauthorized or rejected request removed the saved OCR key.');
+    }
+};
+$ocrNonceRefusalHandler = static fn ($handler) => static function (): void {
+    throw new RuntimeException('Synthetic OCR removal nonce refused.');
+};
+
+try {
+    $_POST = [];
+    $_GET = $ocrRemovalPost;
+    $_REQUEST = $_GET;
+    do_action('admin_init');
+    $assertOcrKeyPreserved();
+
+    wp_set_current_user(0);
+    $_POST = $ocrRemovalPost;
+    $_REQUEST = $_POST;
+    do_action('admin_init');
+    $assertOcrKeyPreserved();
+    wp_set_current_user($administrators[0]->ID);
+
+    foreach ([null, 'invalid-synthetic-nonce'] as $invalidNonce) {
+        $_POST = $ocrRemovalPost;
+        if ($invalidNonce === null) {
+            unset($_POST['adct_parish_intake_remove_ocr_key_nonce']);
+        } else {
+            $_POST['adct_parish_intake_remove_ocr_key_nonce'] = $invalidNonce;
+        }
+        $_REQUEST = $_POST;
+        $nonceWasRefused = false;
+        add_filter('wp_die_handler', $ocrNonceRefusalHandler, PHP_INT_MAX);
+        try {
+            do_action('admin_init');
+        } catch (RuntimeException $failure) {
+            $nonceWasRefused = $failure->getMessage() === 'Synthetic OCR removal nonce refused.';
+        } finally {
+            remove_filter('wp_die_handler', $ocrNonceRefusalHandler, PHP_INT_MAX);
+        }
+        if (! $nonceWasRefused) {
+            $fail('OCR key removal did not refuse a missing or invalid dedicated nonce.');
+        }
+        $assertOcrKeyPreserved();
+    }
+
+    $_POST = $ocrRemovalPost + ['ocr_enabled' => '1'];
+    $_REQUEST = $_POST;
+    do_action('admin_init');
+    $assertOcrKeyPreserved();
+    $refusedAuditCount = (int) $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM {$ocrRemovalAuditTable} WHERE id > %d AND action = %s",
+        $ocrRemovalAuditStart,
+        'settings_updated'
+    ));
+    if ($refusedAuditCount !== 0) {
+        $fail('An unauthorized or rejected OCR removal attempt wrote a settings audit entry.');
+    }
+
+    $_POST = $ocrRemovalPost + [
+        'ocr_api_key' => 'K-synthetic-forged-removal-key-254',
+        'ocr_daily_call_limit' => '999',
+        'ai_provider' => 'none',
+    ];
+    $_REQUEST = $_POST;
+    do_action('admin_init');
+    $removalRows = (array) $wpdb->get_results($wpdb->prepare(
+        "SELECT actor, details FROM {$ocrRemovalAuditTable} WHERE id > %d AND action = %s",
+        $ocrRemovalAuditStart,
+        'settings_updated'
+    ), ARRAY_A);
+    if (
+        get_option('adct_parish_intake_ocr_api_key', false) !== false
+        || [
+            get_option('adct_pi_ocr_enabled'),
+            get_option('adct_pi_ocr_daily_call_limit'),
+            get_option('adct_parish_intake_ai_provider'),
+        ] !== $ocrRemovalSettingsBefore
+        || count($removalRows) !== 1
+        || $removalRows[0]['actor'] !== wp_get_current_user()->user_email
+        || json_decode($removalRows[0]['details'], true, 512, JSON_THROW_ON_ERROR) !== [
+            'changed' => [[
+                'option' => 'adct_parish_intake_ocr_api_key',
+                'before' => 'set',
+                'after' => 'removed',
+            ]],
+        ]
+        || (new \ADCT\ParishIntake\WordPress\Security\WordPressSecretResolver())
+            ->resolve(SecretRegistry::OCR_API_KEY) !== $constantTestOcrKey
+    ) {
+        $fail('Explicit OCR key removal did not delete only the database key with a redacted audit entry.');
+    }
+
+    ob_start();
+    try {
+        do_action($settingsHook);
+    } finally {
+        $removedOcrSettingsHtml = (string) ob_get_clean();
+    }
+    if (
+        strpos($removedOcrSettingsHtml, 'Saved OCR API key removed.') === false
+        || strpos($removedOcrSettingsHtml, 'name="adct_parish_intake_remove_saved_ocr_key"') !== false
+        || strpos($removedOcrSettingsHtml, $storedTestOcrKey) !== false
+        || strpos($removedOcrSettingsHtml, $constantTestOcrKey) !== false
+        || strpos(json_encode($removalRows, JSON_THROW_ON_ERROR), $storedTestOcrKey) !== false
+    ) {
+        $fail('The OCR removal result exposed a secret or still offered removal for an absent saved key.');
+    }
+} finally {
+    $_POST = $ocrRemovalPreviousPost;
+    $_GET = $ocrRemovalPreviousGet;
+    $_REQUEST = $ocrRemovalPreviousRequest;
+    wp_set_current_user($ocrRemovalUserId);
+    if ($ocrRemovalPreviousScreen !== null) {
+        $GLOBALS['current_screen'] = $ocrRemovalPreviousScreen;
+    } else {
+        unset($GLOBALS['current_screen']);
+    }
 }
 
 $originalGet = $_GET;

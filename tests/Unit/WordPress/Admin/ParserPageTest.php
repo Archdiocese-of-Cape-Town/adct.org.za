@@ -26,6 +26,10 @@ namespace ADCT\ParishIntake\WordPress\Admin {
     if (! function_exists('ADCT\ParishIntake\WordPress\Admin\check_admin_referer')) {
         function check_admin_referer(string $action, string $name): void
         {
+            $GLOBALS['adct_test_nonce_checks'][] = ['action' => $action, 'name' => $name];
+            if (($GLOBALS['adct_test_nonce_should_fail'] ?? false) === true) {
+                throw new \AdctTestNonceRefused($action);
+            }
         }
     }
 
@@ -49,6 +53,9 @@ namespace ADCT\ParishIntake\WordPress\Admin {
     if (! function_exists('ADCT\ParishIntake\WordPress\Admin\delete_option')) {
         function delete_option(string $option): bool
         {
+            if (($GLOBALS['parser_page_delete_fails'] ?? false) === true) {
+                return false;
+            }
             $present = array_key_exists($option, $GLOBALS['parser_page_options']);
             unset($GLOBALS['parser_page_options'][$option]);
 
@@ -280,6 +287,9 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
                         \new_options_database($GLOBALS['parser_page_options']);
                         $GLOBALS['parser_page_updates'] = [];
             $GLOBALS['parser_page_logs'] = [];
+            $GLOBALS['adct_test_nonce_checks'] = [];
+            unset($GLOBALS['adct_test_nonce_should_fail']);
+            unset($GLOBALS['parser_page_delete_fails']);
             // These tests are about what happens once a user reaches the page,
             // so the shared capability stub grants everything they need. The
             // refusal path is covered where the gate itself is.
@@ -309,6 +319,8 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
         protected function tearDown(): void
         {
             unset($GLOBALS['adct_test_wp_caps'], $GLOBALS['adct_test_is_admin'], $GLOBALS['adct_test_current_user']);
+            unset($GLOBALS['adct_test_nonce_should_fail'], $GLOBALS['adct_test_nonce_checks']);
+            unset($GLOBALS['parser_page_delete_fails']);
         }
 
         public function testASettingsSaveWritesOneAuditRowNamingWhatChanged(): void
@@ -515,6 +527,149 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             self::assertStringNotContainsString('K811-retained', $auditDetails);
             self::assertStringNotContainsString('K811-forged', $auditDetails);
             self::assertStringNotContainsString($ocrKeyOption, $auditDetails);
+        }
+
+        public function testExplicitOcrKeyRemovalDeletesOnlyTheSavedKeyAndAuditsWithoutSecrets(): void
+        {
+            $option = SecretRegistry::optionName(SecretRegistry::OCR_API_KEY);
+            $GLOBALS['parser_page_options'][$option] = 'K811-obsolete-never-log';
+            $before = $GLOBALS['parser_page_options'];
+            $_POST = [
+                'adct_parish_intake_remove_saved_ocr_key' => '1',
+                'adct_parish_intake_remove_ocr_key_nonce' => 'nonce',
+                'ocr_api_key' => 'K811-forged-never-log',
+            ];
+            $audit = new RecordingAuditWriter();
+            $page = $this->page(audit: $audit);
+            $page->maybeHandleSettings();
+
+            unset($before[$option]);
+            self::assertSame($before, $GLOBALS['parser_page_options']);
+            self::assertSame([], $GLOBALS['parser_page_updates']);
+            self::assertSame([
+                ['action' => 'adct_parish_intake_remove_saved_ocr_key', 'name' => 'adct_parish_intake_remove_ocr_key_nonce'],
+            ], $GLOBALS['adct_test_nonce_checks']);
+            self::assertCount(1, $audit->rows);
+            self::assertSame(AuditAction::SETTINGS_UPDATED, $audit->rows[0]['action']);
+            self::assertSame([
+                'changed' => [['option' => $option, 'before' => 'set', 'after' => 'removed']],
+            ], $audit->rows[0]['details']);
+            self::assertStringNotContainsString('K811-', json_encode($audit->rows, JSON_THROW_ON_ERROR));
+            self::assertSame([], $GLOBALS['parser_page_logs']);
+        }
+
+        public function testOcrKeyRemovalRequiresSettingsCapabilityAndItsOwnNonce(): void
+        {
+            $option = SecretRegistry::optionName(SecretRegistry::OCR_API_KEY);
+            $GLOBALS['parser_page_options'][$option] = 'K811-obsolete-never-log';
+            $_POST = [
+                'adct_parish_intake_remove_saved_ocr_key' => '1',
+                'adct_parish_intake_remove_ocr_key_nonce' => 'bad-nonce',
+            ];
+            $audit = new RecordingAuditWriter();
+            $page = $this->page(audit: $audit);
+            $GLOBALS['adct_test_wp_caps'] = [Capabilities::REVIEW];
+            $page->maybeHandleSettings();
+            self::assertSame('K811-obsolete-never-log', $GLOBALS['parser_page_options'][$option]);
+            self::assertSame([], $audit->rows);
+            self::assertSame([], $GLOBALS['adct_test_nonce_checks']);
+
+            $GLOBALS['adct_test_wp_caps'] = [Capabilities::MANAGE_SETTINGS];
+            $GLOBALS['adct_test_nonce_should_fail'] = true;
+            try {
+                $page->maybeHandleSettings();
+                self::fail('An invalid removal nonce must be refused.');
+            } catch (\AdctTestNonceRefused) {
+                self::assertSame('K811-obsolete-never-log', $GLOBALS['parser_page_options'][$option]);
+                self::assertSame([], $audit->rows);
+            }
+        }
+
+        public function testOcrActivationAttemptCannotAlsoRemoveTheSavedKey(): void
+        {
+            $option = SecretRegistry::optionName(SecretRegistry::OCR_API_KEY);
+            $GLOBALS['parser_page_options'][$option] = 'K811-retained';
+            $_POST = [
+                'adct_parish_intake_remove_saved_ocr_key' => '1',
+                'adct_parish_intake_remove_ocr_key_nonce' => 'nonce',
+                'ocr_enabled' => '1',
+            ];
+            $audit = new RecordingAuditWriter();
+            $page = $this->page(audit: $audit);
+            $page->maybeHandleSettings();
+
+            self::assertSame('K811-retained', $GLOBALS['parser_page_options'][$option]);
+            self::assertSame([], $audit->rows);
+            self::assertStringContainsString('unavailable', (string) $this->privateProperty($page, 'settingsSaveError'));
+        }
+
+        public function testSavedOcrKeyHasASeparateRemovalFormEvenWithAConfiguredConstant(): void
+        {
+            $option = SecretRegistry::optionName(SecretRegistry::OCR_API_KEY);
+            $GLOBALS['parser_page_options'][$option] = 'K811-never-render';
+            $GLOBALS['wpdb']->rows[$option] = 'K811-never-render';
+            self::assertSame('K811-never-render', \ADCT\ParishIntake\WordPress\Admin\get_option($option));
+            self::assertSame('K811-never-render', $GLOBALS['wpdb']->rows[$option]);
+            foreach ([[], [SecretRegistry::OCR_API_KEY]] as $constants) {
+                $html = $this->renderSettings([SecretRegistry::OCR_API_KEY => 'K811-never-render'], $constants);
+                self::assertStringContainsString('name="adct_parish_intake_remove_saved_ocr_key"', $html);
+                self::assertStringContainsString('name="adct_parish_intake_remove_ocr_key_nonce"', $html);
+                self::assertStringNotContainsString('K811-never-render', $html);
+                self::assertStringNotContainsString('name="ocr_api_key"', $html);
+            }
+            self::assertStringNotContainsString(
+                'name="adct_parish_intake_remove_saved_ocr_key"',
+                $this->renderSettings([], [SecretRegistry::OCR_API_KEY])
+            );
+        }
+
+        public function testFailedOcrKeyDeletionPreservesTheKeyAndReportsAnErrorWithoutAuditingSuccess(): void
+        {
+            $option = SecretRegistry::optionName(SecretRegistry::OCR_API_KEY);
+            $GLOBALS['parser_page_options'][$option] = 'K811-never-log';
+            $GLOBALS['parser_page_delete_fails'] = true;
+            $_POST = [
+                'adct_parish_intake_remove_saved_ocr_key' => '1',
+                'adct_parish_intake_remove_ocr_key_nonce' => 'nonce',
+            ];
+            $audit = new RecordingAuditWriter();
+            $page = $this->page(audit: $audit);
+            $page->maybeHandleSettings();
+
+            self::assertSame('K811-never-log', $GLOBALS['parser_page_options'][$option]);
+            self::assertSame([], $audit->rows);
+            self::assertSame('The saved OCR API key could not be removed. Please try again.', $this->privateProperty($page, 'settingsSaveError'));
+            self::assertSame(['[ADCT Parish Intake] The saved OCR API key could not be removed.'], $GLOBALS['parser_page_logs']);
+        }
+
+        public function testRemovingAnAbsentOcrKeyDoesNotCreateAnAuditEntry(): void
+        {
+            $_POST = [
+                'adct_parish_intake_remove_saved_ocr_key' => '1',
+                'adct_parish_intake_remove_ocr_key_nonce' => 'nonce',
+            ];
+            $audit = new RecordingAuditWriter();
+            $page = $this->page(audit: $audit);
+            $page->maybeHandleSettings();
+
+            self::assertSame([], $audit->rows);
+            self::assertSame('No saved OCR API key was found.', $this->privateProperty($page, 'settingsSaveError'));
+        }
+
+        public function testAnUncheckedRemovalActionCannotDeleteTheSavedOcrKey(): void
+        {
+            $option = SecretRegistry::optionName(SecretRegistry::OCR_API_KEY);
+            $GLOBALS['parser_page_options'][$option] = 'K811-retained';
+            $_POST = [
+                'adct_parish_intake_remove_saved_ocr_key' => '0',
+                'adct_parish_intake_remove_ocr_key_nonce' => 'nonce',
+            ];
+            $audit = new RecordingAuditWriter();
+            $this->page(audit: $audit)->maybeHandleSettings();
+
+            self::assertSame('K811-retained', $GLOBALS['parser_page_options'][$option]);
+            self::assertSame([], $audit->rows);
+            self::assertSame([], $GLOBALS['adct_test_nonce_checks']);
         }
 
         public function testAnUnreadablePosterLookupFailureIsLoggedWithoutExposingDatabaseDetails(): void
