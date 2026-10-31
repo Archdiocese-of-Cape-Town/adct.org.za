@@ -95,7 +95,7 @@ The existing `Pipeline::parse(Message): ParseResult` API remains compatible and 
 
 For normal incoming mail, `InboundMessageProcessingJob` turns only the exact `possible_missed_event_after_skipped_section:<count>` outcome diagnostic into a generic operator warning. It persists that count-only sentence with the parsed body in the existing message `error` note field, so the Inbox shows it even without candidate rows. No skipped source text or arbitrary parser notes are copied to the Inbox. A clean retry clears the warning; failed writes still use the failure path. Candidate handling, confirmation and publication are unchanged.
 
-Automated/list messages with no candidates retain the `ignored` transition and automation flag, but use the same count-only warning as their operator reason when present. Without a warning the existing generic no-event reason is unchanged; no parsed body is newly stored on the ignored path.
+Automated/list messages with no candidates retain the `ignored` transition and automation flag, and append the same count-only warning to their existing generic no-event reason when present. Without a warning the existing reason is unchanged; no parsed body is newly stored on the ignored path.
 
 ### Confidence scoring
 

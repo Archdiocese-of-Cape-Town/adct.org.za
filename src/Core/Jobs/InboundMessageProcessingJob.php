@@ -235,11 +235,15 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
             }
 
             if ($message->isAutoReply && $outcome->getCandidates() === []) {
+                $reason = 'This automated or mailing-list message did not contain an event to review.';
+                $warning = $this->parserWarning($outcome);
+                if ($warning !== null) {
+                    $reason .= ' ' . $warning;
+                }
                 $this->requireTransition(
                     $this->messages->markIgnored(
                         $message->id,
-                        $this->parserWarning($outcome)
-                            ?? 'This automated or mailing-list message did not contain an event to review.',
+                        $reason,
                         $this->timestamp()
                     ),
                     InboundMessageRecord::STATUS_IGNORED

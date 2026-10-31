@@ -64,11 +64,12 @@ final class InboundMessageProcessingJobTest extends TestCase
         $fixture['job']->processNext(null);
 
         self::assertSame($list && ! $mixed ? 'ignored' : 'parsed', $fixture['messages']->statuses[self::MESSAGE_ID]);
-        self::assertSame(
-            'Parser warning: 1 possible event notice(s) may have been missed after a private section. '
-                . 'Check the original email; skipped text is not shown.',
-            $fixture['messages']->errors[self::MESSAGE_ID]
-        );
+        $expectedNote = ($list && ! $mixed
+            ? 'This automated or mailing-list message did not contain an event to review. '
+            : '') . 'Parser warning: 1 possible event notice(s) may have been missed after a private section. '
+            . 'Check the original email; skipped text is not shown.';
+        self::assertSame($expectedNote, $fixture['messages']->errors[self::MESSAGE_ID]);
+        self::assertLessThanOrEqual(65535, strlen($expectedNote));
         self::assertCount($mixed ? 1 : 0, $fixture['candidates']->candidates[self::MESSAGE_ID] ?? []);
         self::assertStringNotContainsString(
             'Fictional Person Alpha',
@@ -76,12 +77,13 @@ final class InboundMessageProcessingJobTest extends TestCase
                 . $fixture['messages']->errors[self::MESSAGE_ID]
         );
         self::assertSame([], $fixture['failureLogger']->failures);
+        self::assertStringNotContainsString('Parish braai', $fixture['messages']->errors[self::MESSAGE_ID]);
 
         // An interrupted retry refreshes the warning without duplicating drafts.
         $fixture['messages']->statuses[self::MESSAGE_ID] = 'extracting';
         $fixture['job']->processNext(null);
         self::assertCount($mixed ? 1 : 0, $fixture['candidates']->candidates[self::MESSAGE_ID] ?? []);
-        self::assertStringStartsWith('Parser warning:', $fixture['messages']->errors[self::MESSAGE_ID]);
+        self::assertSame($expectedNote, $fixture['messages']->errors[self::MESSAGE_ID]);
 
         $fixture['messages']->statuses[self::MESSAGE_ID] = 'extracting';
         $fixture['storage']->files['private-message.eml'] = $this->validEmail();

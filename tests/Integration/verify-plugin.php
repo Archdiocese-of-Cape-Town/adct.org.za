@@ -4837,6 +4837,9 @@ $missedEventPostCount = (int) $wpdb->get_var($wpdb->prepare(
 add_filter('pre_wp_mail', $missedEventMailGuard, 10, 2);
 try {
     foreach ([[false, false], [true, false], [false, true], [true, true]] as [$mixed, $list]) {
+        $expectedMissedEventNote = ($list && ! $mixed
+            ? 'This automated or mailing-list message did not contain an event to review. '
+            : '') . $missedEventWarning;
         $raw = ($list ? "List-Id: Fictional parish notices <notices.example.test>\r\nPrecedence: list\r\n" : '')
             . $missedEventRaw . ($mixed
             ? "\n\nCOMMUNITY EVENTS\nPlease join the community supper on 12 October 2026 at 18:30 at Example Hall.\n"
@@ -4877,7 +4880,8 @@ try {
             $run->status->value !== 'completed'
             || ! is_array($row)
             || $row['status'] !== ($list && ! $mixed ? 'ignored' : 'parsed')
-            || $row['error'] !== $missedEventWarning
+            || $row['error'] !== $expectedMissedEventNote
+            || strlen($row['error']) > 65535
             || $row['raw_path'] !== $rawPath
             || ($list && ! $mixed
                 ? $row['body_text'] !== null
@@ -4899,7 +4903,7 @@ try {
             $_GET = $originalGet;
         }
         if (
-            strpos($inboxHtml, $missedEventWarning) === false
+            strpos($inboxHtml, $expectedMissedEventNote) === false
             || strpos($inboxHtml, $mixed ? 'Fictional mixed notice' : 'Fictional zero-candidate notice') === false
             || strpos($inboxHtml, 'Fictional Person Alpha') !== false
             || strpos($inboxHtml, 'Parish braai') !== false
