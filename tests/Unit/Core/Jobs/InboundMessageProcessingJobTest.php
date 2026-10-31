@@ -29,6 +29,7 @@ use ADCT\ParishIntake\Core\Ocr\OcrTextEnrichmentService;
 use ADCT\ParishIntake\Core\Ocr\StoredImageAttachment;
 use ADCT\ParishIntake\Core\Ports\ImageExtractionStoreInterface;
 use ADCT\ParishIntake\Core\Ports\OcrProviderInterface;
+use ADCT\ParishIntake\WordPress\Jobs\OcrSettings;
 use ADCT\ParishIntake\Core\Pdf\PdfExtractionLimits;
 use ADCT\ParishIntake\Core\Pdf\PdfExtractionResult;
 use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
@@ -41,6 +42,8 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Throwable;
+
+require_once __DIR__ . '/../../../Support/WordPressOptionsStubs.php';
 
 final class InboundMessageProcessingJobTest extends TestCase
 {
@@ -472,18 +475,19 @@ final class InboundMessageProcessingJobTest extends TestCase
     }
 
     /**
-     * An event that exists only as words inside a poster image must reach the
-     * parser, otherwise the parish is told to retype something they already
-     * sent as a picture.
+     * A legacy saved opt-in must not send a poster during inbox processing;
+     * the image remains available for the on-demand browser/manual fallback.
      */
-    public function testAnEventSentOnlyAsAPosterStillProducesACandidate(): void
+    public function testAnImageOnlyEventFallsBackToManualReadingWithLegacyOptInSaved(): void
     {
+        \new_options_database([OcrSettings::ENABLED_OPTION => '1']);
         $fixture = $this->fixture(
             new DirectorySnapshot([], [], []),
             ocrStore: $this->ocrStore(OcrExtractionResult::extracted(
                 "Parish Retreat Day\nSaturday 17 October 2026 from 9am to 3pm at Example Parish Hall.",
                 OcrExtractionResult::METHOD_OCR_EXTERNAL
-            ))
+            )),
+            ocrEnabled: OcrSettings::current()->isEnabled()
         );
         $fixture['messages']->add($this->message());
         $fixture['storage']->files['private-message.eml'] = $this->emailWithoutAnEvent();
@@ -491,20 +495,13 @@ final class InboundMessageProcessingJobTest extends TestCase
         $fixture['job']->processNext(null);
 
         self::assertSame('parsed', $fixture['messages']->statuses[self::MESSAGE_ID]);
-        self::assertNotSame([], $fixture['candidates']->candidates[self::MESSAGE_ID] ?? []);
-        self::assertStringContainsString(
-            'Parish Retreat Day',
+        self::assertSame([], $fixture['candidates']->candidates[self::MESSAGE_ID] ?? []);
+        self::assertStringNotContainsString(
+            OcrTextEnrichmentService::SECTION_HEADING,
             $fixture['messages']->bodies[self::MESSAGE_ID]
         );
-        self::assertStringContainsString(
-            OcrTextEnrichmentService::SECTION_HEADING,
-            $fixture['messages']->bodies[self::MESSAGE_ID],
-            'read text is marked, so an operator knows a date came out of a photograph'
-        );
-        self::assertSame(
-            OcrExtractionResult::STATUS_EXTRACTED,
-            $fixture['ocrStore']->recorded[1]->status
-        );
+        self::assertSame([], $fixture['ocrStore']->provider->requestedPaths);
+        self::assertSame([], $fixture['ocrStore']->recorded, 'the image remains pending for manual reading');
     }
 
     /**
