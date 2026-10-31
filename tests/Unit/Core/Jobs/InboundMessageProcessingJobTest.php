@@ -476,9 +476,9 @@ final class InboundMessageProcessingJobTest extends TestCase
 
     /**
      * A legacy saved opt-in must not send a poster during inbox processing;
-     * the image remains available for the on-demand browser/manual fallback.
+     * normal email text and the manual/browser fallback remain available.
      */
-    public function testAnImageOnlyEventFallsBackToManualReadingWithLegacyOptInSaved(): void
+    public function testLegacyOptInDoesNotReadPostersAndKeepsEmailParsingAvailable(): void
     {
         \new_options_database([OcrSettings::ENABLED_OPTION => '1']);
         $fixture = $this->fixture(
@@ -495,7 +495,11 @@ final class InboundMessageProcessingJobTest extends TestCase
         $fixture['job']->processNext(null);
 
         self::assertSame('parsed', $fixture['messages']->statuses[self::MESSAGE_ID]);
-        self::assertSame([], $fixture['candidates']->candidates[self::MESSAGE_ID] ?? []);
+        self::assertCount(1, $fixture['candidates']->candidates[self::MESSAGE_ID]);
+        self::assertSame(
+            'Example Parish community supper',
+            $fixture['candidates']->candidates[self::MESSAGE_ID][0]['fields']['title']
+        );
         self::assertStringNotContainsString(
             OcrTextEnrichmentService::SECTION_HEADING,
             $fixture['messages']->bodies[self::MESSAGE_ID]
