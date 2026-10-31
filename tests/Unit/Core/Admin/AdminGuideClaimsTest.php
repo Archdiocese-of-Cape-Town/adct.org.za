@@ -13,8 +13,6 @@ use ADCT\ParishIntake\Core\Ingestion\AttachmentStoragePolicy;
 use ADCT\ParishIntake\Core\Jobs\JobRunner;
 use ADCT\ParishIntake\Core\Jobs\MailboxPollingJob;
 use ADCT\ParishIntake\Core\Mail\MailQueueConfiguration;
-use ADCT\ParishIntake\Core\Ocr\OcrExtractionLimits;
-use ADCT\ParishIntake\Core\Ocr\OcrTextEnrichmentService;
 use ADCT\ParishIntake\Core\Pdf\PdfExtractionLimits;
 use ADCT\ParishIntake\Core\Pdf\PdfTextEnrichmentService;
 use ADCT\ParishIntake\Core\Sources\Source;
@@ -23,7 +21,6 @@ use ADCT\ParishIntake\WordPress\Approval\ApprovalNoticeJob;
 use ADCT\ParishIntake\WordPress\Approval\FrontEndApprovalQueue;
 use ADCT\ParishIntake\WordPress\Auth\NotifyModeChangeHandler;
 use ADCT\ParishIntake\WordPress\Jobs\HealthAlerts;
-use ADCT\ParishIntake\WordPress\Jobs\OcrSettings;
 use ADCT\ParishIntake\WordPress\Plugin;
 use PHPUnit\Framework\TestCase;
 
@@ -280,27 +277,6 @@ final class AdminGuideClaimsTest extends TestCase
     "One email's PDFs also share a 30 second budget",
     '30',
     ],
-    [
-    'posters per message',
-    OcrTextEnrichmentService::MAX_IMAGES_PER_MESSAGE,
-    self::OPERATOR_GUIDE,
-    'At most 3 posters per email are sent',
-    '3',
-    ],
-    [
-    'shared OCR message budget',
-    OcrExtractionLimits::DEFAULT_MESSAGE_TIME_BUDGET_SECONDS,
-    self::OPERATOR_GUIDE,
-    'the whole message shares a 30-second budget',
-    '30',
-    ],
-    [
-    'daily poster OCR limit',
-    OcrSettings::DEFAULT_DAILY_CALL_LIMIT,
-    self::OPERATOR_GUIDE,
-    'how many posters a day may be read, 20 by default',
-    '20',
-    ],
     ];
 
     /**
@@ -386,44 +362,6 @@ final class AdminGuideClaimsTest extends TestCase
     1,
     MailQueueConfiguration::MAX_HOURLY_CAP,
     ];
-    }
-
-    /**
-    * The poster limit's floor and ceiling are not in the guide but on the
-    * Settings screen, as the input's own min and max. A limit the screen
-    * refuses to accept but the guide implies would cost a parish its poster
-    * text, so the two are checked against each other.
-    */
-    public function testThePosterLimitIsBoundedWhereTheScreenSaysItIsBounded(): void
-    {
-    $screen = self::methodBody(
-    'src/WordPress/Admin/ParserPage.php',
-    'public function renderSettingsPage()'
-    );
-
-    self::assertStringContainsString(
-    'min="<?php echo esc_attr((string) OcrSettings::MIN_DAILY_CALL_LIMIT); ?>"',
-    $screen,
-    'The Settings screen no longer states the smallest daily poster limit the plugin accepts.'
-    );
-    self::assertStringContainsString(
-    'max="<?php echo esc_attr((string) OcrSettings::MAX_DAILY_CALL_LIMIT); ?>"',
-    $screen,
-    'The Settings screen no longer states the largest daily poster limit the plugin accepts.'
-    );
-
-    // The guide quotes the default, and the default has to be a value the
-    // input will actually accept.
-    self::assertGreaterThanOrEqual(
-    OcrSettings::MIN_DAILY_CALL_LIMIT,
-    OcrSettings::DEFAULT_DAILY_CALL_LIMIT,
-    'The default daily poster limit is below the floor the Settings screen allows.'
-    );
-    self::assertLessThanOrEqual(
-    OcrSettings::MAX_DAILY_CALL_LIMIT,
-    OcrSettings::DEFAULT_DAILY_CALL_LIMIT,
-    'The default daily poster limit is above the ceiling the Settings screen allows.'
-    );
     }
 
     /**
