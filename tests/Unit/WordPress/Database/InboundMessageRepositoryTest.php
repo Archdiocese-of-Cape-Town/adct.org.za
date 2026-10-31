@@ -90,6 +90,23 @@ final class InboundMessageRepositoryTest extends TestCase
         );
     }
 
+    public function testParsedWarningIsStoredWithTheBodyInTheGuardedTransition(): void
+    {
+        $database = new InboundMessageRepositoryDatabase();
+        $repository = new InboundMessageRepository($database);
+        $warning = 'Parser warning: check the original email.';
+
+        self::assertTrue($repository->markParsed(41, 'Private body.', '2026-09-25 04:10:00', $warning));
+        self::assertStringContainsString(
+            'SET status = %s, error = %s, updated_at = %s, body_text = %s',
+            $database->prepared[0]['query']
+        );
+        self::assertSame(
+            ['parsed', $warning, '2026-09-25 04:10:00', 'Private body.', 41, 'extracting'],
+            $database->prepared[0]['arguments']
+        );
+    }
+
     public function testRequeueRejectsBatchesLargerThanTwentyBeforeOpeningATransaction(): void
     {
         $database = new InboundMessageRepositoryDatabase();
