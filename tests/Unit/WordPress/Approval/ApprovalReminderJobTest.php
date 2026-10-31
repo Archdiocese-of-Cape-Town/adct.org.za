@@ -37,6 +37,7 @@ use ADCT\ParishIntake\WordPress\Approval\ApprovalRecipients;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
 use DateTimeImmutable;
 use DateTimeZone;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use WP_User;
 
@@ -56,6 +57,9 @@ final class ApprovalReminderJobTest extends TestCase
 
     /** @var list<array{parishId: ?int, kind: string, channel: string, note: ?string}> */
     private array $audited = [];
+
+    /** @var list<int> */
+    private array $routeParishes = [];
 
     private DateTimeImmutable $now;
 
@@ -80,6 +84,7 @@ final class ApprovalReminderJobTest extends TestCase
         $this->queries = [];
         $this->enqueued = [];
         $this->audited = [];
+        $this->routeParishes = [];
         $this->now = new DateTimeImmutable('2026-09-24 08:00:00', new DateTimeZone('Africa/Johannesburg'));
     }
 
@@ -170,6 +175,68 @@ final class ApprovalReminderJobTest extends TestCase
         self::assertContains($this->now->modify('-3 days')->format('Y-m-d H:i:s'), $scan['args']);
     }
 
+    public function testTheReminderLookupDoesNotSelectAnUnstoredCandidateMatchColumn(): void
+    {
+        $this->runJob(new ApprovalReminderSettings(true, 3));
+
+        $lookups = array_values(array_filter(
+            $this->queries,
+            static fn (array $query): bool => str_contains($query['sql'], 'm.sender_email')
+        ));
+        self::assertCount(1, $lookups);
+        self::assertStringNotContainsString('c.matched_candidate_id', $lookups[0]['sql']);
+    }
+
+    public function testTheReminderUsesTheLatestParishRatherThanTheScannedParish(): void
+    {
+        $this->runJob(new ApprovalReminderSettings(true, 3), eventOverrides: ['parish_id' => 6]);
+
+        self::assertSame([6], $this->routeParishes);
+        self::assertSame([6, 6], array_column($this->audited, 'parishId'));
+    }
+
+    public function testNoDeanIsRemindedWhenTheLatestCandidateHasNoParish(): void
+    {
+        $this->runJob(new ApprovalReminderSettings(true, 3), eventOverrides: ['parish_id' => null]);
+
+        self::assertSame([], $this->routeParishes);
+        self::assertSame([self::REVIEWER], $this->recipients());
+        self::assertSame([null], array_column($this->audited, 'parishId'));
+    }
+
+    #[DataProvider('ineligibleReminderCandidates')]
+    public function testNoReminderIsSentWhenTheLatestCandidateNeedsReviewOrHasBeenDecided(
+        array $eventOverrides
+    ): void {
+        $result = $this->runJob(new ApprovalReminderSettings(true, 3), eventOverrides: $eventOverrides);
+
+        self::assertNotNull($result);
+        self::assertSame('12', $result->checkpoint());
+        self::assertSame([], $this->enqueued);
+        self::assertSame([], $this->audited);
+    }
+
+    /** @return iterable<string, array{array<string, mixed>}> */
+    public static function ineligibleReminderCandidates(): iterable
+    {
+        yield 'matched candidate in fields' => [
+            ['fields' => '{"title":"Retreat day","matched_candidate_id":987}'],
+        ];
+        yield 'manual review flag in fields' => [
+            ['fields' => '{"title":"Retreat day","match_review_required":true}'],
+        ];
+        yield 'legacy matched candidate column' => [['matched_candidate_id' => 987]];
+        yield 'legacy manual review column' => [['match_review_required' => true]];
+        yield 'duplicate match' => [['match_kind' => 'duplicate']];
+        yield 'event update' => [['match_kind' => 'update']];
+        yield 'event cancellation' => [['match_kind' => 'cancellation']];
+        yield 'event postponement' => [['match_kind' => 'postponement']];
+        yield 'unknown match kind' => [['match_kind' => null]];
+        yield 'published after scan' => [['status' => 'published']];
+        yield 'approved after scan' => [['approved_by' => 'reviewer@example.test']];
+        yield 'decided after scan' => [['decided_at' => '2026-09-24 06:00:00']];
+    }
+
     public function testALongerPeriodMovesTheScanCutoffFurtherBack(): void
     {
         $this->runJob(new ApprovalReminderSettings(true, 7));
@@ -258,6 +325,82 @@ final class ApprovalReminderJobTest extends TestCase
         self::assertStringContainsString('Edit', $body);
         self::assertStringContainsString('Retreat day', $body);
         self::assertNotSame('', $this->enqueued[0]->textBody);
+    }
+
+    public function testTheReminderShowsTheNormalisedAddressAndDisplayName(): void
+    {
+        $this->runJob(
+            new ApprovalReminderSettings(true, 3),
+            eventOverrides: [
+                'sender_email' => ' Parish.Office@Example.TEST ',
+                'sender_name' => 'Parish Office',
+            ]
+        );
+
+        self::assertCount(2, $this->enqueued);
+        foreach ($this->enqueued as $mail) {
+            $identity = 'Submitted by: parish.office@example.test (Parish Office)';
+            self::assertStringContainsString($identity, $mail->textBody);
+            self::assertStringContainsString($identity, $mail->htmlBody);
+        }
+
+        $eventQueries = array_values(array_filter(
+            $this->queries,
+            static fn (array $query): bool => str_contains($query['sql'], 'm.sender_email')
+        ));
+        self::assertCount(1, $eventQueries);
+        self::assertStringContainsString('m.sender_name', $eventQueries[0]['sql']);
+    }
+
+    public function testTheReminderSaysWhenNoDisplayNameWasSupplied(): void
+    {
+        $this->runJob(new ApprovalReminderSettings(true, 3), eventOverrides: ['sender_name' => null]);
+
+        self::assertCount(2, $this->enqueued);
+        self::assertStringContainsString(
+            'Submitted by: parish-office@example.test (no name supplied)',
+            $this->enqueued[0]->textBody
+        );
+    }
+
+    public function testTheReminderDoesNotRepeatAnAddressAsTheDisplayName(): void
+    {
+        $this->runJob(
+            new ApprovalReminderSettings(true, 3),
+            eventOverrides: ['sender_name' => 'parish-office@example.test']
+        );
+
+        self::assertCount(2, $this->enqueued);
+        self::assertStringContainsString(
+            'Submitted by: parish-office@example.test (no name supplied)',
+            $this->enqueued[0]->textBody
+        );
+    }
+
+    public function testTheReminderEscapesHtmlAndPreventsNameLineInjection(): void
+    {
+        $this->runJob(
+            new ApprovalReminderSettings(true, 3),
+            eventOverrides: [
+                'sender_name' => "<script>alert(1)</script> Parish & Office\r\n"
+                    . 'Submitted by: intruder@example.test',
+            ]
+        );
+
+        self::assertCount(2, $this->enqueued);
+        foreach ($this->enqueued as $mail) {
+            self::assertStringContainsString(
+                'Submitted by: parish-office@example.test (&lt;script&gt;alert(1)&lt;/script&gt; Parish &amp; Office)',
+                $mail->htmlBody
+            );
+            self::assertStringNotContainsString('<script>', $mail->htmlBody);
+            self::assertStringContainsString(
+                'Submitted by: parish-office@example.test (<script>alert(1)</script> Parish & Office)',
+                $mail->textBody
+            );
+            self::assertStringNotContainsString('intruder@example.test', $mail->textBody);
+            self::assertSame(1, substr_count($mail->textBody, 'Submitted by: '));
+        }
     }
 
     public function testAReminderSaysHowLongTheItemHasBeenWaiting(): void
@@ -363,11 +506,17 @@ final class ApprovalReminderJobTest extends TestCase
         ];
 
         $routes = $this->createMock(ApprovalRouteRepositoryInterface::class);
-        $routes->method('findForParish')->willReturn(new ApprovalRouteSnapshot(
-            7,
-            true,
-            [new Approver(4, 9, self::DEAN, 'Dean Test', Approver::NOTIFY_EACH, $deanReminders, true)]
-        ));
+        $routes->method('findForParish')->willReturnCallback(
+            function (int $parishId) use ($deanReminders): ApprovalRouteSnapshot {
+                $this->routeParishes[] = $parishId;
+
+                return new ApprovalRouteSnapshot(
+                    7,
+                    true,
+                    [new Approver(4, 9, self::DEAN, 'Dean Test', Approver::NOTIFY_EACH, $deanReminders, true)]
+                );
+            }
+        );
 
         return $routes;
     }
@@ -377,6 +526,7 @@ final class ApprovalReminderJobTest extends TestCase
      * @param bool $reminderAlreadyQueued the mail queue already holds the reminder
      * @param list<array<string, mixed>> $waiting the rows the scan returns
      * @param bool $scanRuns whether the scan query is answered with $waiting
+     * @param array<string, mixed> $eventOverrides values returned by the event lookup
      */
     private function runJob(
         ApprovalReminderSettings $settings,
@@ -390,7 +540,8 @@ final class ApprovalReminderJobTest extends TestCase
             'status' => 'awaiting_approval',
             'decided_at' => null,
         ]],
-        bool $scanRuns = true
+        bool $scanRuns = true,
+        array $eventOverrides = []
     ): ?JobStepResult {
         $rows = $scanRuns && $waiting !== []
                     ? [array_replace($waiting[0], [
@@ -410,13 +561,13 @@ final class ApprovalReminderJobTest extends TestCase
             }
         );
         $database->method('getResults')->willReturnCallback(
-            function (string $sql) use ($rows): array {
+            function (string $sql) use ($rows, $eventOverrides): array {
                             if (str_contains($sql, 'FROM `wp_adct_pi_event_candidates` c')
                     && str_contains($sql, 'c.updated_at < %s')) {
                     return $rows;
                 }
                 if (str_contains($sql, 'FROM `wp_adct_pi_event_candidates` c')) {
-                    return [[
+                    $event = array_replace([
                         'id' => 12,
                         'fields' => json_encode(
                             ['title' => 'Retreat day', 'event_date' => '2026-10-12'],
@@ -425,10 +576,20 @@ final class ApprovalReminderJobTest extends TestCase
                         'notes' => '[]',
                         'message_id' => null,
                         'matched_candidate_id' => null,
+                        'parish_id' => 5,
+                        'match_kind' => 'new',
+                        'status' => 'awaiting_approval',
+                        'approved_by' => null,
+                        'decided_at' => null,
                         'sender_email' => 'parish-office@example.test',
                         'sender_name' => '',
                         'parish_name' => 'St Anne',
-                    ]];
+                    ], $eventOverrides);
+                    if (! str_contains($sql, 'm.sender_name')) {
+                        unset($event['sender_name']);
+                    }
+
+                    return [$event];
                 }
 
                 return [];

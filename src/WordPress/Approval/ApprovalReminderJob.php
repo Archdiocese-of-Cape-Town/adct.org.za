@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Approval;
 
 use ADCT\ParishIntake\Core\Approval\ApprovalReminderSettings;
+use ADCT\ParishIntake\Core\Approval\ApprovalSenderIdentity;
 use ADCT\ParishIntake\Core\Auth\ActionTokenBinding;
 use ADCT\ParishIntake\Core\Auth\ActionTokenPurpose;
 use ADCT\ParishIntake\Core\Auth\ActionTokenService;
@@ -113,21 +114,25 @@ final class ApprovalReminderJob extends AbstractJob implements JobRunLifecycleIn
                 continue;
             }
 
-            $this->remind($id, (int) ($candidate['parish_id'] ?? 0) ?: null, $settings);
+            $this->remind($id, $settings);
             $after = $id;
         }
 
         return JobStepResult::continueAt((string) $after);
     }
 
-    private function remind(int $candidateId, ?int $parishId, ApprovalReminderSettings $settings): void
+    private function remind(int $candidateId, ApprovalReminderSettings $settings): void
     {
         $event = $this->event($candidateId);
 
-        if ($event === null) {
+        if ($event === null
+            || ($event['status'] ?? null) !== 'awaiting_approval'
+            || ($event['approved_by'] ?? null) !== null
+            || ($event['decided_at'] ?? null) !== null) {
             return;
         }
 
+        $parishId = (int) ($event['parish_id'] ?? 0) ?: null;
         $fields = json_decode((string) $event['fields'], true);
 
         if (! is_array($fields)) {
@@ -136,7 +141,9 @@ final class ApprovalReminderJob extends AbstractJob implements JobRunLifecycleIn
 
         // The same guard the notice job applies: an item still waiting on a
         // manual match decision is not ready for an approver.
-        if (MatchReviewPolicy::requiresManualReview($fields)
+        if (($event['match_kind'] ?? null) !== 'new'
+            || MatchReviewPolicy::requiresManualReview($fields)
+            || ! empty($event['match_review_required'])
             || (int) ($event['matched_candidate_id'] ?? 0) > 0) {
             return;
         }
@@ -243,7 +250,10 @@ final class ApprovalReminderJob extends AbstractJob implements JobRunLifecycleIn
             }
         }
 
-        $summary[] = 'Submitted by: ' . (string) ($event['sender_email'] ?? 'Unknown');
+        $summary[] = 'Submitted by: ' . ApprovalSenderIdentity::format(
+            $event['sender_email'] ?? null,
+            $event['sender_name'] ?? null
+        );
 
         return implode("\n", $summary);
     }
@@ -276,7 +286,7 @@ final class ApprovalReminderJob extends AbstractJob implements JobRunLifecycleIn
     private function event(int $candidateId): ?array
     {
         $rows = $this->rows($this->database->prepare(
-            'SELECT c.id, c.fields, c.notes, c.message_id, c.matched_candidate_id,'
+            'SELECT c.*,'
             . ' m.sender_email, m.sender_name, p.name AS parish_name'
             . ' FROM ' . $this->table('adct_pi_event_candidates') . ' c'
             . ' LEFT JOIN ' . $this->table('adct_pi_inbound_messages') . ' m ON m.id = c.message_id'

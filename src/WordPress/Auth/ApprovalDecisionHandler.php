@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADCT\ParishIntake\WordPress\Auth;
 
+use ADCT\ParishIntake\Core\Approval\ApprovalSenderIdentity;
 use ADCT\ParishIntake\Core\Auth\ActionTokenBinding;
 use ADCT\ParishIntake\Core\Auth\ActionTokenOutcome;
 use ADCT\ParishIntake\Core\Auth\ActionTokenPreview;
@@ -78,7 +79,10 @@ final class ApprovalDecisionHandler implements AtomicActionTokenHandlerInterface
         }
         $message = $this->message($row);
         if ($message !== null) {
-            $details[] = 'Submitted by: ' . (string) ($message['sender_email'] ?? 'Unknown');
+            $details[] = 'Submitted by: ' . ApprovalSenderIdentity::format(
+                $message['sender_email'] ?? null,
+                $message['sender_name'] ?? null
+            );
         }
         $notes = json_decode((string) ($row['notes'] ?? '[]'), true);
         if (is_array($notes) && in_array('unknown_sender', $notes, true)) {
@@ -286,7 +290,8 @@ final class ApprovalDecisionHandler implements AtomicActionTokenHandlerInterface
             return null;
         }
         return $this->read($this->database->prepare(
-            'SELECT sender_email FROM ' . $this->table('adct_pi_inbound_messages') . ' WHERE id = %d',
+            'SELECT sender_email, sender_name FROM '
+            . $this->table('adct_pi_inbound_messages') . ' WHERE id = %d',
             (int) $row['message_id']
         ));
     }
