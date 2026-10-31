@@ -2,11 +2,13 @@
   "name": "adct-parish-intake-test-harness",
   "private": true,
   "scripts": {
+    "test:playground": "node scripts/test-playground.mjs",
     "test:integration": "npm run test:integration-config && npm run test:assets && node scripts/test-integration.mjs",
     "test:assets": "node --test tests/Node/ocr-settings.test.mjs tests/Node/ocr-target.test.mjs",
     "test:integration-config": "node --test scripts/test-integration-config.test.mjs tests/Node/wp-env-home.test.mjs"
   },
   "devDependencies": {
+    "@wp-playground/cli": "3.1.61",
     "@wordpress/env": "10.17.0"
   }
 }

@@ -5721,6 +5721,8 @@ require_once __DIR__ . '/ApprovalDecisionCheck.php';
 ApprovalDecisionCheck::run($fail);
 require_once __DIR__ . '/ReviewQueueCheck.php';
 ReviewQueueCheck::run($fail);
+require_once __DIR__ . '/ReviewQueueJsonCheck.php';
+ReviewQueueJsonCheck::run($fail);
 FrontEndApprovalQueueCheck::run($fail);
 require_once __DIR__ . '/CandidateDetailCheck.php';
 CandidateDetailCheck::run($fail);
