@@ -54,6 +54,7 @@ final class WordPressStubSurfaceTest extends TestCase
         'FixtureComparator.php',
         'FixtureDirectorySnapshotLoader.php',
         'NotifyModeFakes.php',
+        'PdfFixtureIntegrity.php',
         'StubSurface.php',
         'WordPressAuthDoubles.php',
                 'WordPressCapabilityStubs.php',
@@ -99,6 +100,7 @@ final class WordPressStubSurfaceTest extends TestCase
         'FixtureComparator.php' => [],
         'FixtureDirectorySnapshotLoader.php' => [],
         'NotifyModeFakes.php' => [],
+        'PdfFixtureIntegrity.php' => [],
         'StubSurface.php' => [],
         'WordPressAuthDoubles.php' => [
             'ADCT\ParishIntake\WordPress\Auth\__',
@@ -248,6 +250,7 @@ final class WordPressStubSurfaceTest extends TestCase
             'ADCT\ParishIntake\Tests\Support\NotifyModeClock',
             'ADCT\ParishIntake\Tests\Support\NotifyModeDatabase',
         ],
+        'PdfFixtureIntegrity.php' => ['ADCT\ParishIntake\Tests\Support\PdfFixtureIntegrity'],
         'StubSurface.php' => ['ADCT\ParishIntake\Tests\Support\StubSurface'],
         'WordPressAuthDoubles.php' => ['WP_User'],
                 'WordPressCapabilityStubs.php' => ['WP_User'],

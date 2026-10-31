@@ -8,6 +8,16 @@ For pre-release schema changes, test the built zip on an isolated **fresh** Word
 
 ## Test layers
 
+PDF fixtures have a fail-fast SHA-256 check in `tests/bootstrap.php`, before
+PHPUnit loads fixtures. `PdfFixtureIntegrityTest` covers valid, CRLF-corrupt,
+missing and unlisted files without Git. `npm run test:fixtures` runs the
+dependency-free Node/Git safety regressions on disposable repositories: hidden
+corruption despite clean status, same-size edits, missing files, exact binary
+export, existing-destination refusal and corrupt staged bytes. CI runs this
+alongside `npm run fixtures:check`. The checksum guard does not replace or
+weaken the extractor assertions. See [safe detection and recovery](development.md#pdf-fixture-integrity-on-windows)
+before changing fixture bytes; no test automatically restores files.
+
 | Layer | What | Where it runs | When |
 |---|---|---|---|
 | 1. Unit | Domain core: parsing stages and directory lookup, date/recurrence rules, event details and RFC 5545 validation, RRULE expansion and rolling-window jobs, transactional occurrence replacement, schema migrations, matching and trust rules, action tokens, MIME/header parsing and automated-mail detection, bounded PDF text extraction and column-aware ordering, SPF/DKIM/DMARC handling, confirmation recipient safety and HTML/plain-text snapshots, queue idempotency, recovery before current-policy suppression after an uncertain marker write, and cross-recipient conflicts, token binding/thread headers, terminal raw-header failures and UTC markers, inbound reprocessing and sanitized retry diagnostics, Inbox status queries and draft replacement that preserves reviewed rows, IMAP protocol and polling checkpoints, source retry cadence, snapshot invalidation, review queue tab classification as a partition, and Core isolation. | GitHub Actions + locally | Every push / PR |
@@ -70,6 +80,8 @@ The installed-ZIP `ApprovalDecisionCheck` exercises grouped dean/reviewer notifi
 `AuditLogPageTest` covers the screen without a database, including the escaping of every rendered field and the absence of any POST handler.
 
 `SubjectAuditPanelTest` covers the per-record panel without a database: a candidate sees only its own rows and a different candidate sees none; a parish panel renders its heading and ignores candidate rows; the details column is escaped even when the details carry hostile markup; and the panel offers no form and no nonce, which is what keeps it read-only. `SubjectAuditMountTest` then proves each of the three hosts actually calls it, so a panel that renders perfectly in isolation but is never mounted is not counted as done. Neither file needs a database, so both run in the ordinary PHPUnit job.
+
+Issue #241 also covers the composition root in `EventEditorAuditWiringTest`: it invokes the real private `Plugin` constructor, reads its constructed editor without replacing collaborators, and renders the registered audit callback through the real panel, audit repository and database adapter into a read-only `wpdb` double. It asserts the event subject type and ID, bounded paging and visible audit evidence. This catches an omitted optional panel in `Plugin.php`, which directly constructed mount tests cannot detect; it does not impose a general constructor argument-count rule. The test runs in a separate PHP process so its WordPress constant and globals cannot leak into other tests. The injected-panel mount tests also pin the box's callback, screen and placement, read-only output, absent-panel rendering and denied edit access.
 
 `AuditLogCheck` also plants a row **exactly on** the 24-month cutoff, alongside the rows one second either side of it. The either-side rows alone are not enough: a mutation probe that changed the retention comparison from `<` to `<=` deleted nothing extra and the check still passed, because no row sat on the boundary. A check that cannot fail is not evidence, so the boundary row is what pins the comparison itself.
 
