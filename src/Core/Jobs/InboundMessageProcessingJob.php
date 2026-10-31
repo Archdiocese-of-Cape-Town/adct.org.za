@@ -235,10 +235,15 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
             }
 
             if ($message->isAutoReply && $outcome->getCandidates() === []) {
+                $reason = 'This automated or mailing-list message did not contain an event to review.';
+                $warning = $this->parserWarning($outcome);
+                if ($warning !== null) {
+                    $reason .= ' ' . $warning;
+                }
                 $this->requireTransition(
                     $this->messages->markIgnored(
                         $message->id,
-                        'This automated or mailing-list message did not contain an event to review.',
+                        $reason,
                         $this->timestamp()
                     ),
                     InboundMessageRecord::STATUS_IGNORED
@@ -248,7 +253,8 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
                     $this->messages->markParsed(
                         $message->id,
                         $parsedMessage->getBody(),
-                        $this->timestamp()
+                        $this->timestamp(),
+                        $this->parserWarning($outcome)
                     ),
                     InboundMessageRecord::STATUS_PARSED
                 );
@@ -273,6 +279,19 @@ final class InboundMessageProcessingJob extends AbstractJob implements JobRunLif
         }
 
         return JobStepResult::continueAt($checkpoint);
+    }
+
+    private function parserWarning(ParseOutcome $outcome): ?string
+    {
+        foreach ($outcome->getNotes() as $note) {
+            if (preg_match('/\Apossible_missed_event_after_skipped_section:\s*([1-9]\d*)\z/D', $note, $matches) === 1) {
+                return 'Parser warning: ' . $matches[1]
+                    . ' possible event notice(s) may have been missed after a private section. '
+                    . 'Check the original email; skipped text is not shown.';
+            }
+        }
+
+        return null;
     }
 
     private function learnUnknownSender(
