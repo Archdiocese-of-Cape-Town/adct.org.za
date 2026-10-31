@@ -19,7 +19,7 @@ Tooling and structure so everything after it is safe to build.
 ### Phase 1 – MVP email loop
 **Exit criteria (the MVP demo):**
 1. A parish secretary emails a notice with two events (one once-off, one "every first Friday") to the intake mailbox.
-2. Within ~15 minutes she receives a confirmation email showing both events as they will appear. This assumes the free external pinger is set up; without it, it can take up to 2 hours ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
+2. With a new email source's 10-minute interval, a working external pinger, and healthy parsing and outbound-mail queues, the target is a confirmation email in roughly 15 minutes. This is not a deadline: trigger gaps, failures/backoff or queue delays can make it longer. Without the pinger, the two-hour cron backstop can delay the next run ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
 3. She confirms both. The dean of her deanery and the archdiocese reviewers each get an approval email. The dean approves from the email. The reviewers' copy now shows "approved by the dean".
 4. The events appear on the public events page (filterable by date, type, parish and near me) and in the ICS feed. The recurring event shows its upcoming dates.
 5. She emails a time change for the once-off event. Because her address is a verified contact, it updates immediately, and the dean gets a change notice with a Revert link.

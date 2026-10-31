@@ -659,6 +659,31 @@ final class RepositoryTest extends TestCase
         self::assertSame(2, $settings->consecutiveFailures);
     }
 
+    public function testMailboxRepositoryKeepsLegacyDefaultForUnsetStoredInterval(): void
+    {
+        $database = new FakeDatabaseConnection();
+        $database->resultRows = [[
+            'id' => '8',
+            'source_id' => '42',
+            'label' => 'Example mailbox',
+            'host' => 'imap.example.test',
+            'port' => '993',
+            'encryption' => 'ssl',
+            'username' => 'intake@example.test',
+            'inbox_folder' => 'INBOX',
+            'processed_folder' => 'Processed',
+            'max_message_size_bytes' => '15728640',
+            'active' => '1',
+            'source_poll_interval_minutes' => null,
+            'source_last_checked_at' => null,
+            'source_consecutive_failures' => '0',
+        ]];
+
+        $settings = (new MailboxRepository($database))->findActiveMailboxes()[0];
+
+        self::assertSame(Source::DEFAULT_POLL_INTERVAL_MINUTES, $settings->pollIntervalMinutes);
+    }
+
     public function testInboundDuplicateLookupChecksMessageIdAndContentHashWithinSource(): void
     {
         $database = new FakeDatabaseConnection();

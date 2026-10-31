@@ -115,6 +115,33 @@ final class MailboxPollingJobTest extends TestCase
         self::assertTrue($fixture['checkpoints']->checkpoints[self::SOURCE_ID]->scanComplete);
     }
 
+    public function testNewMailboxDefaultIsEligibleTenMinutesAfterSuccessfulPoll(): void
+    {
+        $server = new PollingMailboxServer();
+        $settings = $this->settings(lastCheckedAt: '2026-09-25 02:50:00');
+        $fixture = $this->fixture($server, settings: $settings);
+
+        self::assertSame(Source::DEFAULT_MAILBOX_POLL_INTERVAL_MINUTES, $settings->pollIntervalMinutes);
+
+        $this->finish($fixture['job']);
+
+        self::assertSame(1, $server->connectionCount);
+    }
+
+    public function testExplicitTwentyFourHourIntervalRemainsInEffect(): void
+    {
+        $server = new PollingMailboxServer();
+        $settings = $this->settings(
+            pollIntervalMinutes: Source::DEFAULT_POLL_INTERVAL_MINUTES,
+            lastCheckedAt: '2026-09-25 02:59:00'
+        );
+        $fixture = $this->fixture($server, settings: $settings);
+
+        $this->finish($fixture['job']);
+
+        self::assertSame(0, $server->connectionCount);
+    }
+
     public function testDueMailboxIsNotStarvedByAnEarlierNotDueSource(): void
     {
         $server = new PollingMailboxServer();
@@ -480,7 +507,7 @@ final class MailboxPollingJobTest extends TestCase
 
     private function settings(
         int $maxMessageSizeBytes = 30 * 1024 * 1024,
-        int $pollIntervalMinutes = Source::DEFAULT_POLL_INTERVAL_MINUTES,
+        ?int $pollIntervalMinutes = null,
         ?string $lastCheckedAt = null,
         int $consecutiveFailures = 0,
         int $sourceId = self::SOURCE_ID

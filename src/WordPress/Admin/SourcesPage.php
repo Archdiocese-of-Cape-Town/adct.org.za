@@ -295,6 +295,7 @@ final class SourcesPage
         }
 
         $intervalText = trim($this->postText('poll_interval_minutes'));
+        $type = sanitize_key($this->postText('type'));
         $interval = null;
 
         if ($intervalText !== '') {
@@ -305,13 +306,15 @@ final class SourcesPage
             }
 
             $interval = (int) $intervalText;
+        } else {
+            $interval = Source::defaultPollIntervalMinutesForNewSource($type, $parishId);
         }
 
         try {
             $source = new Source(
                 $sourceId,
                 $parishId,
-                sanitize_key($this->postText('type')),
+                $type,
                 sanitize_text_field($this->postText('identifier')),
                 sanitize_key($this->postText('role')),
                 sanitize_key($this->postText('status')),
@@ -351,8 +354,7 @@ final class SourcesPage
         $type = $source?->type ?? SourceType::EMAIL;
         $role = $source?->role ?? SourceRole::MONITORED;
         $status = $source?->status ?? SourceStatus::ACTIVE;
-        $pollInterval = $source?->pollIntervalMinutes
-            ?? ($type === SourceType::MANUAL ? null : Source::DEFAULT_POLL_INTERVAL_MINUTES);
+        $pollInterval = $source?->pollIntervalMinutes;
         $prefix = 'source-' . ($sourceId > 0 ? (string) $sourceId : ($parishId === null ? 'new-global' : 'new-parish-' . $parishId));
         ?>
         <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
@@ -408,8 +410,8 @@ final class SourcesPage
                 <tr>
                     <th scope="row"><label for="<?php echo esc_attr($prefix); ?>-poll-interval">Poll interval (minutes)</label></th>
                     <td>
-                        <input id="<?php echo esc_attr($prefix); ?>-poll-interval" name="poll_interval_minutes" type="number" min="<?php echo esc_attr((string) Source::MINIMUM_POLL_INTERVAL_MINUTES); ?>" max="<?php echo esc_attr((string) Source::MAXIMUM_POLL_INTERVAL_MINUTES); ?>" step="1" value="<?php echo esc_attr($pollInterval === null ? '' : (string) $pollInterval); ?>" />
-                        <p class="description">Pollable sources default to 1,440 minutes (24 hours); the minimum is 10 minutes. These limits are provisional. Manual sources are not polled and keep this field blank.</p>
+                        <input id="<?php echo esc_attr($prefix); ?>-poll-interval" name="poll_interval_minutes" type="number" min="<?php echo esc_attr((string) Source::MINIMUM_POLL_INTERVAL_MINUTES); ?>" max="<?php echo esc_attr((string) Source::MAXIMUM_POLL_INTERVAL_MINUTES); ?>" step="1" placeholder="Use source default" value="<?php echo esc_attr($pollInterval === null ? '' : (string) $pollInterval); ?>" />
+                        <p class="description">Leave blank for the default: 10 minutes for a new archdiocese-wide email/mailbox source, or 1,440 minutes (24 hours) for other pollable sources. The minimum is 10 minutes; these limits are provisional. Manual sources are not polled.</p>
                     </td>
                 </tr>
             </table>

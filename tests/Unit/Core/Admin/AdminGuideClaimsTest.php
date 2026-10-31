@@ -150,6 +150,13 @@ final class AdminGuideClaimsTest extends TestCase
     '1440',
     ],
     [
+    'new mailbox poll interval',
+    Source::DEFAULT_MAILBOX_POLL_INTERVAL_MINUTES,
+    self::OPERATOR_GUIDE,
+    'New archdiocese-wide email/mailbox sources default to a 10-minute poll interval',
+    '10',
+    ],
+    [
     'minimum poll interval',
     Source::MINIMUM_POLL_INTERVAL_MINUTES,
     self::OPERATOR_GUIDE,

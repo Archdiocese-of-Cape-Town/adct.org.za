@@ -606,7 +606,8 @@ final class MailboxesPage
             $identifier,
             SourceRole::OFFICIAL,
             $source?->status ?? SourceStatus::ACTIVE,
-            $source?->pollIntervalMinutes,
+            $source?->pollIntervalMinutes
+                ?? Source::defaultPollIntervalMinutesForNewSource(SourceType::EMAIL, null),
             $source?->lastCheckedAt,
             $source?->lastSuccessAt,
             $source?->lastItemAt,

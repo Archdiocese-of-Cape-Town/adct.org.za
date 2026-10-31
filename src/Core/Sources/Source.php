@@ -9,6 +9,7 @@ use InvalidArgumentException;
 final class Source
 {
     public const DEFAULT_POLL_INTERVAL_MINUTES = 1440;
+    public const DEFAULT_MAILBOX_POLL_INTERVAL_MINUTES = 10;
     public const MINIMUM_POLL_INTERVAL_MINUTES = 10;
     public const MAXIMUM_POLL_INTERVAL_MINUTES = 4294967295;
 
@@ -24,6 +25,21 @@ final class Source
     public readonly ?string $lastItemAt;
     public readonly int $consecutiveFailures;
     public readonly ?string $lastError;
+
+    public static function defaultPollIntervalMinutesForNewSource(string $type, ?int $parishId): ?int
+    {
+        $type = SourceType::assertValid($type);
+
+        if ($type === SourceType::MANUAL) {
+            return null;
+        }
+
+        if ($type === SourceType::EMAIL && $parishId === null) {
+            return self::DEFAULT_MAILBOX_POLL_INTERVAL_MINUTES;
+        }
+
+        return self::DEFAULT_POLL_INTERVAL_MINUTES;
+    }
 
     public function __construct(
         int $id,

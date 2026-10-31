@@ -134,7 +134,7 @@ Learning rule: when a non-automated message from an unknown From address produce
 | identifier | normalised email address for `email`; HTTP(S) URL for `ics`, `pdf_url`, `facebook_page`, `rss` and `web_page`; free label for `whatsapp_forward` and `manual` |
 | role | `official` or `monitored` |
 | status | `active`, `paused`, `unreliable`, `disabled` |
-| poll_interval_minutes | at least 10 for pollable types; defaults to 1,440 (24 hours). `manual` sources are not polled and store NULL. These limits are provisional. |
+| poll_interval_minutes | at least 10 for pollable types; new archdiocese-wide email/mailbox sources default to 10 minutes and other pollable sources to 1,440 (24 hours). Existing stored intervals are retained. `manual` sources are not polled and store NULL. These limits are provisional. |
 | checkpoint | JSON (e.g. `{"uidvalidity":12345,"last_uid":67,"scan_complete":false}` for mailbox polling; also available for ICS ETag or last post id) |
 | last_checked_at, last_success_at, last_item_at | health tracking |
 | consecutive_failures, last_error | |

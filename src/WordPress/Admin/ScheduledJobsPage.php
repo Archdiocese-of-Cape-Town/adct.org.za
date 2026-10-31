@@ -94,7 +94,7 @@ final class ScheduledJobsPage
         ?>
         <div class="wrap">
             <h1>Parish Intake Scheduled Jobs</h1>
-            <p>Jobs run in batches with a time limit, an item limit, and a saved checkpoint.<?php if ($canRunJobs) : ?> Use <strong>Run now</strong> to start a job immediately.<?php endif; ?></p>
+            <p>Jobs run in batches with a time limit, an item limit, and a saved checkpoint.<?php if ($canRunJobs) : ?> Use <strong>Run now</strong> to start a job immediately; mailbox polling still observes each source's interval and failure backoff.<?php endif; ?></p>
             <p>The framework heartbeat is only a scheduling check; it does not read mail, process events, or send email.</p>
 
             <?php if ($jobs === []) : ?>

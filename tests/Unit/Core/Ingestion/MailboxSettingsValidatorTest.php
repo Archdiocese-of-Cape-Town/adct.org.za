@@ -6,6 +6,7 @@ namespace ADCT\ParishIntake\Tests\Unit\Core\Ingestion;
 
 use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxEncryption;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
+use ADCT\ParishIntake\Core\Sources\Source;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
@@ -24,6 +25,7 @@ final class MailboxSettingsValidatorTest extends TestCase
         self::assertSame('Processed', $settings->processedFolder);
         self::assertSame(30 * 1024 * 1024, $settings->maxMessageSizeBytes);
         self::assertTrue($settings->active);
+        self::assertSame(Source::DEFAULT_MAILBOX_POLL_INTERVAL_MINUTES, $settings->pollIntervalMinutes);
     }
 
     public function testRejectsInvalidHosts(): void

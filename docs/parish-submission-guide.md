@@ -55,12 +55,14 @@ A few things that help a great deal:
 | Stage | What you see |
 |---|---|
 | Your email arrives | Nothing. This is normal. |
-| It is read | Nothing yet. This usually takes up to 10 minutes. |
-| You get a preview email | A list of the events that were found, with anything uncertain highlighted. |
+| It is read | Nothing yet. The mailbox is checked periodically; timing can vary. |
+| You get a preview email | After the message is checked and processed, a list of the events that were found, with anything uncertain highlighted. Sending can be delayed too. |
 | You confirm | Press **Yes, publish this**. Or **No, something is wrong** to start again. |
 | It is approved | A dean or the archdiocese checks it. You may get an email asking for a correction. |
 | It is published | The event appears on the events page and in the calendar. |
 
+There is no guaranteed ten-minute deadline: checking the mailbox, processing
+the message and sending the preview are separate steps, and delays can happen.
 The preview email is the important one. It is a **question**, not a
 confirmation: nothing is done until you answer it. If you ignore it, the
 event stays a draft and is not published.

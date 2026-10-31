@@ -8,6 +8,7 @@ use ADCT\ParishIntake\Core\Ingestion\Imap\MailboxEncryption;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettings;
 use ADCT\ParishIntake\Core\Ingestion\MailboxSettingsValidator;
 use ADCT\ParishIntake\Core\Ports\MailboxSettingsStoreInterface;
+use ADCT\ParishIntake\Core\Sources\Source;
 use DomainException;
 use InvalidArgumentException;
 use RuntimeException;
@@ -193,12 +194,13 @@ final class MailboxRepository extends AbstractRepository implements MailboxSetti
             $failures = array_key_exists('source_consecutive_failures', $row)
                 ? $row['source_consecutive_failures']
                 : 0;
+            $pollIntervalMinutes = $this->nullableSourceInteger(
+                $row['source_poll_interval_minutes'] ?? null,
+                'poll interval'
+            ) ?? Source::DEFAULT_POLL_INTERVAL_MINUTES;
 
             return $settings->withSourcePollingState(
-                $this->nullableSourceInteger(
-                    $row['source_poll_interval_minutes'] ?? null,
-                    'poll interval'
-                ),
+                $pollIntervalMinutes,
                 $lastCheckedAt,
                 $this->sourceInteger($failures, 'failure count')
             );

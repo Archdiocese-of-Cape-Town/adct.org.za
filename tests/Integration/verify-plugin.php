@@ -3694,8 +3694,72 @@ if (
     || strpos($newGlobalSourceHtml, 'name="type"') === false
     || strpos($newGlobalSourceHtml, 'name="identifier"') === false
     || strpos($newGlobalSourceHtml, 'name="source_nonce"') === false
+    || preg_match('/<input id="source-new-global-poll-interval"[^>]*value=""/', $newGlobalSourceHtml) !== 1
+    || strpos($newGlobalSourceHtml, 'Leave blank for the default: 10 minutes for a new archdiocese-wide email/mailbox source') === false
 ) {
-    $fail('The archdiocese-wide Add source form is missing required registry fields.');
+    $fail('The archdiocese-wide Add source form is missing its type-aware poll-interval default.');
+}
+
+$emailIntervalDefault = Source::defaultPollIntervalMinutesForNewSource(SourceType::EMAIL, null);
+$icsIntervalDefault = Source::defaultPollIntervalMinutesForNewSource(SourceType::ICS, null);
+$newEmailSource = $sourceRegistry->save(new Source(
+    0,
+    null,
+    SourceType::EMAIL,
+    'new-email-source-default@example.test',
+    SourceRole::MONITORED,
+    SourceStatus::ACTIVE,
+    $emailIntervalDefault
+));
+$newIcsSource = $sourceRegistry->save(new Source(
+    0,
+    null,
+    SourceType::ICS,
+    'https://example.test/default-calendar.ics',
+    SourceRole::MONITORED,
+    SourceStatus::ACTIVE,
+    $icsIntervalDefault
+));
+$existingDailySource = $sourceRegistry->save(new Source(
+    0,
+    null,
+    SourceType::EMAIL,
+    'existing-daily-source@example.test',
+    SourceRole::MONITORED,
+    SourceStatus::ACTIVE,
+    Source::DEFAULT_POLL_INTERVAL_MINUTES
+));
+$persistedEmailDefault = $sourceRepository->findSource($newEmailSource->id);
+$persistedIcsDefault = $sourceRepository->findSource($newIcsSource->id);
+$persistedDailySource = $sourceRepository->findSource($existingDailySource->id);
+
+if (
+    $emailIntervalDefault !== Source::DEFAULT_MAILBOX_POLL_INTERVAL_MINUTES
+    || $icsIntervalDefault !== Source::DEFAULT_POLL_INTERVAL_MINUTES
+    || $persistedEmailDefault?->pollIntervalMinutes !== Source::DEFAULT_MAILBOX_POLL_INTERVAL_MINUTES
+    || $persistedIcsDefault?->pollIntervalMinutes !== Source::DEFAULT_POLL_INTERVAL_MINUTES
+    || $persistedDailySource?->pollIntervalMinutes !== Source::DEFAULT_POLL_INTERVAL_MINUTES
+) {
+    $fail('Saving new email and non-email sources did not apply the correct defaults or preserve the explicit daily interval.');
+}
+
+$originalGet = $_GET;
+$_GET = ['action' => 'edit', 'id' => (string) $existingDailySource->id];
+ob_start();
+try {
+    do_action($sourcesPageHook);
+} finally {
+    $existingSourceFormHtml = (string) ob_get_clean();
+    $_GET = $originalGet;
+}
+
+if (
+    preg_match(
+        '/<input id="source-' . $existingDailySource->id . '-poll-interval"[^>]*value="1440"/',
+        $existingSourceFormHtml
+    ) !== 1
+) {
+    $fail('Editing an existing source did not retain its explicitly configured 24-hour interval in the form.');
 }
 
 $mailboxesPageSlug = 'adct-parish-intake-mailboxes';
@@ -3746,7 +3810,8 @@ $mailboxSource = $sourceRegistry->save(new Source(
     $mailboxEmail,
     SourceRole::OFFICIAL,
     $mailboxSource?->status ?? SourceStatus::ACTIVE,
-    $mailboxSource?->pollIntervalMinutes,
+    $mailboxSource?->pollIntervalMinutes
+        ?? Source::defaultPollIntervalMinutesForNewSource(SourceType::EMAIL, null),
     $mailboxSource?->lastCheckedAt,
     $mailboxSource?->lastSuccessAt,
     $mailboxSource?->lastItemAt,
@@ -3784,8 +3849,9 @@ if (
     || $persistedMailboxSource->type !== SourceType::EMAIL
     || $persistedMailboxSource->identifier !== $mailboxEmail
     || $persistedMailboxSource->role !== SourceRole::OFFICIAL
+    || $persistedMailboxSource->pollIntervalMinutes !== Source::DEFAULT_MAILBOX_POLL_INTERVAL_MINUTES
 ) {
-    $fail('Mailbox settings did not persist with their archdiocese-wide email source.');
+    $fail('Mailbox settings did not persist with their ten-minute archdiocese-wide email source.');
 }
 
 $activeMailboxIds = array_map(

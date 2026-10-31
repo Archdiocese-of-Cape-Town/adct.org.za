@@ -35,7 +35,7 @@ final readonly class MailboxSettings
             throw new InvalidArgumentException('Mailbox and source IDs cannot be negative.');
         }
 
-        $pollIntervalMinutes ??= Source::DEFAULT_POLL_INTERVAL_MINUTES;
+        $pollIntervalMinutes ??= Source::DEFAULT_MAILBOX_POLL_INTERVAL_MINUTES;
 
         if (
             $pollIntervalMinutes < Source::MINIMUM_POLL_INTERVAL_MINUTES

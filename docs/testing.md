@@ -200,9 +200,11 @@ a real bulletin into a test site.
      **Parish Intake → Deaneries** (notify mode *each*);
    - one **Intake reviewer**.
    Record each address; these are the addresses you will check mailboxes for.
-4. **Parish Intake → Mailboxes**: connect the test mailbox so real mail arrives. If the external pinger is
-   not running, expect up to 2 hours ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md));
-   otherwise roughly 15 minutes.
+4. **Parish Intake → Mailboxes**: connect the test mailbox. Confirm its new archdiocese-wide email source
+   uses a 10-minute interval, then verify that a completed successful poll becomes eligible after ten
+   minutes while an explicitly configured 24-hour interval remains unchanged. The external pinger provides
+   trigger opportunities every 5–10 minutes but does not bypass either source interval or failure backoff;
+   without it, the two-hour cron backstop can delay the next run ([ADR 0010](decisions/0010-scheduled-jobs-with-2-hour-cron-limit.md)).
 
 **Step 3 — confirm, route to dean and reviewers, dean approves**
 

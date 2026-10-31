@@ -173,9 +173,9 @@ xneelo cron jobs can run at most every 2 hours, and there is no WP-CLI, so jobs 
 - WP-Cron stays on, so site visits run due jobs.
 - One 2-hourly xneelo cron job calls `https://<site>/wp-cron.php?doing_wp_cron` over HTTP as a backstop.
 - An optional free external pinger (cron-job.org) calls it every 5–10 minutes for timely intake.
-- **Parish Intake → Scheduled jobs** lists each registered job and its last run, last success, last error, and last run's item count. The per-job **Run now** action is a capability- and nonce-protected POST that uses the same lock and budgets while bypassing only the due check. Running `poll_mailboxes` manually polls active mailboxes; later queue-processing jobs will provide the parsing and event-work checks.
+- **Parish Intake → Scheduled jobs** lists each registered job and its last run, last success, last error, and last run's item count. The per-job **Run now** action is a capability- and nonce-protected POST that uses the same lock and budgets while bypassing only the job-level due check. Running `poll_mailboxes` manually still respects each mailbox source's interval and failure backoff; later queue-processing jobs provide the parsing and event-work checks.
 
-The intervals above are "due" times: a job runs on the first trigger after it is due, including after a trigger gap of up to 2 hours. The scheduled-jobs page reports run state; the separate health-dashboard warning after 2 h 15 min remains a later dashboard feature.
+The intervals above are "due" times: a job runs on the first trigger after it is due, including after a trigger gap of up to 2 hours. The scheduled-jobs page reports run state; the separate health-dashboard warning after 2 h 15 min remains a later dashboard feature. For mailbox polling, this is only the job trigger cadence: each source must also reach its own polling interval. New archdiocese-wide email/mailbox sources default to 10 minutes; other pollable sources default to 24 hours. An external pinger can make triggers more frequent but does not override source intervals or failed-source backoff. Parsing and outbound email are separate queued jobs, so polling timing alone cannot promise when a submitter receives a preview.
 
 ## Trust, confirmation and approval (summary)
 

@@ -118,8 +118,8 @@ final class AdminHelpRegistry
             'capability' => Capabilities::VIEW_REPORTS,
             'title' => 'Scheduled jobs',
             'body' => 'The background work: reading mailboxes, reading saved messages and sending queued'
-                . ' email. Run now starts one immediately, with the same time limits and checkpoints cron'
-                . ' uses.',
+                . ' email. Run now starts a job immediately with the same time limits and checkpoints'
+                . ' cron uses; mailbox polling still respects each source interval and failure backoff.',
             'anchor' => 'keep-scheduled-jobs-running',
         ],
         'adct-parish-intake_page_adct-parish-intake-health' => [

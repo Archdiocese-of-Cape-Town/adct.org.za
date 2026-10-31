@@ -76,6 +76,29 @@ final class SourceTest extends TestCase
             (new Source(0, 1, SourceType::EMAIL, 'office@example.test'))->pollIntervalMinutes
         );
         self::assertSame(
+            Source::DEFAULT_MAILBOX_POLL_INTERVAL_MINUTES,
+            Source::defaultPollIntervalMinutesForNewSource(SourceType::EMAIL, null)
+        );
+        self::assertSame(
+            Source::DEFAULT_POLL_INTERVAL_MINUTES,
+            Source::defaultPollIntervalMinutesForNewSource(SourceType::EMAIL, 7)
+        );
+        self::assertSame(
+            Source::DEFAULT_POLL_INTERVAL_MINUTES,
+            Source::defaultPollIntervalMinutesForNewSource(SourceType::ICS, null)
+        );
+        self::assertNull(Source::defaultPollIntervalMinutesForNewSource(SourceType::MANUAL, null));
+        self::assertSame(
+            Source::DEFAULT_POLL_INTERVAL_MINUTES,
+            (new Source(
+                12,
+                null,
+                SourceType::EMAIL,
+                'office@example.test',
+                pollIntervalMinutes: Source::DEFAULT_POLL_INTERVAL_MINUTES
+            ))->pollIntervalMinutes
+        );
+        self::assertSame(
             Source::MINIMUM_POLL_INTERVAL_MINUTES,
             (new Source(0, 1, SourceType::EMAIL, 'office@example.test', pollIntervalMinutes: 10))->pollIntervalMinutes
         );
