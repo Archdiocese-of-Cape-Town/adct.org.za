@@ -571,7 +571,13 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             $GLOBALS['parser_page_options'][OcrSettings::ENABLED_OPTION] = '1';
 
             $ocrKeyOption = SecretRegistry::optionName(SecretRegistry::OCR_API_KEY);
-            $html = $this->renderSettings([$ocrKeyOption => 'K811-never-render']);
+            $savedOcrKey = 'K811-never-render';
+            $GLOBALS['parser_page_options'][$ocrKeyOption] = $savedOcrKey;
+            $GLOBALS['wpdb']->rows[$ocrKeyOption] = $savedOcrKey;
+            self::assertSame($savedOcrKey, $GLOBALS['parser_page_options'][$ocrKeyOption]);
+            self::assertSame($savedOcrKey, $GLOBALS['wpdb']->rows[$ocrKeyOption]);
+
+            $html = $this->renderSettings([SecretRegistry::OCR_API_KEY => $savedOcrKey]);
 
             self::assertStringContainsString('Automatic server-side poster OCR is unavailable', $html);
             self::assertStringContainsString('Any previously saved OCR setting or API key is retained but not used', $html);
@@ -581,7 +587,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Admin {
             self::assertStringNotContainsString('name="ocr_daily_call_limit"', $html);
             self::assertStringNotContainsString('name="ocr_api_key"', $html);
             self::assertStringNotContainsString('name="remove_ocr_api_key"', $html);
-            self::assertStringNotContainsString('K811-never-render', $html);
+            self::assertStringNotContainsString($savedOcrKey, $html);
             self::assertStringNotContainsString('api.ocr.space', $html);
             self::assertStringNotContainsString('Turn it on', $html);
         }
