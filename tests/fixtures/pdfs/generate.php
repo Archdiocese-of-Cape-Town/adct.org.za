@@ -387,4 +387,14 @@ writeFixture('boxed-sidebar.pdf', [[
     new TextLine('* Marriage preparation', 440, 736, 11),
 ]]);
 
-echo "Done.\n";
+$checksums = [];
+foreach (glob($outputDirectory . '/*.pdf') as $path) {
+    $checksums[basename($path)] = hash_file('sha256', $path);
+}
+ksort($checksums);
+$manifest = json_encode($checksums, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR) . "\n";
+if (file_put_contents($outputDirectory . '/sha256.json', $manifest) !== strlen($manifest)) {
+    throw new RuntimeException('Could not write the PDF fixture checksum manifest.');
+}
+
+echo "Done. Review the PDF bytes and sha256.json together before committing.\n";

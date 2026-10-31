@@ -8,6 +8,16 @@ For pre-release schema changes, test the built zip on an isolated **fresh** Word
 
 ## Test layers
 
+PDF fixtures have a fail-fast SHA-256 check in `tests/bootstrap.php`, before
+PHPUnit loads fixtures. `PdfFixtureIntegrityTest` covers valid, CRLF-corrupt,
+missing and unlisted files without Git. `npm run test:fixtures` runs the
+dependency-free Node/Git safety regressions on disposable repositories: hidden
+corruption despite clean status, same-size edits, missing files, exact binary
+export, existing-destination refusal and corrupt staged bytes. CI runs this
+alongside `npm run fixtures:check`. The checksum guard does not replace or
+weaken the extractor assertions. See [safe detection and recovery](development.md#pdf-fixture-integrity-on-windows)
+before changing fixture bytes; no test automatically restores files.
+
 | Layer | What | Where it runs | When |
 |---|---|---|---|
 | 1. Unit | Domain core: parsing stages and directory lookup, date/recurrence rules, event details and RFC 5545 validation, RRULE expansion and rolling-window jobs, transactional occurrence replacement, schema migrations, matching and trust rules, action tokens, MIME/header parsing and automated-mail detection, bounded PDF text extraction and column-aware ordering, SPF/DKIM/DMARC handling, confirmation recipient safety and HTML/plain-text snapshots, queue idempotency, recovery before current-policy suppression after an uncertain marker write, and cross-recipient conflicts, token binding/thread headers, terminal raw-header failures and UTC markers, inbound reprocessing and sanitized retry diagnostics, Inbox status queries and draft replacement that preserves reviewed rows, IMAP protocol and polling checkpoints, source retry cadence, snapshot invalidation, review queue tab classification as a partition, and Core isolation. | GitHub Actions + locally | Every push / PR |
