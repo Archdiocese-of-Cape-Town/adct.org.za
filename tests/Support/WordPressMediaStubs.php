@@ -63,6 +63,12 @@ declare(strict_types=1);
  * on.
  */
 namespace {
+    if (! function_exists('clean_post_cache')) {
+        function clean_post_cache(int $postId): void
+        {
+            $GLOBALS['adct_test_source_cache_cleared'][] = $postId;
+        }
+    }
 
     if (! function_exists('wp_handle_sideload')) {
         /**

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Publishing;
 
 require_once __DIR__ . '/../../../Support/WordPressMediaStubs.php';
+require_once __DIR__ . '/../../../Support/SourceMaterialLockDatabase.php';
 
 use ADCT\ParishIntake\Core\Audit\AuditAction;
 use ADCT\ParishIntake\Core\Audit\AuditWriter;
@@ -127,7 +128,10 @@ final class PromotedMediaRetentionTest extends TestCase
             new WordPressMediaLibraryGateway(),
             new WordPressEventMeta(),
             new RetentionTestActorResolver(),
-            new RetentionTestAuditWriter()
+            new RetentionTestAuditWriter(),
+            new \ADCT\ParishIntake\WordPress\Publishing\SourceMaterialLock(
+                new \ADCT\ParishIntake\Tests\Support\SourceMaterialLockDatabase()
+            )
         );
     }
 

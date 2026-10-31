@@ -262,19 +262,8 @@ final class WordPressPublicationStore implements PublicationStoreInterface
         try {
             $messageId = (int) ($row['message_id'] ?? 0);
             if ($messageId > 0 && $this->sourceMaterial !== null) {
-                $lock = 'adct-source-' . hash('sha256', $this->database->prefix() . ':' . $eventId);
-                $lock = substr($lock, 0, 64);
-                $locked = false;
                 try {
-                    $result = $this->row($this->database->prepare('SELECT GET_LOCK(%s, 0) AS acquired', $lock));
-                    if ((int) ($result['acquired'] ?? 0) !== 1) {
-                        throw new RuntimeException('Source publication is already running for this event.');
-                    }
-                    $locked = true;
-                    clean_post_cache($eventId);
-                    if ((int) get_post_meta($eventId, 'source_candidate_id', true) === (int) $row['id']) {
-                        $this->sourceMaterial->publishForEvent($eventId, $messageId, $actor, (int) $row['id']);
-                    }
+                    $this->sourceMaterial->publishForEvent($eventId, $messageId, $actor, (int) $row['id']);
                 } catch (Throwable $failure) {
                     error_log(sprintf(
                         'ADCT Parish Intake: source publication failed for event %d (%s).',
@@ -286,10 +275,6 @@ final class WordPressPublicationStore implements PublicationStoreInterface
                         0,
                         $failure
                     );
-                } finally {
-                    if ($locked) {
-                        $this->row($this->database->prepare('SELECT RELEASE_LOCK(%s) AS released', $lock));
-                    }
                 }
             }
         } finally {

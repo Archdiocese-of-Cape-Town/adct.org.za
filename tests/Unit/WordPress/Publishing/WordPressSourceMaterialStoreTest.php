@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\Tests\Unit\WordPress\Publishing;
 
 require_once __DIR__ . '/../../../Support/WordPressMediaStubs.php';
+require_once __DIR__ . '/../../../Support/SourceMaterialLockDatabase.php';
 
 use ADCT\ParishIntake\Core\Audit\AuditAction;
 use ADCT\ParishIntake\Core\Audit\AuditSubjectType;
@@ -147,6 +148,7 @@ final class WordPressSourceMaterialStoreTest extends TestCase
 
     public function testPublicationCopiesEveryEligibleFileAndAttributesTheRecordedApprover(): void
     {
+        update_post_meta(42, 'source_candidate_id', 12);
         $store = $this->store([
             7 => $this->row(7, 'poster.jpg', 'image/jpeg'),
             8 => $this->row(8, 'second.png', 'image/png'),
@@ -170,6 +172,7 @@ final class WordPressSourceMaterialStoreTest extends TestCase
 
     public function testPublicationRetryDoesNotCopyAgainOrRestoreAnExplicitRemoval(): void
     {
+        update_post_meta(42, 'source_candidate_id', 12);
         $store = $this->store([7 => $this->row(7, 'poster.jpg', 'image/jpeg')]);
         $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
         $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
@@ -183,6 +186,7 @@ final class WordPressSourceMaterialStoreTest extends TestCase
 
     public function testCopyFailureIsVisibleAndRetryRepairsItWithoutDuplicatingSuccessfulFiles(): void
     {
+        update_post_meta(42, 'source_candidate_id', 12);
         $store = $this->store([
             7 => $this->row(7, 'poster.jpg', 'image/jpeg'),
             8 => array_replace($this->row(8, 'missing.pdf', 'application/pdf'), ['storage_path' => str_repeat('b', 64) . '.pdf']),
@@ -202,6 +206,7 @@ final class WordPressSourceMaterialStoreTest extends TestCase
 
     public function testPublicationWithoutAttachmentsDoesNotCopyAnything(): void
     {
+        update_post_meta(42, 'source_candidate_id', 12);
         $store = $this->store([]);
         $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
         self::assertSame([], $store->forEvent(42));
@@ -210,6 +215,7 @@ final class WordPressSourceMaterialStoreTest extends TestCase
 
     public function testAnAuditFailureRestoresThePreviousStateAndRemovesTheUnauditedCopy(): void
     {
+        update_post_meta(42, 'source_candidate_id', 12);
         $store = $this->store(
             [7 => $this->row(7, 'poster.jpg', 'image/jpeg')],
             $audit = new RecordingAuditWriter()
@@ -229,6 +235,7 @@ final class WordPressSourceMaterialStoreTest extends TestCase
 
     public function testAFailedFirstAttachmentDoesNotPreventTheNextFileFromPublishing(): void
     {
+        update_post_meta(42, 'source_candidate_id', 12);
         $store = $this->store([
             7 => array_replace($this->row(7, 'missing.jpg', 'image/jpeg'), ['storage_path' => str_repeat('b', 64) . '.jpg']),
             8 => $this->row(8, 'bulletin.pdf', 'application/pdf'),
@@ -241,6 +248,7 @@ final class WordPressSourceMaterialStoreTest extends TestCase
 
     public function testMetadataFailureRemovesTheCopyAndKeepsTheOriginalForRetry(): void
     {
+        update_post_meta(42, 'source_candidate_id', 12);
         $store = $this->store([7 => $this->row(7, 'poster.jpg', 'image/jpeg')]);
         $GLOBALS['adct_test_metadata_error'] = true;
         $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
@@ -254,6 +262,7 @@ final class WordPressSourceMaterialStoreTest extends TestCase
 
     public function testActualSizeIsCheckedEvenWhenTheIntakeRowClaimsASmallFile(): void
     {
+        update_post_meta(42, 'source_candidate_id', 12);
         $store = $this->store([7 => $this->row(7, 'poster.jpg', 'image/jpeg')]);
         $file = fopen($this->intakeDir . '/' . str_repeat('a', 64) . '.jpg', 'wb');
         self::assertIsResource($file);
@@ -272,6 +281,7 @@ final class WordPressSourceMaterialStoreTest extends TestCase
 
     public function testWordPressMetaUnslashingDoesNotChangeTheSubmittedFilename(): void
     {
+        update_post_meta(42, 'source_candidate_id', 12);
         $filename = '..\\..\\<script>notice</script>.pdf';
         $store = $this->store([7 => $this->row(7, $filename, 'application/pdf')]);
         $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
@@ -1103,6 +1113,62 @@ final class WordPressSourceMaterialStoreTest extends TestCase
         return basename($this->sideloadedPath($index));
         }
 
+        public function testAnUpdateFromAnotherMessageDoesNotEraseAnEarlierCopyFailure(): void
+        {
+            update_post_meta(42, 'source_candidate_id', 12);
+            $store = $this->store([
+                7 => $this->row(7, 'earlier.pdf', 'application/pdf', 'pdf'),
+                8 => array_replace($this->row(8, 'later.jpg', 'image/jpeg'), ['message_id' => 4]),
+            ]);
+            $GLOBALS['adct_test_sideload_error'] = 'Synthetic copy refusal';
+            $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+            $earlier = get_post_meta(42, WordPressSourceMaterialStore::ERROR_META, true);
+            self::assertArrayHasKey(7, $earlier);
+            $GLOBALS['adct_test_sideload_error'] = '';
+            $store->publishForEvent(42, 4, 'reviewer@example.test', 12);
+            self::assertSame($earlier, get_post_meta(42, WordPressSourceMaterialStore::ERROR_META, true));
+            $store->promote(42, 7, SourceAttachment::ROLE_BULLETIN);
+            self::assertSame([], get_post_meta(42, WordPressSourceMaterialStore::ERROR_META, true));
+            self::assertCount(2, $store->forEvent(42));
+        }
+
+        public function testAStaleManualAddCannotDuplicateAnAlreadyPublishedAttachment(): void
+        {
+            $store = $this->store([7 => $this->row(7, 'poster.jpg', 'image/jpeg')]);
+            $first = $store->promote(42, 7, 'poster');
+            try {
+                $store->promote(42, 7, 'document');
+                self::fail('A stale manual request must not duplicate a source.');
+            } catch (\DomainException $failure) {
+                self::assertStringContainsString('already published', $failure->getMessage());
+            }
+            self::assertCount(1, $GLOBALS['adct_test_sideloads']);
+            self::assertSame($first->mediaId, $store->forEvent(42)[0]->mediaId);
+        }
+
+        public function testLockRejectsNestedSameEventWithoutBlockingAnotherEventAndReleasesOnFailure(): void
+        {
+            $database = new \ADCT\ParishIntake\Tests\Support\SourceMaterialLockDatabase();
+            $lock = new \ADCT\ParishIntake\WordPress\Publishing\SourceMaterialLock($database);
+            $other = new \ADCT\ParishIntake\WordPress\Publishing\SourceMaterialLock($database);
+            try {
+                $lock->run(42, function () use ($other): void {
+                    try {
+                        $other->run(42, static fn () => self::fail('Nested mutations must not acquire a reentrant lock.'));
+                        self::fail('The same event must be serialized.');
+                    } catch (\DomainException $failure) {
+                        self::assertStringContainsString('already running', $failure->getMessage());
+                    }
+                    self::assertSame('independent', $other->run(43, static fn () => 'independent'));
+                    throw new RuntimeException('Synthetic mutation failure.');
+                });
+            } catch (RuntimeException $failure) {
+                self::assertSame('Synthetic mutation failure.', $failure->getMessage());
+            }
+            self::assertSame([], $database->held);
+            self::assertSame('retry', $lock->run(42, static fn () => 'retry'));
+        }
+
     /**
          * Where the copy handed to the sideload actually landed on disk.
          *
@@ -1152,6 +1218,9 @@ final class WordPressSourceMaterialStoreTest extends TestCase
         new WordPressEventMeta(),
         new FakeActorResolver($actor),
         $audit ?? new RecordingAuditWriter(),
+        new \ADCT\ParishIntake\WordPress\Publishing\SourceMaterialLock(
+            new \ADCT\ParishIntake\Tests\Support\SourceMaterialLockDatabase()
+        ),
         );
         }
 

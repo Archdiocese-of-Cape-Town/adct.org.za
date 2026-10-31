@@ -529,7 +529,8 @@ private ?ReviewQueueRepository $reviewQueue = null;
                     new WordPressMediaLibraryGateway(),
                     new WordPressEventMeta(),
                     new WordPressActorResolver(),
-                    $auditLog
+                    $auditLog,
+                    new \ADCT\ParishIntake\WordPress\Publishing\SourceMaterialLock($database)
                 );
                 $this->publicEventPage = new PublicEventPage(
                     $clock,

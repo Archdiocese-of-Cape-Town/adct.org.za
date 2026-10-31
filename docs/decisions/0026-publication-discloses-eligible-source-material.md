@@ -35,8 +35,11 @@ art only; this change builds on the interfaces merged in #251.
   promotion audit row additionally records `candidate_id` and `automatic`.
   Manual recovery/removal keeps the authenticated actor resolver.
 - Isolate copying from the publication transaction. A per-event database
-  advisory lock serializes automatic copying without waiting in a web request;
-  contention reports an already-published event needing retry. Check the current
+  advisory lock in the source store serializes automatic copying and manual
+  add/removal without waiting in a web request. The publication store delegates
+  without acquiring a second lock; same-connection reentrant mutation is refused,
+  while a lock on another event does not interfere.
+  Contention reports an already-published event needing retry. Check the current
   source candidate after obtaining the lock so a superseded attempt does not
   copy stale material. Release the connection-scoped lock after processing.
   Invalidate the event and listing caches even when source processing fails:
@@ -53,6 +56,11 @@ art only; this change builds on the interfaces merged in #251.
   public URL. Automatic retry must not restore it; manual re-add is deliberate.
   A recording/audit failure restores the prior source state and removes the
   newly created media copy so retry cannot leave unaudited public references.
+  Failure warnings survive an update from another source message. Private
+  recovery metadata records the failed attachment's message and candidate;
+  the editor verifies those against the candidate lookup and stored file row
+  before offering it or accepting a recovery POST. A warning alone is not
+  attachment authorization. Only recovery of that file clears its warning.
 
 ## Consequences and remaining assumptions
 

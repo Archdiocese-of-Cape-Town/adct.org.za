@@ -199,6 +199,11 @@ copy. A copy failure does not unpublish the event, and a warning identifies
 the file requiring recovery. Republishing the same candidate repairs failed
 copies without duplicating successful ones or restoring files you removed.
 Manual re-add is still available if the private original remains stored.
+If a later email updates the event, an earlier failed copy remains in this
+box with its warning and recovery option; the new email does not dismiss it.
+Choose the earlier file and **Publish with this event** to recover it.
+If another source change is running, wait briefly and retry. A repeated stale
+add of an already-published file is refused rather than making a duplicate.
 
 Removal hides the file from this event, but does not delete the media-library
 asset or revoke a URL already shared publicly. Public copies survive intake

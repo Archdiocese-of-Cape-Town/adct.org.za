@@ -26,7 +26,8 @@ final class AutomaticSourceMaterialCheck
         $store = new WordPressSourceMaterialStore(
             new AttachmentRepository($connection), $storage,
             new WordPressMediaLibraryGateway(), new WordPressEventMeta(),
-            new WordPressActorResolver(), new AuditLogRepository($connection, new SystemClock())
+            new WordPressActorResolver(), new AuditLogRepository($connection, new SystemClock()),
+            new \ADCT\ParishIntake\WordPress\Publishing\SourceMaterialLock($connection)
         );
         $now = gmdate('Y-m-d H:i:s');
         $date = (new DateTimeImmutable('tomorrow', new DateTimeZone('Africa/Johannesburg')))->format('Y-m-d');
@@ -37,6 +38,7 @@ final class AutomaticSourceMaterialCheck
             'received_at' => $now, 'status' => 'parsed', 'created_at' => $now, 'updated_at' => $now,
         ]);
         $messageId = (int) $wpdb->insert_id;
+        $messageIds = [$messageId];
         if ($messageId < 1) {
             $fail('Automatic source check could not create a synthetic message.');
         }
@@ -44,11 +46,11 @@ final class AutomaticSourceMaterialCheck
         $candidateIds = [];
         $eventIds = [];
         $mediaIds = [];
-        $make = static function (string $via, string $kind = 'new', ?int $eventId = null) use (
+        $make = static function (string $via, string $kind = 'new', ?int $eventId = null, ?int $fromMessage = null) use (
             $candidates, $messageId, $now, $date, &$candidateIds
         ): int {
             $id = $candidates->insert([
-                'message_id' => $messageId, 'block_index' => count($candidateIds),
+                'message_id' => $fromMessage ?? $messageId, 'block_index' => count($candidateIds),
                 'fields' => wp_json_encode([
                     'title' => 'Synthetic source event', 'description' => 'Synthetic details.',
                     'event_date' => $date, 'event_time' => '09:00',
@@ -168,6 +170,27 @@ final class AutomaticSourceMaterialCheck
             }
             $failure = null;
             try {
+                $beforeMutation = array_map(static fn ($source): int => $source->mediaId, $store->forEvent($eventId));
+                $manualBlocked = 0;
+                foreach ([
+                    static fn () => $store->promote($eventId, $repaired[0]->attachmentId, 'document'),
+                    static fn () => $store->remove($eventId, $repaired[0]->mediaId),
+                ] as $mutation) {
+                    try {
+                        $mutation();
+                    } catch (DomainException $error) {
+                        if (str_contains($error->getMessage(), 'already running')) {
+                            ++$manualBlocked;
+                        }
+                    }
+                }
+                if ($manualBlocked !== 2 || $beforeMutation !== array_map(
+                    static fn ($source): int => $source->mediaId, $store->forEvent($eventId)
+                )) {
+                    $fail('Manual source mutations bypassed the automatic publication lock.');
+                }
+                $independent = $store->promote($eventIds[0], $repaired[0]->attachmentId, 'poster');
+                $mediaIds[] = $independent->mediaId;
                 Plugin::candidatePublisher()->publish($candidateId);
             } catch (RuntimeException $error) {
                 $failure = $error;
@@ -187,6 +210,90 @@ final class AutomaticSourceMaterialCheck
                 !== array_map(static fn ($source): int => $source->mediaId, $store->forEvent($eventId))) {
                 $fail('Retry after source lock contention duplicated existing copies.');
             }
+            $store->remove($eventId, $repaired[0]->mediaId);
+            Plugin::candidatePublisher()->publish($candidateId);
+            if (count($store->forEvent($eventId)) !== 1) {
+                $fail('Automatic retry restored a removal made after source lock contention.');
+            }
+
+            $candidateId = $make('reviewer');
+            add_filter('wp_handle_sideload_prefilter', $refusePdf);
+            try {
+                $eventId = Plugin::candidatePublisher()->publish($candidateId);
+                $eventIds[] = $eventId;
+            } finally {
+                remove_filter('wp_handle_sideload_prefilter', $refusePdf);
+            }
+            $mediaIds = array_merge($mediaIds, array_map(static fn ($source): int => $source->mediaId, $store->forEvent($eventId)));
+            $earlierErrors = get_post_meta($eventId, WordPressSourceMaterialStore::ERROR_META, true);
+            $wpdb->insert($messages, [
+                'source_id' => 1, 'external_id' => 'later-source-' . bin2hex(random_bytes(8)),
+                'received_at' => $now, 'status' => 'parsed', 'created_at' => $now, 'updated_at' => $now,
+            ]);
+            $laterMessage = (int) $wpdb->insert_id;
+            $messageIds[] = $laterMessage;
+            $path = $storage->storeAttachment("%PDF-1.4\n% later synthetic\n", 'pdf');
+            $paths[] = $path;
+            $wpdb->insert($attachments, [
+                'message_id' => $laterMessage, 'filename' => 'later-bulletin.pdf', 'mime_type' => 'application/pdf',
+                'size_bytes' => 27, 'storage_path' => $path, 'created_at' => $now, 'updated_at' => $now,
+            ]);
+            $contendingDatabase = new wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
+            $contendingDatabase->set_prefix($wpdb->prefix);
+            $contendingConnection = new WordPressDatabaseConnection($contendingDatabase);
+            $contendingStore = new WordPressSourceMaterialStore(
+                new AttachmentRepository($contendingConnection), $storage,
+                new WordPressMediaLibraryGateway(), new WordPressEventMeta(),
+                new WordPressActorResolver(), new AuditLogRepository($contendingConnection, new SystemClock()),
+                new \ADCT\ParishIntake\WordPress\Publishing\SourceMaterialLock($contendingConnection)
+            );
+            $failedId = (int) array_key_first($earlierErrors);
+            $posterToRemove = $store->forEvent($eventId)[0]->mediaId;
+            $interleavingAttempted = false;
+            $interleavingBlocked = 0;
+            $interleave = static function (array $file) use (
+                $contendingStore, $eventId, $failedId, $posterToRemove, &$interleavingAttempted, &$interleavingBlocked
+            ): array {
+                if ($interleavingAttempted) {
+                    return $file;
+                }
+                $interleavingAttempted = true;
+                // Automatic copying has already read its source list. A second
+                // connection must not mutate that list while sideload is in flight.
+                foreach ([
+                    static fn () => $contendingStore->promote($eventId, $failedId, 'bulletin'),
+                    static fn () => $contendingStore->remove($eventId, $posterToRemove),
+                ] as $mutation) {
+                    try {
+                        $mutation();
+                    } catch (DomainException $failure) {
+                        if (str_contains($failure->getMessage(), 'already running')) {
+                            ++$interleavingBlocked;
+                        }
+                    }
+                }
+                return $file;
+            };
+            add_filter('wp_handle_sideload_prefilter', $interleave);
+            try {
+                Plugin::candidatePublisher()->publish($make('reviewer', 'update', $eventId, $laterMessage));
+            } finally {
+                remove_filter('wp_handle_sideload_prefilter', $interleave);
+            }
+            $mediaIds = array_merge($mediaIds, array_map(static fn ($source): int => $source->mediaId, $store->forEvent($eventId)));
+            if (! $interleavingAttempted || $interleavingBlocked !== 2 || count($store->forEvent($eventId)) !== 2) {
+                $fail('In-flight automatic copying allowed a concurrent add/removal from another database connection.');
+            }
+            if ($earlierErrors === [] || get_post_meta($eventId, WordPressSourceMaterialStore::ERROR_META, true) !== $earlierErrors) {
+                $fail('A later message erased the earlier failed source and its recovery warning.');
+            }
+            $recovered = $store->promote($eventId, $failedId, 'bulletin');
+            $mediaIds[] = $recovered->mediaId;
+            if (count($store->forEvent($eventId)) !== 3
+                || get_post_meta($eventId, WordPressSourceMaterialStore::ERROR_META, true) !== []
+                || get_post_meta($eventId, WordPressSourceMaterialStore::RECOVERY_META, true) !== []) {
+                $fail('Manual recovery did not restore only the earlier failed file and clear its warning.');
+            }
         } finally {
             foreach (array_unique($mediaIds) as $id) {
                 wp_delete_attachment($id, true);
@@ -200,8 +307,10 @@ final class AutomaticSourceMaterialCheck
             foreach ($candidateIds as $id) {
                 $wpdb->delete($wpdb->prefix . 'adct_pi_event_candidates', ['id' => $id]);
             }
-            $wpdb->delete($attachments, ['message_id' => $messageId]);
-            $wpdb->delete($messages, ['id' => $messageId]);
+            foreach ($messageIds as $id) {
+                $wpdb->delete($attachments, ['message_id' => $id]);
+                $wpdb->delete($messages, ['id' => $id]);
+            }
             foreach ($paths as $path) {
                 $storage->delete($path);
             }

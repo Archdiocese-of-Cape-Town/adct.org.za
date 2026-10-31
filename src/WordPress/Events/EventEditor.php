@@ -639,20 +639,39 @@ final class EventEditor
         $candidateId = absint((string) get_post_meta($eventId, 'source_candidate_id', true));
         $messageId = $candidateId > 0 ? $this->candidates->sourceMessageIdForCandidate($candidateId) : null;
 
-        if ($messageId === null) {
-            return [[], []];
-        }
-
         $offer = [];
         $unavailable = [];
 
-        foreach ($this->attachments->findPromotableForMessage($messageId) as $attachment) {
+        $files = $messageId === null ? [] : $this->attachments->findPromotableForMessage($messageId);
+        $errors = get_post_meta($eventId, \ADCT\ParishIntake\WordPress\Publishing\WordPressSourceMaterialStore::ERROR_META, true);
+        $recovery = get_post_meta($eventId, \ADCT\ParishIntake\WordPress\Publishing\WordPressSourceMaterialStore::RECOVERY_META, true);
+        if (is_array($errors) && is_array($recovery)) {
+            foreach ($recovery as $id => $provenance) {
+                if (! isset($errors[$id]) || ! is_array($provenance)) {
+                    continue;
+                }
+                $sourceCandidate = (int) ($provenance['candidate_id'] ?? 0);
+                $sourceMessage = (int) ($provenance['message_id'] ?? 0);
+                if ((int) $id < 1 || $sourceCandidate < 1 || $sourceMessage < 1
+                    || $this->candidates->sourceMessageIdForCandidate($sourceCandidate) !== $sourceMessage) {
+                    continue;
+                }
+                $file = $this->attachments->findStoredById((int) $id);
+                if ($file !== null && (int) ($file['message_id'] ?? 0) === $sourceMessage
+                    && trim((string) ($file['storage_path'] ?? '')) !== '') {
+                    $files[] = $file;
+                }
+            }
+        }
+        $seen = [];
+        foreach ($files as $attachment) {
             $id = (int) ($attachment['id'] ?? 0);
             $filename = (string) ($attachment['filename'] ?? '');
 
-            if ($id < 1 || $filename === '' || in_array($id, $alreadyPublished, true)) {
+            if ($id < 1 || $filename === '' || isset($seen[$id]) || in_array($id, $alreadyPublished, true)) {
                 continue;
             }
+            $seen[$id] = true;
 
             if (SourceAttachment::isPromotableMimeType((string) ($attachment['mime_type'] ?? ''))) {
                 $offer[] = ['id' => $id, 'filename' => $filename];

@@ -54,6 +54,7 @@ final class WordPressStubSurfaceTest extends TestCase
         'FixtureComparator.php',
         'FixtureDirectorySnapshotLoader.php',
         'NotifyModeFakes.php',
+        'SourceMaterialLockDatabase.php',
         'StubSurface.php',
         'WordPressAuthDoubles.php',
                 'WordPressCapabilityStubs.php',
@@ -100,6 +101,7 @@ final class WordPressStubSurfaceTest extends TestCase
         'FixtureDirectorySnapshotLoader.php' => [],
         'NotifyModeFakes.php' => [],
         'StubSurface.php' => [],
+        'SourceMaterialLockDatabase.php' => [],
         'WordPressAuthDoubles.php' => [
             'ADCT\ParishIntake\WordPress\Auth\__',
             'ADCT\ParishIntake\WordPress\Auth\esc_attr',
@@ -149,6 +151,7 @@ final class WordPressStubSurfaceTest extends TestCase
                                                                             'ADCT\ParishIntake\WordPress\Events\wp_safe_redirect',
                                                                         ],
                                                                         'WordPressMediaStubs.php' => [
+            'clean_post_cache',
                                                                             'delete_post_meta',
                                                                             'delete_post_thumbnail',
                                                                             'get_attached_file',
@@ -250,6 +253,7 @@ final class WordPressStubSurfaceTest extends TestCase
             'ADCT\ParishIntake\Tests\Support\NotifyModeDatabase',
         ],
         'StubSurface.php' => ['ADCT\ParishIntake\Tests\Support\StubSurface'],
+        'SourceMaterialLockDatabase.php' => ['ADCT\ParishIntake\Tests\Support\SourceMaterialLockDatabase'],
         'WordPressAuthDoubles.php' => ['WP_User'],
                 'WordPressCapabilityStubs.php' => ['WP_User'],
                         // The editor gateway's source-material controls reject uploads that arrive

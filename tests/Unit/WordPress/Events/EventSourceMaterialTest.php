@@ -802,6 +802,37 @@ private function withNothingPromoted(): void
     $GLOBALS['adct_publishing_meta'][self::EVENT]['source_attachment_ids'] = json_encode([]);
 }
 
+    public function testAnEarlierFailedFileRemainsVisibleAndAuthorizedForManualRecovery(): void
+    {
+        $this->withNothingPromoted();
+        $this->givenProvenance(self::MESSAGE + 1, []);
+        $GLOBALS['adct_test_candidate_messages'][self::CANDIDATE + 1] = self::MESSAGE;
+        $GLOBALS['adct_test_all_stored_attachments'] = [[
+            'id' => self::ATTACHMENT, 'message_id' => self::MESSAGE,
+            'filename' => 'earlier-failed.pdf', 'mime_type' => 'application/pdf',
+            'storage_path' => 'private-earlier.pdf',
+        ]];
+        $GLOBALS['adct_publishing_meta'][self::EVENT][\ADCT\ParishIntake\WordPress\Publishing\WordPressSourceMaterialStore::ERROR_META] =
+            [self::ATTACHMENT => 'Earlier source copy failed.'];
+        $GLOBALS['adct_publishing_meta'][self::EVENT][\ADCT\ParishIntake\WordPress\Publishing\WordPressSourceMaterialStore::RECOVERY_META] =
+            [self::ATTACHMENT => ['message_id' => self::MESSAGE, 'candidate_id' => self::CANDIDATE + 1]];
+        $store = new RecordingEditorStore();
+        $markup = $this->renderBox($this->editor($store));
+        self::assertStringContainsString('Earlier source copy failed.', $markup);
+        self::assertStringContainsString('earlier-failed.pdf', $markup);
+        $this->acting($this->editor($store), 'handlePromoteSourceMaterial', [
+            'event_id' => self::EVENT, 'attachment_id' => self::ATTACHMENT, 'role' => 'bulletin',
+        ], EventEditor::PROMOTE_SOURCE_MATERIAL_NONCE, EventEditor::PROMOTE_SOURCE_MATERIAL_ACTION);
+        self::assertSame([[self::EVENT, self::ATTACHMENT, 'bulletin']], $store->promotions);
+
+        $GLOBALS['adct_test_all_stored_attachments'][0]['message_id'] = self::MESSAGE + 99;
+        $denied = new RecordingEditorStore();
+        $this->refusedAs($this->editor($denied), 'handlePromoteSourceMaterial', 404, [
+            'event_id' => self::EVENT, 'attachment_id' => self::ATTACHMENT, 'role' => 'bulletin',
+        ], EventEditor::PROMOTE_SOURCE_MATERIAL_NONCE, EventEditor::PROMOTE_SOURCE_MATERIAL_ACTION);
+        self::assertSame([], $denied->promotions, 'A historical warning cannot authorize an unrelated message.');
+    }
+
 private function renderBox(EventEditor $editor): string
     {
         $editor->registerMetaBox();
@@ -941,6 +972,7 @@ final class FakeIntakeAttachmentReader implements IntakeAttachmentReaderInterfac
             if ((int) ($row['id'] ?? 0) === $attachmentId) {
                 return [
                     'id' => $attachmentId,
+                    'message_id' => (int) ($row['message_id'] ?? 0),
                     'filename' => (string) ($row['filename'] ?? ''),
                     'mime_type' => (string) ($row['mime_type'] ?? ''),
                     'size_bytes' => (int) ($row['size_bytes'] ?? 0),
