@@ -829,13 +829,10 @@ private ?ReviewQueueRepository $reviewQueue = null;
                 new PrinsFrankPdfTextExtractor(),
                 $protectedInboundMailStorage
                             ),
-                            // Poster OCR is off until an archdiocese administrator opts in on the
-                            // settings screen, and an absent key leaves the provider unavailable, so
-                            // this collapses to the no-OCR path rather than failing the message. The
-                            // provider is built lazily: this constructor runs before WordPress is
-                            // loaded, so reading options or resolving secrets here would be a fatal
-                            // at install time, and it also means a settings change takes effect on the
-                            // next message rather than needing a re-activation.
+                            // Server-side OCR stays disabled until the project owner approves it;
+                            // neither saved options nor a settings request may open this path. The
+                            // provider remains lazy, but the explicit false gate ensures it is never
+                            // resolved during incoming-mail processing.
                             ocrTextEnrichment: new OcrTextEnrichmentService(
                                 new WordPressImageOcrExtractionStore($attachmentRepository, $clock),
                                 new LazyOcrProvider(
@@ -856,7 +853,7 @@ private ?ReviewQueueRepository $reviewQueue = null;
                                 $protectedInboundMailStorage,
                                 null,
                                 null,
-                                static fn (): bool => OcrSettings::current()->isEnabled()
+                                false
                             )
                         );
         // This is the only scheduled retention path; processed mail is deleted only by exact stored move receipts.

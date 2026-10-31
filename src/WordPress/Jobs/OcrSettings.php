@@ -5,12 +5,11 @@ declare(strict_types=1);
 namespace ADCT\ParishIntake\WordPress\Jobs;
 
 /**
- * The opt-in switch and daily spend cap for server-side OCR of poster images.
+ * The legacy setting and daily call cap for server-side poster OCR.
  *
- * OCR sends a parish poster to an external provider, so it is off until an
- * administrator explicitly turns it on. The daily cap is a separate budget
- * from the AI budget: an OCR spend limit can never be spent down by AI calls,
- * and the two features can be enabled independently.
+ * The saved values are retained for compatibility, but server-side OCR is
+ * unavailable until the project owner approves it. A saved opt-in must never
+ * enable the external provider.
  *
  * This class only reads options. It never calls out to WordPress beyond
  * `get_option`, so the Plugin container can build it before any screen loads.
@@ -19,6 +18,7 @@ final class OcrSettings
 {
     public const ENABLED_OPTION = 'adct_pi_ocr_enabled';
     public const DAILY_CALL_LIMIT_OPTION = 'adct_pi_ocr_daily_call_limit';
+    public const UNAVAILABLE_MESSAGE = 'Automatic server-side poster OCR is unavailable; this setting cannot be enabled.';
 
     /**
      * Twenty posters a day is enough for a normal bulletin week and small
@@ -63,11 +63,15 @@ final class OcrSettings
         );
     }
 
-    /**
-     * False when the operator has not opted in. Callers must treat this as
-     * "do nothing at all" rather than as an error.
-     */
     public function isEnabled(): bool
+    {
+        return false;
+    }
+
+    /**
+     * Whether an older saved value or submitted request asks to enable OCR.
+     */
+    public function isConfiguredEnabled(): bool
     {
         return $this->enabled;
     }

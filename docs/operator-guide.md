@@ -495,38 +495,23 @@ The numbers behind the settings are not a secret, only a detail. Hovering over *
 
 Both controls change only what is on screen. Neither is remembered between page loads, nothing is sent to the site, and the result is still only ever a first draft to check against the poster. Changing the layout makes the browser read the image again, so it takes a moment.
 
-### Read posters automatically in the background (optional)
+### Automatic server-side poster OCR is unavailable
 
-The button above needs a person. **Poster image OCR** is a separate, optional setting that does the same job inside the background inbox job, so a poster arriving at 18:00 is already read before anyone opens a screen ([ADR 0021](decisions/0021-opt-in-server-side-queue-ocr.md)).
+The background OCR design in [ADR 0021](decisions/0021-opt-in-server-side-queue-ocr.md) is **Proposed**, not approved. Automatic server-side poster OCR cannot be enabled, and incoming-mail processing does not send images to OCR.space. This remains true if an older installation has the setting enabled or has an OCR API key configured. Existing OCR settings and secrets are retained but ignored; saving other settings does not change them.
 
-It is **off by default**, and turning it on is a decision to send parish posters to a third party. Read this before ticking the box.
-
-**What leaves this site:** the image attachment itself, and nothing else. It is sent to **OCR.space** at `https://api.ocr.space/parse/image`. The sender's name, email address, subject line, the body text of the email, the Message-ID and every other header **stay on this server** and are never sent with it. The API key travels in a request header, so it is not in the request body. To stop it, untick the box — no poster content leaves the site again from that moment.
-
-**What it does not do.** It cannot approve, publish or send anything. The recognised text is fed to the same local parser as any other email, so the result is scored as evidence and still goes to the ordinary approval step; OCR output is never published on its own.
-
-On **Parish Intake → Settings**, the **Poster image OCR** section has three controls:
-
-- **Read posters automatically** — the opt-in itself.
-- **Poster OCR API key** — optional. Without a key the free OCR.space endpoint is used at a lower rate limit. A key is never shown again after saving; the screen shows only that one is saved, and **Remove saved key** deletes it. A key in `wp-config.php` takes precedence, exactly as for the AI provider key.
-- **Daily poster OCR limit** — how many posters a day may be read, 20 by default. Once the day's posters are read, the rest are skipped and listed for manual entry until tomorrow. This limit is counted separately from the AI fallback's, so neither consumes the other's budget.
-
-**It never breaks intake.** If the provider is slow, busy, unreachable, has no key configured, returns nothing readable, or the poster is too large or in a format the provider does not accept, that one poster is simply skipped: the email is still processed, anything written in the email text is still parsed, and nothing is lost. Each such poster is listed as a **Posters that could not be read** warning on the **Parish Intake → Manual parser** screen with its reason, so a broken provider is visible rather than silent. At most 3 posters per email are sent, and the whole message shares a 30-second budget, so one bulletin full of posters cannot hold up the job.
-
-Both settings are off by default and independent: turning the AI fallback on does not turn OCR on, and vice versa.
+Image-only messages still follow the normal intake path and remain available for manual entry. Use the explicitly clicked **Read text from image** browser control described above when a reviewer is present, or enter the event details by hand. Browser OCR keeps its extracted text in the browser and does not send it back to the site.
 
 ### Configure keys and password constants
 
 AI is **off by default**. On **Parish Intake → Settings**, choose OpenRouter, Groq, local Ollama or a custom OpenAI-compatible endpoint; configure its API base URL (the plugin appends `/chat/completions`) and its provider-specific model. The initial OpenRouter example/default is `qwen/qwen3.8-27b:free` (an existing `openrouter/auto` setting is treated as this free default). The [OpenRouter model page](https://openrouter.ai/qwen/qwen3.8-27b:free) lists this free chat model; availability may change. Check availability and pricing with the provider: `:free` models have quotas, and Groq, local hardware and other providers are **not guaranteed free**. A non-`:free` model shows a conspicuous cost warning. AI is used only below the confidence threshold in the cron inbox job, never in Manual parser or an admin-triggered web request. Calls have a 20-second timeout and a default 50-call UTC-day cap shared across jobs and retries; 429 backs off ten minutes, 5xx five minutes. Failures leave the deterministic candidate intact and produce safe diagnostic notes. A reserved call counts even if it times out or returns invalid data. Email data goes to the configured provider, so enable only after reviewing its privacy terms.
 
-The provider API key can be stored in the WordPress options database or supplied as `ADCT_PI_AI_API_KEY`. A non-empty constant takes precedence. Optional `ADCT_PI_AI_BASE_URL` and `ADCT_PI_AI_MODEL` constants override their admin fields; both are non-secret. On **Parish Intake → Settings**, a configured key constant is shown only as **Set in wp-config.php**; a saved database key is never displayed, and leaving its password field blank keeps it. Select **Remove saved key** to delete a database key, including one overridden by a constant. Local Ollama on `http://localhost:11434/v1` needs no key; remote endpoints require HTTPS and an API key. The server running WordPress must be able to reach the local endpoint. Mailbox passwords are managed from **Parish Intake → Mailboxes**. The OCR API key is managed from the **Poster image OCR** section of **Parish Intake → Settings**, and is handled by the same rules: a saved key is never displayed, a blank password field keeps it, and **Remove saved key** deletes it.
+The provider API key can be stored in the WordPress options database or supplied as `ADCT_PI_AI_API_KEY`. A non-empty constant takes precedence. Optional `ADCT_PI_AI_BASE_URL` and `ADCT_PI_AI_MODEL` constants override their admin fields; both are non-secret. On **Parish Intake → Settings**, a configured key constant is shown only as **Set in wp-config.php**; a saved database key is never displayed, and leaving its password field blank keeps it. Select **Remove saved key** to delete a database key, including one overridden by a constant. Local Ollama on `http://localhost:11434/v1` needs no key; remote endpoints require HTTPS and an API key. The server running WordPress must be able to reach the local endpoint. Mailbox passwords are managed from **Parish Intake → Mailboxes**. Any OCR API key already stored in the database or defined in `wp-config.php` is retained but ignored while server-side OCR remains unapproved; do not add or remove one to control image processing.
 
 To keep secrets out of the database, edit `wp-config.php` and add the needed definitions above the line that says `That's all, stop editing!`:
 
 ```php
 define('ADCT_PI_AI_API_KEY', 'replace-with-your-provider-api-key');
 define('ADCT_PI_IMAP_PASSWORD', 'replace-with-the-events-mailbox-password');
-define('ADCT_PI_OCR_API_KEY', 'replace-with-your-ocr-api-key');
 ```
 
 The values above are placeholders; replace them with the site's credentials and do not commit those values to a repository. The default `ADCT_PI_IMAP_PASSWORD` constant is used for mailboxes without a per-mailbox constant. After saving a mailbox, its form shows the exact per-mailbox constant name; it uses the stable mailbox ID (for example, mailbox ID `12` uses `ADCT_PI_IMAP_PASSWORD_MAILBOX_12`). A per-mailbox constant takes precedence over the default constant, and either non-empty constant takes precedence over a stored database password. Add the constant to `wp-config.php` above the stop-editing line; do not store its value in the repository.
