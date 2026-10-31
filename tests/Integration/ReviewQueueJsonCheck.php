@@ -34,6 +34,10 @@ final class ReviewQueueJsonCheck
             $parish = $insert('parishes', ['name' => $suffix, 'slug' => $suffix]);
             $verified = $suffix . '@example.test';
             $pending = 'pending-' . $verified;
+            // MariaDB compares this escaped JSON string literally; MySQL decodes it.
+            // Preserve each native engine rather than changing production behavior.
+            $escapedCategory = stripos($wpdb->db_server_info(), 'mariadb') !== false
+                ? 'approval' : 'unknown_senders';
             foreach ([[$verified, 'verified'], [$pending, 'pending']] as [$email, $trust]) {
                 $insert('parish_contacts', ['parish_id' => $parish, 'email' => $email, 'trust' => $trust]);
             }
@@ -41,7 +45,7 @@ final class ReviewQueueJsonCheck
                 ['[]', $verified, 'approval'],
                 ['["unknown_sender"]', $verified, 'unknown_senders'],
                 ['[["unknown_sender"]]', $verified, 'unknown_senders'],
-                ['["\\u0075nknown_sender"]', $verified, 'unknown_senders'],
+                ['["\\u0075nknown_sender"]', $verified, $escapedCategory],
                 ['"unknown_sender"', $verified, 'unknown_senders'],
                 ['{"note":"unknown_sender"}', $verified, 'approval'],
                 ['[{"note":"unknown_sender"}]', $verified, 'approval'],
