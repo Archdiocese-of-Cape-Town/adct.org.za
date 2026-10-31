@@ -31,6 +31,58 @@ These commands were checked on 2026-09-24: the smoke test passes, lint is clean,
 
 GitHub Actions (added in [#17](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/17)) runs the unit tests on PHP 8.2, 8.3 and 8.4 and the WordPress integration suite on PHP 8.2 for every PR. A PHP 8.5 job runs the same lint and tests for information only: 8.5 is not a supported target yet, so its job is `continue-on-error` and can never fail a PR. CI is the final judge.
 
+### PDF fixture integrity on Windows
+
+`.gitattributes` marks `*.pdf binary` (`-text -diff -merge`), preventing Git's
+end-of-line conversion on future checkouts/adds. It cannot repair bytes already
+converted by an older checkout, an editor or text-mode shell redirection.
+Git's cached worktree metadata can still report **clean** with wrong bytes
+([#246](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/246)).
+Do not treat `git status`, a matching size, or `git ls-files --eol` as an integrity check.
+
+From **your own** repository worktree, Node 22+ and Git suffice (no npm install):
+
+```powershell
+node scripts\check-pdf-fixtures.mjs
+node --test tests\Node\pdf-fixtures.test.mjs
+```
+
+The read-only check compares all nine fixture PDFs with raw indexed blobs and
+the indexed SHA-256 manifest, bypassing Git's stat cache and shell text
+conversion. It fails on missing files, same-size edits, or CRLF expansion and
+prints byte counts and hashes. PHPUnit also checks the manifest through
+`tests/bootstrap.php` before running any tests, using PHP alone: it works inside
+Docker without Git or on a source archive. Neither check repairs anything.
+
+**Non-destructive recovery:** after inspecting the mismatch, explicitly export
+verified indexed copies into a **new, nonexistent** directory whose parent
+already exists:
+
+```powershell
+node scripts\check-pdf-fixtures.mjs --export "$env:TEMP\adct-pdf-recovery-246"
+```
+
+An existing destination is refused. The export verifies every indexed PDF
+against the indexed manifest before writing, writes binary bytes exclusively,
+and verifies the exported bytes. It never changes the original files or index,
+even for intentional local edits. A successful export means the copies are
+valid, **not** that the worktree is repaired. Preserve the originals in a
+separate backup, review any edits (including staged changes), and get explicit
+owner approval before manually replacing only the confirmed corrupt fixtures.
+Then rerun both the byte check and the extractor test. Never reset/clean a
+worktree, blindly run the generator, or use `git show ... > file.pdf` through
+a text-decoding PowerShell pipeline to fix this. Never repair another session's
+checkout.
+
+For intentional fixture changes, run `tests/fixtures/pdfs/generate.php` only in
+an isolated disposable copy, review the PDFs and generated `sha256.json`
+together, then bring the approved changes into your branch. Do not recalculate
+checksums from suspect worktree bytes just to make tests pass. The checker uses
+the **index**, not HEAD: newly approved fixture and manifest changes must be
+staged together before it can verify them. If both indexed bytes and manifest
+have been deliberately rewritten, a checksum cannot prove their provenance;
+review remains necessary.
+
 ## Build the release zip
 
 Build the installable package from the repository root in PowerShell:
@@ -66,7 +118,7 @@ The build validates the zip by unpacking it, checking its contents (including th
 
 Strauss prefixes the dependency packages under `vendor-prefixed/`, but it does **not** rewrite `use` statements in our own `src/`. A hard `use PrinsFrank\PdfParser\PdfParser;` therefore compiles in development and throws `Error: Class not found` in every release, where the class exists only as `ADCT\ParishIntake\Dependencies\PrinsFrank\PdfParser\PdfParser`. Issue [#239](https://github.com/Archdiocese-of-Cape-Town/adct.org.za/issues/239) shipped exactly that: every PDF failed, and the adapter's catch-all reported it as `The file could not be read as a PDF.` — blaming the file instead of the code.
 
-Resolve dependency classes **by string, probing the unprefixed name first and the prefixed name second**, as `Core\Ingestion\MimeMessageParser` and `Core\Ingestion\RawMessageInspector` already do:
+Resolve dependency classes **by string**, never with a hard `use` statement. The MIME parser is resolved once by `Core\Ingestion\MimeParserClassResolver`, which prefers the prefixed class used by releases and keeps the unprefixed class as a development-only fallback. The PDF adapter below retains its own development-first order:
 
 ```php
 private const PDF_PARSER_CLASSES = [
@@ -77,7 +129,7 @@ private const PDF_PARSER_CLASSES = [
 $parserClass = $this->resolveClass(self::PDF_PARSER_CLASSES);
 ```
 
-Unprefixed first keeps development working against plain `vendor/`. In `@param` and `@return` docblocks, describe these as `object` or `string` — there is no class to name at compile time. See [ADR 0024](decisions/0024-runtime-resolution-of-prefixed-dependency-classes.md).
+The MIME parser's unprefixed fallback keeps development working against plain `vendor/`; the release guard verifies the prefixed class and rejects an unprefixed dependency copy. In `@param` and `@return` docblocks, describe dynamically resolved dependencies as `object` or `string` — there is no class to name at compile time. See [ADR 0024](decisions/0024-runtime-resolution-of-prefixed-dependency-classes.md).
 
 `scripts/check-release-bootstrap.php` enforces this two ways, and both run in CI on every PR:
 
