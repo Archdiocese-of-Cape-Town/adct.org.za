@@ -10,6 +10,7 @@ use ADCT\ParishIntake\Core\Mail\ConfirmationEmailResendCooldownException;
 use ADCT\ParishIntake\Core\Ports\ClockInterface;
 use ADCT\ParishIntake\Core\Review\ReviewQueuePolicy;
 use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
+use ADCT\ParishIntake\WordPress\Database\WordPressDatabaseConnection;
 use DateTimeImmutable;
 use DateTimeZone;
 use DomainException;
@@ -1081,18 +1082,20 @@ final class ReviewQueueRepository
     private function where(int $userId, string $email, bool $reviewer, string $search): array
     {
         [$scope, $args] = $this->scope($userId, $email, $reviewer);
+        $matchReview = $this->jsonText('$.match_review_required');
         $where = "WHERE {$scope} AND c.status != 'superseded' "
             . "AND (c.status != 'duplicate' OR CASE WHEN JSON_VALID(c.fields) THEN "
             . "JSON_EXTRACT(c.fields, '$.matched_candidate_id') > 0 "
-            . "OR JSON_UNQUOTE(JSON_EXTRACT(c.fields, '$.match_review_required')) = 'true' "
+            . "OR {$matchReview} = 'true' "
             . "ELSE 0 END) "
             . "AND (c.status NOT IN ('published','rejected') OR c.updated_at >= %s)";
         $args[] = $this->clock->now()->setTimezone(new DateTimeZone('UTC'))
             ->modify('-30 days')->format('Y-m-d H:i:s');
         if ($search !== '') {
+            $title = $this->jsonText('$.title');
             $like = '%' . $this->database->escapeLike($search) . '%';
             $where .= " AND (m.sender_email LIKE %s OR p.name LIKE %s OR "
-                . "CASE WHEN JSON_VALID(c.fields) THEN JSON_UNQUOTE(JSON_EXTRACT(c.fields, '$.title')) "
+                . "CASE WHEN JSON_VALID(c.fields) THEN {$title} "
                 . "ELSE '' END LIKE %s)";
             array_push($args, $like, $like, $like);
         }
@@ -1101,8 +1104,11 @@ final class ReviewQueueRepository
 
     private function category(): string
     {
+        $note = $this->database instanceof WordPressDatabaseConnection
+            ? $this->database->reviewQueueNoteExpression()
+            : 'JSON_CONTAINS(c.notes, \'"unknown_sender"\')';
         $unknown = "(c.parish_id IS NULL OR m.sender_email IS NULL "
-            . "OR CASE WHEN JSON_VALID(c.notes) THEN JSON_CONTAINS(c.notes, '\"unknown_sender\"') ELSE 0 END "
+            . "OR CASE WHEN JSON_VALID(c.notes) THEN {$note} ELSE 0 END "
             . "OR NOT EXISTS (SELECT 1 FROM {$this->contacts} contact "
             . "WHERE contact.parish_id = c.parish_id AND contact.email = m.sender_email "
             . "AND contact.trust = 'verified'))";
@@ -1116,6 +1122,13 @@ final class ReviewQueueRepository
             . "WHEN c.status = 'awaiting_approval' AND {$unknown} THEN 'unknown_senders' "
             . "WHEN c.status = 'awaiting_approval' AND c.confidence < {$threshold} THEN 'low_confidence' "
             . "WHEN c.status = 'awaiting_approval' THEN 'approval' ELSE 'failed' END";
+    }
+
+    private function jsonText(string $path): string
+    {
+        return $this->database instanceof WordPressDatabaseConnection
+            ? $this->database->reviewQueueTextExpression($path)
+            : "JSON_UNQUOTE(JSON_EXTRACT(c.fields, '{$path}'))";
     }
 
     /** @param array<string, mixed> $details */

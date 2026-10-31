@@ -9,6 +9,7 @@ use RuntimeException;
 final class WordPressDatabaseConnection implements DatabaseConnectionInterface
 {
     private ?object $database;
+    private bool $sqliteFunctionsRegistered = false;
 
     public function __construct(?object $database = null)
     {
@@ -34,6 +35,28 @@ final class WordPressDatabaseConnection implements DatabaseConnectionInterface
         }
 
         return $prepared;
+    }
+
+    public function isSqlite(): bool
+    {
+        return $this->connection() instanceof \WP_SQLite_DB;
+    }
+
+    public function reviewQueueNoteExpression(): string
+    {
+        return $this->isSqlite()
+            ? 'ADCT_PI_UNKNOWN_SENDER(c.notes)'
+            : 'JSON_CONTAINS(c.notes, \'"unknown_sender"\')';
+    }
+
+    public function reviewQueueTextExpression(string $path): string
+    {
+        if (! in_array($path, ['$.title', '$.match_review_required'], true)) {
+            throw new \InvalidArgumentException('The review queue JSON path is invalid.');
+        }
+        return $this->isSqlite()
+            ? "ADCT_PI_JSON_TEXT(c.fields, '{$path}')"
+            : "JSON_UNQUOTE(JSON_EXTRACT(c.fields, '{$path}'))";
     }
 
     public function query(string $query): int|false
@@ -91,6 +114,21 @@ final class WordPressDatabaseConnection implements DatabaseConnectionInterface
 
         if ($this->database === null) {
             throw new RuntimeException('The WordPress database connection is unavailable.');
+        }
+
+        if (! $this->sqliteFunctionsRegistered && $this->database instanceof \WP_SQLite_DB) {
+            $pdo = $this->database->get_driver()->get_sqlite_pdo();
+            // PHP 8.4's Pdo\Sqlite replaces the deprecated PDO SQLite method.
+            $method = method_exists($pdo, 'createFunction') ? 'createFunction' : 'sqliteCreateFunction';
+            foreach ([
+                'ADCT_PI_UNKNOWN_SENDER' => [ReviewQueueJson::class, 'containsUnknownSender'],
+                'ADCT_PI_JSON_TEXT' => [ReviewQueueJson::class, 'text'],
+            ] as $name => $callback) {
+                if (! $pdo->$method($name, $callback, $name === 'ADCT_PI_JSON_TEXT' ? 2 : 1)) {
+                    throw new RuntimeException('The review queue SQLite JSON function could not be registered.');
+                }
+            }
+            $this->sqliteFunctionsRegistered = true;
         }
 
         return $this->database;
