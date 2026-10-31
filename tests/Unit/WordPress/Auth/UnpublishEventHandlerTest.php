@@ -625,6 +625,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
 
             self::assertContains('ROLLBACK', $database->transactions);
             self::assertNotContains('COMMIT', $database->transactions);
+            self::assertSame([], $database->sourceLocks);
 
             // The post was already moved inside the transaction. WordPress has
             // no transaction here, so what makes this recoverable is that the
@@ -724,6 +725,29 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
                 new EventListingGeneration(),
                 new DateTimeZone('Africa/Johannesburg')
             );
+        }
+
+        public function testSourceContentionRefusesUnpublishWithoutConsumingItsToken(): void
+        {
+            $database = $this->database();
+            $tokens = new ActionTokenService(new RevertTokenStore(), new RevertClock());
+            $binding = $this->binding();
+            $token = $tokens->issue($binding)->token();
+            $lock = new \ADCT\ParishIntake\WordPress\Publishing\SourceMaterialLock($database);
+            $lock->run(self::EVENT_ID, function () use ($database, $tokens, $binding, $token): void {
+                try {
+                    $this->handler([self::PARISH_ID], $database)->performAtomic($binding, $token, $tokens, '');
+                    self::fail('An unpublish must not run during source copying.');
+                } catch (DomainException $failure) {
+                    self::assertStringContainsString('already running', $failure->getMessage());
+                }
+                self::assertSame(ActionTokenStatus::VALID, $tokens->inspect($token)->status);
+                self::assertContains('ROLLBACK', $database->transactions);
+                self::assertNotContains('COMMIT', $database->transactions);
+            });
+            self::assertSame([], $database->sourceLocks);
+            $this->handler([self::PARISH_ID], $database)->performAtomic($binding, $token, $tokens, '');
+            self::assertSame([], $database->sourceLocks);
         }
 
         private function binding(): ActionTokenBinding

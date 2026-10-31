@@ -48,6 +48,7 @@ declare(strict_types=1);
  *
  *     $GLOBALS['adct_publishing_meta']         array<int, array> post meta, by post id
  *     $GLOBALS['adct_publishing_featured']     array<int, int>    featured image, by post id
+ *     $GLOBALS['adct_test_source_post_status'] array<int, string|false> status, or false for a missing post
  *
  * A test can also pre-seed `adct_test_media_posts[ID]` to describe an attachment
  * that already exists, which is how the "parented to the event but never
@@ -63,6 +64,12 @@ declare(strict_types=1);
  * on.
  */
 namespace {
+    if (! function_exists('get_post_status')) {
+        function get_post_status(int $postId): string|false
+        {
+            return $GLOBALS['adct_test_source_post_status'][$postId] ?? false;
+        }
+    }
     if (! function_exists('clean_post_cache')) {
         function clean_post_cache(int $postId): void
         {

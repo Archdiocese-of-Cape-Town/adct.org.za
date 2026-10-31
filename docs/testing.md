@@ -376,6 +376,9 @@ Promotion is a decision about **making a parish's file public**, so the tests ar
 - **Recovery persistence is coherent.** A warning and its provenance share one checked metadata write. Transient write failures explicitly preserve the previous complete record. Unit tests cover failed automatic saves, manual cleanup failure and retry, and compatible reads of the old split layout. Installed-ZIP checks refuse a real metadata cleanup write: the copied file remains public, the complete recovery record remains visible, and retry clears it without duplicating media.
 - **All source mutations are serialized.** Real database contention blocks both manual add/removal and automatic copying on the same event, while another event can still change. Retry does not duplicate a copy or restore a later removal. Deterministic tests also reject same-connection reentrancy, refuse a stale duplicate add and verify lock release after failure.
 - **Supersession cannot race in-flight copying.** A sideload prefilter starts a newer candidate update on a second database connection after the older source-candidate check. The update is refused before changing the event, the older copy completes against its own candidate, and the newer candidate publishes successfully after retry. Event-update transactions hold the advisory lock only until commit; filesystem I/O stays post-commit.
+- **Emailed revert/unpublish coordinate with copying.** Synthetic reviewers invoke both real atomic handlers from a second connection during sideload. Contention leaves the token valid and the event unchanged. Injected transactional failures roll back the token/event and release the lock; retry succeeds, retaining previously public source media.
+- **Non-public events do not start automatic source processing.** Unit tests cover draft/private/unpublished/trash/missing posts. Installed-ZIP checks exercise normal editor and REST status updates before a source retry. REST can commit from a second connection even while the advisory lock is held: these standard WordPress writers are not serialized. Transitions after the locked status check can still race in-flight filesystem copying; this remains an explicit limitation of ADR 0026.
+- **Playground source locking currently fails.** A real SQLite-backed Playground probe returns `SQLSTATE[HY000]: General error: 1 no such function: IS_USED_LOCK`; the adapter reports `The source material lock owner could not be checked.` Parser-preview success does not imply publishing compatibility. Publication/update/revert/unpublish need a supported lock adapter, not a success fallback.
 - **Both offers are guarded separately.** The review-queue control and the event-editor control each post to their own `admin_post` action with their own nonce. A forged nonce, a nonce minted for the *other* action, and a nonce carried in from the bulk form are each refused with a 403 and write **no** audit row — asserted, not assumed, since a bulk handler that quietly accepted a foreign nonce would promote every candidate on the page.
 - **No path component derives from the submitted name.** Checked against a traversal name (`../../wp-config.php`), a name with a PHP extension, a non-ASCII name, and a name with no extension at all: the stored file is always `adct-source-<hex>.<ext>` inside the uploads directory, and the parish name survives only as escaped metadata.
 - **Unpromoted material is unreachable.** The front end reads only the ordered `source_attachment_ids` meta. `PublicEventSourceMaterialTest` stubs `get_children()` as a tripwire that both records the call *and* returns matching children, so the test fails both if the broad query appears and if it would have leaked. A promoted-looking attachment parented to the event but never promoted renders nothing.
@@ -388,6 +391,30 @@ Promotion is a decision about **making a parish's file public**, so the tests ar
 - **Escaping is asserted at the render**, not at storage: a filename containing `<script>` is stored intact and rendered escaped in both the review queue and the public page.
 
 **Built-ZIP WordPress checks.** `AutomaticSourceMaterialCheck` runs the actual `Plugin::candidatePublisher()` wiring for dean, reviewer and self approvals, updates/cancellation/postponement, copy refusal and repair, unsupported files, audit attribution, removal and public view/JSON-LD output. Several events use the same private original, catching the fact that real `wp_handle_sideload()` moves its input. The existing source-material integration check also verifies retention and manual controls. These checks need npm/wp-env and are not loaded by PHPUnit: run the release build and `npm run test:integration` locally with an isolated home and unused ports, keeping it running, or use CI. A green unit number alone is not evidence for these API assumptions.
+
+**Unresolved normal-status race regression.** In that isolated installed-ZIP
+environment, invoke `AutomaticSourceMaterialCheck::run($fail)`, where
+`$fail` throws `RuntimeException` rather than exiting. The default check
+uses a real second-connection REST request during sideload and currently fails
+with `UNRESOLVED: ordinary REST committed draft after the locked status check,
+and in-flight copying disclosed a new public file.` This is not presented as a
+fixed race. The normal installed-ZIP suite includes this failing regression and
+must remain red until it is fixed. `run($fail, false)` explicitly runs only the
+safe-path subset for diagnosis; it is not evidence that #252 is ready. The
+throwing callback permits synthetic-fixture cleanup.
+
+**Actual Playground lock probe.** This bounded command starts no server and
+does not modify the production preview blueprint:
+
+```powershell
+npm exec --yes --package=@wp-playground/cli -- wp-playground-cli run-blueprint --php=8.2 --blueprint=tests\Integration\playground-source-lock.json --mount-dir "${PWD}" /plugin
+Get-Content dist\playground-source-lock-result.txt
+```
+
+The probe fails explicitly when the lock is unsupported. Its generated
+diagnostic contains the adapter error and the real SQLite translation error.
+The probe boots SQLite-backed WordPress and the shared lock adapter
+without activating the plugin or testing unrelated schema compatibility.
 
 ## Pre-launch check on a temporary staging instance
 

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://playground.wordpress.net/blueprint-schema.json",
+  "preferredVersions": { "php": "8.2", "wp": "latest" },
+  "steps": [
+    {
+      "step": "runPHP",
+      "code": "<?php require '/wordpress/wp-load.php'; require '/plugin/src/WordPress/Autoloader.php'; ADCT\\ParishIntake\\WordPress\\Autoloader::register(); global $wpdb; $wpdb->suppress_errors(true); $connection = new ADCT\\ParishIntake\\WordPress\\Database\\WordPressDatabaseConnection($wpdb); $result = 'LOCK ACQUIRED'; try { (new ADCT\\ParishIntake\\WordPress\\Publishing\\SourceMaterialLock($connection))->run(42, static function (): void {}); } catch (Throwable $failure) { $result = get_class($failure) . ': ' . $failure->getMessage() . \"\\n\" . $wpdb->last_error; } file_put_contents('/plugin/dist/playground-source-lock-result.txt', $result . \"\\n\"); if ($result !== 'LOCK ACQUIRED') { throw new RuntimeException('UNRESOLVED: Playground source lock is unavailable. See dist/playground-source-lock-result.txt.'); }"
+    }
+  ]
+}

@@ -17,7 +17,7 @@ use ADCT\ParishIntake\WordPress\Publishing\WordPressSourceMaterialStore;
 
 final class AutomaticSourceMaterialCheck
 {
-    public static function run(callable $fail): void
+    public static function run(callable $fail, bool $reproduceOrdinaryStatusRace = true): void
     {
         global $wpdb;
         $connection = new WordPressDatabaseConnection($wpdb);
@@ -46,6 +46,8 @@ final class AutomaticSourceMaterialCheck
         $candidateIds = [];
         $eventIds = [];
         $mediaIds = [];
+        $reviewerId = null;
+        $actionSecrets = [];
         $make = static function (string $via, string $kind = 'new', ?int $eventId = null, ?int $fromMessage = null) use (
             $candidates, $messageId, $now, $date, &$candidateIds
         ): int {
@@ -407,7 +409,214 @@ final class AutomaticSourceMaterialCheck
             if ((int) get_post_meta($eventId, 'source_candidate_id', true) !== $newerCandidate) {
                 $fail('A candidate refused during source copying could not be retried after the lock released.');
             }
+            $reviewerId = wp_insert_user([
+                'user_login' => 'source-race-' . bin2hex(random_bytes(8)),
+                'user_email' => 'source-race-' . bin2hex(random_bytes(8)) . '@example.test',
+                'user_pass' => wp_generate_password(32),
+                'role' => 'subscriber',
+            ]);
+            if (! is_int($reviewerId)) {
+                $fail('Source action race check could not create a synthetic reviewer.');
+            }
+            $reviewer = get_userdata($reviewerId);
+            $reviewer->add_cap(\ADCT\ParishIntake\Core\Auth\Capabilities::REVIEW);
+            $actionClock = new SystemClock();
+            $actionTokens = new \ADCT\ParishIntake\Core\Auth\ActionTokenService(
+                new \ADCT\ParishIntake\WordPress\Database\WordPressActionTokenStore($contendingConnection), $actionClock
+            );
+            $recipients = new \ADCT\ParishIntake\WordPress\Approval\ApprovalRecipients(
+                new \ADCT\ParishIntake\Core\Approval\ApprovalRouteResolver(
+                    new \ADCT\ParishIntake\WordPress\Database\Repository\ApprovalRouteRepository($contendingConnection)
+                )
+            );
+            $actionOccurrences = new \ADCT\ParishIntake\WordPress\Events\WordPressEventOccurrenceMaintenance(
+                new \ADCT\ParishIntake\WordPress\Database\Repository\OccurrenceRepository($contendingConnection),
+                new \ADCT\ParishIntake\Core\Events\OccurrenceExpander(new DateTimeZone('Africa/Johannesburg')),
+                $actionClock
+            );
+            $actionMail = new class implements \ADCT\ParishIntake\Core\Ports\MailerInterface {
+                public function enqueue(\ADCT\ParishIntake\Core\Mail\OutboundEmail $email): \ADCT\ParishIntake\Core\Mail\MailQueueEnqueueResult
+                {
+                    return new \ADCT\ParishIntake\Core\Mail\MailQueueEnqueueResult(
+                        1, \ADCT\ParishIntake\Core\Mail\MailQueueStatus::QUEUED, false
+                    );
+                }
+            };
+            foreach ([
+                \ADCT\ParishIntake\WordPress\Auth\UnpublishEventHandler::class,
+                \ADCT\ParishIntake\WordPress\Auth\RevertChangeHandler::class,
+            ] as $handlerClass) {
+                $originalCandidate = $make('reviewer');
+                $actionEvent = Plugin::candidatePublisher()->publish($originalCandidate);
+                $eventIds[] = $actionEvent;
+                $mediaIds = array_merge($mediaIds, array_map(static fn ($source): int => $source->mediaId, $store->forEvent($actionEvent)));
+                $actionCandidate = $make('reviewer', 'update', $actionEvent, $laterMessage);
+                $handler = new $handlerClass(
+                    $contendingConnection, $recipients, $actionMail, $actionClock,
+                    $actionOccurrences, new EventListingGeneration(), new DateTimeZone('Africa/Johannesburg')
+                );
+                $blocked = false;
+                $binding = null;
+                $secret = null;
+                $actionInterleave = static function (array $file) use (
+                    $handler, $contendingDatabase, $actionTokens, $actionEvent, $reviewer,
+                    &$blocked, &$binding, &$secret, &$actionSecrets
+                ): array {
+                    if ($binding !== null) {
+                        return $file;
+                    }
+                    global $wpdb;
+                    $primary = $wpdb;
+                    $wpdb = $contendingDatabase;
+                    try {
+                        $changeId = (int) $wpdb->get_var($wpdb->prepare(
+                            "SELECT MAX(id) FROM {$wpdb->prefix}adct_pi_event_changes WHERE event_id = %d", $actionEvent
+                        ));
+                        $binding = new \ADCT\ParishIntake\Core\Auth\ActionTokenBinding(
+                            $handler->purpose(), 'event_change', $changeId, $reviewer->user_email
+                        );
+                        $secret = $actionTokens->issue($binding)->token();
+                        $actionSecrets[] = $secret;
+                        try {
+                            $handler->performAtomic($binding, $secret, $actionTokens, '');
+                        } catch (DomainException $failure) {
+                            $blocked = str_contains($failure->getMessage(), 'already running');
+                        }
+                    } finally {
+                        $wpdb = $primary;
+                        clean_post_cache($actionEvent);
+                    }
+                    return $file;
+                };
+                add_filter('wp_handle_sideload_prefilter', $actionInterleave);
+                try {
+                    Plugin::candidatePublisher()->publish($actionCandidate);
+                } finally {
+                    remove_filter('wp_handle_sideload_prefilter', $actionInterleave);
+                    $mediaIds = array_merge($mediaIds, array_map(static fn ($source): int => $source->mediaId, $store->forEvent($actionEvent)));
+                }
+                if (! $blocked || $actionTokens->inspect($secret)->status !== \ADCT\ParishIntake\Core\Auth\ActionTokenStatus::VALID
+                    || (int) get_post_meta($actionEvent, 'source_candidate_id', true) !== $actionCandidate
+                    || get_post_status($actionEvent) !== 'publish') {
+                    $fail($handlerClass . ' committed during copying or consumed a refused action token.');
+                }
+                $publicIds = array_map(static fn ($source): int => $source->mediaId, $store->forEvent($actionEvent));
+                $refuseAction = static function (array $data, array $post) use ($actionEvent): array {
+                    if ((int) ($post['ID'] ?? 0) === $actionEvent) {
+                        throw new RuntimeException('Synthetic action transaction write refusal.');
+                    }
+                    return $data;
+                };
+                $actionFailure = null;
+                add_filter('wp_insert_post_data', $refuseAction, 10, 2);
+                $primary = $wpdb;
+                $wpdb = $contendingDatabase;
+                try {
+                    $handler->performAtomic($binding, $secret, $actionTokens, '');
+                } catch (RuntimeException $failure) {
+                    $actionFailure = $failure;
+                } finally {
+                    $wpdb = $primary;
+                    remove_filter('wp_insert_post_data', $refuseAction, 10);
+                    clean_post_cache($actionEvent);
+                }
+                $actionLockName = substr('adct-source-' . hash('sha256', $wpdb->prefix . ':' . $actionEvent), 0, 64);
+                if ($actionFailure === null
+                    || $actionTokens->inspect($secret)->status !== \ADCT\ParishIntake\Core\Auth\ActionTokenStatus::VALID
+                    || get_post_status($actionEvent) !== 'publish'
+                    || (int) get_post_meta($actionEvent, 'source_candidate_id', true) !== $actionCandidate
+                    || $contendingDatabase->get_var($contendingDatabase->prepare('SELECT IS_USED_LOCK(%s)', $actionLockName)) !== null) {
+                    $fail('A failed revert/unpublish did not roll back the token and event or release its source lock.');
+                }
+                $wpdb = $contendingDatabase;
+                try {
+                    $handler->performAtomic($binding, $secret, $actionTokens, '');
+                } finally {
+                    $wpdb = $primary;
+                    clean_post_cache($actionEvent);
+                }
+                $store->publishForEvent($actionEvent, $laterMessage, 'reviewer@example.test', $actionCandidate);
+                if ($publicIds !== array_map(static fn ($source): int => $source->mediaId, $store->forEvent($actionEvent))) {
+                    $fail('Revert/unpublish retry silently erased previously public source material.');
+                }
+            }
+            $editorCandidate = $make('reviewer');
+            add_filter('wp_handle_sideload_prefilter', $refusePdf);
+            try {
+                $editorEvent = Plugin::candidatePublisher()->publish($editorCandidate);
+                $eventIds[] = $editorEvent;
+            } finally {
+                remove_filter('wp_handle_sideload_prefilter', $refusePdf);
+            }
+            $editorIds = array_map(static fn ($source): int => $source->mediaId, $store->forEvent($editorEvent));
+            $mediaIds = array_merge($mediaIds, $editorIds);
+            wp_update_post(['ID' => $editorEvent, 'post_status' => 'draft']);
+            $store->publishForEvent($editorEvent, $messageId, 'reviewer@example.test', $editorCandidate);
+            if (get_post_status($editorEvent) !== 'draft'
+                || $editorIds !== array_map(static fn ($source): int => $source->mediaId, $store->forEvent($editorEvent))) {
+                $mediaIds = array_merge($mediaIds, array_map(static fn ($source): int => $source->mediaId, $store->forEvent($editorEvent)));
+                $fail('A normal editor draft transition before source retry still disclosed a new file.');
+            }
+            wp_update_post(['ID' => $editorEvent, 'post_status' => 'publish']);
+            $previousUser = get_current_user_id();
+            foreach (['edit_adct_events', 'edit_others_adct_events', 'edit_published_adct_events', 'publish_adct_events'] as $capability) {
+                $reviewer->add_cap($capability);
+            }
+            wp_set_current_user(0);
+            wp_set_current_user($reviewerId);
+            try {
+                $restStatusChange = static function (string $status) use ($editorEvent, $contendingDatabase, $fail): void {
+                    global $wpdb;
+                    $primary = $wpdb;
+                    $wpdb = $contendingDatabase;
+                    try {
+                        $request = new WP_REST_Request('POST', '/wp/v2/adct_event/' . $editorEvent);
+                        $request->set_param('status', $status);
+                        $response = rest_do_request($request);
+                        if ($response->get_status() !== 200 || get_post_status($editorEvent) !== $status) {
+                            $fail('The normal REST status transition fixture was not exercised: ' . wp_json_encode($response->get_data()));
+                        }
+                    } finally {
+                        $wpdb = $primary;
+                        clean_post_cache($editorEvent);
+                    }
+                };
+                (new \ADCT\ParishIntake\WordPress\Publishing\SourceMaterialLock($connection))->run(
+                    $editorEvent, static fn () => $restStatusChange('private')
+                );
+                $store->publishForEvent($editorEvent, $messageId, 'reviewer@example.test', $editorCandidate);
+                if ($editorIds !== array_map(static fn ($source): int => $source->mediaId, $store->forEvent($editorEvent))) {
+                    $fail('A REST private transition before source retry still disclosed a new file.');
+                }
+                if ($reproduceOrdinaryStatusRace) {
+                    wp_update_post(['ID' => $editorEvent, 'post_status' => 'publish']);
+                    $duringCopy = static function (array $file) use ($restStatusChange): array {
+                        $restStatusChange('draft');
+                        return $file;
+                    };
+                    add_filter('wp_handle_sideload_prefilter', $duringCopy);
+                    try {
+                        $store->publishForEvent($editorEvent, $messageId, 'reviewer@example.test', $editorCandidate);
+                    } finally {
+                        remove_filter('wp_handle_sideload_prefilter', $duringCopy);
+                        $mediaIds = array_merge($mediaIds, array_map(static fn ($source): int => $source->mediaId, $store->forEvent($editorEvent)));
+                    }
+                    if (get_post_status($editorEvent) === 'draft'
+                        && $editorIds !== array_map(static fn ($source): int => $source->mediaId, $store->forEvent($editorEvent))) {
+                        $fail('UNRESOLVED: ordinary REST committed draft after the locked status check, and in-flight copying disclosed a new public file.');
+                    }
+                }
+            } finally {
+                wp_set_current_user($previousUser);
+            }
         } finally {
+            foreach ($actionSecrets as $secret) {
+                $wpdb->delete($wpdb->prefix . 'adct_pi_action_tokens', ['token_hash' => hash('sha256', $secret)]);
+            }
+            if (is_int($reviewerId)) {
+                require_once ABSPATH . 'wp-admin/includes/user.php';
+                wp_delete_user($reviewerId);
+            }
             foreach (array_unique($mediaIds) as $id) {
                 wp_delete_attachment($id, true);
             }

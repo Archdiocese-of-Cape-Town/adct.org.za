@@ -5705,7 +5705,13 @@ if ($secondApproverUser instanceof WP_User && in_array('deanery_approver', $seco
 require_once __DIR__ . '/PublicationCheck.php';
 PublicationCheck::run($fail);
 require_once __DIR__ . '/AutomaticSourceMaterialCheck.php';
-AutomaticSourceMaterialCheck::run($fail);
+try {
+    AutomaticSourceMaterialCheck::run(static function (string $message): void {
+        throw new RuntimeException($message);
+    });
+} catch (RuntimeException $failure) {
+    $fail($failure->getMessage());
+}
 
 require_once __DIR__ . '/SingleEventPageCheck.php';
 SingleEventPageCheck::run($fail, $firstParishId, $occurrenceType, $occurrenceVenue);

@@ -23,6 +23,7 @@ use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
+use ADCT\ParishIntake\WordPress\Publishing\SourceMaterialLock;
 use DateTimeZone;
 use DomainException;
 use LogicException;
@@ -130,6 +131,8 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
 
         $this->execute('START TRANSACTION');
         $eventId = null;
+        $sourceLock = new SourceMaterialLock($this->database);
+        $sourceLockedEvent = null;
 
         try {
             $row = $this->change($binding, true);
@@ -157,7 +160,12 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
             }
 
             $eventId = (int) ($row['event_id'] ?? 0);
-            if ($eventId < 1 || ! $this->lockEvent($eventId)) {
+            if ($eventId < 1) {
+                throw new DomainException('The event that was changed no longer exists.');
+            }
+            $sourceLock->acquire($eventId);
+            $sourceLockedEvent = $eventId;
+            if (! $this->lockEvent($eventId)) {
                 throw new DomainException('The event that was changed no longer exists.');
             }
 
@@ -231,6 +239,10 @@ final class RevertChangeHandler implements AtomicActionTokenHandlerInterface
                 );
             }
             throw $failure;
+        } finally {
+            if ($sourceLockedEvent !== null) {
+                $sourceLock->release($sourceLockedEvent);
+            }
         }
 
         $this->afterCommit($eventId, $binding, $row);

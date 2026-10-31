@@ -22,6 +22,7 @@ use ADCT\ParishIntake\WordPress\Database\DatabaseConnectionInterface;
 use ADCT\ParishIntake\WordPress\Events\EventListingGeneration;
 use ADCT\ParishIntake\WordPress\Events\EventOccurrenceHooks;
 use ADCT\ParishIntake\WordPress\Events\EventPostType;
+use ADCT\ParishIntake\WordPress\Publishing\SourceMaterialLock;
 use DateTimeZone;
 use DomainException;
 use LogicException;
@@ -151,6 +152,8 @@ final class UnpublishEventHandler implements AtomicActionTokenHandlerInterface
 
         $this->execute('START TRANSACTION');
         $eventId = null;
+        $sourceLock = new SourceMaterialLock($this->database);
+        $sourceLockedEvent = null;
 
         try {
             $row = $this->change($binding, true);
@@ -174,7 +177,12 @@ final class UnpublishEventHandler implements AtomicActionTokenHandlerInterface
             }
 
             $eventId = (int) ($row['event_id'] ?? 0);
-            if ($eventId < 1 || ! $this->lockEvent($eventId)) {
+            if ($eventId < 1) {
+                throw new DomainException('The event that was changed no longer exists.');
+            }
+            $sourceLock->acquire($eventId);
+            $sourceLockedEvent = $eventId;
+            if (! $this->lockEvent($eventId)) {
                 throw new DomainException('The event that was changed no longer exists.');
             }
 
@@ -252,6 +260,10 @@ final class UnpublishEventHandler implements AtomicActionTokenHandlerInterface
                 );
             }
             throw $failure;
+        } finally {
+            if ($sourceLockedEvent !== null) {
+                $sourceLock->release($sourceLockedEvent);
+            }
         }
 
         $this->afterCommit($eventId, $binding, $row);
@@ -299,7 +311,7 @@ final class UnpublishEventHandler implements AtomicActionTokenHandlerInterface
         // to stand down or the same window would be built twice.
         EventOccurrenceHooks::setPublishingCandidate(true);
         try {
-            $saved = wp_insert_post([
+            $saved = wp_update_post([
                 'ID' => $eventId,
                 'post_type' => EventPostType::POST_TYPE,
                 'post_status' => self::UNPUBLISHED_STATUS,

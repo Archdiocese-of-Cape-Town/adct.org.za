@@ -66,6 +66,7 @@ final class WordPressSourceMaterialStoreTest extends TestCase
     'adct_publishing_featured',
     'adct_test_source_meta_failures',
     'adct_test_source_thumbnail_delete_failures',
+    'adct_test_source_post_status',
     ];
 
     /**
@@ -107,7 +108,19 @@ final class WordPressSourceMaterialStoreTest extends TestCase
         $GLOBALS['adct_test_children_queries'] = [];
         $GLOBALS['adct_publishing_meta'] = [];
         $GLOBALS['adct_publishing_featured'] = [];
+        $GLOBALS['adct_test_source_post_status'] = [42 => 'publish'];
         }
+
+    public function testAutomaticRetryDoesNotDiscloseFilesForANonPublicEvent(): void
+    {
+        $store = $this->store(attachments: [7 => $this->row(7, 'poster.jpg', 'image/jpeg')]);
+        update_post_meta(42, 'source_candidate_id', 12);
+        foreach (['draft', 'private', 'adct_unpublished', 'trash', false] as $status) {
+            $GLOBALS['adct_test_source_post_status'][42] = $status;
+            $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+            self::assertSame([], $GLOBALS['adct_test_sideloads']);
+        }
+    }
 
     protected function tearDown(): void
     {

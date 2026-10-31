@@ -156,6 +156,7 @@ final class WordPressStubSurfaceTest extends TestCase
                                                                             'delete_post_thumbnail',
                                                                             'get_attached_file',
                                                                             'get_post_meta',
+                                                                            'get_post_status',
                                                                             'get_post_thumbnail_id',
                                                                             'set_post_thumbnail',
                                                                             'update_post_meta',

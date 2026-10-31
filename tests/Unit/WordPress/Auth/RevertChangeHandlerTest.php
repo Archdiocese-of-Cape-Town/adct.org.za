@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace {
     require_once __DIR__ . '/../../../Support/WordPressStubs.php';
+    require_once __DIR__ . '/../../../Support/WordPressMediaStubs.php';
 require_once __DIR__ . '/../../../Support/WordPressCapabilityStubs.php';
 
     if (! class_exists('WP_Post', false)) {
@@ -47,8 +48,9 @@ require_once __DIR__ . '/../../../Support/WordPressCapabilityStubs.php';
     }
 
     if (! function_exists('get_permalink')) {
-        function get_permalink(int $postId): string
+        function get_permalink($post = 0, bool $leavename = false): string|false
         {
+            $postId = $post instanceof WP_Post ? $post->ID : (int) $post;
             return 'https://adct.org.za/events/event-' . $postId . '/';
         }
     }
@@ -111,6 +113,12 @@ namespace ADCT\ParishIntake\WordPress\Auth {
     function get_post(mixed $post): mixed
     {
         return $GLOBALS['revert_posts'][(int) $post] ?? null;
+    }
+
+    function wp_update_post(array $data, bool $wpError = false): int
+    {
+        $post = get_post((int) ($data['ID'] ?? 0));
+        return wp_insert_post(array_merge($post instanceof \WP_Post ? get_object_vars($post) : [], $data), $wpError);
     }
 
     function get_post_meta(int $postId, string $key = '', bool $single = false): mixed
@@ -1006,6 +1014,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
                         );
                         self::assertContains('ROLLBACK', $database->transactions);
             self::assertNotContains('COMMIT', $database->transactions);
+            self::assertSame([], $database->sourceLocks);
             // A rolled-back revert must not burn the token, so a retry stays
             // possible. commit() runs even though the revert failed: the
             // transaction that established the token as VALID already ended.
@@ -1020,6 +1029,29 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
                 $database->change(self::CHANGE_ID)['reverted_by'] ?? null,
                 'A rolled-back revert must not leave the change marked as reverted.'
             );
+        }
+
+        public function testSourceContentionRefusesRevertWithoutConsumingItsToken(): void
+        {
+            $database = $this->database();
+            $tokens = new ActionTokenService(new RevertTokenStore(), new RevertClock());
+            $binding = $this->binding();
+            $token = $tokens->issue($binding)->token();
+            $lock = new \ADCT\ParishIntake\WordPress\Publishing\SourceMaterialLock($database);
+            $lock->run(self::EVENT_ID, function () use ($database, $tokens, $binding, $token): void {
+                try {
+                    $this->handler([self::PARISH_ID], $database)->performAtomic($binding, $token, $tokens, '');
+                    self::fail('A revert must not run during source copying.');
+                } catch (DomainException $failure) {
+                    self::assertStringContainsString('already running', $failure->getMessage());
+                }
+                self::assertSame(ActionTokenStatus::VALID, $tokens->inspect($token)->status);
+                self::assertContains('ROLLBACK', $database->transactions);
+                self::assertNotContains('COMMIT', $database->transactions);
+            });
+            self::assertSame([], $database->sourceLocks);
+            $this->handler([self::PARISH_ID], $database)->performAtomic($binding, $token, $tokens, '');
+            self::assertSame([], $database->sourceLocks);
         }
 
         /**
@@ -1215,6 +1247,7 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
      */
     final class RevertDatabase implements DatabaseConnectionInterface
     {
+        public array $sourceLocks = [];
         /**
          * @var array<int, array<string, mixed>>
          */
@@ -1421,6 +1454,20 @@ namespace ADCT\ParishIntake\Tests\Unit\WordPress\Auth {
 
         public function getRow(string $query): ?array
         {
+            if (str_contains($query, 'IS_USED_LOCK')) {
+                $name = (string) (self::argumentsOf($query)[0] ?? '');
+                return ['owner' => isset($this->sourceLocks[$name]) ? 1 : null, 'connection_id' => 1];
+            }
+            if (str_contains($query, 'GET_LOCK')) {
+                $name = (string) (self::argumentsOf($query)[0] ?? '');
+                $this->sourceLocks[$name] = true;
+                return ['acquired' => 1];
+            }
+            if (str_contains($query, 'RELEASE_LOCK')) {
+                $name = (string) (self::argumentsOf($query)[0] ?? '');
+                unset($this->sourceLocks[$name]);
+                return ['released' => 1];
+            }
             // The handler joins postmeta for parish_id, so matching on the bare
             // "FROM ... WHERE id" shape would silently return nothing and read
             // as a missing change rather than a seam mismatch.

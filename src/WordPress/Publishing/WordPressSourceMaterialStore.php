@@ -131,7 +131,8 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
         }
 
         $this->lock->run($eventId, function () use ($eventId, $messageId, $actor, $candidateId): void {
-            if ((int) get_post_meta($eventId, 'source_candidate_id', true) !== $candidateId) {
+            if (get_post_status($eventId) !== 'publish'
+                || (int) get_post_meta($eventId, 'source_candidate_id', true) !== $candidateId) {
                 return;
             }
             $this->publishUnlocked($eventId, $messageId, $actor, $candidateId);

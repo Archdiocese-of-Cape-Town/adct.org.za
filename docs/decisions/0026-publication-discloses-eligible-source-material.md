@@ -79,6 +79,12 @@ art only; this change builds on the interfaces merged in #251.
   skips the older copy. No filesystem I/O joins the transaction.
   Failed event updates roll back before releasing the lock, allowing a later
   retry without leaving an uncommitted candidate or blocking source mutations.
+  Emailed revert and unpublish actions acquire the same lock before locking and
+  changing the post, and before consuming their token. Contention leaves the
+  token usable. Commit and rollback both release the lock before notifications.
+  Automatic copying checks both `publish` status and the source candidate under
+  the lock; a non-public or superseded event is skipped without erasing existing
+  sources or recovery records.
 
 ## Consequences and remaining assumptions
 
@@ -94,3 +100,32 @@ is newly decided here. The owner still needs to formally accept this proposal
 and confirm operational publication notices and public-media retention policy.
 No schema migration, dependency, server OCR, paid service or live-site change is
 introduced.
+
+The advisory lock coordinates the plugin's publication and emailed action
+transactions, not arbitrary WordPress writers. Standard editor/REST status
+updates can still commit while it is held. A transition committed before the
+locked status check prevents new copying; a transition after that check can
+still race a copy already in flight. This is a concrete limitation, not a claim
+that every WordPress status transition is serialized. Stronger coordination of ordinary WordPress writes remains unresolved. The
+core `wp_insert_post_data` filter expects an array, not a refusal `WP_Error`;
+`wp_after_insert_post` is skipped on database failure or when its caller
+disables after-hooks. Simply acquiring/releasing across these hooks is not a
+failure-safe lock lifecycle. REST-specific hooks alone would leave classic
+editor and other `wp_update_post` callers uncovered. A broader integration
+design is needed; a late check cannot retract bytes already disclosed by
+filesystem I/O.
+
+Revert restores the recorded featured-image snapshot, but does not detach or
+delete source media introduced by the reverted change. Whether to detach those
+sources automatically is a separate owner policy decision. Unpublish likewise
+does not erase already-public media URLs.
+
+The shared lock currently requires MySQL/MariaDB `IS_USED_LOCK`, `GET_LOCK` and
+`RELEASE_LOCK`. An actual SQLite-backed Playground lock probe fails with
+`SQLSTATE[HY000]: General error: 1 no such function: IS_USED_LOCK`, reported as
+`The source material lock owner could not be checked.` Source publication,
+existing-event updates, revert and emailed unpublish are therefore not fully
+compatible with this preview backend. Unsupported lock functions report
+failure, never successful lock acquisition. Initial event publication can commit before
+its post-commit source lock fails; that error explicitly reports the committed
+event. The parser preview is not evidence of full publishing compatibility.
