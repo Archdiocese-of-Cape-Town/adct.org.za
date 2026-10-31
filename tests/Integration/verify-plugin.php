@@ -2506,6 +2506,7 @@ $previousEventScreen = get_current_screen();
 $previousEventGet = $_GET;
 $previousMainQuery = $GLOBALS['wp_the_query'] ?? null;
 $legacyFeaturedValue = false;
+// Freeze only the SQL callback's clock; keep the registered admin-query hook and real database.
 $eventFilterClock = new class implements ClockInterface {
     public DateTimeImmutable $instant;
 
@@ -2569,6 +2570,20 @@ try {
         ]);
         return array_map('intval', wp_list_pluck($query->posts, 'ID'));
     };
+    $otherEventFilters = [
+        'adct_pi_parish' => (string) $firstParishId,
+        'adct_pi_recurring' => 'yes',
+        'adct_pi_featured' => 'yes',
+        'adct_pi_status' => 'scheduled',
+    ];
+    $indexedEventDates = $wpdb->get_col($wpdb->prepare(
+        "SELECT start_local_date FROM {$wpdb->prefix}adct_pi_occurrences "
+        . 'WHERE event_id = %d ORDER BY start_utc ASC',
+        $eventPostId
+    ));
+    if ($indexedEventDates !== ['2026-10-10', '2026-11-13', '2026-12-04']) {
+        $fail('The event filter fixture must retain the historical start, RDATE and following recurrence, but not the EXDATE.');
+    }
     $nextEventDate = $wpdb->get_var($wpdb->prepare(
         "SELECT start_local_date FROM {$wpdb->prefix}adct_pi_occurrences "
         . 'WHERE event_id = %d AND start_utc >= %s ORDER BY start_utc ASC LIMIT 1',
@@ -2576,12 +2591,8 @@ try {
         $eventFilterClock->now()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s')
     ));
     if ($nextEventDate !== '2026-11-13'
-        || ! in_array($eventPostId, $matchingEventIds([
-            'adct_pi_parish' => (string) $firstParishId,
+        || ! in_array($eventPostId, $matchingEventIds($otherEventFilters + [
             'adct_pi_next' => $nextEventDate,
-            'adct_pi_recurring' => 'yes',
-            'adct_pi_featured' => 'yes',
-            'adct_pi_status' => 'scheduled',
         ]), true)) {
         $fail('Combined event admin list filters hid a matching event.');
     }
@@ -2594,6 +2605,31 @@ try {
     ] as $filter) {
         if (in_array($eventPostId, $matchingEventIds($filter), true)) {
             $fail('An event admin list filter did not exclude a nonmatching event: ' . wp_json_encode($filter));
+        }
+    }
+    foreach ([
+        'before the historical start' => ['2026-10-10T13:59:59Z', '2026-10-10'],
+        'exactly at the historical start' => ['2026-10-10T14:00:00Z', '2026-10-10'],
+        'one second after the historical start' => ['2026-10-10T14:00:01Z', '2026-11-13'],
+        'SAST midnight before the RDATE' => ['2026-11-12T22:00:00Z', '2026-11-13'],
+        'exactly at the RDATE' => ['2026-11-13T14:00:00Z', '2026-11-13'],
+        'one second after the RDATE' => ['2026-11-13T14:00:01Z', '2026-12-04'],
+        'after every indexed start' => ['2026-12-04T14:00:01Z', null],
+    ] as $boundary => [$instant, $expectedNextDate]) {
+        $eventFilterClock->instant = new DateTimeImmutable($instant);
+        if (! in_array($eventPostId, $matchingEventIds($otherEventFilters), true)) {
+            $fail('The non-date event filters hid the event ' . $boundary . '.');
+        }
+        foreach (['2026-10-10', '2026-11-06', '2026-11-13', '2026-12-04', '2026-12-25'] as $date) {
+            foreach ([[], $otherEventFilters] as $otherFilters) {
+                $matches = in_array($eventPostId, $matchingEventIds($otherFilters + [
+                    'adct_pi_next' => $date,
+                ]), true);
+                if ($matches !== ($date === $expectedNextDate)) {
+                    $fail('The next-date filter selected the wrong occurrence ' . $boundary
+                        . ' for ' . $date . ' (' . ($otherFilters === [] ? 'alone' : 'combined') . ').');
+                }
+            }
         }
     }
     if ($wpdb->update(
