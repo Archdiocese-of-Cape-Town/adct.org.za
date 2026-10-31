@@ -77,6 +77,8 @@ use ADCT\ParishIntake\WordPress\Ingestion\WordPressConfirmationEmailJobSource;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobLock;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressJobStateStore;
 use ADCT\ParishIntake\WordPress\Jobs\WordPressInboundMessageProcessingFailureLogger;
+use ADCT\ParishIntake\WordPress\Jobs\OcrSettings;
+use ADCT\ParishIntake\WordPress\Jobs\WordPressJobScheduler;
 
 require_once ABSPATH . 'wp-admin/includes/plugin.php';
 require_once ABSPATH . 'wp-admin/includes/user.php';
@@ -4680,6 +4682,130 @@ if (
     $fail('Resuming a stored message duplicated candidates or changed attachments, mailbox checkpoints or queued mail.');
 }
 
+$pluginInstanceProperty = new ReflectionProperty(Plugin::class, 'instance');
+$pluginInstance = $pluginInstanceProperty->getValue();
+$schedulerProperty = new ReflectionProperty(Plugin::class, 'jobScheduler');
+$pluginScheduler = $pluginInstance instanceof Plugin
+    ? $schedulerProperty->getValue($pluginInstance)
+    : null;
+$pluginProcessingJob = $pluginScheduler instanceof WordPressJobScheduler
+    ? $pluginScheduler->findJob('process_inbound_messages')
+    : null;
+
+if (! $pluginProcessingJob instanceof InboundMessageProcessingJob) {
+    $fail('The Plugin-wired inbound processing job could not be retrieved from its scheduler.');
+}
+
+$pluginOcrImage = base64_decode(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    true
+);
+
+if (! is_string($pluginOcrImage)) {
+    $fail('The synthetic PNG fixture could not be decoded.');
+}
+
+$pluginOcrImagePath = $processingStorage->storeAttachment($pluginOcrImage, 'png');
+$pluginOcrExternalId = '<plugin-ocr-regression-' . bin2hex(random_bytes(8)) . '@example.test>';
+$pluginOcrRawMessage = implode("\r\n", [
+    'From: Fictional OCR Regression Sender <ocr-regression@example.test>',
+    'To: events@example.test',
+    'Date: Fri, 25 Sep 2026 04:00:00 +0000',
+    'Message-ID: ' . $pluginOcrExternalId,
+    'Subject: Fictional parish poster fallback',
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=UTF-8',
+    '',
+    'Parish: Example Parish',
+    'Community supper on 12 October 2026 at 18:30 at Example Parish Hall.',
+    '',
+]);
+$pluginOcrRawPath = $processingStorage->storeRawMessage($pluginOcrRawMessage);
+$pluginOcrStoredMessage = $inboundMessageStore->store(
+    new InboundMessageRecord(
+        $mailboxSource->id,
+        $pluginOcrExternalId,
+        hash('sha256', $pluginOcrRawMessage),
+        'ocr-regression@example.test',
+        'Fictional OCR Regression Sender',
+        'Fictional parish poster fallback',
+        new DateTimeImmutable('2026-09-25T04:00:00+00:00'),
+        $pluginOcrRawPath,
+        [
+            new InboundAttachmentRecord(
+                'synthetic-parish-poster.png',
+                'image/png',
+                strlen($pluginOcrImage),
+                $pluginOcrImagePath,
+                hash('sha256', $pluginOcrImage),
+                AttachmentStoragePolicy::STATUS_PENDING
+            ),
+        ]
+    ),
+    $integrationTimestamp
+);
+
+if ($pluginOcrStoredMessage->duplicate) {
+    $fail('The synthetic Plugin-wired OCR regression message unexpectedly matched an existing row.');
+}
+
+update_option(OcrSettings::ENABLED_OPTION, '1');
+if (
+    get_option(OcrSettings::ENABLED_OPTION) !== '1'
+    || get_option('adct_parish_intake_ocr_api_key') !== $storedTestOcrKey
+) {
+    $fail('The Plugin-wired OCR regression fixture did not retain its synthetic enabled option and key.');
+}
+
+$blockedHttpRequests = [];
+$blockOutboundRequests = static function ($preempt, $args, $url) use (&$blockedHttpRequests) {
+    if (is_string($url)) {
+        $blockedHttpRequests[] = $url;
+    }
+
+    return new WP_Error('integration_http_blocked', 'Outbound HTTP is blocked by the integration test.');
+};
+add_filter('pre_http_request', $blockOutboundRequests, PHP_INT_MAX, 3);
+$pluginProcessingJob->prioritizeMessageIds([$pluginOcrStoredMessage->messageId]);
+try {
+    $pluginWiredRun = (new JobRunner(
+        new WordPressJobLock(),
+        new WordPressJobStateStore(),
+        new SystemClock()
+    ))->run($pluginProcessingJob, true);
+} finally {
+    $pluginProcessingJob->clearPrioritizedMessageIds();
+    remove_filter('pre_http_request', $blockOutboundRequests, PHP_INT_MAX);
+}
+
+$pluginOcrMessageRow = $wpdb->get_row($wpdb->prepare(
+    "SELECT status, body_text FROM {$inboundTable} WHERE id = %d LIMIT 1",
+    $pluginOcrStoredMessage->messageId
+), ARRAY_A);
+$pluginOcrAttachmentRow = $wpdb->get_row($wpdb->prepare(
+    "SELECT status, extraction_method FROM {$attachmentsTable} WHERE message_id = %d LIMIT 1",
+    $pluginOcrStoredMessage->messageId
+), ARRAY_A);
+$providerRequests = array_values(array_filter(
+    $blockedHttpRequests,
+    static fn (string $url): bool => str_contains($url, 'api.ocr.space/parse/image')
+));
+
+if (
+    $pluginWiredRun->status->value !== 'completed'
+    || ! is_array($pluginOcrMessageRow)
+    || $pluginOcrMessageRow['status'] !== InboundMessageRecord::STATUS_PARSED
+    || ! is_string($pluginOcrMessageRow['body_text'])
+    || strpos($pluginOcrMessageRow['body_text'], 'Community supper on 12 October 2026') === false
+    || strpos($pluginOcrMessageRow['body_text'], 'Text read from the attached poster (OCR)') !== false
+    || ! is_array($pluginOcrAttachmentRow)
+    || $pluginOcrAttachmentRow['status'] !== AttachmentStoragePolicy::STATUS_PENDING
+    || $pluginOcrAttachmentRow['extraction_method'] !== 'none'
+    || $providerRequests !== []
+) {
+    $fail('The Plugin-wired inbound job did not preserve manual poster fallback without contacting OCR.space.');
+}
+
 $originalGet = $_GET;
 $_GET = ['page' => $inboxPageSlug, 'status' => 'parsed'];
 ob_start();
@@ -4699,9 +4825,14 @@ if (
 }
 
 $processingStorage->delete($reprocessRawPath);
+$processingStorage->delete($pluginOcrRawPath);
+$processingStorage->delete($pluginOcrImagePath);
 $wpdb->delete($candidateTable, ['message_id' => $reprocessMessageId], ['%d']);
 $wpdb->delete($attachmentsTable, ['message_id' => $reprocessMessageId], ['%d']);
 $wpdb->delete($inboundTable, ['id' => $reprocessMessageId], ['%d']);
+$wpdb->delete($candidateTable, ['message_id' => $pluginOcrStoredMessage->messageId], ['%d']);
+$wpdb->delete($attachmentsTable, ['message_id' => $pluginOcrStoredMessage->messageId], ['%d']);
+$wpdb->delete($inboundTable, ['id' => $pluginOcrStoredMessage->messageId], ['%d']);
 delete_option('adct_pi_job_state_process_inbound_messages');
 
 if ($wpdb->query($wpdb->prepare(
