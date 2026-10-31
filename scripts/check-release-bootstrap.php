@@ -64,6 +64,7 @@ foreach ([
     'DI\\Container' => 'ADCT\\ParishIntake\\Dependencies\\DI\\Container',
     'Laravel\\SerializableClosure\\SerializableClosure' => 'ADCT\\ParishIntake\\Dependencies\\Laravel\\SerializableClosure\\SerializableClosure',
     'GuzzleHttp\\Psr7\\Request' => 'ADCT\\ParishIntake\\Dependencies\\GuzzleHttp\\Psr7\\Request',
+    'ZBateson\\MailMimeParser\\MailMimeParser' => 'ADCT\\ParishIntake\\Dependencies\\ZBateson\\MailMimeParser\\MailMimeParser',
 ] as $unprefixedClass => $prefixedClass) {
     if (class_exists($unprefixedClass)) {
         fwrite(STDERR, "Unprefixed dependency class loaded from the release: {$unprefixedClass}\n");

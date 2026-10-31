@@ -41,6 +41,15 @@ test time, so the suite makes no network call and does not depend on OCR.space b
 Every fixture page positions its text with an explicit `Tm` matrix, so a line's x and y are exact and a
 fixture can be turned through a given angle (`TextLine`'s `$degrees`) to exercise turned-run reading order.
 
+`pdfs/sha256.json` pins the reviewed PDF bytes. PHPUnit verifies it before any
+tests run, independently of Git. For a read-only index comparison on Windows,
+run `node scripts\check-pdf-fixtures.mjs` from the repository root. Clean Git
+status does not prove a stale checkout is intact. An explicit `--export
+NEW_DIRECTORY` produces verified copies without overwriting originals; see
+[the recovery safeguards](../../docs/development.md#pdf-fixture-integrity-on-windows).
+Intentional regeneration updates the PDFs and manifest together and must be
+reviewed in an isolated copy, never used to erase local edits or bless corruption.
+
 ## Adding a fixture
 
 Drop two files in `emails/` with the same basename:
