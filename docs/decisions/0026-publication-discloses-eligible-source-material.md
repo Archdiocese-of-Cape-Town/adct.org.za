@@ -66,6 +66,10 @@ art only; this change builds on the interfaces merged in #251.
   failure explicitly. If the public copy succeeded but cleanup failed, retry
   clears the retained record without making another copy or undoing publication.
   The previous split layout remains readable for data-preserving transition.
+  Removal first verifies its durable history marker, including for older media
+  copies with no marker. Featured-image deletion is checked before dropping
+  the source reference. A refused metadata or audit write reports failure and
+  restores the prior source/featured-image state so the removal can be retried.
 
 ## Consequences and remaining assumptions
 

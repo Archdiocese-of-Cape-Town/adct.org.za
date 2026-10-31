@@ -209,6 +209,9 @@ that was successfully copied remains public; retry clears its retained warning
 without copying it again.
 The file remains in the recovery selector while that warning needs cleanup,
 even if its public copy is already listed above.
+If removal reports a save failure, do not assume the file is hidden: its prior
+source entry and poster are retained so you can retry **Remove**. Successful
+removal verifies both the source reference and the featured poster were cleared.
 
 Removal hides the file from this event, but does not delete the media-library
 asset or revoke a URL already shared publicly. Public copies survive intake

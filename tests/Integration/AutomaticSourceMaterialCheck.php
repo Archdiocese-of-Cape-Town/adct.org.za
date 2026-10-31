@@ -120,9 +120,40 @@ final class AutomaticSourceMaterialCheck
                     }
                 }
                 $latest = (int) get_post_meta($eventId, 'source_candidate_id', true);
+                if ($via === 'dean') {
+                    $historyKey = '_adct_pi_source_material_attachment_' . $sources[0]->attachmentId;
+                    delete_post_meta($eventId, $historyKey);
+                    $refuseHistory = static function ($check, int $postId, string $key) use ($eventId, $historyKey) {
+                        return $postId === $eventId && $key === $historyKey ? false : $check;
+                    };
+                    $refuseThumbnail = static function ($check, int $postId, string $key) use ($eventId) {
+                        return $postId === $eventId && $key === '_thumbnail_id' ? false : $check;
+                    };
+                    foreach ([
+                        ['add_post_metadata', $refuseHistory],
+                        ['delete_post_metadata', $refuseThumbnail],
+                    ] as [$hook, $refuse]) {
+                        $reported = null;
+                        add_filter($hook, $refuse, 10, 3);
+                        try {
+                            $store->remove($eventId, $sources[0]->mediaId);
+                        } catch (RuntimeException $failure) {
+                            $reported = $failure;
+                        } finally {
+                            remove_filter($hook, $refuse, 10);
+                        }
+                        $view = Plugin::publicEventPage()->viewForPost(get_post($eventId));
+                        if ($reported === null || count($store->forEvent($eventId)) !== 2
+                            || $view['poster'] === null || empty($view['json_ld']['image'])) {
+                            $fail('Refused removal metadata silently changed source visibility or hid its retry control.');
+                        }
+                    }
+                }
                 $store->remove($eventId, $sources[0]->mediaId);
                 Plugin::candidatePublisher()->publish($latest);
-                if (count($store->forEvent($eventId)) !== 1 || has_post_thumbnail($eventId)) {
+                $removedView = Plugin::publicEventPage()->viewForPost(get_post($eventId));
+                if (count($store->forEvent($eventId)) !== 1 || has_post_thumbnail($eventId)
+                    || $removedView['poster'] !== null || ! empty($removedView['json_ld']['image'])) {
                     $fail('Retry restored a manually removed source poster.');
                 }
             }

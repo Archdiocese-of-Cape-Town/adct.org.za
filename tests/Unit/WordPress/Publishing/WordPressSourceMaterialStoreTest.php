@@ -65,6 +65,7 @@ final class WordPressSourceMaterialStoreTest extends TestCase
     'adct_publishing_meta',
     'adct_publishing_featured',
     'adct_test_source_meta_failures',
+    'adct_test_source_thumbnail_delete_failures',
     ];
 
     /**
@@ -1240,6 +1241,98 @@ final class WordPressSourceMaterialStoreTest extends TestCase
         $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
         self::assertSame([], WordPressSourceMaterialStore::failureRecords(42));
         self::assertCount(2, $GLOBALS['adct_test_sideloads'], 'Only the original failed copy and successful repair were attempted.');
+    }
+
+    public function testLegacyRemovalRefusesAHistoryWriteFailureAndRetryNeverRestoresTheFile(): void
+    {
+        update_post_meta(42, 'source_candidate_id', 12);
+        $audit = new RecordingAuditWriter();
+        $store = $this->store([7 => $this->row(7, 'poster.jpg', 'image/jpeg')], $audit);
+        $source = $store->promote(42, 7, 'poster');
+        $history = '_adct_pi_source_material_attachment_7';
+        delete_post_meta(42, $history);
+        $GLOBALS['adct_test_source_meta_failures'][$history] = 1;
+        $reported = null;
+        try {
+            $store->remove(42, $source->mediaId);
+        } catch (RuntimeException $failure) {
+            $reported = $failure;
+        }
+        self::assertInstanceOf(RuntimeException::class, $reported);
+        self::assertCount(1, $store->forEvent(42));
+        self::assertSame($source->mediaId, get_post_thumbnail_id(42));
+        self::assertCount(1, $audit->rows, 'Refused removal must not claim an audit success.');
+        $store->remove(42, $source->mediaId);
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        self::assertSame([], $store->forEvent(42));
+        self::assertSame(0, get_post_thumbnail_id(42));
+        self::assertCount(1, $GLOBALS['adct_test_sideloads']);
+    }
+
+    public function testRefusedThumbnailDeletionReportsFailureAndKeepsRemovalRetryable(): void
+    {
+        update_post_meta(42, 'source_candidate_id', 12);
+        $audit = new RecordingAuditWriter();
+        $store = $this->store([7 => $this->row(7, 'poster.jpg', 'image/jpeg')], $audit);
+        $source = $store->promote(42, 7, 'poster');
+        $GLOBALS['adct_test_source_thumbnail_delete_failures'] = 1;
+        $reported = null;
+        try {
+            $store->remove(42, $source->mediaId);
+        } catch (RuntimeException $failure) {
+            $reported = $failure;
+        }
+        self::assertInstanceOf(RuntimeException::class, $reported);
+        self::assertCount(1, $store->forEvent(42), 'The refused removal must remain reachable by the removal control.');
+        self::assertSame($source->mediaId, get_post_thumbnail_id(42));
+        self::assertCount(1, $audit->rows);
+        $store->remove(42, $source->mediaId);
+        $store->publishForEvent(42, 3, 'reviewer@example.test', 12);
+        self::assertSame([], $store->forEvent(42));
+        self::assertSame(0, get_post_thumbnail_id(42));
+        self::assertCount(1, $GLOBALS['adct_test_sideloads']);
+    }
+
+    public function testRemovalListWriteFailureRestoresTheFeaturedPosterAndCanBeRetried(): void
+    {
+        $audit = new RecordingAuditWriter();
+        $store = $this->store([7 => $this->row(7, 'poster.jpg', 'image/jpeg')], $audit);
+        $source = $store->promote(42, 7, 'poster');
+        $GLOBALS['adct_test_source_meta_failures']['source_attachment_ids'] = 1;
+        $reported = null;
+        try {
+            $store->remove(42, $source->mediaId);
+        } catch (RuntimeException $failure) {
+            $reported = $failure;
+        }
+        self::assertInstanceOf(RuntimeException::class, $reported);
+        self::assertCount(1, $store->forEvent(42));
+        self::assertSame($source->mediaId, get_post_thumbnail_id(42));
+        self::assertCount(1, $audit->rows);
+        $store->remove(42, $source->mediaId);
+        self::assertSame([], $store->forEvent(42));
+        self::assertSame(0, get_post_thumbnail_id(42));
+    }
+
+    public function testRemovalAuditFailureRestoresTheSourceAndFeaturedPoster(): void
+    {
+        $audit = new RecordingAuditWriter();
+        $store = $this->store([7 => $this->row(7, 'poster.jpg', 'image/jpeg')], $audit);
+        $source = $store->promote(42, 7, 'poster');
+        $audit->fail = true;
+        $reported = null;
+        try {
+            $store->remove(42, $source->mediaId);
+        } catch (RuntimeException $failure) {
+            $reported = $failure;
+        }
+        self::assertInstanceOf(RuntimeException::class, $reported);
+        self::assertCount(1, $store->forEvent(42));
+        self::assertSame($source->mediaId, get_post_thumbnail_id(42));
+        $audit->fail = false;
+        $store->remove(42, $source->mediaId);
+        self::assertSame([], $store->forEvent(42));
+        self::assertCount(2, $audit->rows);
     }
 
     public function testLegacySplitFailureRecordsRemainRecoverableAndUpgradeWithoutDataLoss(): void

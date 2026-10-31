@@ -324,6 +324,10 @@ namespace {
     if (! function_exists('delete_post_thumbnail')) {
         function delete_post_thumbnail(int $postId): bool
         {
+            if (($GLOBALS['adct_test_source_thumbnail_delete_failures'] ?? 0) > 0) {
+                --$GLOBALS['adct_test_source_thumbnail_delete_failures'];
+                return false;
+            }
             unset($GLOBALS['adct_publishing_featured'][(int) $postId]);
 
             return true;

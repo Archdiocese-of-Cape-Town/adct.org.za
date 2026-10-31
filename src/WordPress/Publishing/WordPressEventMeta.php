@@ -108,6 +108,9 @@ final class WordPressEventMeta implements StoredAttachmentEventMetaInterface
         }
 
         delete_post_thumbnail($postId);
+        if (get_post_thumbnail_id($postId) === $mediaId) {
+            throw new \RuntimeException('The source poster could not be removed as the featured image.');
+        }
     }
 
     /**

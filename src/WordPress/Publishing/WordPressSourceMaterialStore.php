@@ -320,28 +320,41 @@ final class WordPressSourceMaterialStore implements SourceMaterialStoreInterface
             throw new DomainException('That item is not published with this event.');
         }
 
-        update_post_meta($eventId, self::HISTORY_PREFIX . (int) $removed['attachment_id'], $mediaId);
-        $this->eventMeta->writeSourceAttachmentIds($eventId, $kept);
-
-        if ((string) $removed['role'] === SourceAttachment::ROLE_POSTER) {
-            $this->eventMeta->clearFeaturedImage($eventId, $mediaId);
+        $historyKey = self::HISTORY_PREFIX . (int) $removed['attachment_id'];
+        update_post_meta($eventId, $historyKey, $mediaId);
+        if ((int) get_post_meta($eventId, $historyKey, true) !== $mediaId) {
+            throw new \RuntimeException('Source removal history could not be saved. The file remains published; retry removal.');
         }
 
-        // The attachment stays in the library and the file stays on disk. A
-        // removal is a visibility change; the media library's own delete keeps
-        // its own audit trail, and the bytes have to survive an intake
-        // retention sweep (ADR 0025).
-        $this->writeAuditRow(
-            $eventId,
-            new SourceAttachment(
-                (int) $removed['attachment_id'],
-                $mediaId,
-                (string) $removed['role'],
-                (string) $removed['original_filename']
-            ),
-            false,
-            null
-        );
+        $previousThumbnail = get_post_thumbnail_id($eventId);
+        try {
+            if ((string) $removed['role'] === SourceAttachment::ROLE_POSTER) {
+                $this->eventMeta->clearFeaturedImage($eventId, $mediaId);
+            }
+            $this->eventMeta->writeSourceAttachmentIds($eventId, $kept);
+
+            // Removal changes visibility, not the retained public media bytes.
+            $this->writeAuditRow(
+                $eventId,
+                new SourceAttachment(
+                    (int) $removed['attachment_id'],
+                    $mediaId,
+                    (string) $removed['role'],
+                    (string) $removed['original_filename']
+                ),
+                false,
+                null
+            );
+        } catch (Throwable $failure) {
+            try {
+                $this->eventMeta->writeSourceAttachmentIds($eventId, $entries);
+            } finally {
+                if ($previousThumbnail > 0) {
+                    $this->eventMeta->setFeaturedImage($eventId, $previousThumbnail);
+                }
+            }
+            throw $failure;
+        }
     }
 
     public function forEvent(int $eventId): array
